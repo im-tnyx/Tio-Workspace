@@ -1,4 +1,16 @@
-# Authentication, privacy and security requirements
+<div align="center">
+
+# 🔐 Authentication & Security
+**Persistent login, on-device isolation and secret handling**
+
+[← Docs hub](00-INDEX.md) · [🏠 Home](../README.md) · [🎨 Design](../DESIGN.md)
+
+</div>
+
+> [!NOTE]
+> **Document status:** Planning / proposed specification. Product implementation has not started.
+
+---
 
 **Status:** Design requirements, not a security audit or deployed configuration.
 
@@ -54,3 +66,7 @@ Cold start offline; app kill during write; expired/revoked session; logout then 
 - https://supabase.com/docs/guides/functions/secrets
 - https://docs.expo.dev/versions/latest/sdk/sqlite/
 - https://docs.expo.dev/versions/latest/sdk/securestore/
+
+---
+
+[← Documentation hub](00-INDEX.md) · [Threat model →](14-THREAT-MODEL.md)

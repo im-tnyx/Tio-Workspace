@@ -1,0 +1,54 @@
+name: "✨ Feature proposal"
+description: "Propose a change to the Tio roadmap or product specifications."
+title: "[Feature]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Tio is in **documentation-only planning**. A proposal is not implementation approval. Please link related specifications and describe privacy/offline implications.
+  - type: input
+    id: goal
+    attributes:
+      label: User goal
+      placeholder: "As a user, I want…"
+    validations:
+      required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem and current limitation
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed behaviour and UX
+    validations:
+      required: true
+  - type: dropdown
+    id: phase
+    attributes:
+      label: Suggested phase
+      options:
+        - Phase 0 — documentation / design
+        - Phase 1 — local workout MVP
+        - Phase 2 — AI plan generation
+        - Phase 3 — personal backup
+        - Phase 4 — future optional sync
+        - Not decided
+    validations:
+      required: true
+  - type: textarea
+    id: privacy
+    attributes:
+      label: Offline, data ownership and privacy impact
+      description: Note any data leaving the device, new permissions and account effects.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+      placeholder: "Given…, when…, then…"
+    validations:
+      required: true

@@ -1,4 +1,16 @@
-# Acceptance and testing plan
+<div align="center">
+
+# 🧪 Test & Acceptance Plan
+**Verifiable scenarios for offline operation, login and recovery**
+
+[← Docs hub](00-INDEX.md) · [🏠 Home](../README.md) · [🎨 Design](../DESIGN.md)
+
+</div>
+
+> [!NOTE]
+> **Document status:** Planning / proposed specification. Product implementation has not started.
+
+---
 
 **Status:** Manual/automated tests to build later. Nothing in this document implies tests have passed.
 
@@ -47,3 +59,7 @@ Record test date, device/OS/app build, whether the scenario passed, failure logs
 - When AI is used, verify exactly which fields are transmitted and that keys stay server-side.
 - When backup is disabled, verify there is no personal-cloud upload.
 - When cloud sync is disabled, verify no workout records reach the app's online database.
+
+---
+
+[← Documentation hub](00-INDEX.md) · [Definition of done →](15-DEFINITION-OF-DONE.md)

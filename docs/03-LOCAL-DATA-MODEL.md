@@ -1,4 +1,16 @@
-# Local SQLite data model (proposed)
+<div align="center">
+
+# 🗄 Local Data Model
+**Account-scoped SQLite entities and migration rules**
+
+[← Docs hub](00-INDEX.md) · [🏠 Home](../README.md) · [🎨 Design](../DESIGN.md)
+
+</div>
+
+> [!NOTE]
+> **Document status:** Planning / proposed specification. Product implementation has not started.
+
+---
 
 **Not implemented:** This is a schema specification, not a migration script. Actual SQLite DDL, constraints and indexes will be reviewed before development.
 
@@ -51,3 +63,7 @@ Session history by `user_id + started_at`, plans by owner and update time, sets 
 
 ## Cloud-readiness without cloud dependence
 Keep `user_id`, stable IDs, timestamps and deletion markers from day one. Define deterministic conflict handling **before** sync launches; these fields alone do not magically resolve simultaneous edits.
+
+---
+
+[← Documentation hub](00-INDEX.md) · [Security →](04-AUTH-AND-SECURITY.md)

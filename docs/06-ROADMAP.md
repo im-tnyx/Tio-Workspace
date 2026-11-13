@@ -1,4 +1,16 @@
-# Implementation roadmap — documentation-first
+<div align="center">
+
+# 🗺 Implementation Roadmap
+**Documentation first — sequenced, approval-gated delivery**
+
+[← Docs hub](00-INDEX.md) · [🏠 Home](../README.md) · [🎨 Design](../DESIGN.md)
+
+</div>
+
+> [!NOTE]
+> **Document status:** Planning / proposed specification. Product implementation has not started.
+
+---
 
 **Current phase:** Planning. No estimate, release date or deployed feature is committed.
 
@@ -56,3 +68,7 @@ Payments, community/social, wearable integrations, full server-side workout arch
 
 ## Traceability
 Every planned feature should map to: requirement -> UI screen -> data contract -> test case -> implementation milestone. Changes to privacy defaults require revising these documents first.
+
+---
+
+[← Documentation hub](00-INDEX.md) · [Definition of done →](15-DEFINITION-OF-DONE.md)

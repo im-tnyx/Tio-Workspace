@@ -1,0 +1,39 @@
+name: "🏗 Architecture decision proposal"
+description: "Request a documented architecture or security decision."
+title: "[ADR]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Read the [decision register](https://github.com/im-tnyx/Tio-Workspace/blob/main/docs/09-DECISIONS.md) and [ADR template](https://github.com/im-tnyx/Tio-Workspace/blob/main/docs/16-ADR-TEMPLATE.md). No production changes may start without approval.
+  - type: input
+    id: decision
+    attributes:
+      label: Proposed decision
+      placeholder: "Choose … because …"
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and constraints
+    validations:
+      required: true
+  - type: textarea
+    id: options
+    attributes:
+      label: Considered options and tradeoffs
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Account, offline, privacy and security consequences
+    validations:
+      required: true
+  - type: textarea
+    id: verification
+    attributes:
+      label: How should we validate the decision?
+    validations:
+      required: true

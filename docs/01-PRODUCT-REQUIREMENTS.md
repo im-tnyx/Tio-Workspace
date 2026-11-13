@@ -1,4 +1,16 @@
-# Product requirements — Tio Workout Log
+<div align="center">
+
+# 🎯 Product Requirements
+**Scope, user journeys and MVP acceptance**
+
+[← Docs hub](00-INDEX.md) · [🏠 Home](../README.md) · [🎨 Design](../DESIGN.md)
+
+</div>
+
+> [!NOTE]
+> **Document status:** Planning / proposed specification. Product implementation has not started.
+
+---
 
 **Document state:** Proposed specification, 2026-11-13. **Implementation state: not started.**
 
@@ -64,3 +76,7 @@ Workout save reliability, crash-free sessions, startup-to-dashboard time, offlin
 
 ## Open product decisions
 App display name and branding; exercise library source/licensing; Google/Apple sign-in in addition to email login; whether PIN/biometrics are optional; backup UX and recovery mechanism; AI provider; subscription or usage quota if AI costs arise.
+
+---
+
+[← Documentation hub](00-INDEX.md) · [Architecture →](02-SYSTEM-ARCHITECTURE.md)

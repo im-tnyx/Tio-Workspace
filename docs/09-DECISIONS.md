@@ -1,4 +1,16 @@
-# Architecture decision register
+<div align="center">
+
+# 📝 Architecture Decisions
+**Agreed intentions, proposed choices and open questions**
+
+[← Docs hub](00-INDEX.md) · [🏠 Home](../README.md) · [🎨 Design](../DESIGN.md)
+
+</div>
+
+> [!NOTE]
+> **Document status:** Planning / proposed specification. Product implementation has not started.
+
+---
 
 **Status as of 2026-11-13:** Intentions below are derived from the product brief; **no deployment or implementation is approved yet**.
 
@@ -39,3 +51,7 @@
 
 ## Change control
 When a decision changes, update the relevant requirements/architecture/security/test documents first; log the change here with rationale and approval. Implementation starts only after Phase 0 review.
+
+---
+
+[← Documentation hub](00-INDEX.md) · [ADR template →](16-ADR-TEMPLATE.md)
