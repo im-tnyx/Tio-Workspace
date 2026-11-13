@@ -17,10 +17,11 @@
 ## Phase 0 — Planning and decisions (CURRENT)
 - [x] Establish repository with README and separate planning documents.
 - [x] Define local-first contract, account persistence and no default workout upload.
-- [ ] Review open questions in `09-DECISIONS.md`.
+- [x] Prepare [structured Phase 0 review pack](17-PHASE-0-DECISION-PACK.md), [offline session flow](18-OFFLINE-SESSION-STATE-MACHINE.md), [backup recovery plan](19-BACKUP-RECOVERY-STRATEGY.md) and [MVP UX draft](20-MVP-UX-FLOWS.md) (**proposals only**).
+- [ ] Review open questions in `09-DECISIONS.md` and approve/revise high-risk recommendations.
 - [ ] Approve MVP screen list, backup privacy, encryption and account lifecycle.
 - [ ] Agree on design style and decide platform/dev-build requirements.
-**Exit:** Product and technical plan accepted; only then start app development.
+**Exit:** Product and technical plan accepted and [Phase 1 readiness gate](21-PHASE-1-READINESS.md) signed off; only then start app development.
 
 ## Phase 1 — Foundational offline MVP (NEXT, NOT STARTED)
 - [ ] Expo TypeScript project, routing, navigation, lint/test tooling.

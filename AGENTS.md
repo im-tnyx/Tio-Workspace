@@ -11,7 +11,8 @@
 4. `docs/02-SYSTEM-ARCHITECTURE.md` — module and data boundaries.
 5. `docs/04-AUTH-AND-SECURITY.md` and `docs/05-BACKUP-AND-SYNC.md` — privacy/security requirements.
 6. `DESIGN.md` and `docs/13-DOCUMENTATION-STANDARDS.md` — consistent presentation.
-7. `docs/11-PR-REVIEW-WORKFLOW.md` and `docs/12-POST-MERGE-PLAYBOOK.md` — delivery process.
+7. `docs/17-PHASE-0-DECISION-PACK.md` and `docs/21-PHASE-1-READINESS.md` — pending choices and implementation gate.
+8. `docs/11-PR-REVIEW-WORKFLOW.md` and `docs/12-POST-MERGE-PLAYBOOK.md` — delivery process.
 
 ## Non-negotiable product invariants
 

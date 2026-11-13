@@ -18,7 +18,7 @@ Your account stays signed in. Your workout history stays on your device.
 ![SQLite](https://img.shields.io/badge/SQLite-Local_Data-003B57?style=flat-square&logo=sqlite&logoColor=white)
 ![Supabase](https://img.shields.io/badge/Supabase-Auth_%26_Edge_Functions-3ECF8E?style=flat-square&logo=supabase&logoColor=white)
 
-**[📖 Documentation](docs/00-INDEX.md)** · **[🏗 Architecture](docs/02-SYSTEM-ARCHITECTURE.md)** · **[🎨 Design](DESIGN.md)** · **[🗺 Roadmap](docs/06-ROADMAP.md)** · **[🤝 Contribute](CONTRIBUTING.md)**
+**[📖 Documentation](docs/00-INDEX.md)** · **[🧭 Phase 0 Review](docs/17-PHASE-0-DECISION-PACK.md)** · **[🏗 Architecture](docs/02-SYSTEM-ARCHITECTURE.md)** · **[🎨 Design](DESIGN.md)** · **[🗺 Roadmap](docs/06-ROADMAP.md)** · **[🤝 Contribute](CONTRIBUTING.md)**
 
 </div>
 
@@ -85,6 +85,10 @@ Choose the level you need. All specifications are **proposals** until reviewed a
 | [🗺 Implementation roadmap](docs/06-ROADMAP.md) | [☁️ Backup & sync](docs/05-BACKUP-AND-SYNC.md) | [✅ Post-merge playbook](docs/12-POST-MERGE-PLAYBOOK.md) |
 | [🧪 Acceptance tests](docs/08-TEST-PLAN.md) | [🧠 AI/API contracts](docs/07-API-CONTRACTS.md) | [📝 Decisions / ADRs](docs/09-DECISIONS.md) |
 | [🧱 Repository structure](docs/10-REPOSITORY-STRUCTURE.md) | [🧯 Threat model](docs/14-THREAT-MODEL.md) | [✍️ Documentation standards](docs/13-DOCUMENTATION-STANDARDS.md) |
+
+## 🧭 Before implementation: owner review
+
+Start with the **[Phase 0 Decision Review Pack](docs/17-PHASE-0-DECISION-PACK.md)**. It links the [offline session state machine](docs/18-OFFLINE-SESSION-STATE-MACHINE.md), [backup recovery strategy](docs/19-BACKUP-RECOVERY-STRATEGY.md), [MVP screen flows](docs/20-MVP-UX-FLOWS.md) and [Phase 1 readiness gate](docs/21-PHASE-1-READINESS.md). All recommendations remain **unapproved**; the documents do not authorize app code.
 
 ## 🧩 Feature delivery map
 
