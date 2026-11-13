@@ -12,9 +12,14 @@
 | `docs/*.md` | `src/features/*` feature screens/use cases |
 | `CONTRIBUTING.md`, `SECURITY.md` | `src/domain/*` core types and logic |
 | `.github/` issue & PR templates | `src/data/local/*` SQLite and migrations |
+| `.ai/` context snapshots, task template and archive rules | `src/security/*` secure local keys and account isolation |
 | No app build | `src/data/remote/*` Auth/AI adapters |
 | No Supabase deployment | `supabase/functions/*` AI Edge Functions |
 | No CI pipeline enabled for builds | `tests/*` acceptance/unit/integration tests |
+
+## 🤖 AI context folder (present today)
+
+The new [`.ai/` context system](../.ai/README.md) mirrors the lightweight organization of Tio Ledger while using **Tio workout-specific** rules. [`current.md`](../.ai/current.md) points at one active task at most; [`core/`](../.ai/core/README.md) is read on demand; [`tasks/`](../.ai/tasks/README.md) records approved objectives; and [`archive/`](../.ai/archive/README.md) keeps completed handoffs. `AGENTS.md` and canonical `docs/` take precedence over transient agent notes.
 
 ## 📁 Proposed mobile tree
 

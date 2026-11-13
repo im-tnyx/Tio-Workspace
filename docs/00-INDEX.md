@@ -5,7 +5,7 @@
 
 ![Documentation](https://img.shields.io/badge/STAGE-PLANNING-6D5EF8?style=flat-square)
 
-[🏠 Home](../README.md) · [🎨 Design](../DESIGN.md) · [🤖 Agent rules](../AGENTS.md) · [🤝 Contribute](../CONTRIBUTING.md)
+[🏠 Home](../README.md) · [🎨 Design](../DESIGN.md) · [🤖 Agent rules](../AGENTS.md) · [🧠 AI Context](../.ai/README.md) · [🤝 Contribute](../CONTRIBUTING.md)
 
 </div>
 
@@ -24,7 +24,8 @@
 | Assess quality | [Acceptance tests](08-TEST-PLAN.md) | [Definition of done](15-DEFINITION-OF-DONE.md) |
 | Design a UI or document | [Design system](../DESIGN.md) | [Documentation standards](13-DOCUMENTATION-STANDARDS.md) |
 | Make a change | [Contributing](../CONTRIBUTING.md) | [PR review workflow](11-PR-REVIEW-WORKFLOW.md) |
-| Work with an AI coding agent | [Agent instructions](../AGENTS.md) | [Decision register](09-DECISIONS.md) |
+| Work with an AI coding agent | [Agent instructions](../AGENTS.md) | [AI context system](../.ai/README.md) |
+| Resume a previously authorized task | [Current context pointer](../.ai/current.md) | [Task handoff template](../.ai/tasks/TEMPLATE.md) |
 | Finish a merged change | [Post-merge playbook](12-POST-MERGE-PLAYBOOK.md) | [Changelog](../CHANGELOG.md) |
 
 ## 🗃 Detailed document catalog
