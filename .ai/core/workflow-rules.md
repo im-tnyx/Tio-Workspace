@@ -12,6 +12,9 @@
 ## Single owner and reviewers
 - One active primary objective and one **Implementation owner** per slice.
 - Independent reviewers may inspect but not silently overwrite an owner's files.
+- Default PR quality gate: request **one recorded** owner, separate-agent, GitHub Copilot or Codex review. Record reviewer, assessed SHA, finding severity and verdict; no self-review-only pass. See [review guide](../../.github/REVIEW_GUIDE.md).
+- Bot or AI `COMMENT` feedback is not a formal GitHub approval. Resolve blocking inline comments and re-request review after significant fixes; owner still approves merges.
+- If review is unavailable, keep `REVIEW_PENDING` or record scope-specific owner-authorized deferral with risks; never claim passing review.
 - On handoff record `Implementation owner`, `Previous agent`, `Last commit agent` and observed SHA in the [task template](../tasks/TEMPLATE.md); never invent GitHub approval or add fake `Co-authored-by` metadata.
 - Reconcile conflicting agent assignments and stale branches against actual GitHub state before writing.
 

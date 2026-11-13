@@ -40,6 +40,18 @@ Record decisions actually made with approval/source links. Proposed architecture
 ## Changed files
 List exact repository paths; avoid pasted diffs or chat transcripts.
 
+## PR review evidence and findings
+
+- Review requested from: Owner / independent agent / GitHub Copilot / Codex / other (record actual choice).
+- Reviewer identity and review URL: `<user-or-tool + link>`.
+- Inspected commit SHA / diff scope: `<verified SHA or paths>`.
+- Review status: `REVIEW_PENDING / REVIEW_COMPLETE / OWNER_DEFERRED_REVIEW`.
+- Review result: `PASS / CHANGES_REQUESTED / INCONCLUSIVE` (do **not** infer GitHub approval).
+- Review type: formal GitHub `APPROVED` / GitHub `COMMENT` / independent assessment / owner manual note.
+- Blocking findings and inline threads: `<links, dispositions, fix SHAs, re-review status>`.
+- Owner review deferral (only if applicable): `<authorization, accepted risks, follow-up checkpoint>`.
+- Merge approval: `<separate owner authorization or not granted>`.
+
 ## Validation evidence
 - Checks run: command/tool, observed target commit and result.
 - Not run / unavailable / not applicable: state which and why.

@@ -130,7 +130,7 @@ For any approved code, architecture-affecting change, or substantial feature sli
 3. **Task brief:** create/update one [`.ai/tasks/`](.ai/tasks/README.md) record using [template](.ai/tasks/TEMPLATE.md), link it from [`.ai/current.md`](.ai/current.md) when one bounded objective is active. Small docs-only changes may instead be tracked in a focused PR.
 4. **Design:** describe options, risks, source-of-truth links, in-scope/out-of-scope paths, acceptance evidence and rollback. Escalate only owner decisions.
 5. **Implementation:** one active **Implementation owner** per slice. Other agents may independently review but must not silently write competing changes. Record owner/agent identity, previous owner on transfer, and last commit agent/SHA in task notes, not as artificial `Co-authored-by` trailers.
-6. **Quality review:** run the smallest meaningful tests and security checks, review actual diff and document missing checks. Independent review is distinct from self-review or automated lint.
+6. **Quality review:** run the smallest meaningful tests and security checks, then **request at least one recorded review** from an owner, a genuinely separate AI agent, Codex Code Review or GitHub Copilot Code Review when available. Review the actual changed files and line-level findings; a self-check alone is not the reviewer gate. See [review workflow](docs/11-PR-REVIEW-WORKFLOW.md).
 7. **Handoff:** record current state, changed files, validation, findings, next authorized action and linked PR. Never claim complete without evidence.
 8. **After owner-authorized merge:** run the [post-merge playbook](docs/12-POST-MERGE-PLAYBOOK.md), reconcile issue/PR and move verified completed task to [archive](.ai/archive/README.md); clear/change the pointer in a tracked update.
 
@@ -150,7 +150,29 @@ Relevant future scope: authentication, encrypted SQLite keys, sensitive local de
 
 [Security baseline](docs/04-AUTH-AND-SECURITY.md) · [Threat model](docs/14-THREAT-MODEL.md) · [Backup recovery design](docs/19-BACKUP-RECOVERY-STRATEGY.md) · [`SECURITY.md`](SECURITY.md)
 
-## 10. Validation matrix — honest evidence only
+## 10. Repository-specific review focus (Codex / Copilot / human)
+
+When asked to review a pull request, **inspect the actual current diff and relevant source of truth before declaring anything passed**. Review tools and humans should prioritize consequential mistakes over cosmetic nitpicks:
+
+1. **Local-first data safety:** Flag a change that sends workout history, plans, sets, or progress to an app-controlled server by default, or introduces AI/backup/sync transfer without the specifically required user consent. Include the exact changed path/line and violated contract.
+2. **Account boundary and session safety:** Flag cross-account SQLite/key access, unlocked data on logout/account switch, secrets in client bundles, or claims of remotely verified revocation when offline. Do not treat brief network failure as confirmation of revoked identity.
+3. **Evidence and phase accuracy:** Flag a planned-only workflow represented as implemented/tested/deployed, or Expo/Supabase/runtime changes made without the documented approval. For Markdown-only changes, check link targets, duplicate/conflicting instructions and scope—not runtime test coverage that does not apply.
+
+For every actionable finding, give **severity, exact file/line when available, concrete impact and a minimal fix**. If the concern is unsupported, mark it as a question rather than a defect. Do not spam repeated stylistic observations that ordinary lint can catch.
+
+### Mandatory review-before-merge protocol
+
+- **Request one review as the default quality gate.** Preferred: GitHub Copilot/Codex review if enabled, an independent agent review, or manual repository-owner review. For sensitive Auth, local encryption, deletion, backup, RLS or remote data transfer, recommend an independent specialist security review **plus** explicit owner risk acceptance.
+- Codex may be requested with `@codex review` **only if its GitHub integration is enabled**. Copilot can be requested via the PR's `Reviewers → Copilot` when eligible, or via a supported API. Do not claim either bot is installed without proof.
+- A separate ChatGPT/agent can perform a **read-only review** using [review guide](.github/REVIEW_GUIDE.md) and post findings; identify it accurately as an AI-assisted/manual assessment, not a fabricated GitHub review.
+- **Review complete ≠ GitHub approval.** GitHub Copilot typically leaves a `COMMENT` review; Codex and ChatGPT findings are feedback. Formal `APPROVED` only exists when GitHub records it; branch rulesets and the owner's action-specific merge approval still apply.
+- For inline comments: classify `Blocking` / `Non-blocking` / `Question`, fix concrete blocking findings, link the fix commit and re-review relevant changed lines. Resolve threads only after a substantive response; don't hide findings.
+- Record reviewer identity/tool, exact reviewed head SHA or diff scope, verdict (`PASS / CHANGES_REQUESTED / INCONCLUSIVE`), review URL, open findings and whether further review is required after later pushes.
+- **No reviewer available?** Leave status `REVIEW_PENDING` rather than claiming a pass. Any owner-authorized deferral must name the specific PR, accepted risk and follow-up checkpoint; deferral does not waive formal branch protections or grant merge permission.
+
+[Manual / AI review guide](.github/REVIEW_GUIDE.md) · [PR review workflow](docs/11-PR-REVIEW-WORKFLOW.md)
+
+## 11. Validation matrix — honest evidence only
 
 | Changed scope | Minimum meaningful validation |
 |---|---|
@@ -165,19 +187,19 @@ Relevant future scope: authentication, encrypted SQLite keys, sensitive local de
 
 **Do not report a test as passed unless it actually ran on the current relevant commit/environment.** Distinguish `Not run`, `Unavailable`, `Not applicable` and `Failed`. CI is not assumed to exist. Link actual evidence rather than fabricating a build, screenshot or approval.
 
-## 11. Git, PR, merge and post-merge discipline
+## 12. Git, PR, merge and post-merge discipline
 
 - Before editing: inspect branch, diff and unrelated changes; avoid destructive cleanup and unrelated modifications.
 - Prefer focused branches (`docs/...`, `feat/...`, `fix/...`), conventional readable commits and the [PR template](.github/PULL_REQUEST_TEMPLATE.md).
 - PR description must state **why, scope, changed paths, privacy/architecture effect, verification, skipped checks, risks, reviewer questions and rollback**. Link issues and accepted decisions.
-- Review the changed files and code/data impact. Do not claim “independent review” if the author only self-reviewed; do not fabricate a formal GitHub approval.
+- Ask for at least one **recorded** owner, independent agent, Copilot or Codex review; inspect inline comments and resolve blocking findings. Self-review alone is insufficient. Do not claim “independent review” if the author only self-reviewed; do not fabricate a formal GitHub approval.
 - Verify actual PR mergeability, review comments and **required checks if configured**. A green optional check is not a required review.
 - **No PR merge, force-push, history rewrite, branch deletion, production deployment or destructive data action** without action-specific authorization. Owner-authorized review deferral must record scope, reason, accepted risks and follow-up.
 - After an authorized merge: verify returned merge SHA, `main` HEAD and expected files, reconcile trackers, post-merge tests where applicable and archive only completed work. **Merge is not deployment or product approval**.
 
 [PR review workflow](docs/11-PR-REVIEW-WORKFLOW.md) · [Post-merge playbook](docs/12-POST-MERGE-PLAYBOOK.md)
 
-## 12. Never commit / never invent
+## 13. Never commit / never invent
 
 **Never commit:** `.env` / `.env.*` secrets (except explicitly approved safe examples), private keys, certificates, keystores, service credentials, device session exports, SQLite user databases, personal backup archives, `node_modules/`, `dist/`, `build/`, `coverage/`, local caches, IDE state, logs or screenshots containing user information.
 
@@ -185,7 +207,7 @@ Relevant future scope: authentication, encrypted SQLite keys, sensitive local de
 
 **Never import:** Tio World's Flutter/Watch/Drift architecture, Tio Ledger's Kotlin/finance logic, another repository's task archives or other project-specific agent/orchestrator rules.
 
-## 13. Required end-of-task report
+## 14. Required end-of-task report
 
 Before ending work, provide a brief, evidence-based handoff:
 
