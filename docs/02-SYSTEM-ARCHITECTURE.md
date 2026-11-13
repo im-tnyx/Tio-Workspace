@@ -66,7 +66,7 @@ src/
   bootstrap/            optional dependency wiring
 ```
 
-Feature repository **interfaces live in `features/<name>/domain/`** and feature-specific implementations in `features/<name>/data/`. Screens/components/hooks do not import SQLite, SecureStore or Supabase SDK directly; complex coordination may add an optional `application/` use-case layer. `src/app/` is navigation-only, feature-to-feature deep imports are forbidden, and public `index.ts` exports are used when cross-feature interaction is genuinely required. No empty folders, package-per-feature or speculative AI/backup/sync modules.
+Feature repository **interfaces live in `features/<name>/domain/`** and feature-specific implementations in `features/<name>/data/`. Screens/components/hooks do not import SQLite, SecureStore or Supabase SDK directly; complex coordination may add an optional `application/` use-case layer. `src/app/` owns routes/layouts and root providers only, feature-to-feature deep imports are forbidden, and public `index.ts` exports are used when cross-feature interaction is genuinely required. No empty folders, package-per-feature or speculative AI/backup/sync modules.
 
 ## Critical abstractions
 - `features/workouts/domain/WorkoutRepository` defines list/get/create/update/delete for sessions, sets and exercise history; `features/workouts/data/` implements it using `platform/database/`.
