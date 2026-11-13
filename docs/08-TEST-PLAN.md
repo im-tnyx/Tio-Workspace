@@ -1,0 +1,49 @@
+# Acceptance and testing plan
+
+**Status:** Manual/automated tests to build later. Nothing in this document implies tests have passed.
+
+## Test priority legend
+- **P0**: must pass before first workout MVP release
+- **P1**: must pass before AI or backup release
+- **P2**: must pass before future cloud sync launch
+
+| ID | Priority | Scenario | Expected result |
+|---|---|---|---|
+| AUTH-01 | P0 | Fresh install -> register online | Verified user account and correct local partition |
+| AUTH-02 | P0 | Force-close and reopen after login | Dashboard opens without requiring another login |
+| AUTH-03 | P0 | Disable internet and reopen app | Already initialized user's local workouts accessible |
+| AUTH-04 | P0 | Fresh install with no network/no previous login | Login requires connection; no unauthorized local access |
+| AUTH-05 | P0 | Logout and restart | No account data accessible until authorized re-login |
+| AUTH-06 | P0 | Switch from user A to user B | B cannot read/decrypt A's data |
+| AUTH-07 | P0 | Return to user A | A's history preserved unless explicitly deleted |
+| AUTH-08 | P0 | Remote session invalid while device offline | Local/offline state clearly handled; protected server calls blocked until revalidation |
+| DATA-01 | P0 | Complete workouts offline | Sets, reps, weights, timestamps persist in SQLite |
+| DATA-02 | P0 | App killed mid workout | Last committed autosaved state recovers |
+| DATA-03 | P0 | Edit/delete and restart | Correct record changes; no phantom duplicates |
+| DATA-04 | P0 | Database schema upgrade | User history maintained; migration verifies |
+| SEC-01 | P0 | Inspect mobile APK/IPA/config | No AI provider, Supabase service-role or backend secret key |
+| SEC-02 | P0 | SQLCipher-enabled native build | `cipher_version` detected; raw database unreadable without key |
+| AI-01 | P1 | Call function without valid user token | Denied and no vendor API call |
+| AI-02 | P1 | Valid plan generation | Preview/edit response; saves only on user acceptance |
+| AI-03 | P1 | Offline/429/5xx AI request | Local logging unaffected; understandable error |
+| BKP-01 | P1 | Encrypted backup then fresh-device restore | Same account can recover full matching records |
+| BKP-02 | P1 | Wrong recovery code or altered archive | Restore fails without modifying current local database |
+| BKP-03 | P1 | Restore backup from different account | Blocked or explicitly handled under an approved transfer policy |
+| BKP-04 | P1 | Upload interrupted or cloud quota exhausted | Local data and last good backup preserved |
+| BKP-05 | P1 | Uninstall without a successful backup | Correctly communicate that local data can be lost |
+| BKP-06 | P1 | Offline background / OS kills job | No false 'backup successful' indication |
+| SYNC-01 | P2 | Offline edits on two devices | Defined conflict policy works without silent loss |
+| SYNC-02 | P2 | User disables sync | No further uploads; existing cloud data policy honored |
+| SYNC-03 | P2 | User A attempts to read user B's cloud rows | Denied by RLS/authorization |
+
+## Test environments
+Physical Android and iPhone devices, current supported OS versions, actual Expo development/release builds, unstable network, background and device-kill scenarios, low storage, multiple users on one device, reinstallation and cross-device restores.
+
+## Release evidence
+Record test date, device/OS/app build, whether the scenario passed, failure logs without secrets and evidence of restore outcomes. No release should advertise secure encryption/backup until testing verifies it.
+
+## Privacy validation
+- Inspect network requests during normal local workout logging: no workout payloads sent to app server.
+- When AI is used, verify exactly which fields are transmitted and that keys stay server-side.
+- When backup is disabled, verify there is no personal-cloud upload.
+- When cloud sync is disabled, verify no workout records reach the app's online database.
