@@ -40,30 +40,39 @@
 
 **Important:** A login session and the online identity **do not mean** workout data is uploaded. Initial workout reads/writes must not require HTTP calls.
 
-## Proposed source tree (not created)
+## Selected module architecture v2.1 (owner accepted; not implemented)
+
+**Chosen organization:** feature-first modular monolith with feature-owned business rules/repositories and shared platform adapters. See the [complete tree, dependency matrix and owner-approved layout](10-REPOSITORY-STRUCTURE.md). **Nothing under `src/` exists yet** and the layout decision does not authorize app initialization.
+
 ```text
 src/
-  app/                   Expo Router screens/layouts
-  features/auth/         signup, login, session gate
-  features/workouts/     workout editor, live session, history
-  features/plans/        templates, schedule
-  features/progress/     calculations, chart view
-  features/settings/     privacy, logout, backups
-  features/ai/           plan generator, result review
-  domain/                types, validation, use cases, repository contracts
-  data/local/            SQLite schema, migrations, SQL repositories
-  data/remote/auth/      Supabase auth adapter
-  data/remote/ai/        authenticated Edge Function caller
-  services/backup/       encrypted export/import adapters (planned)
-  services/sync/         cloud sync adapters (future only)
-  security/              secure session and local key management
+  app/                  Expo Router routes/layouts + root providers only
+  features/
+    auth/               login/session UI and feature logic
+    home/               dashboard
+    exercises/          exercise library
+    workouts/           screens, components, hooks, domain, data, tests, index.ts
+    plans/              plan editor
+    progress/           progress/history screens
+    settings/           account/local-data privacy settings
+  platform/
+    database/           SQLite connection/migrations/account rebind
+    auth/               technical Supabase Auth client/adapter
+    security/           key storage, encryption/isolation primitives
+  shared/
+    ui/                 reusable presentational components
+    theme/              tokens
+    utils/              pure general utilities
+  bootstrap/            optional dependency wiring
 ```
 
+Feature repository **interfaces live in `features/<name>/domain/`** and feature-specific implementations in `features/<name>/data/`. Screens/components/hooks do not import SQLite, SecureStore or Supabase SDK directly; complex coordination may add an optional `application/` use-case layer. `src/app/` owns routes/layouts and root providers only, feature-to-feature deep imports are forbidden, and public `index.ts` exports are used when cross-feature interaction is genuinely required. No empty folders, package-per-feature or speculative AI/backup/sync modules.
+
 ## Critical abstractions
-- `WorkoutRepository` defines list/get/create/update/delete for sessions, sets and exercise history.
-- `PlanRepository` handles plans and assigned workout days.
-- `SessionManager` owns authenticated identity and cached offline identity, and routes to Login or Dashboard.
-- `LocalDatabaseManager` opens only the matching user's encrypted SQLite partition and migrates schema.
+- `features/workouts/domain/WorkoutRepository` defines list/get/create/update/delete for sessions, sets and exercise history; `features/workouts/data/` implements it using `platform/database/`.
+- `features/plans/domain/PlanRepository` handles plans and assigned workout days; its adapter remains feature-owned.
+- A feature-level session coordinator uses the technical `platform/auth/` adapter; the Expo Router gate chooses Login or Dashboard. Cached identity remains subject to pending offline-session approval.
+- The proposed `platform/database/LocalDatabaseManager` opens/closes/rebinds the matching account's SQLite store and owns migrations; encrypted partitions and key lifecycle require separate owner approval and native testing.
 - `BackupPort` exports/imports a **versioned, encrypted** snapshot with provider-specific adapters.
 - `SyncPort` is a future optional online synchronization boundary; its absence must not affect local operations.
 
@@ -76,7 +85,7 @@ src/
 6. Logout clears auth credentials, closes local DB and returns to Login; local logs remain account-isolated until explicit erasure.
 
 ## Data direction
-- Exercise/workout edits: UI -> use case -> local SQLite transaction -> UI observes changed local data.
+- Exercise/workout edits: feature UI/hook -> repository interface (optional application use case for complex flows) -> feature SQL adapter -> account-bound platform/database transaction -> UI observes updated local state.
 - Optional AI draft: UI -> authenticated Edge Function -> AI provider -> validated response -> preview -> user accepts -> SQLite.
 - Optional backup: SQLite consistent snapshot -> encrypted, versioned archive -> Drive/iCloud storage. Restore follows verified reverse path.
 - Future sync: local change log -> authenticated sync API/DB with RLS -> reconciliation -> local DB. Local write remains first.

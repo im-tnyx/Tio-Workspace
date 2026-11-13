@@ -1,90 +1,114 @@
-# 🧱 Repository structure & module boundaries
+# 🧱 Tio Workspace · Repository Structure v2.1
 
-**Status:** Proposed architecture; paths under `src/` and `supabase/` do not yet exist.
+**Architecture decision:** **Owner-selected on 2026-11-13** — Feature-first Modular Monolith + Lightweight Clean Domain Boundaries + Shared Platform Adapters. This finalizes **source organization**, not Phase 1 implementation.
 
-[← Docs hub](00-INDEX.md) · [🏠 README](../README.md) · [🏗 System architecture](02-SYSTEM-ARCHITECTURE.md)
+**Today:** documentation only. None of the proposed `src/` folders, Expo app routes, native SQLite/SQLCipher modules or live Supabase integrations exist.
 
-## 🗂 Current vs planned
+[← Docs hub](00-INDEX.md) · [🏗 System architecture](02-SYSTEM-ARCHITECTURE.md) · [📝 Decisions](09-DECISIONS.md) · [🤖 Agent rules](../AGENTS.md)
 
-| Today — documentation only | After explicit implementation approval |
-|---|---|
-| `README.md`, `DESIGN.md`, `AGENTS.md` | `app/` or `src/app/` Expo Router routes |
-| `docs/*.md` | `src/features/*` feature screens/use cases |
-| `CONTRIBUTING.md`, `SECURITY.md` | `src/domain/*` core types and logic |
-| `.github/` issue & PR templates | `src/data/local/*` SQLite and migrations |
-| `.ai/` context snapshots, task template and archive rules | `src/security/*` secure local keys and account isolation |
-| No app build | `src/data/remote/*` Auth/AI adapters |
-| No Supabase deployment | `supabase/functions/*` AI Edge Functions |
-| No CI pipeline enabled for builds | `tests/*` acceptance/unit/integration tests |
+## 1 · Why this structure
 
-## 🤖 AI context folder (present today)
+One React Native + Expo TypeScript app for iOS and Android. Business capabilities evolve in `features/`; shared technical infrastructure stays in `platform/`; only genuinely reusable non-business code goes into `shared/`. Keep repository interfaces and pure rules separate from SDKs without forcing a full Clean Architecture directory tree into every small feature.
 
-The new [`.ai/` context system](../.ai/README.md) mirrors the lightweight organization of Tio Ledger while using **Tio workout-specific** rules. [`current.md`](../.ai/current.md) points at one active task at most; [`core/`](../.ai/core/README.md) is read on demand; [`tasks/`](../.ai/tasks/README.md) records approved objectives; and [`archive/`](../.ai/archive/README.md) keeps completed handoffs. `AGENTS.md` and canonical `docs/` take precedence over transient agent notes.
+**Chosen structure is a design constraint, not a scaffolding request.** Remaining security/auth/backup decisions in [Phase 0 review](17-PHASE-0-DECISION-PACK.md) and [Phase 1 readiness](21-PHASE-1-READINESS.md) still require explicit approval.
 
-## 📁 Proposed mobile tree
+## 2 · Final future tree — not created
 
 ```text
-src/
-├── app/                     # navigation and screens (Expo Router)
-├── features/
-│   ├── auth/                # UI + session use cases
-│   ├── workouts/            # create/log/history
-│   ├── plans/               # templates/schedule
-│   ├── progress/            # charts/PRs
-│   ├── settings/            # local-only, privacy, data management
-│   └── ai/                  # optional plan draft UI
-├── domain/
-│   ├── entities/            # Workout, Exercise, Plan, Set
-│   ├── repositories/        # WorkoutRepository, PlanRepository
-│   └── use-cases/           # validation + business rules
-├── data/
-│   ├── local/               # account-specific SQLite store, migrations
-│   └── remote/              # Supabase Auth, Edge Function clients
-├── services/
-│   ├── backup/              # later: encrypted archives, provider adapters
-│   └── sync/                # future only: opt-in change reconciliation
-├── security/                # key/session handling
-└── shared/                  # app theme, components, utilities
-
-supabase/
-└── functions/
-    └── generate-workout-plan/   # after Phase 2 approval
+Tio-Workspace/
+├── src/
+│   ├── app/                      # Expo Router routes/layouts + root providers
+│   │   ├── _layout.tsx
+│   │   ├── (auth)/
+│   │   └── (tabs)/
+│   ├── features/                 # each major feature owns its internals
+│   │   ├── auth/
+│   │   ├── home/
+│   │   ├── exercises/
+│   │   ├── workouts/
+│   │   │   ├── screens/         # feature screens
+│   │   │   ├── components/      # feature-specific components
+│   │   │   ├── hooks/           # presentation orchestration
+│   │   │   ├── domain/          # models, rules, repository interfaces
+│   │   │   ├── data/            # workout SQL repository implementations
+│   │   │   ├── tests/
+│   │   │   └── index.ts         # explicit feature public API
+│   │   ├── plans/
+│   │   ├── progress/
+│   │   └── settings/
+│   ├── platform/                 # shared technical infrastructure
+│   │   ├── database/            # SQLite connection, migrations, account switch
+│   │   ├── auth/                # Supabase client and Auth adapter
+│   │   └── security/            # keys, encryption, account isolation
+│   ├── shared/                   # reusable, non-business elements only
+│   │   ├── ui/
+│   │   ├── theme/
+│   │   └── utils/
+│   └── bootstrap/                # optional dependency wiring
+├── assets/
+├── docs/
+├── .ai/
+└── AGENTS.md
 ```
 
-## 🧭 Dependency direction
+`(auth)` and `(tabs)` are route groups, not extra business modules. `src/app/` owns navigation, layouts and root providers only. The tree is illustrative: **no empty placeholders or directories**. Create each directory only when an authorized implementation needs it. `features/workouts/` is an example; every feature need not immediately reproduce all its subfolders.
+
+**Optional complexity layer:** add `features/<name>/application/` or `use-cases/` if multi-step workflow, recovery, several repositories or transaction coordination justify it. Simple feature hooks may call injected repository-facing services; never embed complex domain/business rules permanently in React hooks.
+
+## 3 · Dependency and import matrix
+
+| Caller | Allowed | Forbidden |
+|---|---|---|
+| `app/` | Feature public `index.ts`, shared UI/theme, approved root providers | Business logic, SQL/network queries, deep feature imports |
+| `features/*/screens,components,hooks` | Same-feature domain/application via injected contracts; `shared/` | Direct `expo-sqlite`, Supabase SDK or SecureStore imports; other-feature internals |
+| `features/*/domain` | Pure TS rules/models/repository interfaces | React/Expo, SDKs, SQL, network, platform implementation |
+| `features/*/data` | Same-feature domain ports; `platform/database` or relevant technical adapters | UI/routes; another feature's private internals |
+| `features/*/index.ts` | Deliberate stable exports for callers | Export-all of private internals by default |
+| `platform/` | Native/external infrastructure SDKs and low-level contracts | Feature UI, feature workflows, domain rules |
+| `shared/` | Truly reusable UI/theme/pure utilities | Feature-specific workout logic, feature internal imports |
+| `bootstrap/` | Approved dependency composition and wiring | Duplicating product logic or creating premature global services |
+
+**Cross-feature rule:** another feature may consume `features/workouts/index.ts` exports but must not deep-import `features/workouts/data/*`, `hooks/*`, `domain/*` or `components/*`. Prefer explicit public interfaces, and avoid circular feature dependencies. Move a contract into a shared domain home only when real cross-feature reuse is demonstrated and approved.
+
+**Feature UI must not import `expo-sqlite`, SecureStore or Supabase SDK directly.** Feature `domain/` defines repository contracts; feature `data/` implements them. Complex business orchestration belongs in optional `application/`, not in JSX or React hooks.
+
+## 4 · Workout data and identity ownership
 
 ```mermaid
 flowchart TD
-  UI["UI + Navigation"] --> CASES["Domain use cases"]
-  CASES --> CONTRACT["Repository contracts"]
-  SQL["SQLite adapter"] --> CONTRACT
-  AUTH["Supabase Auth adapter"] --> CASES
-  AI["Edge Function client"] --> CASES
-  BK["Backup adapter (later)"] --> CONTRACT
-  SYNC["Sync adapter (future)"] --> CONTRACT
+  R["app/ Expo route"] --> UI["features/workouts screens + hooks"]
+  UI --> PORT["workouts/domain repository interface"]
+  UI -. "complex flow" .-> USE["optional workouts/application use case"]
+  USE --> PORT
+  IMPL["workouts/data SQL repository"] -. "implements" .-> PORT
+  IMPL --> DB["platform/database SQLite connection"]
+  DB --> SEC["platform/security account keys + isolation"]
+  BOOT["optional bootstrap / provider wiring"] -. "injects repository" .-> UI
 ```
 
-**Rule:** UI never calls workout REST database endpoints directly; SQLite remains authoritative for local features. Domain contracts know nothing about React Native, Expo, Supabase SDKs or cloud APIs.
+- `platform/database/`: owns connection, migrations, open/close and **safe account switching/rebinding**. It does not own feature-specific SQL queries.
+- `features/workouts/data/`: owns workout SQL and repository implementation, maps domain models, and uses parameterized transactions.
+- `platform/auth/`: owns technical Supabase client/adapter; `features/auth/` owns feature-level session behavior, subject to pending offline identity decisions.
+- `platform/security/`: owns technical key-access and isolation; **SQLCipher feasibility and key lifecycle are not approved/tested merely by accepting this folder layout**.
+- **Workout data stays in local SQLite by default.** Auth does not upload workout records. AI, personal encrypted backup and future cloud sync require separately authorized, opt-in feature slices; no speculative services/packages are created now.
 
-## 🔑 Ownership
+## 5 · Packaging and validation policy
 
-| Concern | Planned owner | Boundary |
-|---|---|---|
-| Navigation/presentation | `app/`, `shared/ui/` | UI consumes use cases |
-| Session/account identity | `features/auth/`, `security/` | Never share cross-account data |
-| Workout CRUD | `domain/` + `data/local/` | Writes offline |
-| AI network calls | `data/remote/ai/`, `supabase/functions/` | Secret stays server-side |
-| Backup/restore | `services/backup/` | Consent + encryption |
-| Optional online sync | `services/sync/` | Disabled by default |
+- Start with one Expo app, not one npm package per screen/feature. Do not create `packages/*` or workspaces just to feel modular.
+- Extract into a package only with (a) multiple real apps/build targets sharing it, (b) a proven stable API/owner, and (c) a justified build, testing and versioning cost.
+- During **approved Phase 1** work, add TypeScript + ESLint checks for forbidden cross-feature deep imports, cycles, domain-to-SDK imports and UI-to-storage/Auth SDK imports. Do not add tools or CI while Phase 0 is documentation-only.
+- Validate account-switch isolation, offline write continuity, schema migration and key-loss failure when runtime exists. Native SQLCipher must be verified with actual native builds. No document counts as a test result.
 
-## 🔍 Module acceptance
+## 6 · Agent acceptance criteria
 
-- Dependencies one-way; avoid circular imports.
-- Schema migrations and key lifecycle are versioned and tested.
-- No account A data appears while account B is active.
-- Failed remote calls cannot break local workout writes.
-- New external service requires an ADR, privacy review and rollback plan.
+- Thin route files; features own presentation and business behavior.
+- Feature domain ports can be tested without Expo/SQL/Supabase.
+- Feature data adapters use technical platform services; platform is not business-aware.
+- No deep cross-feature imports; public `index.ts` exports only what other features need.
+- No direct SQLite, SecureStore or Supabase SDK calls from UI/hooks.
+- No new packages, empty folders or premature `application/` layers.
+- Current PR contains documentation only; required Codex/owner review precedes merge.
 
 ---
 
-[← Architecture](02-SYSTEM-ARCHITECTURE.md) · [Testing →](08-TEST-PLAN.md)
+**Accepted source-layout decision:** [ADR-009](09-DECISIONS.md) · **No Phase 1 approval:** [Readiness gate](21-PHASE-1-READINESS.md).

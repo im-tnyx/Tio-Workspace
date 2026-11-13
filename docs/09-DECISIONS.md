@@ -25,6 +25,9 @@
 | ADR-006 | AI provider keys stay behind server-side Edge Functions | Client bundles are not secret storage |
 | ADR-007 | Personal cloud backup is optional; future online DB sync separately opt-in | User control |
 | ADR-008 | Plan and document everything before implementation | User's explicit development order |
+| ADR-009 | **Feature-first Modular Monolith v2.1**: `src/app/` routes/providers, `src/features/*` business-owned modules, `src/platform/*` technical adapters, non-business `src/shared/*`, optional `src/bootstrap/`; feature `domain/` interfaces and `data/` implementations with optional complex use cases | **Chosen by owner on 2026-11-13** as the final source-layout architecture. No package-per-feature; see [canonical boundaries](10-REPOSITORY-STRUCTURE.md). Does **not** approve Phase 1 coding or pending security choices. |
+
+**ADR-009 approval boundary:** Owner acceptance applies to **source organization and dependency rules only**. Expo initialization, Auth provider details, encrypted database/key policy, backups, AI, sync, CI and all implementation require their own decisions and explicit Phase 1 authorization. Documentation approval/merge is not a deployment or build approval.
 
 ## Engineering proposals — validate during implementation
 | ID | Proposal | Validation needed |

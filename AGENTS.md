@@ -112,11 +112,16 @@ Before nontrivial work: **discover available tools and installed skills**; match
 
 ## 7. Module ownership and visual safety (future implementation)
 
-**Planned**, not existing runtime paths: [repository structure](docs/10-REPOSITORY-STRUCTURE.md) proposes `src/app/` or Expo Router app entry, `src/features/` for workout UI, `src/domain/` for types/use cases/contracts, `src/data/local/` for SQLite, `src/data/remote/` for Auth/AI adapters, `src/security/` for keys/sessions, and later `src/services/backup` and `src/services/sync`. Verify the actual structure once code exists; do **not** create paths just because they appear here.
 
-- UI → application/use cases → domain repository contracts; SQLite adapters implement local persistence. Domain must not import Expo, Supabase SDKs or HTTP clients.
-- Keep ownership explicit: local data remains authoritative; remote calls cannot block local workout completion. No speculative backend, sync engine or wearable app.
-- Prefer focused, minimal abstractions. Schema migrations, key custody, conflict policies and API contracts require review before runtime changes.
+**Architecture v2.1 is the owner's final source-organization choice, not implementation authorization.** Follow the [complete tree and import matrix](docs/10-REPOSITORY-STRUCTURE.md): `src/app/` routes/layouts and root providers only; `src/features/<name>/` owns business modules; `src/platform/` owns shared technical services; `src/shared/` holds genuinely reusable non-business UI/theme/utils; `src/bootstrap/` is optional wiring. These are **future paths**, not current runtime files.
+
+- **Feature ownership:** each feature `domain/` owns pure models, domain rules and repository interfaces; its `data/` owns SQL repository implementations. `platform/database/` owns SQLite connection, migrations and safe account switch/rebind, not workout-specific queries.
+- **Thin UI:** feature screens/components/hooks and Expo Router files must never import `expo-sqlite`, Supabase SDK or SecureStore directly. UI consumes injected feature-facing interfaces or application services.
+- **Cross-feature boundaries:** never deep-import `features/other-feature/*` internals. Interact through explicit public `index.ts` exports or separately approved shared contracts. `platform/` and `shared/` may not import feature internals.
+- **Pragmatic layering:** add optional feature `application/` use cases for significant multi-repository orchestration, transactions, workout start/finish or recovery. Complex domain rules must not live inside React hooks. No mandatory empty layers, npm package per feature or premature monorepo.
+- **No code yet:** TypeScript and ESLint import-boundary enforcement start only once Phase 1 tooling is separately approved. Domain has no React Native/Expo/SQL/Supabase dependencies.
+- **Preserve privacy:** local workout writes are authoritative and cannot be blocked by remote availability. Encryption, Auth/session policy, backup/sync, schemas and AI integrations remain separately gated. No speculative services or backend.
+
 - **Non-visual refactors may not redesign UI.** Preserve observed layout, spacing, text sizes, theme values, interactions and navigation unless the task explicitly approves a visual change.
 - Never replace a component-specific value with a “nearby” shared token just for consistency. Reuse approved design primitives only when current semantics and actual computed value are preserved.
 - After UI changes, evaluate loading, empty, offline, error, account-switch and accessibility states. Check iOS/Android layouts and contrast/text scaling with actual tooling where available. Don't claim screenshots or visual review occurred if they did not.
