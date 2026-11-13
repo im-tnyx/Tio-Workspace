@@ -14,12 +14,37 @@
 
 **Not implemented:** This is a schema specification, not a migration script. Actual SQLite DDL, constraints and indexes will be reviewed before development.
 
+## Proposed Drizzle ORM and local migration contract
+
+> [!IMPORTANT]
+> **Phase 0 proposal — owner decision pending.** Drizzle is a query/schema toolkit, **not** a database or remote storage service. No application code, packages, native builds, migrations or Supabase infrastructure are authorized by this document.
+
+| Responsibility | Proposed owner |
+|---|---|
+| Device-local data | Expo SQLite, encrypted by SQLCipher in a verified native build |
+| Account-file lifecycle | `platform/database/LocalDatabaseManager`, bound to the verified Supabase `user_id` |
+| Encryption keys | `platform/security/` and OS-protected storage; distinct per account |
+| Schema and migrations | TypeScript Drizzle schema + reviewed, version-controlled SQLite SQL generated via `drizzle-kit generate` |
+| Migration execution | Bundled offline SQL applied only to the matching, already-unlocked local database |
+| Feature queries | Drizzle adapters in `features/<name>/data/`; repository contracts remain in `features/<name>/domain/` |
+| Applied version tracking | One Drizzle migration journal; `app_meta` for separate app/install metadata, not a competing authoritative migration counter |
+
+**Startup gate (proposal):** resolve the permitted account binding → open only its DB file → confirm SQLCipher is actually in the native binary → apply its protected database key → verify the keyed database can be read → run bundled pending Drizzle migrations → check resulting schema/integrity → open feature repositories and the dashboard. Keep user-data operations blocked during migration. Do not migrate a shared/default, locked, plaintext or different account's file. No network call is needed for local migration.
+
+**Safety and failure:** Review every generated SQL diff (especially `DROP`, renames, table rebuilds, indexes and foreign keys). Prefer additive migrations; do not use unreviewed `drizzle-kit push` against on-device user data. Before destructive change, require an adequately tested **consistent encrypted account-bound rollback snapshot**, sufficient free space and a documented recovery procedure. Do not assume every migration runs atomically or that Drizzle supplies automatic reversible `down` migrations. On failure, preserve the original encrypted DB/key, block UI access, surface a recoverable error and offer only explicit, verified account-matched restore/retry. **Never** silently erase/recreate a database or fall back to plaintext.
+
+**Minimal MVP:** create only the *approved* tables needed for a meaningful workout-log slice. The complete logical schema below is a proposal, not a commitment to migrate every table in release one. Keep necessary exercise/session/set relations and user ownership; do not collapse joins solely to minimize table count. Agree weight precision, foreign keys and first migration subset before coding.
+
+**Phase 1 feasibility gate:** pin compatible Expo SDK / `expo-sqlite` / `drizzle-orm` / `drizzle-kit` versions; validate SQL file bundling, migration journal and any required Metro/Babel support. Exercise the flow on real Android/iPhone native builds. Expo Go is insufficient to validate SQLCipher. See [security order](04-AUTH-AND-SECURITY.md), [migration acceptance tests](08-TEST-PLAN.md) and [readiness gate](21-PHASE-1-READINESS.md).
+
+Official references (recheck versions at implementation): [Drizzle + Expo SQLite](https://orm.drizzle.team/docs/sqlite/connect-expo-sqlite), [migration fundamentals](https://orm.drizzle.team/docs/migrations), [Expo SQLite SQLCipher](https://docs.expo.dev/versions/latest/sdk/sqlite/).
+
 ## Design rules
 - Locally persisted data is authoritative until future sync is explicitly enabled.
 - Use stable random UUID-style IDs for records created offline. Never rely on sequential IDs for cross-device identity.
 - All account-owned rows are scoped to the Supabase `user_id`, including plans and workout content.
 - UTC epoch millisecond timestamps (`created_at`, `updated_at`) on mutable records; render dates in the user's timezone.
-- `schema_version` for local migrations and `deleted_at` tombstones for potentially synchronized user records.
+- The proposed Drizzle migration journal is authoritative for applied schema versions; `app_meta` records only distinct installation/compatibility metadata. Use `deleted_at` tombstones for potentially synchronized user records.
 - Database transactions for session edits, set updates and import. Parameterized SQL only.
 - The local file must not be shared across users without strict access controls; the preferred proposal is **per-account encrypted database files**, with account-ID-safe file naming.
 

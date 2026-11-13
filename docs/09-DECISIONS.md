@@ -39,6 +39,7 @@
 | PROP-005 | Versioned encrypted backup format and user-held recovery method | Real cross-device recovery tests |
 | PROP-006 | Google Drive appDataFolder | OAuth scope, user consent and restore UX |
 | PROP-007 | iCloud native backup integration or file export/import fallback | Expo/iOS feasibility and entitlements |
+| PROP-008 | **Drizzle ORM + Drizzle Kit proposal** for local Expo SQLite schema/queries and bundled versioned migration SQL; **not owner-approved** | Validate Expo/Drizzle compatibility, account-scoped journal, SQLCipher unlock-first sequence, failure recovery and Android/iPhone offline upgrades. See [local data model](03-LOCAL-DATA-MODEL.md). |
 
 ## Open product decisions (not blocking documentation)
 1. Final branding and app package identifiers.

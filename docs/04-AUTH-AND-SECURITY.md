@@ -38,6 +38,18 @@
 - Expo SecureStore behaviour differs by OS on uninstall. Do not promise that it survives reinstall or that deleting an app always deletes iOS Keychain values.
 - Sensitive logs/tokens must not be printed to console, crash reports or analytics; clean debug traces.
 
+## Proposed SQLCipher unlock before Drizzle migrations
+
+For the [local Drizzle proposal](03-LOCAL-DATA-MODEL.md), the database must be **account-bound and decrypted before ORM migrations**:
+
+1. Resolve the exact locally verified Supabase `user_id`, its encrypted file and its OS-protected key. If missing/mismatched, keep locked.
+2. Open that file in a native build; query `PRAGMA cipher_version` and **fail closed** if absent. An unknown `PRAGMA key` can otherwise be ignored by plaintext SQLite.
+3. Apply the correct key **before schema reads**, verify a keyed database read and reject corruption/wrong-key errors without deleting data; never log key material.
+4. Run the bundled Drizzle SQL migration against this database alone; gate dashboard and repository access until migration and integrity checks pass.
+5. On failure, preserve ciphertext/key; do not silently create a replacement DB, mark migration successful or open another user's store. Recover only via verified explicit retry/restore.
+
+SQLCipher native compatibility, migration atomicity and key lifecycle require authorized Android/iPhone validation; D04–D06 remain pending. This is a proposal, **not an implemented security guarantee**.
+
 ## Mobile vs server-side keys
 | Credential | Location |
 |---|---|

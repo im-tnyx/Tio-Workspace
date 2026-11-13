@@ -40,6 +40,7 @@
 | D10 | Workout catalog & licensing | Start with a small curated/manual exercise catalog | Low | ⬜ Pending |
 | D11 | Analytics and retention | No workout payload analytics by default; separate crash logs from workout content | Medium | ⬜ Pending |
 | D12 | Future sync deletion semantics | Separate disabling sync from deleting cloud copies; revisit in Phase 4 | **High later** | ⬜ Pending |
+| D13 | Local ORM and migration tooling | Propose Drizzle ORM + offline-bundled SQLite migrations after SQLCipher unlock, with fail-closed encrypted recovery | **High** | ⬜ Pending |
 
 ## 🧱 Architecture trade-offs at a glance
 
@@ -83,7 +84,7 @@ flowchart TD
 
 ## 📋 Required owner sign-off
 
-- [ ] Approve/adjust the D01–D12 recommendations above; record reasons and privacy consequences.
+- [ ] Approve/adjust the D01–D13 recommendations above; record reasons and privacy consequences (D13 does not waive D04–D06).
 - [ ] Confirm account switching, logout, account deletion and local erase semantics.
 - [ ] Accept or reject offline access after undetectable server revocation.
 - [ ] Approve recovery UX for encrypted backup **before** promising restore.
