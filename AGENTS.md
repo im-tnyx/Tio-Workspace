@@ -6,10 +6,10 @@
 
 ## Session start / context loading
 
-1. Read this §AGENTS.md§ first. Then read [§.ai/current.md§](.ai/current.md) to discover whether one task is active.
-2. If and only if §Active Task§ is not §none§, load that task record and only its explicitly needed [§.ai/core/§](.ai/core/README.md) summaries.
+1. Read this `AGENTS.md` first. Then read [`.ai/current.md`](.ai/current.md) to discover whether one task is active.
+2. If and only if `Active Task` is not `none`, load that task record and only its explicitly needed [`.ai/core/`](.ai/core/README.md) summaries.
 3. Open the canonical documents relevant to the objective; verify current GitHub/worktree branch, PR, commit and approval before editing.
-4. Do not bulk-read §.ai/tasks/§ or §.ai/archive/§ and do not treat .ai summaries as authority above product specs or actual source state.
+4. Do not bulk-read `.ai/tasks/` or `.ai/archive/` and do not treat .ai summaries as authority above product specs or actual source state.
 
 ## Source of truth (read in order)
 1. `README.md` — project status and foundational promises.
