@@ -18,7 +18,7 @@ Your account stays signed in. Your workout history stays on your device.
 ![SQLite](https://img.shields.io/badge/SQLite-Local_Data-003B57?style=flat-square&logo=sqlite&logoColor=white)
 ![Supabase](https://img.shields.io/badge/Supabase-Auth_%26_Edge_Functions-3ECF8E?style=flat-square&logo=supabase&logoColor=white)
 
-**[📖 Documentation](docs/00-INDEX.md)** · **[🧭 Phase 0 Review](docs/17-PHASE-0-DECISION-PACK.md)** · **[🏗 Architecture](docs/02-SYSTEM-ARCHITECTURE.md)** · **[🎨 Design](DESIGN.md)** · **[🗺 Roadmap](docs/06-ROADMAP.md)** · **[🤝 Contribute](CONTRIBUTING.md)**
+**[📖 Documentation](docs/00-INDEX.md)** · **[🤖 AI Context](.ai/README.md)** · **[🧭 Phase 0 Review](docs/17-PHASE-0-DECISION-PACK.md)** · **[🏗 Architecture](docs/02-SYSTEM-ARCHITECTURE.md)** · **[🎨 Design](DESIGN.md)** · **[🗺 Roadmap](docs/06-ROADMAP.md)** · **[🤝 Contribute](CONTRIBUTING.md)**
 
 </div>
 
@@ -89,6 +89,10 @@ Choose the level you need. All specifications are **proposals** until reviewed a
 ## 🧭 Before implementation: owner review
 
 Start with the **[Phase 0 Decision Review Pack](docs/17-PHASE-0-DECISION-PACK.md)**. It links the [offline session state machine](docs/18-OFFLINE-SESSION-STATE-MACHINE.md), [backup recovery strategy](docs/19-BACKUP-RECOVERY-STRATEGY.md), [MVP screen flows](docs/20-MVP-UX-FLOWS.md) and [Phase 1 readiness gate](docs/21-PHASE-1-READINESS.md). All recommendations remain **unapproved**; the documents do not authorize app code.
+
+## 🤖 Agent-ready context
+
+Tio Workspace uses a compact [§.ai/§ context system](.ai/README.md), adapted from [Tio Ledger](https://github.com/im-tnyx/Tio-Ledger/tree/main/.ai). [§AGENTS.md§](AGENTS.md) remains the authoritative agent policy; [§.ai/current.md§](.ai/current.md) is the lightweight active-task pointer, [§core/§](.ai/core/README.md) holds read-on-demand summaries, and [§tasks/§](.ai/tasks/README.md) / [§archive/§](.ai/archive/README.md) preserve handoff history. No AI context note grants permission to implement or merge code.
 
 ## 🧩 Feature delivery map
 
