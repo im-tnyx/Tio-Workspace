@@ -10,6 +10,7 @@
 - [ ] Target branch is correct, typically `main`.
 - [ ] Verify expected changed files exist on `main` and link from README/docs index.
 - [ ] Check any branch protection/status checks actually configured; do not assume approval and checks imply a successful deploy.
+- [ ] Record the completed reviewer/agent/bot/owner assessment link, disposition of blocking inline comments, reviewed SHA/scope, and distinct owner merge authorization. Do not relabel automated comments as GitHub formal approvals.
 - [ ] Archive/close linked issue only when acceptance criteria are met.
 
 ## 02 · Revalidate the result

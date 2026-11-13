@@ -1,45 +1,68 @@
 # [Task title]
 
-> **Template only.** Copy this to `tasks/<scope>/local-YYYYMMDD-short-slug.md` when a bounded task is approved. This file does not create or authorize work.
+> **Template only.** Copy to `.ai/tasks/<scope>/local-YYYYMMDD-short-slug.md` after the bounded task is approved. This file does not authorize implementation, deployment or merge.
 
 | Field | Value |
 |---|---|
 | Status | In Progress / Blocked / Ready for Review / Complete |
-| Objective | One concrete outcome |
-| Owner / author | Name or agent role |
-| Issue and approval | Link to scope-specific owner authorization |
-| Branch | Verify live Git ref |
-| Baseline commit | Historical SHA observed at task start |
-| Observed HEAD | Live check at inspection time (historical evidence, not permanent authority) |
-| Platform scope | Docs / Android / iOS / shared / auth / workouts |
+| Objective | One concrete, measurable outcome |
+| Implementation owner | Agent/human with permission to edit this slice |
+| Previous agent | None / previous authorized owner |
+| Last commit agent | None / agent role + inspected commit SHA |
+| Tracking / approval | Issue or PR link **and separate owner authorization reference** |
+| Branch | Verify current branch from actual repository |
+| Base SHA / inspected HEAD | Record evidence at inspection time, not permanent current state |
+| Platform and file scope | Docs / shared / iOS / Android / Auth / workouts etc. |
 | Created / updated | YYYY-MM-DD |
 
-## Required Context
-- [ ] [AGENTS.md](../../AGENTS.md)
-- [ ] [Relevant core summary](../core/README.md)
-- [ ] [Relevant canonical spec](../../docs/00-INDEX.md)
+## Required context (read on demand)
+- [ ] [`AGENTS.md`](../../AGENTS.md) read and applicable constraints identified
+- [ ] [Current pointer](../current.md) reconciled
+- [ ] Relevant [core summary](../core/README.md) and [canonical spec](../../docs/00-INDEX.md) linked
+- [ ] Live issue/PR, branch, ownership, approvals verified
 
 ## Approved scope / non-goals
-Describe exactly what may change and what must not.
+- In scope: list bounded paths, features and acceptance criteria.
+- Out of scope: explicitly name changes that must not be included.
+- Approval source: link to the specific written owner permission.
+
+## Selected skills and tools
+- Task-to-skill mapping: skill/tool name and reason selected.
+- Instructions read: exact skill or official docs path/URL (when applicable).
+- Unavailable capabilities: what could not be used and why.
 
 ## Durable decisions
-Only decisions actually made; cite ADR/issue where applicable.
+Record decisions actually made with approval/source links. Proposed architecture is not approval.
 
 ## Progress
-- [ ] Next verifiable deliverable.
+- [ ] Next verifiable unit of work.
 
 ## Changed files
-Enumerate paths, not giant code diffs.
+List exact repository paths; avoid pasted diffs or chat transcripts.
+
+## PR review evidence and findings
+
+- Review requested from: Owner / independent agent / GitHub Copilot / Codex / other (record actual choice).
+- Reviewer identity and review URL: `<user-or-tool + link>`.
+- Inspected commit SHA / diff scope: `<verified SHA or paths>`.
+- Review status: `REVIEW_PENDING / REVIEW_COMPLETE / OWNER_DEFERRED_REVIEW`.
+- Review result: `PASS / CHANGES_REQUESTED / INCONCLUSIVE` (do **not** infer GitHub approval).
+- Review type: formal GitHub `APPROVED` / GitHub `COMMENT` / independent assessment / owner manual note.
+- Blocking findings and inline threads: `<links, dispositions, fix SHAs, re-review status>`.
+- Owner review deferral (only if applicable): `<authorization, accepted risks, follow-up checkpoint>`.
+- Merge approval: `<separate owner authorization or not granted>`.
 
 ## Validation evidence
-- Checks run: exact command/tool, target and result.
-- Not run: explain why.
-- Review classification: independent / self-review / automated (non-binding).
-- Remaining findings and risks.
+- Checks run: command/tool, observed target commit and result.
+- Not run / unavailable / not applicable: state which and why.
+- Required CI vs supplemental checks: verify current repository ruleset if applicable.
+- Security findings vs scanner/infrastructure errors: distinguish them.
+- Review type: Independent / Self-review / Automated non-binding.
+- Open findings, residual risks and owner review status.
 
 ## Handoff
 **Next owner:**  
 **Next authorized action:**  
-**Post-merge cleanup needed:** Yes / No
+**Post-merge synchronization/archive needed:** Yes / No
 
-[← Tasks instructions](README.md) · [Main AI guide](../README.md)
+[← Task guide](README.md) · [Root agent contract](../../AGENTS.md)

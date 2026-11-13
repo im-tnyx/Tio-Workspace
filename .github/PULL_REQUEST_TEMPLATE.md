@@ -36,6 +36,22 @@ Related ADR:
 ## 📸 UI evidence (if applicable)
 <!-- Only add real screenshots, accessibility evidence or design references. Do not fabricate. -->
 
+## 👀 Review evidence — required before merge
+<!-- Request a review by an eligible Codex/Copilot bot, separate AI agent, or repository owner. Keep formal approval distinct from comments. -->
+- [ ] At least one reviewer was **requested** (or explicitly explain unavailable / owner-authorized deferral)
+- [ ] Review feedback recorded with URL, reviewer identity and inspected head SHA/scope
+- [ ] Blocking inline findings fixed or explicitly dispositioned; re-review requested after substantial fixes
+- [ ] No claim that bot `COMMENT` equals formal GitHub `APPROVED`
+- [ ] Current branch protection / required checks verified if available
+- [ ] **Owner approval to merge this PR** obtained separately
+
+**Reviewer / tool:**  
+**Review link / reviewed SHA:**  
+**Verdict:** `REVIEW_PENDING / PASS / CHANGES_REQUESTED / INCONCLUSIVE`  
+**Blocking threads / fixes / follow-up:**  
+
+See [review guide](REVIEW_GUIDE.md) and [PR review workflow](../docs/11-PR-REVIEW-WORKFLOW.md).
+
 ## ✅ Reviewer checklist
 - [ ] Requirements and ADR updated if necessary
 - [ ] Documentation hub/README updated for new documents

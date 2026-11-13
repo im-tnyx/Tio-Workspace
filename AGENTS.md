@@ -1,73 +1,224 @@
-# 🤖 Agent Instructions — Tio Workspace
+# 🤖 AGENTS.md — Tio Workspace Agent Operating Contract
 
-> **Current operating mode: DOCUMENTATION-ONLY.** This file is guidance for AI coding agents and human maintainers. It does not authorize new app code, infrastructure deployment or merge operations.
+> **One instruction is enough to start:** “Follow `AGENTS.md`.” Every agent must read and apply this file, check the live repository, select relevant skills/tools, honor approval gates, and report verified outcomes. This is a repository policy, **not** permission to start unapproved work.
 
-[🏠 README](README.md) · [🧠 AI Context](.ai/README.md) · [🎨 Design rules](DESIGN.md) · [📚 Docs hub](docs/00-INDEX.md) · [🤝 Contributor guide](CONTRIBUTING.md)
-
-## Session start / context loading
-
-1. Read this §AGENTS.md§ first. Then read [§.ai/current.md§](.ai/current.md) to discover whether one task is active.
-2. If and only if §Active Task§ is not §none§, load that task record and only its explicitly needed [§.ai/core/§](.ai/core/README.md) summaries.
-3. Open the canonical documents relevant to the objective; verify current GitHub/worktree branch, PR, commit and approval before editing.
-4. Do not bulk-read §.ai/tasks/§ or §.ai/archive/§ and do not treat .ai summaries as authority above product specs or actual source state.
-
-## Source of truth (read in order)
-1. `README.md` — project status and foundational promises.
-2. `docs/09-DECISIONS.md` — agreed intentions vs unapproved proposals.
-3. `docs/01-PRODUCT-REQUIREMENTS.md` — product requirements.
-4. `docs/02-SYSTEM-ARCHITECTURE.md` — module and data boundaries.
-5. `docs/04-AUTH-AND-SECURITY.md` and `docs/05-BACKUP-AND-SYNC.md` — privacy/security requirements.
-6. `DESIGN.md` and `docs/13-DOCUMENTATION-STANDARDS.md` — consistent presentation.
-7. `docs/17-PHASE-0-DECISION-PACK.md` and `docs/21-PHASE-1-READINESS.md` — pending choices and implementation gate.
-8. `docs/11-PR-REVIEW-WORKFLOW.md` and `docs/12-POST-MERGE-PLAYBOOK.md` — delivery process.
-
-## Non-negotiable product invariants
-
-| Must | Must not |
+| Field | Value |
 |---|---|
-| Account required for initial registration/sign-in | Fake an offline signup flow |
-| Preserve session on normal app close/reopen | Force login for every reopen |
-| Store workouts locally by default | Upload workout records just because Auth exists |
-| Allow already-initialized offline workout CRUD | Block workout completion on remote API availability |
-| Isolate local workout records by verified account ID | Mix data between two accounts on one device |
-| Put AI secrets only in server-side function secrets | Embed service-role, vendor keys or refresh secrets in code |
-| Offer backup and sync only after opt-in, as distinct modes | Treat personal Drive/iCloud snapshots as realtime sync |
-| Test recovery and encryption before promising safety | Claim device-loss recovery without verified backup |
+| Applies to | All human and AI contributors operating in `im-tnyx/Tio-Workspace` |
+| Project stage | **Phase 0 — DOCUMENTATION ONLY**; no working Expo app or deployed Supabase project |
+| Maintainer authority | Repository owner makes scope, privacy, security, implementation and merge decisions |
+| Canonical references | [Docs hub](docs/00-INDEX.md), [decision register](docs/09-DECISIONS.md), [architecture](docs/02-SYSTEM-ARCHITECTURE.md) |
+| Continuity pointer | [`.ai/current.md`](.ai/current.md); never assume this is current without checking GitHub |
+| Last policy review | 2026-11-13 · proposed governance update, not a technical build audit |
 
-## Phase-0 change scope
-**Allowed now:** improve Markdown documentation, GitHub issue/PR templates and architecture decision records. Clarify requirements, explicit assumptions and acceptance tests.
+## 1. Operating rules — read first
 
-**Not allowed without explicit approval:** installing or scaffolding Expo, modifying a live Supabase project, creating credentials or schemas, adding runtime dependencies, configuring production CI/secrets, changing remote RLS, integrating AI vendors, launching background sync or merging PRs.
+1. **Communicate in Hindi/Hinglish** unless the owner requests another language. Keep technical identifiers, code, paths, CLI commands and commit messages in English. Be concise, direct and specific about trade-offs.
+2. **Inspect real state before action.** Verify correct repository, default branch, active PR/issue, branch HEAD, changed files, and worktree status when available. GitHub and actual files outrank stale chat/context summaries.
+3. **Respect the authorized scope.** A “next” instruction follows the active conversation's **specific** objective; it does not grant blanket permission to write app code, deploy infrastructure, weaken security, change privacy defaults or merge unrelated PRs.
+4. **Use the best applicable skill/tool**, not just generic reasoning. Discover availability, read its instructions and verify results. Never invent a connected account, skill, test run, approval or deployment.
+5. **Choose a bounded slice.** Prefer one independently reviewable outcome and minimal modifications. Preserve unrelated files and user changes.
+6. **Document evidence.** Distinguish planned, approved, scaffolded, implemented, validated and deployed; state checks run, skipped checks and current risks truthfully.
+7. **Do not silently escalate authority.** An issue, roadmap item, PR, task brief or merged planning document does not approve new implementation.
 
-## Editing procedure
-1. Inspect current files and branch; never assume repository state or versions.
-2. Prefer a focused `docs/...` branch and an auditable pull request, not direct `main` edits.
-3. Update the appropriate requirement/ADR **before** implementation-oriented wording.
-4. Preserve meaning: distinguish `planned`, `verified`, `deployed` and `future`.
-5. Keep links relative, diagrams GitHub-compatible and the README's project status truthful.
-6. Do a local/automated check when available: Markdown syntax, links, anchors, JSON/YAML examples, sensitive strings, frontmatter and diff scope.
-7. Create a PR summary with scope, risks, changes, manual checks and rollback.
-8. **Never merge** without review/authorization; follow `docs/12-POST-MERGE-PLAYBOOK.md` if the change is approved and merged.
+## 2. Session bootstrap — how to operate with only “Follow AGENTS.md”
 
-## Architecture rules for future app code (after approval)
-- UI -> domain/use case -> repository -> local SQLite. Network adapters must be separate.
-- Domain types should not import Expo, Supabase or HTTP SDKs.
-- Repository contracts make future opt-in cloud sync additive rather than a UI rewrite.
-- Stable IDs, timestamps, owner IDs, migrations, deterministic conflict strategy.
-- Auth token/AI key separation, least-privilege storage, encryption verification.
-- User-set backup/sync consent checked at the point of every remote data transfer.
-- Tests must verify offline continuity, session restoration, account switching and secure logout.
+```mermaid
+flowchart TD
+  A["Read AGENTS.md"] --> B["Read .ai/current.md"]
+  B --> C["Verify live repo, issue, PR, HEAD"]
+  C --> D{"Approved task exists?"}
+  D -->|No| E["Documentation / decision review only"]
+  D -->|Yes| F["Read one task brief + relevant canonical docs"]
+  F --> G["Discover + load relevant skills"]
+  G --> H["Focused change + validation"]
+  H --> I["PR review + owner merge gate"]
+  I --> J["Post-merge verification / task handoff"]
+```
 
-## Agent quality checklist
-- [ ] Changes stay within approved phase and task.
-- [ ] No secrets, personal tokens, private workout data or invented test results.
-- [ ] No misleading “done” badges or claims.
-- [ ] Both Android and iOS implications considered.
-- [ ] New decisions logged and requirements/tests updated.
-- [ ] PR description accurately states validation and limits.
-- [ ] Links resolve and files are discoverable from index.
+**Mandatory startup sequence:**
 
-## Stop and escalate
-Ask the owner to decide when a change affects cloud privacy defaults, deletion/recovery guarantees, auth requirements, encryption key custody, third-party data sharing, payments or uncontrolled infrastructure cost. For urgent exposed credentials or vulnerabilities, use `SECURITY.md` and do not post secrets into public issues.
+1. Read this file, then [`.ai/current.md`](.ai/current.md). If a task is active, read **only** its linked [task brief](.ai/tasks/README.md) and the [core summaries](.ai/core/README.md) required by that task. Never preload all tasks/archive files.
+2. Verify the live repo and its Git/PR state. When working in a local checkout, use available `git status --short --branch` and `git rev-parse HEAD`; when using a connector, inspect the actual remote branch/PR and its changed files. Do not claim a clean local worktree from a remote-only connection.
+3. Reconcile the task brief, linked GitHub issue/PR, canonical docs and runtime source. If an **existing** Linear or external tracker is linked and available, inspect it; do not assume such a tracker exists. Report inaccessible sources rather than fabricating state.
+4. Confirm the approved objective, excluded work, next permissible action, responsible agent and needed review. Stop and request a decision only for an actual high-risk, scope-changing or authorization blocker.
+5. Open the task's relevant product/security/design docs **on demand**, then use the skill-selection protocol below.
 
-**Status:** These are project instructions; they are not proof of agent execution or code readiness.
+## 3. Source of truth and scope
+
+| Question | Authority | What the agent must do |
+|---|---|---|
+| What code/config/PR/check is real? | Actual repository files, source, GitHub state and test evidence | Verify current status, do not rely on a cached SHA |
+| What behavior must the product have? | [Product requirements](docs/01-PRODUCT-REQUIREMENTS.md), [architecture](docs/02-SYSTEM-ARCHITECTURE.md), [decisions](docs/09-DECISIONS.md), approved ADRs | Follow **accepted** requirements; proposals remain pending |
+| What design is intended? | [`DESIGN.md`](DESIGN.md), [MVP UX flows](docs/20-MVP-UX-FLOWS.md), [UI standards](docs/13-DOCUMENTATION-STANDARDS.md) | Keep planned screens distinct from approved mockups |
+| Who authorizes agent actions? | Owner instructions + this file + [PR workflow](docs/11-PR-REVIEW-WORKFLOW.md) | An agent note is never approval |
+| What task should resume? | Live issue/PR plus [`.ai/current.md`](.ai/current.md) / one task brief | Resolve disagreements before editing |
+| What should be checked? | [Test plan](docs/08-TEST-PLAN.md), [definition of done](docs/15-DEFINITION-OF-DONE.md) + actual toolchain | Report evidence, not expectations |
+
+**Conflict rule:** runtime/config is the evidence for current *behavior*; accepted specs/ADRs govern *intended behavior*. When they disagree, document the discrepancy rather than silently changing the specification or interpreting an unapproved proposal as a decision. Higher-priority platform/tool security requirements still apply.
+
+## 4. Phase and owner-approval gates
+
+**Allowed now (Phase 0):** scoped Markdown docs, design proposals, ADR preparation, requirements/test planning, repository governance, `.ai/` context maintenance and issue/PR templates.
+
+**Not authorized yet:** Expo scaffolding, dependency installation, app source/UI creation, database migrations, Supabase project/schema changes, Edge Function deployment, native entitlements/OAuth configuration, AI provider integration, real cloud backups/sync, paid infrastructure or release operations.
+
+- Before **Phase 1**, require a **separate written owner approval** identifying the approved work and resolved high-risk decisions in [Phase 0 review](docs/17-PHASE-0-DECISION-PACK.md) and [readiness gate](docs/21-PHASE-1-READINESS.md).
+- Any **new independently scoped feature**, product-visible UI behavior, auth/session semantics, privacy setting, account deletion, encryption key custody, cloud transfer, database shape, paid integration or deployment requires an explicit owner decision.
+- **Routine subtasks inside a previously approved, bounded task** do not need repeated permission when they respect the existing scope. This does **not** override the Phase 0 code prohibition.
+- Creating/updating a reviewable branch and PR for authorized documentation work is allowed. **Merging needs its own unmistakable owner authorization** for that PR; PR creation alone never authorizes merge.
+- Treat “approve”, “merge”, “start implementation” and “deploy” as separate permissions. Never infer any one from another.
+
+## 5. Skill and tool routing — choose deliberately
+
+Before nontrivial work: **discover available tools and installed skills**; match them to the task, read their authoritative instructions/`SKILL.md` and relevant references, then use the appropriate capability. A skill is a **procedure**, not proof that its service is configured.
+
+| Work type | Preferred specialist workflow | Required safeguard |
+|---|---|---|
+| Repository/PRs/issues | Connected GitHub tooling; inspect branch, changed files, reviews and checks | Don't invent Git/CI state or merge without approval |
+| Documentation/architecture | Repository standards, Markdown/link/diagram checks; documentation tools when artifact requested | Cross-link canonical specs; avoid duplicate sources of truth |
+| Expo/React Native (future) | Check actual package versions and Expo/React Native official docs; matching specialized skill if available | No scaffolding until Phase 1 approval; both platforms reviewed |
+| Supabase Auth / Edge Functions (future) | **Use the Supabase skill when available**, consult current Supabase docs/changelog and connected project tools | Client has only publishable key; secrets and privileged calls server-side |
+| Supabase Postgres/RLS (future sync only) | Supabase + Postgres best-practice skill when available; migration/RLS review | No default workout upload; owner-scoped RLS and negative tests |
+| Local SQLite / SQLCipher (future) | Verify Expo SQLite native-build feasibility, encryption and OS secure-key lifecycle using current docs | Never promise encryption before native verification |
+| UI/accessibility (future) | [Design rules](DESIGN.md), visual/a11y QA and appropriate available tools | Preserve non-visual UI by default; verify real devices/screens |
+| AI plan generation (later) | Versioned contract/security evaluation, provider-specific skill if installed | Edge Function authorization, quotas and user-reviewed local draft |
+| Drive/iCloud backup (later) | Provider-specific current docs and matching integration skill if available | Explicit opt-in, independent recovery secret and fresh-device restore test |
+
+**Rules for skill selection:**
+
+- **Do not use project-specific Tio Ledger / tio-world / unrelated-product orchestrator skills** to manage Tio Workspace. Their repositories, languages, source paths and approval models are different.
+- Do not claim a Tio Workspace-specific skill exists unless it was actually discovered. Do not install/connect a new external service or create credentials without user consent.
+- Prefer official docs and relevant specialized skill over outdated examples; validate version-sensitive API/config guidance when implementation is approved.
+- If a required skill, repo connection, test environment, simulator or native device is unavailable, state the limitation and complete only a safe, verifiable subset.
+- Record useful skill/tool choices and their actual outputs in the task/PR; don't claim a skill ran because it was listed.
+
+## 6. Tio product invariants — never violate
+
+| Must always preserve | Must never assume or implement by accident |
+|---|---|
+| Initial signup/login requires online **Supabase Auth** | First-ever offline guest account or signup |
+| Normal close/reopen keeps a valid persisted session | Force login on every restart |
+| Already initialized users can log workouts offline | Every workout write needs remote availability |
+| Sets, exercises, plans, progress and history stay in **on-device SQLite** by default | Auth login uploads workout records to Supabase |
+| Account UUID binds isolated local storage, proposed encrypted per-account DBs | Access another user's local data from a logged-out/switch state |
+| Logout locks retained history; local erase is a different confirmed action | Deleting session erases workout data |
+| Remote session invalidation is checked when connectivity allows | Claim remote revocation can always be detected offline |
+| AI provider secrets stay on a server-side authenticated Edge Function | Include service-role or AI secret in mobile binary |
+| Personal encrypted backup is **later and opt-in**; cloud sync is **separately opt-in and future** | Drive/iCloud snapshot equals live app-server sync |
+| Backup recovery uses an independent portable user-held recovery design | Promise restoration without a tested backup or original device |
+
+**Security nuance:** Offline cached local access is a deliberate policy decision under review; it is **not** proof that a remote session has not been revoked. An online AI/cloud request must be freshly authorized server-side. Reinstallation or phone loss without a usable backup can mean permanent loss of local-only data.
+
+## 7. Module ownership and visual safety (future implementation)
+
+**Planned**, not existing runtime paths: [repository structure](docs/10-REPOSITORY-STRUCTURE.md) proposes `src/app/` or Expo Router app entry, `src/features/` for workout UI, `src/domain/` for types/use cases/contracts, `src/data/local/` for SQLite, `src/data/remote/` for Auth/AI adapters, `src/security/` for keys/sessions, and later `src/services/backup` and `src/services/sync`. Verify the actual structure once code exists; do **not** create paths just because they appear here.
+
+- UI → application/use cases → domain repository contracts; SQLite adapters implement local persistence. Domain must not import Expo, Supabase SDKs or HTTP clients.
+- Keep ownership explicit: local data remains authoritative; remote calls cannot block local workout completion. No speculative backend, sync engine or wearable app.
+- Prefer focused, minimal abstractions. Schema migrations, key custody, conflict policies and API contracts require review before runtime changes.
+- **Non-visual refactors may not redesign UI.** Preserve observed layout, spacing, text sizes, theme values, interactions and navigation unless the task explicitly approves a visual change.
+- Never replace a component-specific value with a “nearby” shared token just for consistency. Reuse approved design primitives only when current semantics and actual computed value are preserved.
+- After UI changes, evaluate loading, empty, offline, error, account-switch and accessibility states. Check iOS/Android layouts and contrast/text scaling with actual tooling where available. Don't claim screenshots or visual review occurred if they did not.
+
+## 8. Task execution and multi-agent handoff
+
+For any approved code, architecture-affecting change, or substantial feature slice:
+
+1. **Discovery:** read issue/PR, acceptance criteria, [roadmap](docs/06-ROADMAP.md), decision status and exact owner approval.
+2. **Exploration:** inspect relevant code/docs, discover skills/tools, identify constraints, version risks and involved platforms. Check Git/worktree for concurrent edits.
+3. **Task brief:** create/update one [`.ai/tasks/`](.ai/tasks/README.md) record using [template](.ai/tasks/TEMPLATE.md), link it from [`.ai/current.md`](.ai/current.md) when one bounded objective is active. Small docs-only changes may instead be tracked in a focused PR.
+4. **Design:** describe options, risks, source-of-truth links, in-scope/out-of-scope paths, acceptance evidence and rollback. Escalate only owner decisions.
+5. **Implementation:** one active **Implementation owner** per slice. Other agents may independently review but must not silently write competing changes. Record owner/agent identity, previous owner on transfer, and last commit agent/SHA in task notes, not as artificial `Co-authored-by` trailers.
+6. **Quality review:** run the smallest meaningful tests and security checks, then **request at least one recorded review** from an owner, a genuinely separate AI agent, Codex Code Review or GitHub Copilot Code Review when available. Review the actual changed files and line-level findings; a self-check alone is not the reviewer gate. See [review workflow](docs/11-PR-REVIEW-WORKFLOW.md).
+7. **Handoff:** record current state, changed files, validation, findings, next authorized action and linked PR. Never claim complete without evidence.
+8. **After owner-authorized merge:** run the [post-merge playbook](docs/12-POST-MERGE-PLAYBOOK.md), reconcile issue/PR and move verified completed task to [archive](.ai/archive/README.md); clear/change the pointer in a tracked update.
+
+**Takeover rule:** if two agents claim the same slice, or a task brief's branch is stale/merged, pause overlapping writes, inspect actual GitHub/worktree state, and obtain explicit ownership transfer. Preserve unrelated uncommitted changes.
+
+## 9. Security-sensitive review — two independent axes
+
+Relevant future scope: authentication, encrypted SQLite keys, sensitive local deletion/recovery, `supabase/functions/**`, database grants/RLS/RPCs/views, OAuth, cloud backups, AI provider secrets, user data transfers.
+
+- Treat workout/health information, login tokens, biometric data and backup material as sensitive. Minimize data sent to third parties; opt-in must be explicit at point of transfer.
+- Never commit or log real user workout data, recovery secrets, access/refresh tokens, provider keys, service-role credentials or private signing material.
+- For future Supabase exposed tables, enable appropriately scoped RLS; ownership must be verified server-side. Client roles alone are **not** record-level authorization.
+- When checks report trouble, record both **check requiredness** (required by actual repository ruleset vs supplemental) **and outcome/cause** (concrete security finding vs scanner/infrastructure error).
+- Required check failures block merge absent authorized resolution; a supplemental check's **real vulnerability** still needs disposition. Scanner outages are not passes and should not be misreported as application vulnerabilities.
+- Never bypass branch protection, disable meaningful security checks, add blanket allowlists or deploy broad privileges merely to turn CI green.
+- Docs-only edits **do not require invented runtime/Supabase security tests**. Perform proportional documentary checks and explicitly mark runtime tests not applicable.
+
+[Security baseline](docs/04-AUTH-AND-SECURITY.md) · [Threat model](docs/14-THREAT-MODEL.md) · [Backup recovery design](docs/19-BACKUP-RECOVERY-STRATEGY.md) · [`SECURITY.md`](SECURITY.md)
+
+## 10. Repository-specific review focus (Codex / Copilot / human)
+
+When asked to review a pull request, **inspect the actual current diff and relevant source of truth before declaring anything passed**. Review tools and humans should prioritize consequential mistakes over cosmetic nitpicks:
+
+1. **Local-first data safety:** Flag a change that sends workout history, plans, sets, or progress to an app-controlled server by default, or introduces AI/backup/sync transfer without the specifically required user consent. Include the exact changed path/line and violated contract.
+2. **Account boundary and session safety:** Flag cross-account SQLite/key access, unlocked data on logout/account switch, secrets in client bundles, or claims of remotely verified revocation when offline. Do not treat brief network failure as confirmation of revoked identity.
+3. **Evidence and phase accuracy:** Flag a planned-only workflow represented as implemented/tested/deployed, or Expo/Supabase/runtime changes made without the documented approval. For Markdown-only changes, check link targets, duplicate/conflicting instructions and scope—not runtime test coverage that does not apply.
+
+For every actionable finding, give **severity, exact file/line when available, concrete impact and a minimal fix**. If the concern is unsupported, mark it as a question rather than a defect. Do not spam repeated stylistic observations that ordinary lint can catch.
+
+### Mandatory review-before-merge protocol
+
+- **Request one review as the default quality gate.** Preferred: GitHub Copilot/Codex review if enabled, an independent agent review, or manual repository-owner review. For sensitive Auth, local encryption, deletion, backup, RLS or remote data transfer, recommend an independent specialist security review **plus** explicit owner risk acceptance.
+- Codex may be requested with `@codex review` **only if its GitHub integration is enabled**. Copilot can be requested via the PR's `Reviewers → Copilot` when eligible, or via a supported API. Do not claim either bot is installed without proof.
+- A separate ChatGPT/agent can perform a **read-only review** using [review guide](.github/REVIEW_GUIDE.md) and post findings; identify it accurately as an AI-assisted/manual assessment, not a fabricated GitHub review.
+- **Review complete ≠ GitHub approval.** GitHub Copilot typically leaves a `COMMENT` review; Codex and ChatGPT findings are feedback. Formal `APPROVED` only exists when GitHub records it; branch rulesets and the owner's action-specific merge approval still apply.
+- For inline comments: classify `Blocking` / `Non-blocking` / `Question`, fix concrete blocking findings, link the fix commit and re-review relevant changed lines. Resolve threads only after a substantive response; don't hide findings.
+- Record reviewer identity/tool, exact reviewed head SHA or diff scope, verdict (`PASS / CHANGES_REQUESTED / INCONCLUSIVE`), review URL, open findings and whether further review is required after later pushes.
+- **No reviewer available?** Leave status `REVIEW_PENDING` rather than claiming a pass. Any owner-authorized deferral must name the specific PR, accepted risk and follow-up checkpoint; deferral does not waive formal branch protections or grant merge permission.
+
+[Manual / AI review guide](.github/REVIEW_GUIDE.md) · [PR review workflow](docs/11-PR-REVIEW-WORKFLOW.md)
+
+## 11. Validation matrix — honest evidence only
+
+| Changed scope | Minimum meaningful validation |
+|---|---|
+| Markdown/AGENTS/`.ai/` | Git diff scope; relative links, Markdown code fences, navigation/typos, status truth, sensitive-string scan. `git diff --check` **only if local checkout exists** |
+| TypeScript/Expo (later) | Actual repository lint, typecheck, unit tests and device builds once configured; don't invent scripts |
+| Auth/session | Cold restart, offline cached account, refresh/revocation, logout/relogin, cross-account negative tests |
+| Local SQLite/SQLCipher | Schema migrations, atomic autosave, offline CRUD, encryption verification in a native build, key-loss failure |
+| AI Edge Function | Auth, inputs/output schema, limits, provider key isolation, no sensitive request logging |
+| Backup/restore | User consent, ciphertext integrity, wrong key, wrong user, interrupted upload and real new-device restore |
+| Cloud sync (future) | RLS ownership, opt-in/off, conflicts, tombstones, remote deletion and offline reconciliation |
+| UI | Behavior + real rendered baseline, accessibility, light/dark, small screen and offline/error states |
+
+**Do not report a test as passed unless it actually ran on the current relevant commit/environment.** Distinguish `Not run`, `Unavailable`, `Not applicable` and `Failed`. CI is not assumed to exist. Link actual evidence rather than fabricating a build, screenshot or approval.
+
+## 12. Git, PR, merge and post-merge discipline
+
+- Before editing: inspect branch, diff and unrelated changes; avoid destructive cleanup and unrelated modifications.
+- Prefer focused branches (`docs/...`, `feat/...`, `fix/...`), conventional readable commits and the [PR template](.github/PULL_REQUEST_TEMPLATE.md).
+- PR description must state **why, scope, changed paths, privacy/architecture effect, verification, skipped checks, risks, reviewer questions and rollback**. Link issues and accepted decisions.
+- Ask for at least one **recorded** owner, independent agent, Copilot or Codex review; inspect inline comments and resolve blocking findings. Self-review alone is insufficient. Do not claim “independent review” if the author only self-reviewed; do not fabricate a formal GitHub approval.
+- Verify actual PR mergeability, review comments and **required checks if configured**. A green optional check is not a required review.
+- **No PR merge, force-push, history rewrite, branch deletion, production deployment or destructive data action** without action-specific authorization. Owner-authorized review deferral must record scope, reason, accepted risks and follow-up.
+- After an authorized merge: verify returned merge SHA, `main` HEAD and expected files, reconcile trackers, post-merge tests where applicable and archive only completed work. **Merge is not deployment or product approval**.
+
+[PR review workflow](docs/11-PR-REVIEW-WORKFLOW.md) · [Post-merge playbook](docs/12-POST-MERGE-PLAYBOOK.md)
+
+## 13. Never commit / never invent
+
+**Never commit:** `.env` / `.env.*` secrets (except explicitly approved safe examples), private keys, certificates, keystores, service credentials, device session exports, SQLite user databases, personal backup archives, `node_modules/`, `dist/`, `build/`, `coverage/`, local caches, IDE state, logs or screenshots containing user information.
+
+**Never claim:** deployed backend, active Supabase project, successful tests/CI, a reviewed PR, current account permissions, an approved design, a working backup, or a current Git SHA without direct evidence.
+
+**Never import:** Tio World's Flutter/Watch/Drift architecture, Tio Ledger's Kotlin/finance logic, another repository's task archives or other project-specific agent/orchestrator rules.
+
+## 14. Required end-of-task report
+
+Before ending work, provide a brief, evidence-based handoff:
+
+1. **Outcome:** exactly what changed and where (paths/branch/PR).
+2. **Evidence:** commands/tools and checks actually run; results for the current branch/commit.
+3. **Limits:** what was not checked, pending reviews or security/product decisions.
+4. **Authorization:** what is approved, merely proposed, or **not** approved.
+5. **Next action:** one concrete, authorized step; do not promise asynchronous work.
+
+**Stop-and-escalate triggers:** unexpected private data exposure, destructive migration, user-account isolation risk, encryption/recovery ambiguity, unconsented cloud upload, changed auth/trust model, production-cost commitment, conflicting implementation owners, or missing approval for a new scope.
+
+---
+
+**Root rule:** If the owner only says **“Follow AGENTS.md”**, follow this complete operating contract, then load the relevant `.ai/` context and canonical documents. No extra verbal checklist is needed—but **no new approval is implied**.
