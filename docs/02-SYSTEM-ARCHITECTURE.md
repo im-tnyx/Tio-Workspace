@@ -1,4 +1,16 @@
-# Local-first system architecture
+<div align="center">
+
+# 🏗 System Architecture
+**Local-first boundaries, flows and module contracts**
+
+[← Docs hub](00-INDEX.md) · [🏠 Home](../README.md) · [🎨 Design](../DESIGN.md)
+
+</div>
+
+> [!NOTE]
+> **Document status:** Planning / proposed specification. Product implementation has not started.
+
+---
 
 **Status:** Proposed design only. No code or infrastructure has been created.
 
@@ -77,3 +89,7 @@ Current device stores workouts. Supabase Auth stores account identity/session da
 
 ## Engineering decisions to validate
 Expo SDK and native-build choice; encryption key lifecycle; database per user vs scoped rows; use of a sync-oriented change journal from day one; third-party backup integrations on both OSs; performance and battery impact of background operations.
+
+---
+
+[← Documentation hub](00-INDEX.md) · [Local data model →](03-LOCAL-DATA-MODEL.md)

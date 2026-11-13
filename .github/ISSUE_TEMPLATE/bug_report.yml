@@ -1,0 +1,48 @@
+name: "🐛 Bug report"
+description: "Report a reproducible issue in existing docs or, later, an implemented app feature."
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. **The app is not implemented yet.** Report documentation errors now; only report runtime bugs after an app build exists. Never include tokens, keys or private workout records.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Documentation / broken link
+        - Product requirements / architecture
+        - Authentication (future app)
+        - Local workout data (future app)
+        - AI / backup / sync (future app)
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: Describe observable behaviour or documentation problem.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How can we reproduce it?
+      description: Include steps, platform and conditions, not personal data.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behaviour
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Evidence and relevant links
+      description: Redact private information.
+    validations:
+      required: false

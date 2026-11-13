@@ -1,4 +1,16 @@
-# Online API contract proposals
+<div align="center">
+
+# 🧠 AI & API Contracts
+**Authenticated Edge Functions and future-only sync APIs**
+
+[← Docs hub](00-INDEX.md) · [🏠 Home](../README.md) · [🎨 Design](../DESIGN.md)
+
+</div>
+
+> [!NOTE]
+> **Document status:** Planning / proposed specification. Product implementation has not started.
+
+---
 
 **Status:** Specification draft only; no endpoints are deployed.
 
@@ -66,3 +78,7 @@ Do not deploy routes yet. Potential operations: `pushChanges`, `pullChanges`, `g
 - https://supabase.com/docs/guides/functions
 - https://supabase.com/docs/guides/functions/auth
 - https://supabase.com/docs/guides/functions/secrets
+
+---
+
+[← Documentation hub](00-INDEX.md) · [Security →](04-AUTH-AND-SECURITY.md)

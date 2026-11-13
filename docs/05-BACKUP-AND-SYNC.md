@@ -1,4 +1,16 @@
-# Personal backup, restore and future cloud sync
+<div align="center">
+
+# ☁️ Backup, Restore & Future Sync
+**Encrypted personal backups and optional cloud synchronization**
+
+[← Docs hub](00-INDEX.md) · [🏠 Home](../README.md) · [🎨 Design](../DESIGN.md)
+
+</div>
+
+> [!NOTE]
+> **Document status:** Planning / proposed specification. Product implementation has not started.
+
+---
 
 **Status:** Design only. Google Drive/iCloud connection, permissions and native capabilities have **not** been configured or tested.
 
@@ -67,3 +79,7 @@ tio-backup-v1/
 - https://developers.google.com/workspace/drive/api/guides/appdata
 - https://docs.expo.dev/versions/latest/sdk/sqlite/
 - https://developer.apple.com/icloud/
+
+---
+
+[← Documentation hub](00-INDEX.md) · [Roadmap →](06-ROADMAP.md)
