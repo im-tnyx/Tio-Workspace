@@ -51,7 +51,7 @@ Official references (recheck versions at implementation): [Drizzle + Expo SQLite
 ## Tables
 | Table | Key fields | Purpose |
 |---|---|---|
-| `app_meta` | `key` PK, `value` | Schema revision and data installation markers |
+| `app_meta` | `key` PK, `value` | Installation/compatibility metadata; Drizzle journal is the migration source of truth |
 | `local_accounts` | `user_id` PK, `last_used_at` | Safe mapping of known accounts to local files; never passwords |
 | `exercises` | `id` PK, `user_id`, `name`, `category`, `equipment`, `is_custom`, timestamps | Local exercise catalog/custom exercises |
 | `workout_plans` | `id` PK, `user_id`, `title`, `goal`, `notes`, timestamps | Plan templates |
