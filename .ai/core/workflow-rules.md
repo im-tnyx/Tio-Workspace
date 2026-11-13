@@ -1,35 +1,32 @@
-# 🔀 Workflow and handoff rules
+# 🔀 Agent workflow and handoff summary
 
-## Read sequence
-1. [AGENTS.md](../../AGENTS.md)
-2. [Current pointer](../current.md)
-3. One active task record if assigned
-4. Only the required [core summaries](README.md) and canonical documents
-5. Verify the live GitHub branch/PR/files before any changes
+> Short on-demand context. [`AGENTS.md`](../../AGENTS.md) remains the complete operating contract; this file is **not** a second authority.
 
-## Single owner / single pointer
-- Exactly one active primary task pointer at a time. Tasks can be marked `In Progress`, `Blocked`, `Ready for Review` or `Complete`.
-- Track a bounded objective, allowed files, owner, approval, source links, verifiable progress, tests and next action.
-- Other agents may review independently without becoming the implementation owner. Avoid simultaneous conflicting writes.
-- Review is recommended before merging; self-review and green CI do **not** equal an independent approval.
-- Do not invent formal GitHub approval or infer it from a conversation summary.
+## Start / resume
+1. Read [root AGENTS.md](../../AGENTS.md) and [current pointer](../current.md).
+2. Verify live GitHub, branch, PR and issue; read one approved task brief if active.
+3. Load only relevant [core summaries](README.md) and canonical documents.
+4. Select specialized skills/tools by actual task: read installed skill instructions, never assume connection or wrong-project tools.
+5. Verify approved scope, owner and remaining privacy/security constraints.
 
-## Approval gates
-- Phase 0: documentation, task context and review templates only.
-- New implementation, deployment, database schema, paid API, OAuth/native permissions, remote data collection, privacy changes or destructive Git operations require owner authorization.
-- A documentation PR merge does not approve architecture decisions or Phase 1.
-- Creating a PR never grants merge permission; record scope-specific authorization before merge.
-- If an independent review is deferred, record owner authorization and reasons, open risks and follow-up checkpoint; do not silently waive it.
+## Single owner and reviewers
+- One active primary objective and one **Implementation owner** per slice.
+- Independent reviewers may inspect but not silently overwrite an owner's files.
+- On handoff record `Implementation owner`, `Previous agent`, `Last commit agent` and observed SHA in the [task template](../tasks/TEMPLATE.md); never invent GitHub approval or add fake `Co-authored-by` metadata.
+- Reconcile conflicting agent assignments and stale branches against actual GitHub state before writing.
 
-## Work cycle
-1. **Plan**: tie the objective to an issue and canonical specification; record scope/non-goals.
-2. **Implement only approved work**: focused branch, clear commit messages, no unrelated edits.
-3. **Verify**: report exact checks run, skipped checks and findings; account/security concerns need explicit tests.
-4. **Review**: use [PR workflow](../../docs/11-PR-REVIEW-WORKFLOW.md), then obtain owner authorization to merge.
-5. **Post-merge**: verify merged SHA and relevant paths, update docs/issues, then archive the completed task and clear the pointer.
-6. **Resume**: if branch/PR no longer exists or status conflicts with GitHub, reconcile first; historical SHAs are not current branch heads.
+## Approval and execution gates
+- **Phase 0 remains documentation-only**; new runtime code or production changes require separately approved Phase 1 scope.
+- An issue, planning document, task or PR is not permission to implement.
+- Routine subtasks of an approved scope may proceed without repeating the same decision; scope expansions, privacy/security changes and merge/deployment need explicit approvals.
+- Workflow: Discovery → Exploration → Skills/architecture plan → Bounded work → Proportional validation → PR/review → Owner-authorized merge → Verified handoff.
+- Never weaken required checks or mistake scanner outages for a security pass.
+- Merging a docs PR does not approve proposed product decisions.
 
-## Minimal task record
-Copy [task template](../tasks/TEMPLATE.md). Avoid transcripts, copy-pasted official docs and large raw terminal logs. Keep active task context concise (target ~150 lines).
+## Task records and post-merge
+- Use [task guide](../tasks/README.md) and [template](../tasks/TEMPLATE.md).
+- Keep context short and evidence-based; no transcripts, copied specs, secrets or raw command dumps.
+- Record exact checks performed, skipped validation, independent/self/automated review status and one next action.
+- After verified merge and post-merge checks, archive completed task and clear current pointer through an authorized tracked change.
 
-**Canonical:** [AGENTS.md](../../AGENTS.md) · [Contribution](../../CONTRIBUTING.md) · [Review workflow](../../docs/11-PR-REVIEW-WORKFLOW.md) · [Post merge](../../docs/12-POST-MERGE-PLAYBOOK.md)
+**Canonical:** [Agent contract](../../AGENTS.md) · [PR workflow](../../docs/11-PR-REVIEW-WORKFLOW.md) · [Post-merge playbook](../../docs/12-POST-MERGE-PLAYBOOK.md)
