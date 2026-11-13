@@ -49,6 +49,12 @@
 9. Whether cloud sync is free/paid and how existing cloud data is deleted on disable.
 10. Minimal analytics policy and opt-in consent.
 
+## Phase 0 decision-review package (recommendations pending)
+
+The [Phase 0 Decision Review Pack](17-PHASE-0-DECISION-PACK.md) tracks D01–D12 with explicit **pending** status and alternatives, informed by the [offline session state machine](18-OFFLINE-SESSION-STATE-MACHINE.md), [encrypted backup recovery](19-BACKUP-RECOVERY-STRATEGY.md), [MVP UX flows](20-MVP-UX-FLOWS.md) and [Phase 1 readiness checklist](21-PHASE-1-READINESS.md). These are **proposals only**, not new accepted ADRs; owner decisions remain tracked in [GitHub issue #2](https://github.com/im-tnyx/Tio-Workspace/issues/2).
+
+Important: Offline access to already-verified local data cannot guarantee real-time enforcement of a remote session revocation while the device has no network. This trade-off must receive explicit owner review. Local database encryption keys and portable backup recovery secrets must also be considered separately.
+
 ## Change control
 When a decision changes, update the relevant requirements/architecture/security/test documents first; log the change here with rationale and approval. Implementation starts only after Phase 0 review.
 

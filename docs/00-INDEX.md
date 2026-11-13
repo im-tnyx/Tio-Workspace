@@ -16,6 +16,7 @@
 
 | **I'm here to…** | **Start with** | **Then read** |
 |---|---|---|
+| Review what needs approval before coding | [Phase 0 decision review](17-PHASE-0-DECISION-PACK.md) | [Phase 1 readiness gate](21-PHASE-1-READINESS.md) |
 | Understand the app | [Product requirements](01-PRODUCT-REQUIREMENTS.md) | [Roadmap](06-ROADMAP.md) |
 | Review its architecture | [System architecture](02-SYSTEM-ARCHITECTURE.md) | [Local data model](03-LOCAL-DATA-MODEL.md) |
 | Check privacy & account design | [Auth & security](04-AUTH-AND-SECURITY.md) | [Threat model](14-THREAT-MODEL.md) |
@@ -46,6 +47,11 @@
 | 14 | [Threat model](14-THREAT-MODEL.md) | Sensitive assets, threat surfaces |
 | 15 | [Definition of done](15-DEFINITION-OF-DONE.md) | Exit criteria for documents and code |
 | 16 | [ADR template](16-ADR-TEMPLATE.md) | Reusable architectural decision record |
+| 17 | [Phase 0 decision pack](17-PHASE-0-DECISION-PACK.md) | Unapproved owner choices and risk gates |
+| 18 | [Offline session state machine](18-OFFLINE-SESSION-STATE-MACHINE.md) | Persistent login, offline access and revocation limitations |
+| 19 | [Backup & recovery strategy](19-BACKUP-RECOVERY-STRATEGY.md) | Encryption, fresh-device restore and provider feasibility |
+| 20 | [MVP UX flows](20-MVP-UX-FLOWS.md) | Navigation and workout screen states |
+| 21 | [Phase 1 readiness](21-PHASE-1-READINESS.md) | Documented go/no-go for future implementation |
 
 ## 🔁 How documents stay reliable
 

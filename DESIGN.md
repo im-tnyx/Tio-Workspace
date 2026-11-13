@@ -49,6 +49,8 @@ Tokens must be checked for accessible text contrast in real light/dark UI; these
 - **Icons:** consistent 24px outline icon family; always pair unfamiliar icons with labels.
 - **Accessibility:** dynamic font sizes, voice labels, focus order, reduced-motion support, dark mode, and color-blind-friendly status cues.
 
+Review proposed [MVP screens & interaction flows](docs/20-MVP-UX-FLOWS.md) before locking navigation and states. They remain unapproved until owner review.
+
 ## 04 · Screens to design
 
 | Screen | Primary action | Key design rule |
