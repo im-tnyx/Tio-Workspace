@@ -70,7 +70,7 @@ export function AuthPreviewPage({ onBack, children, headerActionLabel, onHeaderA
         // The keyboard covers the home-indicator inset. Shrink it during
         // keyboardWillShow (not after keyboardDidShow) in the SAME animation.
         // Without a keyboard keep full home-indicator clearance.
-        paddingBottom: keyboardVisible ? spacing.sm : insets.bottom + spacing.sm,
+        paddingBottom: keyboardVisible ? spacing.xs : insets.bottom + spacing.sm,
       }}>
         {children}
       </View>
