@@ -8,8 +8,9 @@ import { copy } from '@/shared/i18n/en';
 
 // The header is OUTSIDE KeyboardAvoidingView and never changes its top inset.
 // Only the form below it resizes when the keyboard is visible. No ScrollView.
-export function AuthPreviewPage({ onBack, children }: {
+export function AuthPreviewPage({ onBack, children, headerActionLabel, onHeaderAction }: {
   onBack: () => void; children: ReactNode;
+  headerActionLabel?: string; onHeaderAction?: () => void;
 }) {
   const insets = useSafeAreaInsets();
   const { colors } = useAppearance();
@@ -28,7 +29,7 @@ export function AuthPreviewPage({ onBack, children }: {
       minHeight: insets.top + spacing.sm + 54,
       justifyContent: 'flex-end',
     }}>
-      <View style={{ minHeight: 54, justifyContent: 'center' }}>
+      <View style={{ minHeight: 54, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
         <Pressable onPress={onBack} accessibilityRole="button"
           accessibilityLabel={copy('back')}
           style={({ pressed }) => ({
@@ -38,6 +39,17 @@ export function AuthPreviewPage({ onBack, children }: {
           <Text accessibilityElementsHidden
             style={{ color: colors.text, fontSize: 32, lineHeight: 38 }}>{'←'}</Text>
         </Pressable>
+        {headerActionLabel && onHeaderAction ? <Pressable
+          onPress={onHeaderAction} accessibilityRole="button"
+          accessibilityLabel={headerActionLabel}
+          style={({ pressed }) => ({
+            minHeight: 48, justifyContent: 'center',
+            opacity: pressed ? 0.65 : 1,
+          })}>
+          <Text style={{ color: colors.text, fontSize: 16, fontWeight: '600' }}>
+            {headerActionLabel}
+          </Text>
+        </Pressable> : null}
       </View>
     </View>
     <KeyboardAvoidingView
