@@ -6,6 +6,16 @@ export type ColorTokens = {
 };
 export const spacing = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 } as const;
 export const radii = { sm: 10, md: 16, lg: 22, pill: 999 } as const;
+
+/** Auth previews use deliberately low-emphasis empty-field and disabled CTA colors.
+ * Keep these scoped: global button colors and Welcome CTA remain unchanged. */
+export const authPreviewMuted: Record<ColorMode, {
+  disabledBackground: string; disabledText: string; placeholder: string;
+}> = {
+  dark: { disabledBackground: '#282828', disabledText: '#858585', placeholder: '#707070' },
+  light: { disabledBackground: '#E8E8E8', disabledText: '#868686', placeholder: '#929292' },
+};
+
 // Global button geometry. Keep visible size compact; enlarge the tappable
 // area invisibly on Android (>= 48dp) and let large text expand the height.
 export const controlSizes = {
