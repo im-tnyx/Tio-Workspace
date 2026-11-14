@@ -1,4 +1,4 @@
-import { Text, View } from 'react-native';
+import { ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button } from '@/shared/ui/Button';
 import { Card } from '@/shared/ui/Card';
@@ -45,15 +45,19 @@ export function WelcomePanel({
         // The CTA has matching 16pt side/bottom padding, plus the device safe area.
         paddingBottom: insets.bottom + spacing.lg,
       }}><Card>{buttons}</Card></View>
-    </> : <View style={{
-      flex: 1, alignItems: 'center', justifyContent: 'center',
-      paddingTop: insets.top, paddingBottom: insets.bottom,
-    }}>
+    </> : <ScrollView
+      style={{ flex: 1 }}
+      showsVerticalScrollIndicator={false}
+      contentContainerStyle={{
+        flexGrow: 1, justifyContent: 'center', alignItems: 'center',
+        paddingTop: insets.top + spacing.lg,
+        paddingBottom: insets.bottom + spacing.lg,
+      }}>
       <View style={{ width: '100%', maxWidth: 330,
         alignItems: 'center', gap: 48 }}>
         {heading}
         <View style={{ width: '100%', gap: spacing.md }}>{buttons}</View>
       </View>
-    </View>}
+    </ScrollView>}
   </View>;
 }
