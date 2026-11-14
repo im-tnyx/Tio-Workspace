@@ -1,7 +1,7 @@
 import { Text, TextInput, View } from 'react-native';
 import type { TextInputProps } from 'react-native';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
-import { radii, spacing, typography } from '@/shared/theme/tokens';
+import { authPreviewMuted, radii, spacing, typography } from '@/shared/theme/tokens';
 
 // One reusable field for email, password and future form screens. Existing
 // callers can keep using label/value/onChangeText without additional props.
@@ -29,7 +29,7 @@ export function TextField({
       onChangeText={onChangeText}
       editable={editable}
       placeholder={placeholder}
-      placeholderTextColor={variant === 'bare' ? (mode === 'dark' ? '#707070' : '#929292') : colors.muted}
+      placeholderTextColor={variant === 'bare' ? authPreviewMuted[mode].placeholder : colors.muted}
       accessibilityLabel={label}
       underlineColorAndroid="transparent"
       style={[typography.body, variant === 'bare' ? {
