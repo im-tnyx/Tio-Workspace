@@ -1,22 +1,33 @@
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, ScrollView, Text, View } from 'react-native';
+import { Keyboard, KeyboardAvoidingView, Platform, Pressable, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
 import { spacing } from '@/shared/theme/tokens';
 import { copy } from '@/shared/i18n/en';
 
-// Auth forms must remain reachable on short screens and when the keyboard opens.
+// One fixed page per step. NO ScrollView or swipe scrolling; compact spacing
+// and KeyboardAvoidingView keep the current single field/action in view.
 export function AuthPreviewPage({ onBack, children }: {
   onBack: () => void; children: ReactNode;
 }) {
   const insets = useSafeAreaInsets();
   const { colors } = useAppearance();
-  return <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+  const [keyboardShown, setKeyboardShown] = useState(false);
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardDidShow', () => setKeyboardShown(true));
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardShown(false));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
+
+  return <KeyboardAvoidingView
+    behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     style={{ flex: 1, backgroundColor: colors.background }}>
     <View style={{
-      flex: 1, paddingTop: insets.top + spacing.sm, gap: spacing.xl,
+      flex: 1, paddingTop: insets.top + (keyboardShown ? 0 : spacing.sm),
+      paddingBottom: keyboardShown ? 0 : insets.bottom + spacing.sm,
+      gap: keyboardShown ? spacing.sm : spacing.md,
     }}>
-      {/* Auth-only back arrow, no duplicate title, border, or phone action. */}
       <View style={{
         minHeight: 54, flexDirection: 'row', alignItems: 'center',
         paddingHorizontal: spacing.lg,
@@ -31,15 +42,12 @@ export function AuthPreviewPage({ onBack, children }: {
             style={{ color: colors.text, fontSize: 32, lineHeight: 38 }}>{'←'}</Text>
         </Pressable>
       </View>
-      <ScrollView
-        style={{ flex: 1 }}
-        contentContainerStyle={{
-          flexGrow: 1, paddingHorizontal: spacing.lg,
-          paddingBottom: insets.bottom + spacing.xl,
-        }}
-        keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+      <View style={{
+        flex: 1, minHeight: 0, paddingHorizontal: spacing.lg,
+        paddingTop: keyboardShown ? 0 : spacing.md,
+      }}>
         {children}
-      </ScrollView>
+      </View>
     </View>
   </KeyboardAvoidingView>;
 }
