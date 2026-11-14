@@ -1,5 +1,6 @@
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, Text, View } from 'react-native';
+import { Keyboard, KeyboardAvoidingView, Platform, Pressable, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
 import { spacing } from '@/shared/theme/tokens';
@@ -13,6 +14,22 @@ export function AuthPreviewPage({ onBack, children, headerActionLabel, onHeaderA
 }) {
   const insets = useSafeAreaInsets();
   const { colors } = useAppearance();
+  const [keyboardVisible, setKeyboardVisible] = useState(false);
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    // Unlike keyboardDidShow, these fire BEFORE movement; animate our safe-area
+    // padding together with the system keyboard and KeyboardAvoidingView.
+    const show = Keyboard.addListener('keyboardWillShow', event => {
+      Keyboard.scheduleLayoutAnimation(event);
+      setKeyboardVisible(true);
+    });
+    const hide = Keyboard.addListener('keyboardWillHide', event => {
+      Keyboard.scheduleLayoutAnimation(event);
+      setKeyboardVisible(false);
+    });
+    return () => { show.remove(); hide.remove(); };
+  }, []);
+
   return <View style={{ flex: 1, backgroundColor: colors.background }}>
     {/* Fixed back arrow: identical safe-area position before/after focus. */}
     <View style={{
@@ -50,10 +67,10 @@ export function AuthPreviewPage({ onBack, children, headerActionLabel, onHeaderA
       <View style={{
         flex: 1, minHeight: 0, paddingHorizontal: spacing.lg,
         paddingTop: spacing.xl,
-        // A constant inset prevents a second abrupt bottom-layout update when
-        // keyboardDidShow fires. KeyboardAvoidingView handles iOS movement.
-        // Keep home-indicator clearance when the keyboard is dismissed.
-        paddingBottom: insets.bottom + spacing.sm,
+        // The keyboard covers the home-indicator inset. Shrink it during
+        // keyboardWillShow (not after keyboardDidShow) in the SAME animation.
+        // Without a keyboard keep full home-indicator clearance.
+        paddingBottom: keyboardVisible ? spacing.sm : insets.bottom + spacing.sm,
       }}>
         {children}
       </View>
