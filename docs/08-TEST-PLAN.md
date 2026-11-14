@@ -45,7 +45,7 @@
 | AI-03 | P1 | Offline/429/5xx AI request | Local logging unaffected; understandable error |
 | BKP-01 | P1 | Encrypted backup then fresh-device restore | Same account can recover full matching records |
 | BKP-02 | P1 | Wrong recovery code or altered archive | Restore fails without modifying current local database |
-| BKP-03 | P1 | Restore backup from different account | Blocked or explicitly handled under an approved transfer policy |
+| BKP-03 | P1 | Restore backup from different account | Rejected: one bound account per installation; no account-switch or cross-account import flow |
 | BKP-04 | P1 | Upload interrupted or cloud quota exhausted | Local data and last good backup preserved |
 | BKP-05 | P1 | Uninstall without a successful backup | Correctly communicate that local data can be lost |
 | BKP-06 | P1 | Offline background / OS kills job | No false 'backup successful' indication |

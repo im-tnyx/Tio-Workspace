@@ -78,7 +78,7 @@ tio-backup-v1
 
 **Platform wipe nuance:** Android app-data removal commonly deletes sandbox data, but iOS Keychain entries can outlive uninstall. Detect a fresh installation independently from Keychain remnants; a missing/unknown SQLite file or install marker must not be interpreted as a successfully restored workout history. Fail closed on inconsistent binding/key/file states.
 
-## 06A · Restore steps
+### Restore steps
 
 1. On new device: successfully sign in to Tio online and confirm account identity.
 2. Select user-owned backup destination and file/version.
@@ -101,11 +101,12 @@ tio-backup-v1
 | Phone lost, no backup | Local-only history may be unrecoverable |
 | Upload interrupted | No success badge; retain previous verified snapshot |
 | Wrong signed-in Tio account | Stop restore and explain account mismatch |
-| New device without local SQLCipher key | Restore is **still possible** using independent backup recovery method |
+| New device without local SQLCipher key | Restore is a **future test target**, possible only with a completed compatible encrypted backup and independent recovery secret; not yet a proven capability |
 
 ## 08 · Owner decisions required
 
-- [x] Independent user-held portable recovery **principle** selected; [ ] choose the precise code/passphrase UX, cryptographic KDF/format and loss warnings after security review.
+- [x] Independent user-held portable recovery **principle** selected.
+- [ ] Choose the precise code/passphrase UX, cryptographic KDF/format and loss warnings after security review.
 - [x] User can select no backup; **manual backup on demand** and optional future scheduled backups chosen as UX policy. Native schedule feasibility and exact cadence still require testing.
 - [ ] Decide cross-platform encrypted file export delivery order after feasibility tests; do not claim it is implemented.
 - [ ] Should Android default to appDataFolder and iOS start with Files export fallback?
