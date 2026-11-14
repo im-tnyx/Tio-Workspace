@@ -113,7 +113,7 @@ No team or agent should mark a deferred high-risk test **passed** merely because
 | 1.2 Auth | Separately approved online email/password + OTP verification and server/provider anti-abuse; binding/security | Only verified signup unlocks, no guest, resend/rate/replay and persisted/offline same account tests pass |
 | 1.3 Secure SQLite | Native SQLCipher/Drizzle compatibility and OS key lifecycle reviewed | `PRAGMA cipher_version`, fail-closed missing-key path, account binding before unlock, migrations; Android/iOS backup/transfer exclusion evidence |
 | 1.4–1.6 Workout MVP | Secure local data and selected caps | Program/routine saved-name 3–25 and count-based quotas, 1–8 sets and curated free Library tested; custom-exercise creation/paywall excluded; existing history preserved |
-| 1.7 Release candidate | Full device validation | Phase 1 **P0 AUTH-01–14, LIMIT-01–04, SEC-01–06, DATA and UX-01–05/08–12** with device/server evidence; future Backup/Sync cases remain later gates |
+| 1.7 Release candidate | Full device validation | Phase 1 **P0 AUTH-01–14, LIMIT-01–05 (future member-only LIMIT-06 excluded), SEC-01–06, DATA and UX-01–05/08–12 (future accent UX-13 excluded)** with device/server evidence; future Backup/Sync cases remain later gates |
 
 **Important sequencing:** native proof cannot legitimately be marked complete before its test build exists. Approve **bounded work** and keep security-release gates pending; do not use a broad “Phase 1 approved” label to bypass them. Any Supabase project/credential, new permission or privacy-changing action needs explicit scoped approval before execution.
 

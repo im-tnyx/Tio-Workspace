@@ -10,7 +10,7 @@
 </div>
 
 > [!IMPORTANT]
-> **ADR-010/011/012/013/014/015 owner decisions (2026-11-14):** D13 tooling, D02–D06 core policies, D10 MVP scope, future exclusive cloud mode choice, future paid separately opt-in Supabase Sync and an initially four-tab **Standard** bar with default Glass and future optional Pill/configurable tab count were accepted; **D04 explicitly forbids account switching/add-account**. D01 package IDs/icon, D07–D09, D11–D12 details, Custom font license and native/security implementations remain pending; Tnyx app name, neutral default and future user-selectable accent direction and typography options are selected (ADR-016). The original product intentions in [09-DECISIONS.md](09-DECISIONS.md) remain the constraints. This document neither authorizes Phase 1 nor changes the default local-only privacy policy.
+> **ADR-010/011/012/013/014/015 owner decisions (2026-11-14):** D13 tooling, D02–D06 core policies, D10 MVP scope, future exclusive cloud mode choice, future paid separately opt-in Supabase Sync and an initially four-tab **Standard** bar with default Glass and future optional Pill/configurable tab count were accepted; **D04 explicitly forbids account switching/add-account**. D01 selected app ID `com.tnyx.tio`/unverified registration and original icon, D07–D09, D11–D12 details, Custom font license and native/security implementations remain pending; Tnyx app name, neutral default and future user-selectable accent direction and typography options are selected (ADR-016). The original product intentions in [09-DECISIONS.md](09-DECISIONS.md) remain the constraints. This document neither authorizes Phase 1 nor changes the default local-only privacy policy.
 
 ## ✅ Already specified by the owner
 
