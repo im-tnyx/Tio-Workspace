@@ -1,4 +1,5 @@
-import { Dimensions, Text, View } from 'react-native';
+import { useEffect, useRef } from 'react';
+import { Dimensions, Text, TextInput, View } from 'react-native';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
 import { copy } from '@/shared/i18n/en';
 import { authPreviewLayout, spacing, typography } from '@/shared/theme/tokens';
@@ -35,6 +36,16 @@ export function AuthCredentialsScreen({
   const compact = Dimensions.get('screen').height < 700;
   const signingUp = mode === 'sign-up';
   const primarySignIn = !signingUp && (step === 'email' || step === 'password');
+  const signInEmailInput = useRef<TextInput>(null);
+  const previousStep = useRef<AuthPreviewStep>(step);
+  useEffect(() => {
+    const prior = previousStep.current;
+    previousStep.current = step;
+    // autoFocus does not re-run for a retained input when returning from Password.
+    if (!signingUp && prior === 'password' && step === 'email') {
+      signInEmailInput.current?.focus();
+    }
+  }, [signingUp, step]);
 
   const title = step === 'email' ? copy(signingUp ? 'enterEmail' : 'signInEnterEmail')
     : step === 'reset-email' ? copy('confirmEmail')
@@ -74,6 +85,7 @@ export function AuthCredentialsScreen({
             stages. Only the heading changes and Password appears below. */}
         <TextField
           key="sign-in-email"
+          inputRef={signInEmailInput}
           autoFocus={step === 'email'}
           label={copy('email')} variant="bare"
           value={email} onChangeText={onChangeEmail}

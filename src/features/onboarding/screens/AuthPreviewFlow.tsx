@@ -97,13 +97,8 @@ export function AuthPreviewFlow({ mode, onExit }: {
   const footerLabel = step === 'new-password' ? copy('resetPassword')
     : step === 'password' ? copy(mode === 'sign-up' ? 'signUp' : 'signIn')
     : copy('continue');
-  const footerNotice = step === 'email'
-    ? copy(mode === 'sign-up' ? 'emailPreviewNotice' : 'signInPreviewNotice')
-    : step === 'reset-email' ? copy('resetEmailPreviewNotice')
-    : step === 'otp' ? copy('otpPreviewNotice')
-    : step === 'reset-otp' ? copy('resetOtpPreviewNotice')
-    : step === 'new-password' ? copy('newPasswordPreviewNotice')
-    : copy(mode === 'sign-up' ? 'signUpPreviewNotice' : 'signInPreviewNotice');
+  // Shared truthful preview warning prevents label height changes during focus.
+  const footerNotice = copy('authPreviewSafetyNotice');
 
   return <AuthPreviewPage
     onBack={onBack}

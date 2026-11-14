@@ -174,3 +174,11 @@ Verify static architecture and mock-only behavior first; ensure no SDK/storage/A
 - Sign in, Sign up and recovery remain **non-scrolling**. On especially small phones with maximum text scaling, some content may not fit above the native keyboard; that review finding remains open pending actual device QA. No forced truncation of security notices or input fields is introduced.
 - Android system Back uses the same step-aware handler as the on-screen arrow, scoped to the focused route. The OS may first dismiss the keyboard; the next Back then navigates the preview step. Real Android hardware/gesture tests remain necessary.
 - No live Auth, OTP, Supabase, storage, network calls, deployment, or merge. Current-HEAD CI and independent review remain gating.
+
+
+## Single-owner keyboard motion + compact auth footer (2026-11-15; supersedes previous timing description)
+
+- Owner confirmed excess space between the warning and CTA and an iOS CTA movement mismatch. Replaced the 57pt minimum preview warning slot with natural text height, reduced the warning/button gap to 8pt and used identical truthfully worded temporary safety copy across all mock-only stages. The notice stays **above** the persistent CTA.
+- The earlier JS `keyboardWillShow`/`keyboardWillHide` state, safe-area padding toggle and `Keyboard.scheduleLayoutAnimation` duplicated the keyboard avoidance animation. Removed these; native `KeyboardAvoidingView` is the only iOS keyboard layout owner. The fixed iOS home-indicator safe inset is now on an **outer wrapper** so the KAV measures its effective area; the inner CTA bottom gutter remains 16pt, equal to both side gutters. Android retains its existing resize/safe-area calculation.
+- On Sign in, the retained Email input now explicitly regains focus when returning from Password; `autoFocus` on an already-mounted input was insufficient. Preview-only, no real auth/email/OTP/password storage, and no scrolling or Welcome redesign.
+- Static CI must be observed on the new commit; iPhone Expo Go video/device QA is needed to assess whether native keyboard motion is visually synchronized. Small-phone extreme font scaling remains an unverified accessibility constraint with non-scrollable screens.

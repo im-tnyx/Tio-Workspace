@@ -30,9 +30,6 @@ export const controlSizes = {
 export const authPreviewLayout = {
   signInTitleMinHeight: 46,
   signInTitleMinHeightCompact: 39,
-  // Fixed footer note slot prevents different preview messages from shifting CTA.
-  // The Text may grow beyond this minimum for accessibility font scaling.
-  footerNoticeMinHeight: 57,
   authMiddleMinHeight: 0,
 } as const;
 export const typography = {

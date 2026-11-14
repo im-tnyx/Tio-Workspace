@@ -13,6 +13,7 @@ export const en = {
   emailStepIntro: "We'll send you a verification code when authentication is available.",
   signInEmailIntro: 'Enter the email address associated with your account.',
   signInEmailPreviewNotice: 'UI preview only. Sign in is not available yet.',
+  authPreviewSafetyNotice: 'UI preview only. No email or code is sent. Do not enter a real password.',
   forgotPassword: 'Forgot password',
   confirmEmail: 'Confirm your email address',
   confirmEmailIntro: 'Enter the email address associated with this account.',

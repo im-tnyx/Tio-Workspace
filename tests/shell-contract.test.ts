@@ -120,7 +120,6 @@ test('app-wide button size and welcome bottom spacing are shared tokens', () => 
   assert.equal(controlSizes.onboardingButtonMinHeight, 46);
   assert.equal(authPreviewLayout.signInTitleMinHeight, 46);
   assert.equal(authPreviewLayout.signInTitleMinHeightCompact, 39);
-  assert.equal(authPreviewLayout.footerNoticeMinHeight, 57);
   assert.equal(authPreviewLayout.authMiddleMinHeight, 0);
   assert.equal(controlSizes.buttonRadius, radii.pill);
   assert.equal(controlSizes.buttonHitSlopVertical, 3);
@@ -140,15 +139,16 @@ test('post-Welcome auth uses persistent parent header and CTA, middle-only step 
   assert.match(page, /<Button size="onboarding"/);
   assert.match(page, /label=\{footerLabel\}/);
   assert.match(page, /\{footerNotice\}/);
-  assert.match(page, /footerNoticeMinHeight/);
+  assert.doesNotMatch(page, /footerNoticeMinHeight/);
   // Temporary warning comes BEFORE the CTA so the bottom edge is 16pt away.
   assert.ok(page.indexOf('{footerNotice ? <Text') < page.indexOf('<Button size="onboarding"'));
   assert.doesNotMatch(page, /<ScrollView/);
-  assert.match(page, /if \(keyboardVisibleRef\.current\) return;/);
-  // 16pt side and bottom gutter uses the same semantic spacing token.
-  // The hidden-keyboard inset is extra system-safe-area clearance.
+  assert.doesNotMatch(page, /keyboardVisibleRef|scheduleLayoutAnimation|keyboardWillShow|keyboardWillHide/);
+  assert.match(page, /gap: spacing\.sm, paddingTop: spacing\.sm/);
+  assert.match(page, /paddingBottom: Platform\.OS === 'ios' \? insets\.bottom : 0/);
+  // The KAV is the only animation owner, with a constant iOS 16pt gutter.
   assert.match(page, /paddingHorizontal: spacing\.lg/);
-  assert.match(page, /paddingBottom: keyboardVisible \? spacing\.lg : insets\.bottom \+ spacing\.lg/);
+  assert.match(page, /paddingBottom: Platform\.OS === 'ios' \? spacing\.lg : insets\.bottom \+ spacing\.lg/);
   // Removing temporary preview copy later must not remove CTA edge padding.
   assert.match(page, /footerNotice\?: string/);
   assert.match(page, /footerNotice \? <Text/);
@@ -181,8 +181,19 @@ test('both Sign in and Sign up routes use the same persistent auth parent', () =
   assert.match(page, /disabledAppearance=\{footerKeepAppearance \? 'enabled' : 'muted'\}/);
   assert.match(button, /const visuallyDisabled = disabled && disabledAppearance !== 'enabled';/);
   assert.match(button, /disabled=\{disabled\} accessibilityState=\{\{ disabled \}\}/);
-  // Same preview notice at both Sign-in steps prevents CTA height reflow.
-  assert.match(flow, /mode === 'sign-up' \? 'emailPreviewNotice' : 'signInPreviewNotice'/);
+  // One persistent safety notice prevents text-height reflow between steps.
+  assert.match(flow, /footerNotice = copy\('authPreviewSafetyNotice'\)/);
+  assert.match(copy('authPreviewSafetyNotice'), /No email or code is sent/);
+  assert.match(copy('authPreviewSafetyNotice'), /Do not enter a real password/);
+});
+
+test('Sign-in Password to Email restores focus on the mounted Email field', () => {
+  const screen = readFileSync('src/features/onboarding/screens/AuthCredentialsScreen.tsx', 'utf8');
+  const field = readFileSync('src/shared/ui/TextField.tsx', 'utf8');
+  assert.match(screen, /prior === 'password' && step === 'email'/);
+  assert.match(screen, /signInEmailInput\.current\?\.focus\(\)/);
+  assert.match(screen, /inputRef=\{signInEmailInput\}/);
+  assert.match(field, /ref=\{inputRef\}/);
 });
 
 test('Android system Back follows the same auth-step Back handler', () => {

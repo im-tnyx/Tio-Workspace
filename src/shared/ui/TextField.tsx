@@ -1,5 +1,6 @@
 import { Text, TextInput, View } from 'react-native';
 import type { TextInputProps } from 'react-native';
+import type { Ref } from 'react';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
 import { authPreviewMuted, radii, spacing, typography } from '@/shared/theme/tokens';
 
@@ -12,18 +13,20 @@ type Props = {
   placeholder?: string;
   editable?: boolean;
   variant?: 'outlined' | 'bare';
+  inputRef?: Ref<TextInput>;
 } & Pick<TextInputProps,
   'keyboardType' | 'autoCapitalize' | 'autoCorrect' | 'autoComplete'
   | 'secureTextEntry' | 'returnKeyType' | 'textContentType' | 'maxLength' | 'autoFocus'>;
 
 export function TextField({
   label, value, onChangeText, placeholder, editable = true,
-  variant = 'outlined', ...inputProps
+  variant = 'outlined', inputRef, ...inputProps
 }: Props) {
   const { colors, mode } = useAppearance();
   return <View style={{ gap: spacing.sm }}>
     {variant === 'outlined' ? <Text style={[typography.caption, { color: colors.text }]}>{label}</Text> : null}
     <TextInput
+      ref={inputRef}
       {...inputProps}
       value={value}
       onChangeText={onChangeText}

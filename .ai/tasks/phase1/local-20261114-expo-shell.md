@@ -54,3 +54,9 @@ Official Expo SDK 58, Expo Router and Expo Blur docs checked on 2026-11-14. Foll
 - Owner authorized bounded Phase 1.1 UI fixes to the auth footer, Email to Password motion and review-related Android system Back; no scrolling and no other phase.
 - Agent: ChatGPT GitHub connector implementation session on PR #11. Modified AuthPreviewPage, AuthPreviewFlow, static tests, Phase 1.1 guide and this record in a single Git commit; use live branch SHA as ground truth.
 - Validation before merge: new-HEAD CI, real iPhone keyboard motion and equal gutters, Android system Back, short-screen and large-text accessibility, independent recorded PR review. No native device/build validation was performed in this session; no merge approval.
+
+## Auth keyboard mismatch follow-up (2026-11-15)
+
+- Owner observed a large notice-to-CTA gap and keyboard/CTA motion mismatch after the initial screenshot fix. The source had an unneeded 57pt notice min-height and two concurrent keyboard animation/padding owners.
+- Scoped work: natural-height stable safety copy above CTA with 8pt gap, fixed 16pt button gutter outside iOS native keyboard avoidance, explicit retained Email ref focus restore on Password→Email, contract tests and doc correction. No auth backend, Supabase, SQLite, scrolling or merge.
+- Evidence: GitHub current branch commit/CI to be verified; physical iOS/Android movement and high-text accessibility remain unverified until observed on devices; ask Codex for independent re-review.

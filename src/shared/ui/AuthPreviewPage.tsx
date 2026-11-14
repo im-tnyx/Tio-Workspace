@@ -1,6 +1,5 @@
-import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Keyboard, KeyboardAvoidingView, Platform, Pressable, Text, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
 import { authPreviewLayout, spacing, typography } from '@/shared/theme/tokens';
@@ -21,28 +20,8 @@ export function AuthPreviewPage({
 }) {
   const insets = useSafeAreaInsets();
   const { colors } = useAppearance();
-  const [keyboardVisible, setKeyboardVisible] = useState(false);
-  const keyboardVisibleRef = useRef(false);
-  useEffect(() => {
-    if (Platform.OS !== 'ios') return;
-    // Unlike keyboardDidShow, these fire BEFORE movement; animate our safe-area
-    // padding together with the system keyboard and KeyboardAvoidingView.
-    const show = Keyboard.addListener('keyboardWillShow', event => {
-      // Email -> Password can change the keyboard layout without closing it.
-      // Avoid scheduling a second JS animation for an already visible keyboard.
-      if (keyboardVisibleRef.current) return;
-      keyboardVisibleRef.current = true;
-      Keyboard.scheduleLayoutAnimation(event);
-      setKeyboardVisible(true);
-    });
-    const hide = Keyboard.addListener('keyboardWillHide', event => {
-      if (!keyboardVisibleRef.current) return;
-      keyboardVisibleRef.current = false;
-      Keyboard.scheduleLayoutAnimation(event);
-      setKeyboardVisible(false);
-    });
-    return () => { show.remove(); hide.remove(); };
-  }, []);
+  // KeyboardAvoidingView owns iOS keyboard timing; avoid a second JS animation.
+  // A constant outer safe-area inset keeps its measured frame stable.
 
   return <View style={{ flex: 1, backgroundColor: colors.background }}>
     {/* Fixed back arrow: identical safe-area position before/after focus. */}
@@ -75,39 +54,37 @@ export function AuthPreviewPage({
         </Pressable> : null}
       </View>
     </View>
-    <KeyboardAvoidingView
-      style={{ flex: 1 }}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-      <View style={{
+    {/* iOS safe-area padding stays OUTSIDE KAV even when the keyboard opens. */}
+    <View style={{ flex: 1, paddingBottom: Platform.OS === 'ios' ? insets.bottom : 0 }}>
+      <KeyboardAvoidingView
+        style={{ flex: 1 }}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+        <View style={{
         flex: 1, minHeight: 0, paddingHorizontal: spacing.lg,
         paddingTop: spacing.xl,
-        // Keep an equal 16pt logical gutter at the sides and bottom.
-        // When the keyboard hides, allow for the system safe-area *in addition*
-        // to that gutter; when it opens, the keyboard covers the home indicator.
-        // iOS updates alongside keyboardWillShow/WillHide, not after animation.
-        paddingBottom: keyboardVisible ? spacing.lg : insets.bottom + spacing.lg,
+        // iOS: one constant 16pt bottom gutter; KAV handles IME position.
+        // Android retains its prior safe-inset and system-resize behavior.
+        paddingBottom: Platform.OS === 'ios' ? spacing.lg : insets.bottom + spacing.lg,
       }}>
         {/* Only this middle content updates between Email, OTP and Password. */}
         <View style={{ flex: 1, minHeight: authPreviewLayout.authMiddleMinHeight }}>
           {children}
         </View>
         {/* Persistent footer: stable temporary notice ABOVE the same CTA. */}
-        <View style={{ gap: spacing.md, paddingTop: spacing.sm }}>
-          {/* Three-line minimum slot keeps different preview messages from
-              shifting the CTA as the Email and Password stages change. */}
+        <View style={{ gap: spacing.sm, paddingTop: spacing.sm }}>
+          {/* One unchanged warning in every mock step; no blank height slot. */}
           {footerNotice ? <Text style={[typography.caption, {
             color: colors.muted, textAlign: 'center',
-            minHeight: authPreviewLayout.footerNoticeMinHeight,
           }]}>{footerNotice}</Text> : null}
-          {/* Button is last: bottom and side gutters are both 16pt against
-              the visible keyboard; hidden keyboard adds the safe-area inset. */}
+          {/* CTA stays last with the 16pt horizontal/bottom design gutter. */}
           <Button size="onboarding"
             label={footerLabel} onPress={onFooterPress}
             disabledTone="soft" disabled={footerDisabled}
             disabledAppearance={footerKeepAppearance ? 'enabled' : 'muted'}
           />
         </View>
-      </View>
-    </KeyboardAvoidingView>
+        </View>
+      </KeyboardAvoidingView>
+    </View>
   </View>;
 }
