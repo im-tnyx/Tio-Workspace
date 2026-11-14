@@ -55,6 +55,7 @@
 | 21 | [Phase 1 readiness](21-PHASE-1-READINESS.md) | Documented go/no-go for future implementation |
 | 22 | [Phase 0 design & Phase 1 owner approval](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) | Proposed visual freeze, deferred risks and explicit sign-off template |
 | 23 | [Input limits, OTP & deferred membership](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md) | Proposed numeric caps, approved verified-signup and membership deferment policy |
+| 24 | [Phase 1.1 shell implementation guide](24-PHASE-1-1-SHELL.md) | Approved shell-only scope, out-of-scope boundaries, validation plan and review status |
 
 ## 🔁 How documents stay reliable
 

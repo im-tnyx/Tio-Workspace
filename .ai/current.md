@@ -1,28 +1,20 @@
 # 🧭 Current AI Context
 
-> Read after [AGENTS.md](../AGENTS.md). This is a **pointer**, not proof that a task, branch, review, deployment, or approval exists.
+> Read after [AGENTS.md](../AGENTS.md). This pointer is task metadata; actual PR/branch/check status must be verified through GitHub.
 
 | Field | Value |
 |---|---|
-| Status | **Idle — no assigned implementation task** |
-| Active Task | **none** |
-| Active Scope | **none** |
-| Implementation Owner | **none assigned** |
-| Branch / HEAD | Resolve from GitHub or actual worktree at session start |
-| Pending product review | [Phase 0 issue #2](https://github.com/im-tnyx/Tio-Workspace/issues/2) |
-| Phase 1 authorization | **Not granted** |
-| Last context setup | 2026-11-13 |
+| Status | **In Progress — owner-authorized Phase 1.1 shell PR, not merged** |
+| Active Task | [Phase 1.1 Expo shell](tasks/phase1/local-20261114-expo-shell.md) |
+| Active Scope | Expo/TypeScript setup, mock shared UI/theme/navigation, English-only dummy screens, basic CI |
+| Implementation Owner | This approved Phase 1.1 implementation session, connected account `im-tnyx` |
+| Branch / HEAD | `feat/phase1-1-expo-shell-20261114` (re-verify live SHA) |
+| Owner written authorization | Explicit chat approval on **2026-11-14**: Phase 1.1 shell PR only; no Auth, SQLite, Supabase, AI, membership, backup/sync, deployment or merge |
+| Phase 1.1 merge permission | **Not granted**; requires separate owner instruction |
+| Other phases | **Not authorized** |
 
-## Next safe action
+## Next action
 
-Review the [Phase 0 decision pack](../docs/17-PHASE-0-DECISION-PACK.md) and owner-approved choices. If a bounded new task is authorized, create a record using [the task template](tasks/TEMPLATE.md), then update this pointer **on that task branch**. Until then, remain documentation-only.
+Verify current PR HEAD, dependency and static checks; obtain independent code review. Do **not** merge or start Auth, database, cloud or deployment. After an owner-authorized future merge, apply the [post-merge playbook](../docs/12-POST-MERGE-PLAYBOOK.md) and archive the completed task.
 
-## Resume protocol
-
-1. Read [AGENTS.md](../AGENTS.md); verify the live GitHub repository, issue, PR, branch and current commit.
-2. If `Active Task` is `none`, do **not** invent a task or assume the last conversation authorized one.
-3. If one task is listed later, read only its task file and explicitly named core summaries.
-4. Reconcile stale notes against canonical [documentation](../docs/00-INDEX.md) and actual GitHub status before acting.
-5. At handoff, record a single next action and update the pointer only within the authorized scope.
-
-**Note:** Another branch may carry a documentation PR while this default-branch pointer says idle. The PR is GitHub's authority for that review; “idle” means there is no currently assigned implementation objective.
+[Task record](tasks/phase1/local-20261114-expo-shell.md) · [AGENTS](../AGENTS.md)

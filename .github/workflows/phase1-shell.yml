@@ -1,0 +1,46 @@
+name: Phase 1.1 shell checks
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'app.json'
+      - 'package.json'
+      - 'tsconfig.json'
+      - 'eslint.config.cjs'
+      - '.github/workflows/phase1-shell.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'app.json'
+      - 'package.json'
+      - 'tsconfig.json'
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      # A lockfile is not yet available from this environment. npm install is
+      # intentionally used instead of npm ci; generating/reviewing a lockfile is
+      # a follow-up before reproducible release builds.
+      - name: Install pinned SDK dependencies
+        run: npm install --no-audit --no-fund
+      - name: Verify Expo SDK package compatibility
+        run: npm run expo:check
+      - name: TypeScript
+        run: npm run typecheck
+      - name: ESLint
+        run: npm run lint
+      - name: Pure shell contract tests
+        run: npm test
