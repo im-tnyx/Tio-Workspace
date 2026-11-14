@@ -20,6 +20,7 @@ export const typography = {
   caption: { fontSize: 13, lineHeight: 19, fontWeight: '500' as const },
 };
 export const chromeMotion = { showThreshold: 96, hideThreshold: 40, durationMs: 180 } as const;
+// Welcome's brand typing speed is owned by shared/ui/typing.ts (one-shot only).
 export const palettes: Record<ColorMode, ColorTokens> = {
   light: {
     background: '#FFFFFF', card: '#F5F5F5', text: '#111111',

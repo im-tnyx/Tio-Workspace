@@ -1,6 +1,8 @@
 import { Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button } from '@/shared/ui/Button';
+import { Card } from '@/shared/ui/Card';
+import { TypewriterHeading } from '@/shared/ui/TypewriterHeading';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
 import { spacing } from '@/shared/theme/tokens';
 
@@ -9,15 +11,21 @@ type Props = {
   title: string;
   actions: readonly Action[];
   actionPlacement?: 'center' | 'bottom';
+  animatedTitle?: boolean;
 };
 
-export function WelcomePanel({ title, actions, actionPlacement = 'center' }: Props) {
+export function WelcomePanel({
+  title, actions, actionPlacement = 'center', animatedTitle = false,
+}: Props) {
   const { colors } = useAppearance();
   const insets = useSafeAreaInsets();
-  const heading = <Text accessibilityRole="header" style={{
+  const headingStyle = {
     color: colors.text, fontSize: 54, lineHeight: 65,
-    fontWeight: '800', letterSpacing: 5, textAlign: 'center',
-  }}>{title}</Text>;
+    fontWeight: '800' as const, letterSpacing: 5, textAlign: 'center' as const,
+  };
+  const heading = animatedTitle
+    ? <TypewriterHeading title={title} textStyle={headingStyle} />
+    : <Text accessibilityRole="header" style={headingStyle}>{title}</Text>;
   const buttons = actions.map(action => <Button
     key={action.label} label={action.label}
     onPress={action.onPress} variant={action.variant} />);
@@ -36,7 +44,7 @@ export function WelcomePanel({ title, actions, actionPlacement = 'center' }: Pro
         gap: spacing.md,
         // The CTA has matching 16pt side/bottom padding, plus the device safe area.
         paddingBottom: insets.bottom + spacing.lg,
-      }}>{buttons}</View>
+      }}><Card>{buttons}</Card></View>
     </> : <View style={{
       flex: 1, alignItems: 'center', justifyContent: 'center',
       paddingTop: insets.top, paddingBottom: insets.bottom,
