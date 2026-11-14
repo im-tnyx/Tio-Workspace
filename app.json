@@ -18,15 +18,7 @@
       "package": "com.tnyx.tio"
     },
     "plugins": [
-      "expo-router",
-      [
-        "expo-navigation-bar",
-        {
-          "enforceContrast": false,
-          "hidden": false,
-          "style": "light"
-        }
-      ]
+      "expo-router"
     ],
     "experiments": {
       "typedRoutes": true
