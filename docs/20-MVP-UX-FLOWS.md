@@ -50,6 +50,8 @@ flowchart TD
 
 **Tnyx and Hindi-ready typography (ADR-016):** All new user-facing copy uses **Tnyx** as app name. Settings → Appearance → Typography has **Default OS/system** and **Custom app font**, both Devanagari-capable with script fallback. Shared tokens control buttons, nav labels, forms and sheets; future localized messages use separate translation resources, not font changes or hardcoded strings in dumb screens. Test `UX-11` with Hindi matras/conjuncts, mixed English/Hindi, large text, caret and accessible layouts after implementation. Exact licensed font and language rollout are pending.
 
+**Primary-color update (ADR-016):** Tnyx now uses owner-selected **Aqua Teal `#00BFBF`** sampled from the uploaded background instead of Violet. This is the brand anchor for the shared token system, **not a requirement to paint entire screens teal**. The bright shade must not be paired with small white labels (approximately 2.28:1 contrast); use separate semantic text/icon/CTA tokens in Light/Dark and test glass layers and Standard bottom-tab legibility. The original screenshot content/logo is not reproduced. See [DESIGN.md](../DESIGN.md) and [UX-12](08-TEST-PLAN.md).
+
 ## 02 · Screen contract
 
 | Screen | Primary CTA | Offline | Empty/error state |

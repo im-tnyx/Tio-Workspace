@@ -105,7 +105,9 @@
 
 | UX-11 | P0 | Settings Typography Default/Custom on Android/iOS, with Hindi/Devanagari and mixed English-Hindi workout labels, buttons, bottom navigation, sheets, text inputs, large accessibility text | Both modes use shared font tokens, reliable glyph/fallback coverage (matras/conjuncts), readable line wrapping and text input caret/selection; no clipping/missing glyph boxes; preference persists. Language switching is separate and is not implied by font choice; no font implementation/test exists yet |
 
-These are **planned**, unexecuted acceptance criteria. The first workout MVP requires **P0 UX-01–05 and UX-08–11**; **P1 UX-06 belongs to Personal Backup (Phase 3)** and **P2 UX-07 to paid Supabase Sync (Phase 4)**. A screenshot reference is not test evidence or an asset license.
+| UX-12 | P0 | New image-derived Aqua Teal `#00BFBF` replaces Violet in shared `brand.primary`; inspect Light/Dark × Glass/Solid TopBar, Standard tab bar, primary CTA, links and Hindi labels on iOS/Android | Bright teal CTA pairs with contrast-safe foreground (not small white text at ~2.28:1), distinct readable on-surface link/text tokens, accessible tab icons/labels over translucent moving backgrounds and readable disabled/focus states; don't copy screenshot wordmark; no screen-hardcoded color fork |
+
+These are **planned**, unexecuted acceptance criteria. The first workout MVP requires **P0 UX-01–05 and UX-08–12**; **P1 UX-06 belongs to Personal Backup (Phase 3)** and **P2 UX-07 to paid Supabase Sync (Phase 4)**. A screenshot reference is not test evidence or an asset license.
 
 ## Test environments
 Physical Android and iPhone devices, current supported OS versions, actual Expo development/release builds, unstable network, background and device-kill scenarios, low storage, attempted second account on a bound installation, deliberate erase/reset, reinstallation and cross-device restores.
