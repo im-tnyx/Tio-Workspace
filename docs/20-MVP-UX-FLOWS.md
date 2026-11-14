@@ -31,7 +31,7 @@ flowchart TD
   Library --> Exercise["Exercise detail / editor - nested"]
   You --> Progress["Progress - nested"]
   You --> Settings["Settings - nested"]
-  Settings --> Appear["Appearance: Glass/Solid, Light/Dark"]
+  Settings --> Appear["Appearance: Glass/Solid, System(default)/Light/Dark"]
   Settings --> Backup["Personal Backup - later"]
   Settings --> Sync["Paid Sync - future"]
 ```
@@ -40,7 +40,7 @@ flowchart TD
 
 ### Shared shell and theme choices (owner-selected)
 
-- Settings → Appearance: **Glass is the default**, **Solid only via this Settings control**, and Light/Dark independent. All four combinations required; initial Light/Dark choice still pending. Technical/reduced-transparency fallback may render Solid without changing saved Glass. No cloud upload/account change.
+- Settings → Appearance: **System(default), Light, Dark** and independent **Glass(default)/Solid**. System follows OS changes; manual overrides persist. Six preference combos resolve to four rendered material × Light/Dark states. No duplicate per-screen theme decisions.
 - One **TopBar** takes the reference's rounded/translucent grouped style without copied branding or unapproved search/notifications. On root tab screens the compact TopBar is **hidden initially**, revealing **after scrolling** via centrally owned threshold/reduced-motion-friendly transition and hiding when back at top. On nested screens it is **visible immediately** with back affordance.
 - One **BottomTabBar** draws the current **Standard safe-area-aligned, full-width bar**, with default background-translucent **Glass** or Settings-selected **Solid** material at any root scroll position. Its destinations come from the future **app-owned ordered tab config** (initial Home/Workout/Library/You, changeable later), not a four-slot constant; optional floating **Pill** is a later layout variant. All shared fields, buttons, cards, sheets, switches/selects and text use `src/shared/theme/tokens/` in light/dark.
 - Future `src/shared/theme/tokens/` supplies tokens, `src/shared/ui/` supplies shared primitives, `src/app/` owns routes/tab visibility and shared scroll TopBar coordinator; features compose them. **Every screen stays dumb** (view state/props and callbacks only), with async/state orchestration in feature hooks/controllers, business rules in domain/application and SDK/I/O in data/platform. See [module architecture](10-REPOSITORY-STRUCTURE.md). **Future paths only**.
@@ -48,11 +48,13 @@ flowchart TD
 
 **Config-driven tab contract (owner-selected architecture, not an active management screen):** future app shell supplies ordered root-tab descriptors with stable keys, accessible icon/label, valid destination and root/nested visibility. `BottomTabBar` accepts descriptors and a layout variant; Standard is the initial product selection, Pill reserved for later approval. No per-screen tab list, duplicated navigation logic, implicit extra tabs or user-facing tab editor in MVP. A count change may require new real destination screens and a separate reviewed product decision. Use responsive item distribution, safe-area and keyboard handling; verify 3/4/5+ tab fixtures and larger font sizes without clipped or unreachable tabs.
 
-**Tnyx and Hindi-ready typography (ADR-016):** All new user-facing copy uses **Tnyx** as app name. Settings → Appearance → Typography has **Default OS/system** and **Custom app font**, both Devanagari-capable with script fallback. Shared tokens control buttons, nav labels, forms and sheets; future localized messages use separate translation resources, not font changes or hardcoded strings in dumb screens. Test `UX-11` with Hindi matras/conjuncts, mixed English/Hindi, large text, caret and accessible layouts after implementation. Exact licensed font and language rollout are pending.
+**MVP English-only, OS/system typography (ADR-018):** No Language/Custom Font picker or Hindi translations/font files yet. Use English message keys and typed screen state, centralized date/number/unit formatters and shared font tokens; do not hard-code text or font decisions in dumb JSX. Future Hindi/other languages and licensed script-aware fonts are independently approved extensions, with UX-15 future test; current English/system-font gate is UX-11.
 
 **Selected UI direction (ADR-016):** Black/White/Gray is Tnyx's **neutral default with no mandatory colored accent**. Neutral navigation selection, progress, CTA and focus must be readable. A **future** Settings → Accent Color picker may let the user choose named colors (Teal `#00BFBF` is just one candidate), but is NOT part of initial MVP. Appearance Light/Dark and Glass/Solid are separate axes; semantic danger/error colors remain. Screenshot is visual reference only, not a UI clone. See [DESIGN](../DESIGN.md), [UX-12/13](08-TEST-PLAN.md).
 
 **Application ID:** `com.tnyx.tio` selected for Android and iOS, subject to ownership/registration verification. Visible name is Tnyx; repo and versioned archive IDs remain unchanged.
+
+**Portrait-only (ADR-018):** every supported phone route including Auth/OTP, root and nested screens, active workout and sheets; no landscape layout or toggle. App/native shell owns orientation, not feature screens. Real Android/iPhone rotation, resume, safe areas/keyboard and iPad/tablet compatibility must be verified before a supported-platform claim.
 
 ## 02 · Screen contract
 
@@ -68,7 +70,7 @@ flowchart TD
 | Active Workout | Log/complete sets | Yes | Autosave/transaction failure and resume |
 | History | Open past session | Yes | No logged sessions |
 | Progress | View PRs / volume | Yes | Insufficient data, unit selection |
-| Settings (nested) | Glass/Solid + Light/Dark, **Typography Default/Custom**, bound account, logout and separate erase/reset | Mostly | Hindi/Devanagari-capable persistent typography independent of appearance, no account switch, irreversible reset warning |
+| Settings (nested) | Appearance **System/Light/Dark** and Glass/Solid, account, logout and separate erase/reset | Mostly | OS-follow/manual override; **no Language/Custom Font picker in English MVP**, no account switch and reset warning |
 | Personal Backup (later) | Optional Back up now / Restore / settings | Needs network for remote upload/download; manual encrypted file workflow depends on platform | OFF by default; last success/progress/failure/quota/recovery states |
 | AI Draft (later) | Generate then approve | No | AI unavailable; preserve local session |
 | Supabase Sync (future paid membership) | Full-workout-data premium alternative to Personal Backup | Not part of MVP | **Disabled/unavailable now**; when built, Settings offers one choice: Local Only / Personal Backup / Supabase Sync, never both ON |
@@ -129,7 +131,7 @@ The owner-provided iOS/Android screenshots inform **information hierarchy only**
 - Each screen covers `loading`, `empty`, `offline`, `error`, and account-safety states.
 - Never expose cached workout data when a different account attempts login; **no identity-switching flow exists**.
 
-**Owner-selected shell (ADR-015):** **initial** four tab roots Home / Workout / Library / You in a **Standard full-width layout with default Glass translucency**, future tab count/order via config and Pill layout deferred; root compact TopBar **scroll-revealed only**, nested TopBar immediately visible; Settings-only Solid option, independent Light/Dark; centralized theme tokens and dumb screens. Existing MVP features remain nested. See the [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) and P0 UX-01–05/08–11 versus later P1 UX-06, P2 UX-07; final palette/QA/screenshot sign-off remains pending.
+**Owner-selected shell (ADR-015):** **initial** four tab roots Home / Workout / Library / You in a **Standard full-width layout with default Glass translucency**, future tab count/order via config and Pill layout deferred; root compact TopBar **scroll-revealed only**, nested TopBar immediately visible; Settings-only Solid, System(default)/Light/Dark, portrait-only; centralized theme tokens and dumb screens. Existing MVP features remain nested. See the [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) and P0 UX-01–05/08–11 versus later P1 UX-06, P2 UX-07; final palette/QA/screenshot sign-off remains pending.
 
 ## 07 · Design acceptance checklist
 
@@ -138,7 +140,7 @@ The owner-provided iOS/Android screenshots inform **information hierarchy only**
 - [ ] Workout set editor tested for one-handed operation and large text.
 - [ ] Exact logout/erase/recovery wording and accessibility behavior reviewed in a design acceptance pass; policy selected.
 - [x] Intended iOS/Android configured-root-only Standard Glass bar, initial four destinations, future tab-count/layout extensibility, nested hide and shared TopBar variants recorded (ADR-015); not tested in native builds.
-- [ ] iOS/Android Glass/Solid × Light/Dark, contrast and fallback validated on actual devices.
+- [ ] Android/iPhone **System(default)/Light/Dark + Glass/Solid**, portrait-only orientation, English-only system fonts, neutral Glass contrast and native fallbacks tested (`UX-08/11/14`). Hindi/custom fonts and accent picker are future-only.
 - [ ] All cloud states explicitly distinguish default local-only from later opt-in features.
 
 ---

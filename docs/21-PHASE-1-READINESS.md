@@ -20,7 +20,7 @@
 
 | Gate | What must be true | Current |
 |---|---|---|
-| Product | **Tnyx name, `com.tnyx.tio` app ID, Black/White/Gray Neutral default without Teal, future optional Accent Color picker deferred**, Default/Custom Hindi-ready typography and core MVP scope selected | ⬜ Device UI contrast, app ID registration/icon, font/native QA pending |
+| Product | **Tnyx + `com.tnyx.tio`; Neutral, Glass(default)/Solid, System(default)/Light/Dark; portrait-only Android/iOS; English-only with OS/system fonts** (ADR-018). Future Accent Color, Hindi and Custom Font controls deferred | ⬜ Real device orientation/theme/English-font QA, icon and app ID registration pending |
 | Session | **Email/password + mandatory signup email OTP, no guest, server anti-abuse controls** (ADR-017), plus previously verified offline access (ADR-011); test revocation and errors | ⬜ Provider/numeric settings & runtime evidence pending |
 | Data isolation | **One account/installation, no switching, logout retains data; separate reset** selected; native key/erase lifecycle and tests still required | ⬜ Technical validation pending |
 | Native build | SQLCipher build/validation strategy accepted (Expo Go limitations understood) | ⬜ Pending |
@@ -33,6 +33,8 @@
 | Owner authorization | Explicit written approval for Phase 1 implementation | ⬜ Pending |
 
 **ADR-017 refined scope:** Phase 1.1 is shell placeholders only; Phase 1.2 separately implements verified email OTP with selected server-enforced targets and **no CAPTCHA**. Phase 1.4–1.6 implement **count-based program/routine/exercise/sets caps** with free curated Library, **no functional Create Custom Exercise UI or membership gate**. Later approved membership enables max 50 custom exercises/member and separately gated paid Sync; app lock, billing and paywall are deferred. All native/provider tests pending.
+
+**ADR-018 owner-selected initial shell constraints:** native app-shell orientation **portrait-only** on supported phones; Appearance preference **System(default)/Light/Dark**; English UI/system font and centralized copy/formatting abstractions. Do NOT add Language/Custom Font settings, translations, Hindi font binaries or landscape layouts in Phase 1.1; these are deferred. This is docs policy, not coding permission.
 
 ## 02 · Proposed Phase 1 slices **after** approval
 
@@ -66,10 +68,10 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 
 ### Review-ready acceptance for the proposed design baseline (not yet executed)
 
-- [ ] Phase 1 **P0 UX-01–05 and UX-08–12** documented in [test plan](08-TEST-PLAN.md), including **Standard translucent Glass bar** on configured roots (initial four), future variable-count architecture, root scroll-revealed/nested immediate TopBar, Settings-only Solid, four material/appearance combinations, central `src/shared/theme/tokens/` and dumb-screen boundaries; **Pill is future only**. Native accessibility evidence required after implementation; **UX-06 P1 Backup and UX-07 P2 Sync** remain later phase gates.
+- [ ] Phase 1 **P0 UX-01–05 and UX-08–12 and UX-14** documented in [test plan](08-TEST-PLAN.md), including **Standard translucent Glass bar** on configured roots (initial four), future variable-count architecture, root scroll-revealed/nested immediate TopBar, Settings-only Solid, System(default)/Light/Dark preference (6 combinations, 4 rendered modes), portrait-only, central `src/shared/theme/tokens/` and dumb-screen boundaries; **Pill is future only**. Native accessibility evidence required after implementation; **UX-06 P1 Backup and UX-07 P2 Sync** remain later phase gates.
 - [x] Owner selected **four initial root tabs in a Standard bottom bar with default Glass material**, config-driven future tab counts/order and optional future Pill layout; root scroll-revealed TopBar, nested back TopBar, Settings-only Solid, Light/Dark and dumb token-driven screens (ADR-015; design policy only).
 - [x] Tnyx uses **Black/White/Gray with no forced Teal** by default; future named user-selectable accent colors are planned but **no MVP picker** (ADR-016).
-- [ ] Test neutral/Glass contrast, focus/selected/progress in Light/Dark and Android/iOS **without Teal**; future Accent Color presets and UX-13 P1 are not current MVP exit requirements. Custom font/license, Light/Dark default, scroll threshold and native accessibility remain pending.
+- [ ] Test System OS-follow vs Light/Dark manual override, supported Android/iPhone portrait-only rotation through Auth/workout/keyboard, and English-only system-font scaling/shared message keys. **UX-08/11/14 P0**, future UX-13 accent picker and UX-15 Hindi/custom fonts excluded from MVP.
 - [x] Owner selected **Android application ID + iOS bundle ID `com.tnyx.tio`**.
 - [ ] Verify store/platform uniqueness, signing/ownership, original icon and Custom font licensing; repository unchanged.
 - [ ] Scope exclusions for the initial **Phase 1.1 shell** are explicit: no auth connection, SQLCipher workout store, AI, backups, paid Sync, billing or release.
