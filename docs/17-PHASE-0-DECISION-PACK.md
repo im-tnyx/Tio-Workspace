@@ -10,7 +10,7 @@
 </div>
 
 > [!IMPORTANT]
-> **ADR-010/011 owner decisions (2026-11-14):** D13 tooling plus D02–D06 core policies and D10 small exercise/MVP scope were accepted; **D04 explicitly forbids account switching/add-account**. D01, D07–D09, D11–D12 details and native/security implementations remain pending. The original product intentions in [09-DECISIONS.md](09-DECISIONS.md) remain the constraints. This document neither authorizes Phase 1 nor changes the default local-only privacy policy.
+> **ADR-010/011/012 owner decisions (2026-11-14):** D13 tooling plus D02–D06 core policies and D10 small exercise/MVP scope were accepted; **D04 explicitly forbids account switching/add-account**. D01, D07–D09, D11–D12 details and native/security implementations remain pending. The original product intentions in [09-DECISIONS.md](09-DECISIONS.md) remain the constraints. This document neither authorizes Phase 1 nor changes the default local-only privacy policy.
 
 ## ✅ Already specified by the owner
 
@@ -33,8 +33,8 @@
 | D03 | Offline session policy | Previously verified bound identity may log workouts offline; remote revocation is unknown until online | **High** | ✅ Trade-off accepted (ADR-011) |
 | D04 | **No account switching** / logout | **One locally bound account per installation**; no second login while bound; logout locks retained history, separately confirmed erase/reset required | **High** | ✅ Policy approved (ADR-011) |
 | D05 | Local key lifecycle | Per-bound-user SQLCipher key in protected OS storage, fail closed; native build/reinstall validation outstanding | **High** | ✅ Principle approved; verification pending (ADR-011) |
-| D06 | Backup recovery | Future opt-in encrypted backup with **independent portable user-held recovery secret**; crypto/restore UX pending | **High** | ✅ Principle approved; implementation pending (ADR-011) |
-| D07 | Personal cloud provider | Android Drive appDataFolder feasibility; iOS iCloud native spike, fallback to encrypted file export | **High** | ⬜ Pending |
+| D06 | Backup recovery | Future encrypted backup **OFF by default**, optional manual / best-effort scheduled copies, **user-held portable recovery secret**; cleared/reinstalled app has empty local diary until optional same-user restore | **High** | ✅ UX/policy approved (ADR-011/012); crypto/provider tests pending |
+| D07 | Personal cloud provider | **Owner-selected UI pattern:** familiar Settings → Backup, last success/progress/failure, storage guidance, best-effort frequency and future attachment controls; Drive/iCloud feasibility and export fallback not approved as working capabilities | **High** | ⬜ Implementation/provider pending (ADR-012 UX only) |
 | D08 | AI provider + request policy | Select provider after privacy, pricing, output schema and quota review | Medium | ⬜ Pending |
 | D09 | PIN/biometric | Offer optional app lock, with explicit recovery/lockout rules | Medium | ⬜ Pending |
 | D10 | Workout catalog & licensing | MVP includes small curated/manual exercise entry; third-party licensing needs review | Low | ✅ MVP scope approved; licensing pending (ADR-011) |
@@ -88,8 +88,8 @@ flowchart TD
 - [ ] Resolve **D01, D07–D09, D11–D12** remaining scope/provider/UX/privacy details and native validation before relevant phases.
 - [x] Confirm **no account switching**, same-account re-login after logout, and separate confirmed erase/reset; server account deletion details remain a separate future UX.
 - [x] Accept offline local access despite unverifiable remote revocation until reconnection; online functions still require server authorization.
-- [x] Approve portable user-held recovery **principle**.
-- [ ] Finalize secure backup UX/cryptography and test fresh-device restore **before** promising recovery.
+- [x] Approve portable user-held recovery **principle** and **optional-backup OFF default + clear-data empty/restore UX** (ADR-012).
+- [ ] Finalize recovery-code UX, cryptography, native Drive/iCloud integration and real fresh-device restore testing **before** promising recovery.
 - [x] Approve [MVP functional screens/flows](20-MVP-UX-FLOWS.md) for Home, Plans, Exercise Library, Workouts, History, Progress, Settings and Auth.
 - [ ] Finalize branding, visual hierarchy and detailed destructive/reset copy.
 - [ ] Validate on-device build feasibility for SQLCipher and iCloud before freezing plans.

@@ -23,7 +23,7 @@
 | Migrations | **ADR-010 tooling selected**; compatible native versions/bundling, account-specific journal, safe migration and recovery still require validation/sign-off | ⬜ Technical gate pending |
 | Privacy | Workouts stay local; cloud upload disabled by default | ✅ Requirement recorded, **not tested** |
 | Secrets | AI provider secrets server-side; publishable keys understood | ✅ Requirement recorded, **not tested** |
-| Backup | **User-held independent recovery secret principle selected**; provider/crypto design and restore proofs deferred to later phase | ✅ Principle recorded; future tests pending |
+| Backup | **ADR-012 optional backup OFF by default** and cleared-data empty/restore UX selected; portable secret required. Providers, encryption implementation, auto timing and restore proofs deferred to later phase | ✅ UX policy recorded; future tests pending |
 | Tests | Owner-selected MVP and single-account acceptance scenarios defined; native/device execution and exact release thresholds still required | ⬜ Runtime evidence pending |
 | Owner authorization | Explicit written approval for Phase 1 implementation | ⬜ Pending |
 
@@ -48,7 +48,7 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 - [ ] `SEC-01/02/03`: no production secrets in mobile binary; verified SQLCipher and fail-closed key/cipher failure.
 - [ ] Real Android + iPhone developer/release build tests recorded.
 - [ ] Measured navigation, local query and autosave performance with representative workouts.
-- [ ] Clear backup-loss warning for people who use local-only mode.
+- [ ] Clear backup-loss warning for local-only mode: OS clear data/reinstall/erase may remove workouts; login alone does not restore them. Future opt-in backup/restore tested in its own phase.
 - [ ] No runtime app logs contain raw workout values or auth credentials.
 
 ## 04 · Change approval record
@@ -62,7 +62,7 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 | Security exceptions | Explicitly listed and accepted, or “none” |
 | Review evidence | Linked PR or issue comment recording approval |
 
-**Current Phase 1 authorization:** None recorded in this document. **Phase 0 owner decisions:** ADR-010 selected the database stack; ADR-011 selected email/password, single-account/no-switch policy, offline access risk, retained logout data, portable recovery principle and MVP functional scope (2026-11-14). Neither approves code, native key/erase implementation, migration execution or deployment.
+**Current Phase 1 authorization:** None recorded in this document. **Phase 0 owner decisions:** ADR-010 selected the database stack; ADR-011 selected email/password, single-account/no-switch policy, offline access risk, retained logout data and MVP functional scope; ADR-012 selected future optional backup defaults and fresh-login recovery UX (2026-11-14). Neither approves code, native key/erase implementation, migration execution or deployment.
 
 ## 05 · Go/no-go
 

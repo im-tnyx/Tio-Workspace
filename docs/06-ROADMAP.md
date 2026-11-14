@@ -41,12 +41,12 @@
 **Exit:** No provider API secret shipped in mobile app; plans persist locally.
 
 ## Phase 3 — Personal encrypted backup & restore (PLANNED)
-- [ ] Finalize backup format, recovery passphrase/code and rotation design.
+- [ ] Implement **owner-selected optional backup OFF by default (ADR-012)**; finalize encrypted archive format, portable recovery passphrase/code and rotation design.
 - [ ] Support manual encrypted export/import; prove restore on fresh installation.
 - [ ] Google Drive OAuth/appDataFolder integration; consent, error handling.
 - [ ] iCloud native feasibility spike; integrate a proven approach or provide explicit export/import fallback.
-- [ ] Add backup status, manual trigger, remote deletion and best-effort scheduling if safe.
-- [ ] Run full lost-phone/new-device/account-mismatch/failed-backup recovery tests.
+- [ ] Add Settings → Backup with **last successful backup, manual Back up now, progress, failure/retry/storage status**, remote deletion, **Off/Daily/Weekly/Monthly best-effort** scheduling where tested; never allow unencrypted backup.
+- [ ] Run full OS clear-data/reinstall/phone-loss, same-account optional restore, **no-backup → empty diary**, missing recovery key, quota-failure, wrong-account and interrupted-backup tests; photo/video include controls only if a separate attachment feature is later approved.
 **Exit:** A real encrypted backup can be reliably restored by its rightful user.
 
 ## Phase 4 — Optional app-cloud database sync (FUTURE; NOT AUTHORIZED FOR INITIAL BUILD)
