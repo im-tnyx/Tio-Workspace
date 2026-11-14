@@ -16,15 +16,16 @@
 
 | Gate | What must be true | Current |
 |---|---|---|
-| Product | Branding, MVP scope and screens signed off | ⬜ Pending |
-| Session | Persistent online login + offline account-policy edge cases approved | ⬜ Pending |
-| Data isolation | Account-specific SQLite/key lifecycle and logout/erase semantics approved | ⬜ Pending |
+| Product | **MVP functional screens/scope selected** (ADR-011); final brand/visual hierarchy/accessibility sign-off | ⬜ Detailed design pending |
+| Session | **Email/password + cached offline access policy selected** (ADR-011); test offline revocation, reauth and errors | ⬜ Runtime evidence pending |
+| Data isolation | **One account/installation, no switching, logout retains data; separate reset** selected; native key/erase lifecycle and tests still required | ⬜ Technical validation pending |
 | Native build | SQLCipher build/validation strategy accepted (Expo Go limitations understood) | ⬜ Pending |
 | Migrations | **ADR-010 tooling selected**; compatible native versions/bundling, account-specific journal, safe migration and recovery still require validation/sign-off | ⬜ Technical gate pending |
 | Privacy | Workouts stay local; cloud upload disabled by default | ✅ Requirement recorded, **not tested** |
 | Secrets | AI provider secrets server-side; publishable keys understood | ✅ Requirement recorded, **not tested** |
-| Backup | Later-phase recovery principles agreed, no false restore promises | ⬜ Pending |
-| Tests | Platform and acceptance test plan agreed | ⬜ Pending |
+| OS-managed backup privacy | Android legacy/12+ cloud/device-transfer and iOS native exclusions, plus stale-key fail-closed recovery | ⬜ Native validation pending (`SEC-04/05`) |
+| Backup | **ADR-012 optional backup OFF by default** and cleared-data empty/restore UX selected; portable secret required. Providers, encryption implementation, auto timing and restore proofs deferred to later phase | ✅ UX policy recorded; future tests pending |
+| Tests | Owner-selected MVP and single-account acceptance scenarios defined; native/device execution and exact release thresholds still required | ⬜ Runtime evidence pending |
 | Owner authorization | Explicit written approval for Phase 1 implementation | ⬜ Pending |
 
 ## 02 · Proposed Phase 1 slices **after** approval
@@ -33,7 +34,7 @@
 |---|---|---|
 | 1.1 | Expo TypeScript app shell, routing/theme, basic CI | Physical device starts shell, test command documented |
 | 1.2 | Auth sign-up/sign-in/forgot password; secure persistence adapter | Correct persistent login and offline session flows |
-| 1.3 | Encrypted account-local SQLite + **owner-selected Drizzle migration tooling** (after Phase 1 authorization) | `PRAGMA cipher_version` verified in native build; offline migration, failure-recovery and account-switch tests |
+| 1.3 | Single-bound-account encrypted SQLite + **owner-selected Drizzle migration tooling** (after Phase 1 authorization) | `PRAGMA cipher_version` native verification, offline migration, failure recovery and blocked-second-account tests |
 | 1.4 | Exercise library and plan editor | Local creation/edit/restart works without network |
 | 1.5 | Workout sets/session logging | Atomic autosave and crash/restart recovery |
 | 1.6 | History/progress, logout, local erase UX | Correct account isolation, privacy and offline tests |
@@ -43,12 +44,15 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 
 ## 03 · Validation matrix
 
-- [ ] `AUTH-01/02/03/04/05/06/07/08`: account setup, reopen, offline access, switch user and revoked session flows.
+- [ ] `AUTH-01/02/03/04/05/06/07/08/09`: signup, reopening, offline access, denied second account, same-user re-login, revoked session and explicit reset.
 - [ ] `DATA-01/02/03/04/05/06/07`: persistence, crash recovery, deletion, offline upgrades, interrupted migrations and account isolation.
 - [ ] `SEC-01/02/03`: no production secrets in mobile binary; verified SQLCipher and fail-closed key/cipher failure.
+- [ ] `SEC-04/05`: validate Local Only Android/iOS OS-managed backup/device-transfer exclusions and stale-key recovery on real native builds.
+- [ ] Future Personal Backup phase `BKP-15/16`: voluntary discovery after erased local settings, matching encrypted archive restore and safe provider-not-found errors.
+
 - [ ] Real Android + iPhone developer/release build tests recorded.
 - [ ] Measured navigation, local query and autosave performance with representative workouts.
-- [ ] Clear backup-loss warning for people who use local-only mode.
+- [ ] Clear backup-loss warning for local-only mode: OS clear data/reinstall/erase may remove workouts; login alone does not restore them. Future opt-in backup/restore tested in its own phase.
 - [ ] No runtime app logs contain raw workout values or auth credentials.
 
 ## 04 · Change approval record
@@ -62,7 +66,9 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 | Security exceptions | Explicitly listed and accepted, or “none” |
 | Review evidence | Linked PR or issue comment recording approval |
 
-**Current Phase 1 authorization:** None recorded in this document. **Separate Phase 0 technology decision:** ADR-010 / D13 approved on 2026-11-14 for stack selection only, not for build, native key policy, migration execution or deployment.
+**Owner future-business choice (ADR-014):** Full supported workout-data Supabase Sync is a later **opt-in paid membership** feature, not in Phase 1. Membership does not by itself authorize workout uploads; local logging and optional Personal Backup remain available without paid Sync. Billing/entitlement/security/retention remain pending.
+
+**Current Phase 1 authorization:** None recorded in this document. **Phase 0 owner decisions:** ADR-010 selected the database stack; ADR-011 selected email/password, single-account/no-switch policy, offline access risk, retained logout data and MVP functional scope; ADR-012 selected future optional personal backup and manual restore UX; ADR-013 selected exclusive cloud modes and future auto-hydration for previously enabled authorized Sync; ADR-014 selected optional paid membership **plus independent consent** for future full-workout server Sync (2026-11-14). These approve policy only, **not** code, billing, native key/erase, migration, backend or deployment.
 
 ## 05 · Go/no-go
 

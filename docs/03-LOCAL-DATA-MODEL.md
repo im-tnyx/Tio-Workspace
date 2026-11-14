@@ -22,14 +22,14 @@
 | Responsibility | Proposed owner |
 |---|---|
 | Device-local data | Expo SQLite, encrypted by SQLCipher in a verified native build |
-| Account-file lifecycle | `platform/database/LocalDatabaseManager`, bound to the verified Supabase `user_id` |
+| Account-file lifecycle | `platform/database/LocalDatabaseManager`, **one bound user per installation**; no second local account or switch flow |
 | Encryption keys | `platform/security/` and OS-protected storage; distinct per account |
 | Schema and migrations | TypeScript Drizzle schema + reviewed, version-controlled SQLite SQL generated via `drizzle-kit generate` |
 | Migration execution | Bundled offline SQL applied only to the matching, already-unlocked local database |
 | Feature queries | Drizzle adapters in `features/<name>/data/`; repository contracts remain in `features/<name>/domain/` |
 | Applied version tracking | One Drizzle migration journal; `app_meta` for separate app/install metadata, not a competing authoritative migration counter |
 
-**Startup gate (proposal):** resolve the permitted account binding → open only its DB file → confirm SQLCipher is actually in the native binary → apply its protected database key → verify the keyed database can be read → run bundled pending Drizzle migrations → check resulting schema/integrity → open feature repositories and the dashboard. Keep user-data operations blocked during migration. Do not migrate a shared/default, locked, plaintext or different account's file. No network call is needed for local migration.
+**Startup gate (proposal):** resolve the **sole** permitted installation account binding → open only its DB file → confirm SQLCipher is actually in the native binary → apply its protected database key → verify the keyed database can be read → run bundled pending Drizzle migrations → check resulting schema/integrity → open feature repositories and the dashboard. Keep user-data operations blocked during migration. Do not migrate a shared/default, locked, plaintext or mismatched-identity file. No network call is needed for local migration.
 
 **Safety and failure:** Review every generated SQL diff (especially `DROP`, renames, table rebuilds, indexes and foreign keys). Prefer additive migrations; do not use unreviewed `drizzle-kit push` against on-device user data. Before destructive change, require an adequately tested **consistent encrypted account-bound rollback snapshot**, sufficient free space and a documented recovery procedure. Do not assume every migration runs atomically or that Drizzle supplies automatic reversible `down` migrations. On failure, preserve the original encrypted DB/key, block UI access, surface a recoverable error and offer only explicit, verified account-matched restore/retry. **Never** silently erase/recreate a database or fall back to plaintext.
 
@@ -46,13 +46,13 @@ Official references (recheck versions at implementation): [Drizzle + Expo SQLite
 - UTC epoch millisecond timestamps (`created_at`, `updated_at`) on mutable records; render dates in the user's timezone.
 - The proposed Drizzle migration journal is authoritative for applied schema versions; `app_meta` records only distinct installation/compatibility metadata. Use `deleted_at` tombstones for potentially synchronized user records.
 - Database transactions for session edits, set updates and import. Parameterized SQL only.
-- The local file must not be shared across users without strict access controls; the preferred proposal is **per-account encrypted database files**, with account-ID-safe file naming.
+- **One installation, one bound user UUID and one encrypted workout store.** Hold the installation binding in protected pre-unlock metadata (not solely inside encrypted SQLite), reject a different identity before opening the DB, and do not maintain an account list or second account store. A completed explicit local erase may reset the binding; logout cannot.
 
 ## Tables
 | Table | Key fields | Purpose |
 |---|---|---|
 | `app_meta` | `key` PK, `value` | Installation/compatibility metadata; Drizzle journal is the migration source of truth |
-| `local_accounts` | `user_id` PK, `last_used_at` | Safe mapping of known accounts to local files; never passwords |
+| `local_accounts` (optional; not the pre-unlock binding) | `user_id` PK, `last_used_at` | At most one post-unlock account row; binding needed to choose/decrypt the DB must be held separately in protected metadata |
 | `exercises` | `id` PK, `user_id`, `name`, `category`, `equipment`, `is_custom`, timestamps | Local exercise catalog/custom exercises |
 | `workout_plans` | `id` PK, `user_id`, `title`, `goal`, `notes`, timestamps | Plan templates |
 | `plan_days` | `id` PK, `plan_id`, `day_index`, `title`, timestamps | Weekly/day structure |
@@ -78,7 +78,7 @@ local account (user_id) 1 ─── * account-owned records
 - **Create/update:** write locally in one transaction, update timestamps, refresh derived stats from local source.
 - **Delete:** soft-delete user-owned sync candidates where practical; purge only via explicit irreversible erase or retention policy.
 - **Logout:** clear current auth binding and secure keys in memory; close DB; do not delete persisted workouts.
-- **User switch:** close prior account DB before opening the next. Authenticate the next identity online before decrypting its data.
+- **Different account attempt:** reject before decrypting or changing the bound account UUID, key or file. No add/switch UI. Only a distinct explicit **erase local data and reset installation** action (with no-backup warning) can remove the binding before a fresh online account setup.
 - **Uninstall/device loss:** local database may be lost. Recovery requires a **completed compatible backup**; signing into Supabase alone does not reconstruct workouts.
 - **Schema migration:** monotonically increasing versions with upgrade/rollback testing and a snapshot before destructive changes.
 - **Import:** verify schema version, account identity, authenticated integrity and key before changing any data; restore atomically.

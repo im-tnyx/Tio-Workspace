@@ -37,7 +37,7 @@ Tio-Workspace/
 │   │   ├── progress/
 │   │   └── settings/
 │   ├── platform/                 # shared technical infrastructure
-│   │   ├── database/            # SQLite connection, migrations, account switch
+│   │   ├── database/            # SQLite connection, migrations, single-account binding
 │   │   ├── auth/                # Supabase client and Auth adapter
 │   │   └── security/            # keys, encryption, account isolation
 │   ├── shared/                   # reusable, non-business elements only
@@ -86,7 +86,7 @@ flowchart TD
   BOOT["optional bootstrap / provider wiring"] -. "injects repository" .-> UI
 ```
 
-- `platform/database/`: owns connection, migrations, open/close and **safe account switching/rebinding**. It does not own feature-specific SQL queries.
+- `platform/database/`: owns connection, migrations, open/close and **single bound-account initialization/lock and confirmed reset**. It does not own feature-specific SQL queries.
 - `features/workouts/data/`: owns workout SQL and repository implementation, maps domain models, and uses parameterized transactions.
 - `platform/auth/`: owns technical Supabase client/adapter; `features/auth/` owns feature-level session behavior, subject to pending offline identity decisions.
 - `platform/security/`: owns technical key-access and isolation; **SQLCipher feasibility and key lifecycle are not approved/tested merely by accepting this folder layout**.
@@ -97,7 +97,7 @@ flowchart TD
 - Start with one Expo app, not one npm package per screen/feature. Do not create `packages/*` or workspaces just to feel modular.
 - Extract into a package only with (a) multiple real apps/build targets sharing it, (b) a proven stable API/owner, and (c) a justified build, testing and versioning cost.
 - During **approved Phase 1** work, add TypeScript + ESLint checks for forbidden cross-feature deep imports, cycles, domain-to-SDK imports and UI-to-storage/Auth SDK imports. Do not add tools or CI while Phase 0 is documentation-only.
-- Validate account-switch isolation, offline write continuity, schema migration and key-loss failure when runtime exists. Native SQLCipher must be verified with actual native builds. No document counts as a test result.
+- Validate second-account rejection, same-account re-login, confirmed reset, offline write continuity, schema migration and key-loss failure when runtime exists. Native SQLCipher must be verified with actual native builds. No document counts as a test result.
 
 ## 6 · Agent acceptance criteria
 

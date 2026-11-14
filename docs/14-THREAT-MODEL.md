@@ -20,7 +20,9 @@
 
 | Scenario | Planned safeguard | Verification |
 |---|---|---|
-| Account A data appears in B session | Account-specific store + authenticated identity binding | `AUTH-06`, `AUTH-07` |
+| Second user B is admitted to A-bound installation or sees A data | Single protected installation binding; reject different UUID, retain locked ciphertext | `AUTH-06`, `AUTH-07`, `AUTH-09` |
+| OS-managed cloud/device backup or phone migration copies Local Only SQLite without explicit Tio backup consent | Future Android legacy/cloud/D2D and iOS native file backup exclusions; acknowledge OS/OEM limits | `SEC-04`, `SEC-05` |
+| Reinstall loses local backup/provider settings while a valid personal archive remains | Same-account voluntary provider discovery, verified owner/encryption and safe no-result path | `BKP-15`, `BKP-16` |
 | Device backup copied without authorization | Authenticated encryption and secure key custody | `SEC-02` and future restore negative tests |
 | Local key lost on reinstall | Independent recoverable **backup** encryption method | `BKP-01`, `BKP-05` |
 | App binary reverse engineered | No AI/vendor/service-role secrets in client | `SEC-01` |

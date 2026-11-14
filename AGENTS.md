@@ -101,21 +101,21 @@ Before nontrivial work: **discover available tools and installed skills**; match
 | Normal close/reopen keeps a valid persisted session | Force login on every restart |
 | Already initialized users can log workouts offline | Every workout write needs remote availability |
 | Sets, exercises, plans, progress and history stay in **on-device SQLite** by default | Auth login uploads workout records to Supabase |
-| Account UUID binds isolated local storage, proposed encrypted per-account DBs | Access another user's local data from a logged-out/switch state |
+| **One bound Tio account per installation**; same-user re-login only, encrypted local data retained across logout | Add/switch to a second account while the prior binding/workouts remain; silently overwrite or delete data |
 | Logout locks retained history; local erase is a different confirmed action | Deleting session erases workout data |
 | Remote session invalidation is checked when connectivity allows | Claim remote revocation can always be detected offline |
 | AI provider secrets stay on a server-side authenticated Edge Function | Include service-role or AI secret in mobile binary |
 | Personal encrypted backup is **later and opt-in**; cloud sync is **separately opt-in and future** | Drive/iCloud snapshot equals live app-server sync |
 | Backup recovery uses an independent portable user-held recovery design | Promise restoration without a tested backup or original device |
 
-**Security nuance:** Offline cached local access is a deliberate policy decision under review; it is **not** proof that a remote session has not been revoked. An online AI/cloud request must be freshly authorized server-side. Reinstallation or phone loss without a usable backup can mean permanent loss of local-only data.
+**Security nuance:** Owner accepted offline cached access for a previously verified, locally bound account, including unavoidable delay in checking remote revocation; it is **not** proof that a remote session has not been revoked. An online AI/cloud request must be freshly authorized server-side. Reinstallation or phone loss without a usable backup can mean permanent loss of local-only data.
 
 ## 7. Module ownership and visual safety (future implementation)
 
 
 **Architecture v2.1 is the owner's final source-organization choice, not implementation authorization.** Follow the [complete tree and import matrix](docs/10-REPOSITORY-STRUCTURE.md): `src/app/` routes/layouts and root providers only; `src/features/<name>/` owns business modules; `src/platform/` owns shared technical services; `src/shared/` holds genuinely reusable non-business UI/theme/utils; `src/bootstrap/` is optional wiring. These are **future paths**, not current runtime files.
 
-- **Feature ownership:** each feature `domain/` owns pure models, domain rules and repository interfaces; its `data/` owns SQL repository implementations. `platform/database/` owns SQLite connection, migrations and safe account switch/rebind, not workout-specific queries.
+- **Feature ownership:** each feature `domain/` owns pure models, domain rules and repository interfaces; its `data/` owns SQL repository implementations. `platform/database/` owns SQLite connection, migrations and the **single-account installation binding/lock lifecycle**, not workout-specific queries. It must not expose a multi-account switch flow.
 - **Thin UI:** feature screens/components/hooks and Expo Router files must never import `expo-sqlite`, Supabase SDK or SecureStore directly. UI consumes injected feature-facing interfaces or application services.
 - **Cross-feature boundaries:** never deep-import `features/other-feature/*` internals. Interact through explicit public `index.ts` exports or separately approved shared contracts. `platform/` and `shared/` may not import feature internals.
 - **Pragmatic layering:** add optional feature `application/` use cases for significant multi-repository orchestration, transactions, workout start/finish or recovery. Complex domain rules must not live inside React hooks. No mandatory empty layers, npm package per feature or premature monorepo.
@@ -124,7 +124,7 @@ Before nontrivial work: **discover available tools and installed skills**; match
 
 - **Non-visual refactors may not redesign UI.** Preserve observed layout, spacing, text sizes, theme values, interactions and navigation unless the task explicitly approves a visual change.
 - Never replace a component-specific value with a “nearby” shared token just for consistency. Reuse approved design primitives only when current semantics and actual computed value are preserved.
-- After UI changes, evaluate loading, empty, offline, error, account-switch and accessibility states. Check iOS/Android layouts and contrast/text scaling with actual tooling where available. Don't claim screenshots or visual review occurred if they did not.
+- After UI changes, evaluate loading, empty, offline, error, blocked-second-account and accessibility states. Check iOS/Android layouts and contrast/text scaling with actual tooling where available. Don't claim screenshots or visual review occurred if they did not.
 
 ## 8. Task execution and multi-agent handoff
 
@@ -160,7 +160,7 @@ Relevant future scope: authentication, encrypted SQLite keys, sensitive local de
 When asked to review a pull request, **inspect the actual current diff and relevant source of truth before declaring anything passed**. Review tools and humans should prioritize consequential mistakes over cosmetic nitpicks:
 
 1. **Local-first data safety:** Flag a change that sends workout history, plans, sets, or progress to an app-controlled server by default, or introduces AI/backup/sync transfer without the specifically required user consent. Include the exact changed path/line and violated contract.
-2. **Account boundary and session safety:** Flag cross-account SQLite/key access, unlocked data on logout/account switch, secrets in client bundles, or claims of remotely verified revocation when offline. Do not treat brief network failure as confirmation of revoked identity.
+2. **Account boundary and session safety:** Flag cross-account SQLite/key access, allowing a second login against an existing local account binding, unlocked data after logout, secrets in client bundles, or claims of remotely verified revocation when offline. Do not treat brief network failure as confirmation of revoked identity.
 3. **Evidence and phase accuracy:** Flag a planned-only workflow represented as implemented/tested/deployed, or Expo/Supabase/runtime changes made without the documented approval. For Markdown-only changes, check link targets, duplicate/conflicting instructions and scope—not runtime test coverage that does not apply.
 
 For every actionable finding, give **severity, exact file/line when available, concrete impact and a minimal fix**. If the concern is unsupported, mark it as a question rather than a defect. Do not spam repeated stylistic observations that ordinary lint can catch.
@@ -183,7 +183,7 @@ For every actionable finding, give **severity, exact file/line when available, c
 |---|---|
 | Markdown/AGENTS/`.ai/` | Git diff scope; relative links, Markdown code fences, navigation/typos, status truth, sensitive-string scan. `git diff --check` **only if local checkout exists** |
 | TypeScript/Expo (later) | Actual repository lint, typecheck, unit tests and device builds once configured; don't invent scripts |
-| Auth/session | Cold restart, offline cached account, refresh/revocation, logout/relogin, cross-account negative tests |
+| Auth/session | Cold restart, offline cached account, refresh/revocation, logout/same-user relogin, blocked-second-account negative tests |
 | Local SQLite/SQLCipher | Schema migrations, atomic autosave, offline CRUD, encryption verification in a native build, key-loss failure |
 | AI Edge Function | Auth, inputs/output schema, limits, provider key isolation, no sensitive request logging |
 | Backup/restore | User consent, ciphertext integrity, wrong key, wrong user, interrupted upload and real new-device restore |

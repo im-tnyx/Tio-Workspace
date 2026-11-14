@@ -39,6 +39,7 @@ Your account stays signed in. Your workout history stays on your device.
 
 - **Account required:** the app uses online authentication to establish identity; everyday workout CRUD should not depend on internet.
 - **Session persistence:** closing the app is not logout; remote session revocation and reauthentication still need correct handling.
+- **Single-account installation:** one locally bound Tio identity at a time. There is no add-account or switch-account feature; a different login is blocked while the prior account's encrypted workouts remain. Logout locks data without erasing it. Any reset must be an explicit, separately confirmed destructive action.
 - **Workouts do not automatically go to our server:** signup/login data is online, workout logs are on the device by default.
 - **AI is an exception only when requested:** a generated-plan request uses a secure server-side API and sends only the inputs needed to produce the plan.
 - **No magical recovery:** uninstalling, resetting or losing a device may erase local-only data. Cloud restore requires a real, completed encrypted backup.
@@ -88,7 +89,7 @@ Choose the level you need. All specifications are **proposals** until reviewed a
 
 ## 🧭 Before implementation: owner review
 
-Start with the **[Phase 0 Decision Review Pack](docs/17-PHASE-0-DECISION-PACK.md)**. It links the [offline session state machine](docs/18-OFFLINE-SESSION-STATE-MACHINE.md), [backup recovery strategy](docs/19-BACKUP-RECOVERY-STRATEGY.md), [MVP screen flows](docs/20-MVP-UX-FLOWS.md) and [Phase 1 readiness gate](docs/21-PHASE-1-READINESS.md). All recommendations remain **unapproved**; the documents do not authorize app code.
+Start with the **[Phase 0 Decision Review Pack](docs/17-PHASE-0-DECISION-PACK.md)**. It links the [offline session state machine](docs/18-OFFLINE-SESSION-STATE-MACHINE.md), [backup recovery strategy](docs/19-BACKUP-RECOVERY-STRATEGY.md), [MVP screen flows](docs/20-MVP-UX-FLOWS.md) and [Phase 1 readiness gate](docs/21-PHASE-1-READINESS.md). Some technology and single-account/MVP policy decisions are now **owner-approved**, while native security verification and other Phase 0 questions remain open. The documents do not authorize app code.
 
 ## 🤖 Agent-ready context
 
