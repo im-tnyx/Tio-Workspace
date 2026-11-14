@@ -32,6 +32,17 @@
 | Remote outage during a workout | Local-first writes; cloud calls isolated | `DATA-01`, `AI-03` |
 | Logout leaves data visible | Clear session and memory; close local store | `AUTH-05` |
 
+### New owner-selected threat controls — planned, not verified (ADR-017)
+
+| Threat | Required design mitigation | Acceptance |
+|---|---|---|
+| Bots create unverified accounts, abuse email sending, brute-force or replay signup OTP | Mandatory online email-password signup **plus OTP confirmation** before binding/unlocking a workout store; server/provider resend/send/verify controls, short expiry, safe error handling, CAPTCHA/risk screening as appropriate; client countdown is not a security boundary | `AUTH-11/12`, `SEC-06` |
+| Forged session/guest mode or offline startup attempts to bypass authentication | No guest workout flow; correct immutable UUID and protected local binding before SQLCipher unlock; preserve ADR-011 *previously verified* offline use without online revocation claims | `AUTH-13/14`, `AUTH-06`, `SEC-02/03` |
+| Unbounded password/username/workout input or huge collections causing DoS/data corruption | Shared validated min/max policy, server auth enforcement and domain/local transaction caps; length counted properly for Hindi graphemes; no silent truncation/old-history deletion | `LIMIT-01/02/03/04` |
+| Later paid membership bypass or accidental server workout uploads | Keep membership out of MVP while retaining stable ownership/data interfaces; future entitlement validated server-side, separate explicit Sync upload opt-in, RLS and no local-workout lockout on expiry | `SYNC-03/08/09/10` — future phase |
+
+**Residual risk:** Passwords/OTP and SQLCipher reduce exposure but cannot guarantee an "unhackable" device or backend. Native binary inspection, key attacks, authenticated server security and provider-specific quotas still need adversarial testing.
+
 ## 03 · Non-goals and residual risk
 
 A compromised/rooted phone, vulnerable OS, leaked recovery phrase, malware or device access while unlocked cannot be fully mitigated by app-level encryption. Automatic backup frequency is limited by mobile OS scheduling. An online-authenticated account does not guarantee locally saved workouts can be recovered after uninstall.

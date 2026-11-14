@@ -21,6 +21,10 @@
 
 | ID | Priority | Scenario | Expected result |
 |---|---|---|---|
+| AUTH-11 | P0 | Fresh signup email+password, pending email verification, invalid code, then correct OTP | Unverified signup and invalid OTP cannot initialize/unlock any workout store; only verified same-bound-user UUID can access; first signup requires online connection |
+| AUTH-12 | P0 | Signup OTP rapid resend, expired/replayed code, invalid code flood, resend after 429, competing IP accounts | **Server/provider-enforced** expiry, resend/send/verify throttle and risk mitigation; no client-only bypass, generic errors, no OTP leak; proposed numeric quotas must be confirmed against provider |
+| AUTH-13 | P0 | Fresh install no login, anonymous Supabase session, wrong UUID, logout or reauth required | No protected local workout UI/CRUD without previously verified and permitted same-bound-user state; no guest path; signed-out store locked |
+| AUTH-14 | P0 | Verified user reopens offline with retained protected binding, then later online revocation | Offline local workout use still works per ADR-011 without repeated OTP; server operations revalidate, confirmed invalid session requires reauth; no cross-account unlock |
 | AUTH-01 | P0 | Fresh install -> register online | Verified user account and correct local partition |
 | AUTH-02 | P0 | Force-close and reopen after login | Dashboard opens without requiring another login |
 | AUTH-03 | P0 | Disable internet and reopen app | Already initialized user's local workouts accessible |
@@ -29,6 +33,10 @@
 | AUTH-06 | P0 | Attempt different user B login on installation bound to A (even after A logout) | B rejected; binding, key and A's ciphertext preserved; B never reads A's records |
 | AUTH-07 | P0 | Log back in as same bound user A after logout | A's history opens; neither auth logout nor wrong-account attempt erased it |
 | AUTH-08 | P0 | Remote session invalid while device offline | Previously verified account may access locally under accepted trust policy; online protected calls blocked until revalidation |
+| LIMIT-01 | P0 | Signup/reset password and optional Unicode/Hindi display username below/above proposed length bounds | Validated using agreed server/feature policy; no silent truncation; email/password remains login method; no unverified auth bypass |
+| LIMIT-02 | P0 | Exercise and program/routine names at min/max, Hindi grapheme clusters, invalid Unicode/control characters | Shared validator handles grapheme length, normalization, localized errors and overlong input without data loss |
+| LIMIT-03 | P0 | Create custom exercises/programs/routines/exercises in routine and sets at each agreed maximum and one beyond | Transaction-safe cap validation outside dumb screens; valid boundary persists offline; rejected write changes no records; imported over-limit history not silently erased |
+| LIMIT-04 | P0 | Mock old/over-limit stored data after a future cap revision and mixed normal/restored records | Existing history preserved/readable when safe; explicit migration/edit path and resource-safety safeguards; no silent delete, lockout or paid upsell |
 | DATA-01 | P0 | Complete workouts offline | Sets, reps, weights, timestamps persist in SQLite |
 | DATA-02 | P0 | App killed mid workout | Last committed autosaved state recovers |
 | DATA-03 | P0 | Edit/delete and restart | Correct record changes; no phantom duplicates |
@@ -36,6 +44,7 @@
 | DATA-05 | P0 | Interrupted migration, insufficient storage or faulty SQL | Fail-closed recovery UI; no silent DB reset/plaintext fallback, verified encrypted snapshot can restore all data |
 | DATA-06 | P0 | Attempt second account while local SQLCipher DB has an existing migration journal | New account blocked before opening/migrating; original bound DB and journal unchanged |
 | DATA-07 | P0 | Repeat startup and restore compatible older-schema backup | Migration idempotent on current version; older restore verified for user/integrity and migrated after unlock |
+| SEC-06 | P0 | Attack signup/OTP endpoints and local gate with automation, replayed codes, forged login state, mismatched UUID and unverified account | Server/provider throttles and configured Auth verification independently enforce gate; no anonymous workout access, token/OTP logs, cross-account DB read or promise of perfect security |
 | SEC-01 | P0 | Inspect mobile APK/IPA/config | No AI provider, Supabase service-role or backend secret key |
 | SEC-02 | P0 | SQLCipher-enabled native build | `cipher_version` detected; raw database unreadable without key |
 | SEC-03 | P0 | Wrong/missing key or native build without SQLCipher | Storage fails closed before ORM migration or workout UI; no plaintext replacement created |

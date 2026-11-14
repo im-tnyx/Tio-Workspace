@@ -15,12 +15,22 @@
 **Status:** Design requirements, not a security audit or deployed configuration.
 
 ## Authentication contract
-- Supabase Auth manages email/password registration, verification if enabled, login, password reset, signout and session refresh.
+- Supabase Auth manages email/password signup/login, **mandatory email OTP confirmation during signup**, password reset, signout and refresh. **Email verification must be enabled**; an unverified/pending signup never unlocks/binds local workout SQLite. Provider-compatible OTP template/verification method, production email transport and rate-limit settings are implementation gates, not enabled by these docs.
 - `persistSession` and a correctly designed secure React Native storage adapter keep users signed in on normal app restarts.
 - First account signup/login needs internet. Previously initialized devices can continue **local** workout work offline.
 - App restart **does not** automatically require sign-in. Reauthentication may be required when the session is revoked, logout occurs, refresh credentials cannot be recovered, or security policies mandate it.
 - Offline status must never be mistaken for positive proof that the remote account remains active; protect privileged server operations with fresh server-side authentication.
 - **Owner-approved offline policy:** cached locally verified bound identity may use local workouts offline despite delayed remote revocation detection; once online, protected server calls must revalidate. Optional PIN/biometrics can be evaluated later, not silently required on every restart.
+
+### Signup OTP, no-guest boundary and abuse protection (ADR-017)
+
+- **Online first registration:** email + password → send one-time code → verify email OTP with Supabase Auth → confirm immutable account UUID and local installation binding → only then initialize/unlock encrypted workout storage. No anonymous/guest mode, unverified-user access, local-only bypass or alternate account switching. The Auth screen remains available when locked. Persistent **verified** sessions and previously eligible offline cached sessions remain consistent with ADR-011; signup OTP is not demanded every app open.
+- **Server-enforced anti-spam:** define code expiry, resend cooldown, send quota, bad-code attempts and progressive blocks at Supabase/project or a reviewed secure gateway. UI timer alone is insufficient. Check provider configuration, rate limits, CAPTCHA/risk challenge compatibility and custom SMTP; use generic/non-enumerating error messaging, no OTP/password logging. Fail closed on invalid/expired/mismatched code; offline first signup cannot verify.
+- **Security defense in depth:** validate password policy and all length/count limits on their authoritative boundary; encrypted bound SQLite with protected key, no secrets in app/analytics, future AI/Sync server auth and RLS, tests for brute force, replay and wrong-account access. No absolute "unhackable" claim.
+- **App lock (PIN/biometrics) is deferred**, not an MVP prerequisite. Security does **not** depend on a PIN screen.
+- **Membership/payments deferred until core app completion**. Design stable domain/capability/entitlement interfaces only; do not ship purchases, paywall, remote workout storage or paid-feature gating in Phase 1. Future server entitlement alone cannot authorize uploading workouts; Sync still needs explicit consent.
+
+**Numeric proposals and linked acceptance:** [input/OTP decision pack](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md) and [test plan](08-TEST-PLAN.md). Exact number approval/provider feasibility are pending.
 
 ## Account isolation
 - Bind **one local account per app installation** to the exact verified Supabase `auth.users.id`, not mutable email. Do **not** provide add-account/switch-account UI or maintain multiple account DBs.
@@ -74,6 +84,11 @@ SQLCipher native compatibility, migration atomicity and exact key lifecycle requ
 ## Security test cases
 Cold start offline; app kill during write; expired/revoked session; logout then same-user re-login; blocked second-account login; confirmed reset/rebind; stolen/modified backup; malicious imported file; auth token leakage; AI endpoint unauthorized call; excessive function requests; Android uninstall/reinstall; iOS Keychain reinstall semantics; recovery-key loss; database encryption verification.
 
+- https://supabase.com/docs/guides/auth/passwords
+- https://supabase.com/docs/guides/auth/auth-email-templates
+- https://supabase.com/docs/guides/auth/rate-limits
+- https://supabase.com/docs/guides/auth/auth-captcha
+- https://supabase.com/docs/guides/security/production-checklist
 ## Current sources (revalidate before implementing)
 - https://supabase.com/docs/guides/auth/quickstarts/react-native
 - https://supabase.com/docs/guides/auth/sessions

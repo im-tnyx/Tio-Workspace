@@ -14,13 +14,13 @@
 | Topic | Existing owner-selected policy | Proposed decision for owner |
 |---|---|---|
 | Functional scope | Auth, Home, Exercise Library, Plans, Active Workout, History, Progress, Settings — ADR-011 | Keep the selected screens; no new MVP feature |
-| Account/privacy | Supabase email/password, single locally bound UUID, offline local workouts; no account switching | Preserve unchanged |
+| Account/privacy | **Supabase email/password + mandatory signup email OTP verification, server-enforced anti-spam, no guest**, single bound UUID and eligible verified offline users (ADR-011/017) | Exact OTP/strength/rate settings pending owner and provider QA; never bypass stored account key gate |
 | Storage | Local encrypted SQLite default; Personal Backup or future paid Sync is separately chosen, never both active | Preserve unchanged |
 | App identity | **Tnyx** final app display name selected (ADR-016); repo still `Tio-Workspace` | Android application ID, iOS bundle ID and icon/logo assets pending |
 | UI shell / visual identity | **Owner-selected ADR-015:** initial four tabs Home/Workout/Library/You in **Standard full-width + Glass translucent bar**; reusable config allows future owner-approved tab count/order and future Pill layout; scroll-revealed root TopBar, nested immediate TopBar, Settings Solid/independent Light-Dark, dumb/token-driven screens | Palette, typography, Light/Dark startup, icon, scroll threshold, native QA and any future Pill/count feature are pending |
 | Typography / i18n | **Owner-selected (ADR-016):** Settings Default OS / Custom app font, both Hindi/Devanagari-ready with fallback; future language selection separate; shared token-driven controls | Custom font family/license and native large-text/Hindi QA pending; no font assets in this PR |
-| Local lock | PIN/biometrics undecided | **Defer** to a separate consent/recovery decision; do not imply an always-on unlock prompt |
-| Phase 1 | No implementation authorized | Prefer **Phase 1.1-only written approval**, after design and tooling/startup plan sign-off |
+| Local lock | **Not in MVP** (ADR-017) | Optional PIN/biometrics considered only in a separately approved future slice |
+| Phase 1 | No implementation authorized; Phase 1.1 shell has **no live Auth/OTP or paid membership** | Prefer **Phase 1.1-only written approval**; Phase 1.2 OTP and Phase 1.4–1.6 capped local data after separate gates; membership after core app |
 
 **Still-pending owner decisions:** Android/iOS app IDs, icon, **exact Violet hex/contrast**, possible Mint accent, **Custom font family/license**, initial locale launch, **initial Light/Dark**, scroll threshold/animation, device visual QA, scoped Phase 1 authorization/exclusions and security exceptions. **Glass is the already-selected default material**; ADR-015 shell/token/presentation choices are recorded.
 
@@ -71,18 +71,23 @@ For each applicable screen: **loading, empty, offline, error, saving/retry, dest
 
 A Personal Backup restore is not tied to the current/remembered upload mode, may be skipped, and must not silently enable upload. Future Supabase Sync requires previous explicit user opt-in, valid entitlement and current authorization, then may automatically hydrate local data. Auth alone never recreates local-only workouts. Refer to [recovery contract](19-BACKUP-RECOVERY-STRATEGY.md) and [MVP flows](20-MVP-UX-FLOWS.md).
 
+### Phase 0 security/limits update — owner-selected ADR-017
+
+**Selected without assigning numeric values:** first online email/password signup **requires an emailed OTP code** and provider/server-enforced resend/attempt rate controls; an unverified account or guest cannot use workout features; **previously verified same-bound offline access remains valid**, no re-login/OTP on every start. The app needs **minimum and maximum lengths/counts** for password/profile username, custom exercise, workout program, routine/exercise slots and sets, but the exact caps in [the input/OTP decision pack](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md) are **proposals for owner approval**. Optional PIN/biometric app lock is **deferred**, not required to finish MVP. **Membership, paywalls and paid Supabase Sync wait until after the workout app is complete**, with future-ready domain/entitlement extension points only and no implicit workout upload. No provider configuration, code or security testing is represented by this doc.
+
 ## 3. Decisions that must be recorded versus legitimately deferred
 
 | Ref | Required now to sign off shell | Deferred gate / risk |
 |---|---|---|
+| D16 / D17 / ADR-017 | **Min/max limits required and verified signup OTP/no guest selected**, but numeric thresholds and provider configuration pending | Approve cap table/anti-abuse target, then verify iOS/Android/server behavior in respective phases; no authorization bypass |
 | D01 / ADR-016 | **Tnyx display name selected**; app IDs, original icon/logo pending | Trademark/assets and store release review remain separate; repo name unchanged |
 | Visual / typography | **Violet primary direction and Default/Custom Hindi-ready type selected (ADR-016)**; ADR-015 Standard+Glass configurable nav remains; exact colors/font and startup Light/Dark pending | iOS/Android screenshots, Hindi/large type inputs, 3/4/5+ tabs, scroll, contrast and blur/keyboard QA pending |
 | D02–D06, D10, D13 | Already owner-selected via ADR-010/011; **do not reopen silently** | Native key lifecycle, encryption and migration tests must pass before local encrypted storage release |
 | D07 | Agree Personal Backup is **later** and manual export/import is the first feasibility target | Google Drive scopes, iCloud native path, crypto format, scheduler and fresh-install restore in Phase 3 |
 | D08 | Exclude AI from Phase 1 | Provider, privacy, output contract, quota and Edge Function design in Phase 2 |
-| D09 | Explicitly defer optional local PIN/biometrics | Later lockout and recovery consent decision; never silently require at every app open |
+| D09 | **Owner explicitly deferred app lock from MVP (ADR-017)** | Later optional lock/recovery UX needs separate approval; not an MVP go/no-go |
 | D11 | Default proposal: **no workout-content analytics** and minimize any future crash telemetry | Provider, retention and user disclosure require separate approval |
-| D12 / ADR-014 | Exclude paid Sync and billing from Phase 1 | Phase 4 RLS/owner auth, consent, entitlement/expiry, remote deletion and conflicts |
+| D12 / ADR-014/017 | **No membership/billing/paywall until after core workout MVP**; design stable domain interfaces now | Future paid Sync needs server entitlement, separate upload consent, RLS, expiry/export and deletion policy |
 | OS backup | Require test strategy and no false Local Only claims | Android backup/cloud/D2D exclusions, iOS file backup flags and lost/stale key fail-closed tests before relevant native release |
 
 No team or agent should mark a deferred high-risk test **passed** merely because the implementation is deferred.
@@ -91,7 +96,7 @@ No team or agent should mark a deferred high-risk test **passed** merely because
 
 ### 4.1 To approve **only Phase 1.1 — shell**
 
-- [ ] Owner confirms **exact Violet values, Custom font family/license, initial Light/Dark**, scroll-tuning and app IDs/icon; **Tnyx name, Violet direction and font modes are selected (ADR-016)**; **Standard Glass initial tab bar, future config-driven tab count/Pill variant, scroll-reveal TopBar and dumb token-driven screens already selected** under ADR-015.
+- [ ] Owner confirms **numeric min/max/OTP thresholds** (see [limits pack](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md)), then remaining visual decisions including Violet values, font/license, Light/Dark, app IDs/icon; **Tnyx name, Violet direction and font modes are selected (ADR-016)**; **Standard Glass initial tab bar, future config-driven tab count/Pill variant, scroll-reveal TopBar and dumb token-driven screens already selected** under ADR-015.
 - [ ] Owner states exact Phase 1.1 scope and excludes Auth credentials/project setup, encryption/storage implementation, real workouts, AI, backups, server sync, billing and releases.
 - [ ] Review Expo SDK and React Native compatibility on the actual implementation date; select a native development-build and iOS/Android test approach. No packages/config are installed in this PR.
 - [ ] Owner accepts that SQLCipher, Drizzle, secure storage and OS backup controls are **unverified** and must remain blocked until their later implementation gates.
@@ -104,10 +109,10 @@ No team or agent should mark a deferred high-risk test **passed** merely because
 
 | Slice | Entry gate | Mandatory exit evidence before progressing/releasing |
 |---|---|---|
-| 1.2 Auth | Separate owner-allowed setup, session persistence and identity-binding specification | First online signup, same-user re-login, persistence/offline eligibility, blocked second UUID tests |
+| 1.2 Auth | Separately approved online email/password + OTP verification and server/provider anti-abuse; binding/security | Only verified signup unlocks, no guest, resend/rate/replay and persisted/offline same account tests pass |
 | 1.3 Secure SQLite | Native SQLCipher/Drizzle compatibility and OS key lifecycle reviewed | `PRAGMA cipher_version`, fail-closed missing-key path, account binding before unlock, migrations; Android/iOS backup/transfer exclusion evidence |
-| 1.4–1.6 Workout MVP | Local DB/security slice validated | Exercises/plans, transactional sets/reps, crash recovery, local History/Progress, separate erase versus logout |
-| 1.7 Release candidate | Full device validation | Phase 1 **P0 AUTH/DATA/SEC + UX-01–05/UX-08–11** with device evidence; P1 UX-06 Backup and P2 UX-07 Sync are later gates |
+| 1.4–1.6 Workout MVP | Local DB/security slice validated; owner-approved numeric caps | Exercise/plan/program/routine/set min/max tests, transactional persistence, history untouched by policy changes, crash recovery and separate erase vs logout |
+| 1.7 Release candidate | Full device validation | Phase 1 **P0 AUTH-01–14, LIMIT-01–04, SEC-01–06, DATA and UX-01–05/08–11** with device/server evidence; future Backup/Sync cases remain later gates |
 
 **Important sequencing:** native proof cannot legitimately be marked complete before its test build exists. Approve **bounded work** and keep security-release gates pending; do not use a broad “Phase 1 approved” label to bypass them. Any Supabase project/credential, new permission or privacy-changing action needs explicit scoped approval before execution.
 

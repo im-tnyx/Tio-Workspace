@@ -21,7 +21,7 @@
 | Gate | What must be true | Current |
 |---|---|---|
 | Product | **Tnyx display name, Violet direction, Default/Custom Hindi-ready typography** and MVP scope selected (ADR-016/011); app IDs/icon, exact shades/font and visual QA pending | ⬜ Detailed design/native QA pending |
-| Session | **Email/password + cached offline access policy selected** (ADR-011); test offline revocation, reauth and errors | ⬜ Runtime evidence pending |
+| Session | **Email/password + mandatory signup email OTP, no guest, server anti-abuse controls** (ADR-017), plus previously verified offline access (ADR-011); test revocation and errors | ⬜ Provider/numeric settings & runtime evidence pending |
 | Data isolation | **One account/installation, no switching, logout retains data; separate reset** selected; native key/erase lifecycle and tests still required | ⬜ Technical validation pending |
 | Native build | SQLCipher build/validation strategy accepted (Expo Go limitations understood) | ⬜ Pending |
 | Migrations | **ADR-010 tooling selected**; compatible native versions/bundling, account-specific journal, safe migration and recovery still require validation/sign-off | ⬜ Technical gate pending |
@@ -29,8 +29,10 @@
 | Secrets | AI provider secrets server-side; publishable keys understood | ✅ Requirement recorded, **not tested** |
 | OS-managed backup privacy | Android legacy/12+ cloud/device-transfer and iOS native exclusions, plus stale-key fail-closed recovery | ⬜ Native validation pending (`SEC-04/05`) |
 | Backup | **ADR-012 optional backup OFF by default** and cleared-data empty/restore UX selected; portable secret required. Providers, encryption implementation, auto timing and restore proofs deferred to later phase | ✅ UX policy recorded; future tests pending |
-| Tests | Owner-selected MVP and single-account acceptance scenarios defined; native/device execution and exact release thresholds still required | ⬜ Runtime evidence pending |
+| Tests | Owner-selected mandatory email OTP/no guest and min/max validation, plus existing single-account acceptance; **candidate numeric caps and provider rate values still require owner/provider validation** | ⬜ Runtime evidence pending |
 | Owner authorization | Explicit written approval for Phase 1 implementation | ⬜ Pending |
+
+**New prerequisite from ADR-017:** Phase 1.1 stays a **shell with mock/nonfunctional Auth placeholder only**, no signup emails, OTP configuration, Supabase Auth or workout encryption. Phase 1.2 implements email/password registration with **email OTP confirmation, no guest access and enforced anti-abuse** after separate approval and provider configuration. Phase 1.4–1.6 implement exact **owner-approved min/max input/cap validators** for custom exercises, plans/programs, routines and sets; test without hidden history truncation. No optional app lock. Membership/billing and paid Sync start **only after the core workout MVP is complete** in separately gated work; feature/domain/data contracts should stay future-compatible without premature paywall implementation.
 
 ## 02 · Proposed Phase 1 slices **after** approval
 
@@ -48,7 +50,9 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 
 ## 03 · Validation matrix
 
-- [ ] `AUTH-01/02/03/04/05/06/07/08/09`: signup, reopening, offline access, denied second account, same-user re-login, revoked session and explicit reset.
+- [ ] `AUTH-01–14` (including `AUTH-10`): signup **email OTP**, no-guest verification gate, brute-force/resend handling, reopening and previously verified offline access, wrong user, revoked session and explicit reset.
+- [ ] **Proposed numeric policy owner-approved before implementation** and `LIMIT-01–04` for min/max lengths/counts, Unicode/Hindi labels, transactional maxes and no silent legacy data truncation.
+- [ ] `SEC-06` for OTP/replay/abuse, unverified/anonymous/wrong-account bypass and sensitive logging, in addition to `SEC-01–05`.
 - [ ] `DATA-01/02/03/04/05/06/07`: persistence, crash recovery, deletion, offline upgrades, interrupted migrations and account isolation.
 - [ ] `SEC-01/02/03`: no production secrets in mobile binary; verified SQLCipher and fail-closed key/cipher failure.
 - [ ] `SEC-04/05`: validate Local Only Android/iOS OS-managed backup/device-transfer exclusions and stale-key recovery on real native builds.
@@ -80,7 +84,7 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 | Security exceptions | Explicitly listed and accepted, or “none” |
 | Review evidence | Linked PR or issue comment recording approval |
 
-**Owner future-business choice (ADR-014):** Full supported workout-data Supabase Sync is a later **opt-in paid membership** feature, not in Phase 1. Membership does not by itself authorize workout uploads; local logging and optional Personal Backup remain available without paid Sync. Billing/entitlement/security/retention remain pending.
+**Owner future-business choice (ADR-014/017):** **Membership/paywall is postponed until after the core workout MVP is complete**. Full supported workout-data Supabase Sync is a later **opt-in paid membership** feature, not in Phase 1. Membership does not by itself authorize workout uploads; local logging and optional Personal Backup remain available without paid Sync. Billing/entitlement/security/retention remain pending.
 
 **Current Phase 1 authorization:** None recorded in this document. **Phase 0 owner decisions:** ADR-010 selected the database stack; ADR-011 selected email/password, single-account/no-switch policy, offline access risk, retained logout data and MVP functional scope; ADR-012 selected future optional personal backup and manual restore UX; ADR-013 selected exclusive cloud modes and future auto-hydration for previously enabled authorized Sync; ADR-014 selected optional paid membership **plus independent consent** for future full-workout server Sync (2026-11-14). These approve policy only, **not** code, billing, native key/erase, migration, backend or deployment.
 

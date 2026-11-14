@@ -29,14 +29,14 @@
 | Ref | Decision needed | Working recommendation / selection | Risk if undecided | Owner status |
 |---|---|---|---|---|
 | D01 | Product name/identity | **Tnyx** final app display name; repo stays `Tio-Workspace`; choose Android application ID, iOS bundle ID and original icon/logo | Medium | ✅ Name selected (ADR-016); ⬜ IDs/icon pending |
-| D02 | Sign-in options | Supabase **email/password MVP**; Google/Apple optional later | Medium | ✅ Policy approved (ADR-011) |
+| D02 | Sign-in options | Supabase **email/password + required email OTP signup verification**; no guest; Google/Apple optional later; rate/expiry config needs native/server validation | High | ✅ Auth policy selected (ADR-011/017); quota numbers pending |
 | D03 | Offline session policy | Previously verified bound identity may log workouts offline; remote revocation is unknown until online | **High** | ✅ Trade-off accepted (ADR-011) |
 | D04 | **No account switching** / logout | **One locally bound account per installation**; no second login while bound; logout locks retained history, separately confirmed erase/reset required | **High** | ✅ Policy approved (ADR-011) |
 | D05 | Local key lifecycle | Per-bound-user SQLCipher key in protected OS storage, fail closed; native build/reinstall validation outstanding | **High** | ✅ Principle approved; verification pending (ADR-011) |
 | D06 | Backup recovery | Future encrypted backup **OFF by default**, optional manual / best-effort scheduled copies, **user-held portable recovery secret**; cleared/reinstalled app has empty local diary until optional same-user restore | **High** | ✅ UX/policy approved (ADR-011/012); crypto/provider tests pending |
 | D07 | Personal cloud provider | **Owner-selected UI pattern:** familiar Settings → Backup, last success/progress/failure, storage guidance, best-effort frequency and future attachment controls; Drive/iCloud feasibility and export fallback not approved as working capabilities | **High** | ⬜ Implementation/provider pending (ADR-012 UX only) |
 | D08 | AI provider + request policy | Select provider after privacy, pricing, output schema and quota review | Medium | ⬜ Pending |
-| D09 | PIN/biometric | Offer optional app lock, with explicit recovery/lockout rules | Medium | ⬜ Pending |
+| D09 | PIN/biometric | **Deferred: no app lock in initial MVP**; later optional PIN/biometric and recovery/lockout needs separate owner approval | Low now | ✅ Deferment selected (ADR-017); future design pending |
 | D10 | Workout catalog & licensing | MVP includes small curated/manual exercise entry; third-party licensing needs review | Low | ✅ MVP scope approved; licensing pending (ADR-011) |
 | D11 | Analytics and retention | No workout payload analytics by default; separate crash logs from workout content | Medium | ⬜ Pending |
 | D12 | Future sync deletion semantics | Separate disabling sync from deleting cloud copies; revisit in Phase 4 | **High later** | ⬜ Pending |
@@ -45,6 +45,10 @@
 | D15 | App typography and future languages | Settings Default OS / Custom app font; both Hindi/Devanagari-ready, shared tokens, locale selection separate; Violet primary | Medium | ✅ Brand/type direction (ADR-016); font family/licensing and QA pending |
 
 **D15 — Typography, Hindi and internationalization (ADR-016):** Settings offers **Default OS / Custom app font**, both with Devanagari support/fallback, persistent local preference and shared tokens. Future language selection/translation resources are separate. **Violet** selected as brand-primary color family, exact shades not yet finalized. See [DESIGN](../DESIGN.md) and [UX-11](08-TEST-PLAN.md).
+
+**D16 — Input and count limits:** min **and** max are required for password, optional profile username, exercise/program/routine names, number of programs/custom exercises/routines, exercises per routine and sets. [Candidate numeric caps](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md) are **pending owner approval** and native/domain/provider validation, not selected values. Do not conflate current program quotas with future paid membership.
+
+**D17 — Verified signup / deferred membership:** online email/password + **email OTP signup verification** with server-enforced spam/attempt controls; no guest/unverified workout access; preserve previously verified cached offline workout use. App lock is deferred. **Membership/paywall/paid Sync are deferred until after core workout MVP is complete**; keep stable UUID and clean future entitlement/consent interfaces without shipping any billing or upload now (ADR-017).
 
 ## 🧱 Architecture trade-offs at a glance
 
@@ -93,7 +97,7 @@ flowchart TD
 ## 📋 Required owner sign-off
 
 - [x] Record owner-selected **D02–D06 policy, D10 MVP scope and D13 tooling** in ADR-010/011; selection does not certify implementation security.
-- [ ] Resolve **D01 package IDs/icon**, D07–D09, D11–D12, Custom font family/license and relevant native validation before those phases.
+- [ ] Resolve **D01 package IDs/icon**, D07–D08, D11–D12, numerical D16/OTP D17 provider settings, Custom font license and relevant native validation before their implementation phases; **D09 app lock deliberately deferred**.
 - [x] Confirm **no account switching**, same-account re-login after logout, and separate confirmed erase/reset; server account deletion details remain a separate future UX.
 - [x] Accept offline local access despite unverifiable remote revocation until reconnection; online functions still require server authorization.
 - [x] Approve portable user-held recovery **principle** and **optional-backup OFF default + clear-data empty/restore UX** (ADR-012).

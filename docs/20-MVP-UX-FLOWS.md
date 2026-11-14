@@ -55,7 +55,7 @@ flowchart TD
 | Screen | Primary CTA | Offline | Empty/error state |
 |---|---|---|---|
 | Session gate | Resume existing authenticated user | Yes if account is initialized and locally eligible | Need login / reauth / unavailable key |
-| Auth | First signup / same-bound-user Sign in | No for first-time login | Network error, invalid credentials, different-account denied, email verification |
+| Auth | **Online email/password Signup → Email OTP verify**; existing same-bound Sign in | No for new signup/verification | Pending/wrong/expired OTP, resend 429/cooldown, no guest, account mismatch denied, network error; unverified cannot open Home/workout DB |
 | Home | Start / Resume Workout | Yes | “Create your first plan” / “Start a free workout” |
 | Workout (root) | Start/resume, plans and history links | Yes | Empty plans, in-progress resume |
 | Exercise Library (Library root) | Add exercise | Yes, local list | No results; add custom exercise |
@@ -71,7 +71,7 @@ flowchart TD
 
 ## 03 · Happy path — first user
 
-1. Welcome → sign up online → any required email confirmation → verified identity bound to a local account store.
+1. Welcome → sign up online with email + password → **enter emailed OTP** and verify it server-side → confirm same-user immutable UUID → bind/unlock encrypted local store → Home. Until confirmed, only Auth/OTP screens, no guest workouts.
 2. Home offers “Start workout” and “Create plan”.
 3. User starts a session, picks exercise, logs repetitions/weight and marks sets complete.
 4. App commits changes to local SQLite transactionally. A clear “Saved on this device” indicator appears.
@@ -104,9 +104,11 @@ flowchart TD
 | Reauth | “Sign in again with the account already linked to this device.” | Do not claim the account was deleted because internet is unavailable |
 | Different account login | “This device is linked to another Tnyx account. Sign in with that account; changing accounts is not supported.” | Block before data access; no automatic reset |
 
+**Owner-approved security/limit UX (ADR-017):** Signup is online **email/password plus required email OTP code verification** with server-side resend/attempt defenses; countdown/disabled resend are presentation only. Show clear locked/unverified, code-expired, rate-limited, network and recovery states; never reveal whether an email already exists unnecessarily. Offline cached workout use remains available **only** for a previously verified matching installation under ADR-011. The optional username is a **profile display field**, not a sign-in ID; shared inputs use localized min/max feedback and grapheme-safe Hindi counters. Candidate numeric lengths/counts are in the [limits pack](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md), **not yet approved**. **No PIN/biometric app lock, membership purchase or paywall UI in MVP.**
+
 ## 05A · Future paid Sync membership gate
 
-Supabase Sync will be unavailable in the initial MVP. Later Settings must clearly label it **Membership required**, not default. Membership purchase alone must not enable upload: a separate informed Sync opt-in is needed to transfer the **complete supported workout dataset**. Basic local workouts and Personal Backup are not gated behind this subscription. Pricing, payments, cancellation and server retention UX need separate authorization and testing.
+Supabase Sync and any paid membership/paywall are **deferred until after the core workout MVP is complete**. No membership screen or purchase controls in the initial app; later approved Settings must clearly label Sync **Membership required**, not default. Membership purchase alone must not enable upload: a separate informed Sync opt-in is needed to transfer the **complete supported workout dataset**. Basic local workouts and Personal Backup are not gated behind this subscription. Pricing, payments, cancellation and server retention UX need separate authorization and testing.
 
 ## 05B · Future backup UI states (WhatsApp-inspired)
 
