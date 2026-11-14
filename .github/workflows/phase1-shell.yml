@@ -7,6 +7,7 @@ on:
       - 'tests/**'
       - 'app.json'
       - 'package.json'
+      - 'package-lock.json'
       - 'tsconfig.json'
       - 'eslint.config.cjs'
       - '.github/workflows/phase1-shell.yml'
@@ -17,6 +18,7 @@ on:
       - 'tests/**'
       - 'app.json'
       - 'package.json'
+      - 'package-lock.json'
       - 'tsconfig.json'
 
 permissions:
