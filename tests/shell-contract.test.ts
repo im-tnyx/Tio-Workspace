@@ -6,7 +6,7 @@ import { DEFAULT_PREFERENCES, decodePreferences, resolveMode } from '../src/shar
 import { copy, formatNumber } from '../src/shared/i18n/en.ts';
 import { canOpenShellPreview } from '../src/bootstrap/shell/shellPreviewAccess.ts';
 import { canContinueAuthPreview, nextAuthPreviewStep, previousAuthPreviewStep } from '../src/features/onboarding/authPreviewSteps.ts';
-import { authPreviewMuted, controlSizes, radii, spacing } from '../src/shared/theme/tokens/index.ts';
+import { authPreviewLayout, authPreviewMuted, controlSizes, radii, spacing } from '../src/shared/theme/tokens/index.ts';
 import { BRAND_TYPING_INTERVAL_MS, BRAND_DOT_DIAMETER, BRAND_DOT_GAP, BRAND_DOT_FINAL_HOLD_MS, visibleTypingText } from '../src/shared/ui/typing.ts';
 
 test('initial root navigation has four stable, distinct routes', () => {
@@ -59,6 +59,8 @@ test('Welcome entry and auth choice labels are centrally defined', () => {
   assert.equal(copy('email'), 'Email');
   assert.equal(copy('password'), 'Password');
   assert.equal(copy('signInIntro'), 'Sign in with your email and password.');
+  assert.equal(copy('signInEnterEmail'), 'Enter your email');
+  assert.equal(copy('enterPassword'), 'Enter your password');
   assert.match(copy('signInPreviewNotice'), /not available yet/);
   assert.match(copy('signInPreviewNotice'), /real password/);
   assert.match(copy('signUpPreviewNotice'), /not available yet/);
@@ -115,6 +117,8 @@ test('unverified users cannot reach the mock shell in release builds', () => {
 test('app-wide button size and welcome bottom spacing are shared tokens', () => {
   assert.equal(controlSizes.buttonMinHeight, 42);
   assert.equal(controlSizes.onboardingButtonMinHeight, 46);
+  assert.equal(authPreviewLayout.signInTitleMinHeight, 92);
+  assert.equal(authPreviewLayout.signInTitleMinHeightCompact, 78);
   assert.equal(controlSizes.buttonRadius, radii.pill);
   assert.equal(controlSizes.buttonHitSlopVertical, 3);
   assert.equal(spacing.lg, 16);
