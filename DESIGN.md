@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🎨 TIO / Design System
+# 🎨 Tnyx / Design System
 **Visual direction for the proposed mobile app and a consistent, readable documentation experience**
 
 ![Status](https://img.shields.io/badge/DESIGN-PROPOSED-6D5EF8?style=flat-square)
@@ -25,7 +25,7 @@
 | Accessibility | Text scaling, touch targets, screen reader labels | Color-only statuses |
 | Consistency | Shared spacing, typography and form states | Different patterns for the same task |
 
-## 02 · Proposed color tokens
+## 02 · Violet primary / proposed color tokens
 
 | Semantic token | Light | Dark | Use |
 |---|---|---|---|
@@ -37,6 +37,8 @@
 | `text.secondary` | `#667085` | `#ADB5C5` | Hints/metadata |
 | `stroke.default` | `#E5E7EF` | `#2B3040` | Borders |
 | `status.danger` | `#C73853` | `#FF758D` | Destructive actions |
+
+**Owner-selected (ADR-016): Violet is Tnyx's primary brand color direction.** Hex values below are **candidate shades**, not separately approved exact colors. Mint remains a proposed supporting accent; validate contrast in both Light/Dark and Glass/Solid.
 
 Tokens must be checked for accessible text contrast in real light/dark UI; these are proposals pending visual QA. No hard-coded color values inside feature screens once a token system exists.
 
@@ -57,12 +59,24 @@ The uploaded iOS app screenshot is **visual reference only**, showing a transluc
 
 - **Spacing rhythm:** 4 / 8 / 12 / 16 / 24 / 32 px, subject to responsive scaling.
 - **Cards:** 16px radius proposed; clear grouping; avoid decorative shadows that reduce legibility.
-- **Type hierarchy:** large page title → section heading → body → supporting metadata. Prioritize device system fonts until typography licensing/performance are approved.
+- **Type hierarchy:** large page title → section heading → body → supporting metadata. Owner selected **Default device/system** and **Custom app-provided** typography modes; both need Hindi/Devanagari rendering. The exact Custom font and license are pending.
 - **Touch targets:** aim for at least 44 × 44 pt on iOS and 48 × 48 dp on Android, with larger workout controls.
 - **Icons:** consistent 24px outline icon family; always pair unfamiliar icons with labels.
 - **Accessibility:** dynamic font sizes, voice labels, focus order, reduced-motion support, dark mode, and color-blind-friendly status cues.
 
 Review proposed [MVP screens & interaction flows](docs/20-MVP-UX-FLOWS.md) before locking navigation and states. The owner-selected shell policy is recorded; exact mockups, color tokens and device testing still need review.
+
+### Brand, typography and multilingual foundation (owner-selected ADR-016)
+
+**App display name: Tnyx.** The repository `Tio-Workspace` is unchanged. **Violet** is the primary color family; exact tokens and a possible Mint accent remain in visual review.
+
+**Settings → Appearance → Typography** offers two independent, persistent local choices:
+- **Default:** device/system font stack, including OS language/script fallback.
+- **Custom:** future licensed, app-bundled font family with **complete Hindi/Devanagari support or a deliberately paired Devanagari-capable fallback**. Glyph gaps or failed font loads fall back to a readable OS font without data loss or silently changing the stored preference.
+
+Both modes apply via `src/shared/theme/tokens/` and shared UI components to TopBar, bottom tabs, cards, buttons, text fields, placeholders, dialogs, workout numbers/units and screen-reader content. Screen JSX remains dumb; no hard-coded font branches. Validate matras, conjuncts, line wrapping, text input caret/selection, numeric input, large accessibility text, mixed Hindi/English strings and native Android/iOS rendering.
+
+**Typography mode is not a language selector.** Future languages require locale resources/message keys and appropriate formatting; font switching never translates content. Exact Custom font family, weight/style map, licensing, binary footprint and initial locale availability are **still pending**. No fonts/code/localizations have been added by Phase 0 documentation.
 
 ### Dumb/presentational screen rule (ADR-015)
 
@@ -110,7 +124,7 @@ Suggested hierarchy: **Overview → Decisions → Flows → Edge cases → Verif
 
 ## 06A · Proposed Phase 0 visual freeze for owner review
 
-**Owner-selected (ADR-015):** **initially four bottom-root screens Home, Workout, Library, You** through a **changeable navigation registry** (future number/order owner-controlled), a **Standard bar layout now**, and optional Pill layout reserved for later; all detailed screens hide the bottom bar. Shared scroll-revealed root TopBar (nested immediately visible), **config-driven Standard bottom bar with default Glass material** (Pill layout deferred), centralized theme tokens, dumb screens and independent Glass/Solid × Light/Dark preferences. **Not yet finalized:** violet/mint colors, typography, initial Light/Dark choice, exact scroll threshold/motion, name/IDs, detailed hierarchy, contrast, native blur fallback and device screenshots.
+**Owner-selected (ADR-015):** **initially four bottom-root screens Home, Workout, Library, You** through a **changeable navigation registry** (future number/order owner-controlled), a **Standard bar layout now**, and optional Pill layout reserved for later; all detailed screens hide the bottom bar. Shared scroll-revealed root TopBar (nested immediately visible), **config-driven Standard bottom bar with default Glass material** (Pill layout deferred), centralized theme tokens, dumb screens and independent Glass/Solid × Light/Dark preferences. **Selected (ADR-016):** Tnyx display name, Violet primary direction, Default/Custom Hindi-ready typography. **Pending:** exact Violet shades/Mint accent, Custom font assets/license, initial Light/Dark, scroll threshold/motion, Android/iOS application IDs, icon, detailed visual hierarchy and real-device QA.
 
 Use the [Phase 0 design and Phase 1 approval pack](docs/22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) for exact review choices, Restore/Skip versus future Sync automatic hydration copy, acceptance criteria and the owner sign-off template. Do not read this paragraph as sign-off, app code authorization or a delivered UI.
 

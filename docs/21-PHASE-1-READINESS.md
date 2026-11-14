@@ -20,7 +20,7 @@
 
 | Gate | What must be true | Current |
 |---|---|---|
-| Product | **MVP functional screens/scope selected** (ADR-011); final brand/visual hierarchy/accessibility sign-off | ⬜ Detailed design pending |
+| Product | **Tnyx display name, Violet direction, Default/Custom Hindi-ready typography** and MVP scope selected (ADR-016/011); app IDs/icon, exact shades/font and visual QA pending | ⬜ Detailed design/native QA pending |
 | Session | **Email/password + cached offline access policy selected** (ADR-011); test offline revocation, reauth and errors | ⬜ Runtime evidence pending |
 | Data isolation | **One account/installation, no switching, logout retains data; separate reset** selected; native key/erase lifecycle and tests still required | ⬜ Technical validation pending |
 | Native build | SQLCipher build/validation strategy accepted (Expo Go limitations understood) | ⬜ Pending |
@@ -61,10 +61,11 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 
 ### Review-ready acceptance for the proposed design baseline (not yet executed)
 
-- [ ] Phase 1 **P0 UX-01–05 and UX-08–10** documented in [test plan](08-TEST-PLAN.md), including **Standard translucent Glass bar** on configured roots (initial four), future variable-count architecture, root scroll-revealed/nested immediate TopBar, Settings-only Solid, four material/appearance combinations, central `src/shared/theme/tokens/` and dumb-screen boundaries; **Pill is future only**. Native accessibility evidence required after implementation; **UX-06 P1 Backup and UX-07 P2 Sync** remain later phase gates.
+- [ ] Phase 1 **P0 UX-01–05 and UX-08–11** documented in [test plan](08-TEST-PLAN.md), including **Standard translucent Glass bar** on configured roots (initial four), future variable-count architecture, root scroll-revealed/nested immediate TopBar, Settings-only Solid, four material/appearance combinations, central `src/shared/theme/tokens/` and dumb-screen boundaries; **Pill is future only**. Native accessibility evidence required after implementation; **UX-06 P1 Backup and UX-07 P2 Sync** remain later phase gates.
 - [x] Owner selected **four initial root tabs in a Standard bottom bar with default Glass material**, config-driven future tab counts/order and optional future Pill layout; root scroll-revealed TopBar, nested back TopBar, Settings-only Solid, Light/Dark and dumb token-driven screens (ADR-015; design policy only).
-- [ ] Confirm violet/mint colors, typography, **initial Light/Dark preference**, scroll threshold/animation and final visual QA (Glass material default is already selected; see [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md)).
-- [ ] Owner documents application identifiers and whether logo/app icon remain provisional; no fake design-signoff claims.
+- [x] Owner selected **Tnyx display name, Violet primary direction, Default/Custom typography with Devanagari fallback** (ADR-016; design policy only).
+- [ ] Confirm exact Violet hex/contrast, optional Mint accent, Custom font family/license/weights, first locale release, initial Light/Dark, scroll thresholds and real-device Hindi UI QA (Glass default already selected; see [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md)).
+- [ ] Owner documents **Tnyx** Android application ID, iOS bundle ID, logo/icon and Custom font licensing. Repo remains `Tio-Workspace`; no fake design sign-off.
 - [ ] Scope exclusions for the initial **Phase 1.1 shell** are explicit: no auth connection, SQLCipher workout store, AI, backups, paid Sync, billing or release.
 - [ ] Later native security and portability gates remain pending until real Android/iOS builds produce evidence.
 

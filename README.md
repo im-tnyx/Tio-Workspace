@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🏋️ TIO WORKSPACE
+# 🏋️ Tnyx — Tio Workspace
 
 ### Train offline. Own your progress.
 
@@ -12,6 +12,8 @@ Your account stays signed in. Your workout history stays on your device.
 ![Project stage](https://img.shields.io/badge/PROJECT-PLANNING%20ONLY-6D5EF8?style=for-the-badge)
 ![Architecture](https://img.shields.io/badge/ARCHITECTURE-LOCAL--FIRST-13B89A?style=for-the-badge)
 ![Platforms](https://img.shields.io/badge/PLATFORMS-iOS%20%2B%20Android-334155?style=for-the-badge)
+
+**Owner-selected app display name:** **Tnyx** (2026-11-14). The existing repository is still `im-tnyx/Tio-Workspace`; GitHub paths and versioned backup format names are not renamed. Android application ID, iOS bundle ID and logo/icon still require separate approval.
 
 ![React Native](https://img.shields.io/badge/React_Native-Planned-20232A?style=flat-square&logo=react&logoColor=61DAFB)
 ![Expo](https://img.shields.io/badge/Expo-Planned-111827?style=flat-square&logo=expo&logoColor=white)
@@ -39,7 +41,7 @@ Your account stays signed in. Your workout history stays on your device.
 
 - **Account required:** the app uses online authentication to establish identity; everyday workout CRUD should not depend on internet.
 - **Session persistence:** closing the app is not logout; remote session revocation and reauthentication still need correct handling.
-- **Single-account installation:** one locally bound Tio identity at a time. There is no add-account or switch-account feature; a different login is blocked while the prior account's encrypted workouts remain. Logout locks data without erasing it. Any reset must be an explicit, separately confirmed destructive action.
+- **Single-account installation:** one locally bound Tnyx identity at a time. There is no add-account or switch-account feature; a different login is blocked while the prior account's encrypted workouts remain. Logout locks data without erasing it. Any reset must be an explicit, separately confirmed destructive action.
 - **Workouts do not automatically go to our server:** signup/login data is online, workout logs are on the device by default.
 - **AI is an exception only when requested:** a generated-plan request uses a secure server-side API and sends only the inputs needed to produce the plan.
 - **No magical recovery:** uninstalling, resetting or losing a device may erase local-only data. Cloud restore requires a real, completed encrypted backup.
@@ -155,6 +157,6 @@ Want to propose a change? Use the [issue templates](.github/ISSUE_TEMPLATE/) and
 
 <sub>Built from a privacy-first idea. Designed before implementation.</sub>
 
-**TIO WORKSPACE · Documentation phase · 13 November 2026**
+**Tnyx App · Tio Workspace repo · Documentation phase · 14 November 2026**
 
 </div>

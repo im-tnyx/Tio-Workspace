@@ -10,7 +10,7 @@
 </div>
 
 > [!IMPORTANT]
-> **ADR-010/011/012/013/014/015 owner decisions (2026-11-14):** D13 tooling, D02–D06 core policies, D10 MVP scope, future exclusive cloud mode choice, future paid separately opt-in Supabase Sync and an initially four-tab **Standard** bar with default Glass and future optional Pill/configurable tab count were accepted; **D04 explicitly forbids account switching/add-account**. D01, D07–D09, D11–D12 details and native/security implementations remain pending. The original product intentions in [09-DECISIONS.md](09-DECISIONS.md) remain the constraints. This document neither authorizes Phase 1 nor changes the default local-only privacy policy.
+> **ADR-010/011/012/013/014/015 owner decisions (2026-11-14):** D13 tooling, D02–D06 core policies, D10 MVP scope, future exclusive cloud mode choice, future paid separately opt-in Supabase Sync and an initially four-tab **Standard** bar with default Glass and future optional Pill/configurable tab count were accepted; **D04 explicitly forbids account switching/add-account**. D01 package IDs/icon, D07–D09, D11–D12 details, Custom font license and native/security implementations remain pending; Tnyx app name, Violet direction and typography options are selected (ADR-016). The original product intentions in [09-DECISIONS.md](09-DECISIONS.md) remain the constraints. This document neither authorizes Phase 1 nor changes the default local-only privacy policy.
 
 ## ✅ Already specified by the owner
 
@@ -28,7 +28,7 @@
 
 | Ref | Decision needed | Working recommendation / selection | Risk if undecided | Owner status |
 |---|---|---|---|---|
-| D01 | Product name/identity | Use **Tio** provisionally; finalize identifiers before builds | Medium | ⬜ Pending |
+| D01 | Product name/identity | **Tnyx** final app display name; repo stays `Tio-Workspace`; choose Android application ID, iOS bundle ID and original icon/logo | Medium | ✅ Name selected (ADR-016); ⬜ IDs/icon pending |
 | D02 | Sign-in options | Supabase **email/password MVP**; Google/Apple optional later | Medium | ✅ Policy approved (ADR-011) |
 | D03 | Offline session policy | Previously verified bound identity may log workouts offline; remote revocation is unknown until online | **High** | ✅ Trade-off accepted (ADR-011) |
 | D04 | **No account switching** / logout | **One locally bound account per installation**; no second login while bound; logout locks retained history, separately confirmed erase/reset required | **High** | ✅ Policy approved (ADR-011) |
@@ -42,6 +42,9 @@
 | D12 | Future sync deletion semantics | Separate disabling sync from deleting cloud copies; revisit in Phase 4 | **High later** | ⬜ Pending |
 | D13 | Local ORM and migration tooling | **Selected:** Expo SQLite + Drizzle ORM/Drizzle Kit + native SQLCipher; offline-bundled migrations. Unlock, key and recovery implementation require validation | **High** | ✅ Approved — stack only (ADR-010, 2026-11-14) |
 | D14 | iOS-inspired shared UI shell | **Initial four roots** Home/Workout/Library/You; **Standard + Glass bottom bar now**, owner-configurable tab count/order later; **Pill layout deferred**. Solid in Settings, Light/Dark independent; root scroll-reveal TopBar, dumb token-driven screens | Medium | ✅ Owner-selected ADR-015 (2026-11-14); tab registry/layout/native QA pending |
+| D15 | App typography and future languages | Settings Default OS / Custom app font; both Hindi/Devanagari-ready, shared tokens, locale selection separate; Violet primary | Medium | ✅ Brand/type direction (ADR-016); font family/licensing and QA pending |
+
+**D15 — Typography, Hindi and internationalization (ADR-016):** Settings offers **Default OS / Custom app font**, both with Devanagari support/fallback, persistent local preference and shared tokens. Future language selection/translation resources are separate. **Violet** selected as brand-primary color family, exact shades not yet finalized. See [DESIGN](../DESIGN.md) and [UX-11](08-TEST-PLAN.md).
 
 ## 🧱 Architecture trade-offs at a glance
 
@@ -69,7 +72,7 @@ A key protected only by device secure storage is useful for **local** database s
 | Personal backup | Explicit opt-in, OFF by default | **Only user-selected Drive/iCloud or encrypted exported file — never Supabase** | Encrypted snapshot/restore with confirmation |
 | App cloud sync | **Exclusive future opt-in; backup mode OFF**, not authorized now | Future Supabase Postgres + RLS (not backup storage) | Auto-download authorized same-user rows after new login when available; no Backup Restore, conflicts/tombstones, **not historical backup** |
 
-**Never** label personal backup a real-time synchronization feature, or future sync a guaranteed historical backup. **ADR-013 requires exactly one active cloud destination, or none**: Personal Backup mode has a manual Restore; future Supabase Sync mode would auto-rehydrate from server data and has no backup Restore. Cloud-mode changes require consent and prior-copy deletion checks; disabled modes' **old remote copies are not magically removed**, and manual exports cannot be erased by Tio. Local SQLite is always primary; sync deletions may propagate.
+**Never** label personal backup a real-time synchronization feature, or future sync a guaranteed historical backup. **ADR-013 requires exactly one active cloud destination, or none**: Personal Backup mode has a manual Restore; future Supabase Sync mode would auto-rehydrate from server data and has no backup Restore. Cloud-mode changes require consent and prior-copy deletion checks; disabled modes' **old remote copies are not magically removed**, and manual exports cannot be erased by Tnyx. Local SQLite is always primary; sync deletions may propagate.
 
 ## 🧩 Review order (to avoid wasted work)
 
@@ -85,12 +88,12 @@ flowchart TD
   F -->|Yes, separately recorded| H["Future: Expo setup"]
 ```
 
-**Current sign-off handoff:** the [Phase 0 final design and Phase 1 owner approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) compiles the existing selected policies into a design baseline and separate **Phase 1.1-only** authorization template. It does **not** close D01/D07–D09/D11–D12, complete native validation or grant coding permission. Record any actual owner decisions back in this queue/decision register after approval.
+**Current sign-off handoff:** the [Phase 0 final design and Phase 1 owner approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) compiles the existing selected policies into a design baseline and separate **Phase 1.1-only** authorization template. It selects the D01 app name but does **not** settle package IDs/icon, D07–D09/D11–D12, font licensing, native validation or implementation permission. Record any actual owner decisions back in this queue/decision register after approval.
 
 ## 📋 Required owner sign-off
 
 - [x] Record owner-selected **D02–D06 policy, D10 MVP scope and D13 tooling** in ADR-010/011; selection does not certify implementation security.
-- [ ] Resolve **D01, D07–D09, D11–D12** remaining scope/provider/UX/privacy details and native validation before relevant phases.
+- [ ] Resolve **D01 package IDs/icon**, D07–D09, D11–D12, Custom font family/license and relevant native validation before those phases.
 - [x] Confirm **no account switching**, same-account re-login after logout, and separate confirmed erase/reset; server account deletion details remain a separate future UX.
 - [x] Accept offline local access despite unverifiable remote revocation until reconnection; online functions still require server authorization.
 - [x] Approve portable user-held recovery **principle** and **optional-backup OFF default + clear-data empty/restore UX** (ADR-012).

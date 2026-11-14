@@ -39,7 +39,7 @@
 | SEC-01 | P0 | Inspect mobile APK/IPA/config | No AI provider, Supabase service-role or backend secret key |
 | SEC-02 | P0 | SQLCipher-enabled native build | `cipher_version` detected; raw database unreadable without key |
 | SEC-03 | P0 | Wrong/missing key or native build without SQLCipher | Storage fails closed before ORM migration or workout UI; no plaintext replacement created |
-| SEC-04 | P0 | Local Only: inspect Android pre-12 backup XML, Android 12+ cloud/device-transfer rules and actual copied SQLite, WAL/SHM, local snapshots | Effective native exclusions verified; any OS/OEM limitations documented, no implied Tio cloud upload |
+| SEC-04 | P0 | Local Only: inspect Android pre-12 backup XML, Android 12+ cloud/device-transfer rules and actual copied SQLite, WAL/SHM, local snapshots | Effective native exclusions verified; any OS/OEM limitations documented, no implied Tnyx cloud upload |
 | SEC-05 | P0 | Local Only: inspect iOS app-data/iCloud backup and device migration, then restore with missing/stale Keychain key | Effective native exclusion verified; no wrong-account unlock, plaintext fallback, phantom data or silent erase |
 
 | AUTH-09 | P0 | Explicit erase/reset installation vs logout | Logout preserves binding/history; reset warns of permanent loss, requires confirmation, and only then permits fresh online account binding |
@@ -58,7 +58,7 @@
 | BKP-10 | P1 | Automatic backup OFF / Daily / Weekly / Monthly | No background transfer when off; any enabled schedule honors consent, OS best-effort rules, quota limits and actual completion timestamps |
 | BKP-11 | P1 | Lost recovery secret, incorrect account, or incompatible encrypted backup | No restore possible without valid secret/identity; no backend bypass, no overwrite or false recovery promise |
 | BKP-12 | P1 | Future optional media attachments absent/present | No photo/video switches or uploads without approved attachment support and consent; when present, inclusion/size is correctly reflected |
-| BKP-13 | P1 | User enables personal backup to Google Drive/iCloud | Archive is client-encrypted and sent only to user-selected provider; **zero workout/backup data** in Supabase Postgres/Storage, with no Tio server archive copy |
+| BKP-13 | P1 | User enables personal backup to Google Drive/iCloud | Archive is client-encrypted and sent only to user-selected provider; **zero workout/backup data** in Supabase Postgres/Storage, with no Tnyx server archive copy |
 | BKP-14 | P1 | User leaves personal backup OFF in Local Only mode and uses local workouts | No Drive/iCloud or Supabase workout payload transfer; local logging unaffected |
 | BKP-15 | P1 | Completed encrypted backup → clear app settings/reinstall → same-account sign-in with no local backup mode/provider → user selects Find backup | Explicit provider authorization discovers matching archive; **Restore / Skip** shown after validation, user may Restore without enabling Backup or may Skip without altering local data/mode; no implicit upload or second-account binding |
 | BKP-16 | P1 | Fresh device with wrong Drive/iCloud account, revoked consent, missing archive, changed app identity or unavailable iCloud container | Honest not-found/error and encrypted import fallback; local data untouched and no implicit backup or Supabase sync |
@@ -94,7 +94,9 @@
 
 | UX-10 | P0 | With mock **3, 4 and 5+ tab configurations** supplied to the reusable bottom-bar/layout boundary, test small screens and larger text | Initial four-tab Standard UI remains unchanged; tab keys/labels/routes/selection remain valid with fewer/more configured tabs; no crash, inaccessible destinations, overlapping/clipped controls or hardcoded widths; overflow/adaptive handling documented. This tests **extensibility**, not shipping additional tabs or a Pill switch |
 
-These are **planned**, unexecuted acceptance criteria. The first workout MVP requires **P0 UX-01–05 and UX-08–10**; **P1 UX-06 belongs to Personal Backup (Phase 3)** and **P2 UX-07 to paid Supabase Sync (Phase 4)**. A screenshot reference is not test evidence or an asset license.
+| UX-11 | P0 | Settings Typography Default/Custom on Android/iOS, with Hindi/Devanagari and mixed English-Hindi workout labels, buttons, bottom navigation, sheets, text inputs, large accessibility text | Both modes use shared font tokens, reliable glyph/fallback coverage (matras/conjuncts), readable line wrapping and text input caret/selection; no clipping/missing glyph boxes; preference persists. Language switching is separate and is not implied by font choice; no font implementation/test exists yet |
+
+These are **planned**, unexecuted acceptance criteria. The first workout MVP requires **P0 UX-01–05 and UX-08–11**; **P1 UX-06 belongs to Personal Backup (Phase 3)** and **P2 UX-07 to paid Supabase Sync (Phase 4)**. A screenshot reference is not test evidence or an asset license.
 
 ## Test environments
 Physical Android and iPhone devices, current supported OS versions, actual Expo development/release builds, unstable network, background and device-kill scenarios, low storage, attempted second account on a bound installation, deliberate erase/reset, reinstallation and cross-device restores.

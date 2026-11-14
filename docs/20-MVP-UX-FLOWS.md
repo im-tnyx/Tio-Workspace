@@ -48,6 +48,8 @@ flowchart TD
 
 **Config-driven tab contract (owner-selected architecture, not an active management screen):** future app shell supplies ordered root-tab descriptors with stable keys, accessible icon/label, valid destination and root/nested visibility. `BottomTabBar` accepts descriptors and a layout variant; Standard is the initial product selection, Pill reserved for later approval. No per-screen tab list, duplicated navigation logic, implicit extra tabs or user-facing tab editor in MVP. A count change may require new real destination screens and a separate reviewed product decision. Use responsive item distribution, safe-area and keyboard handling; verify 3/4/5+ tab fixtures and larger font sizes without clipped or unreachable tabs.
 
+**Tnyx and Hindi-ready typography (ADR-016):** All new user-facing copy uses **Tnyx** as app name. Settings → Appearance → Typography has **Default OS/system** and **Custom app font**, both Devanagari-capable with script fallback. Shared tokens control buttons, nav labels, forms and sheets; future localized messages use separate translation resources, not font changes or hardcoded strings in dumb screens. Test `UX-11` with Hindi matras/conjuncts, mixed English/Hindi, large text, caret and accessible layouts after implementation. Exact licensed font and language rollout are pending.
+
 ## 02 · Screen contract
 
 | Screen | Primary CTA | Offline | Empty/error state |
@@ -62,7 +64,7 @@ flowchart TD
 | Active Workout | Log/complete sets | Yes | Autosave/transaction failure and resume |
 | History | Open past session | Yes | No logged sessions |
 | Progress | View PRs / volume | Yes | Insufficient data, unit selection |
-| Settings (nested) | Glass/Solid + Light/Dark, bound account, logout and separate erase/reset | Mostly | Independent persisted theme choices, no add/switch account UI, irreversible reset warning |
+| Settings (nested) | Glass/Solid + Light/Dark, **Typography Default/Custom**, bound account, logout and separate erase/reset | Mostly | Hindi/Devanagari-capable persistent typography independent of appearance, no account switch, irreversible reset warning |
 | Personal Backup (later) | Optional Back up now / Restore / settings | Needs network for remote upload/download; manual encrypted file workflow depends on platform | OFF by default; last success/progress/failure/quota/recovery states |
 | AI Draft (later) | Generate then approve | No | AI unavailable; preserve local session |
 | Supabase Sync (future paid membership) | Full-workout-data premium alternative to Personal Backup | Not part of MVP | **Disabled/unavailable now**; when built, Settings offers one choice: Local Only / Personal Backup / Supabase Sync, never both ON |
@@ -100,7 +102,7 @@ flowchart TD
 | Backup failed | “Backup failed. Your workouts are still saved on this device.” | Show reason, Retry and storage guidance; retain last successful backup date |
 | AI draft | “Review and edit before saving” | Never auto-apply generated routines |
 | Reauth | “Sign in again with the account already linked to this device.” | Do not claim the account was deleted because internet is unavailable |
-| Different account login | “This device is linked to another Tio account. Sign in with that account; changing accounts is not supported.” | Block before data access; no automatic reset |
+| Different account login | “This device is linked to another Tnyx account. Sign in with that account; changing accounts is not supported.” | Block before data access; no automatic reset |
 
 ## 05A · Future paid Sync membership gate
 
@@ -121,7 +123,7 @@ The owner-provided iOS/Android screenshots inform **information hierarchy only**
 - Each screen covers `loading`, `empty`, `offline`, `error`, and account-safety states.
 - Never expose cached workout data when a different account attempts login; **no identity-switching flow exists**.
 
-**Owner-selected shell (ADR-015):** **initial** four tab roots Home / Workout / Library / You in a **Standard full-width layout with default Glass translucency**, future tab count/order via config and Pill layout deferred; root compact TopBar **scroll-revealed only**, nested TopBar immediately visible; Settings-only Solid option, independent Light/Dark; centralized theme tokens and dumb screens. Existing MVP features remain nested. See the [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) and P0 UX-01–05/08 versus later P1 UX-06, P2 UX-07; final palette/QA/screenshot sign-off remains pending.
+**Owner-selected shell (ADR-015):** **initial** four tab roots Home / Workout / Library / You in a **Standard full-width layout with default Glass translucency**, future tab count/order via config and Pill layout deferred; root compact TopBar **scroll-revealed only**, nested TopBar immediately visible; Settings-only Solid option, independent Light/Dark; centralized theme tokens and dumb screens. Existing MVP features remain nested. See the [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) and P0 UX-01–05/08–11 versus later P1 UX-06, P2 UX-07; final palette/QA/screenshot sign-off remains pending.
 
 ## 07 · Design acceptance checklist
 

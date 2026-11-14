@@ -1,6 +1,6 @@
 <div align="center">
 
-# 📚 TIO DOCUMENTATION
+# 📚 Tnyx App · Tio Workspace Documentation
 **One map for the product vision, technical boundaries and engineering workflow.**
 
 ![Documentation](https://img.shields.io/badge/STAGE-PLANNING-6D5EF8?style=flat-square)
