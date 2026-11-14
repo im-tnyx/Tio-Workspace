@@ -1,4 +1,4 @@
-import { Text, View, useWindowDimensions } from 'react-native';
+import { Dimensions, Text, View } from 'react-native';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
 import { copy } from '@/shared/i18n/en';
 import { spacing, typography } from '@/shared/theme/tokens';
@@ -27,8 +27,9 @@ export function AuthCredentialsScreen({
   onChangeEmail, onChangeCode, onChangePassword, onSubmit,
 }: Props) {
   const { colors } = useAppearance();
-  const { height } = useWindowDimensions();
-  const compact = height < 700;
+  // Screen height stays stable while Android resizes the window for a keyboard.
+  // Do not resize the heading when the input gains focus.
+  const compact = Dimensions.get('screen').height < 700;
   const signingUp = mode === 'sign-up';
   const title = step === 'email' ? copy('enterEmail')
     : step === 'otp' ? copy('enterCode')
