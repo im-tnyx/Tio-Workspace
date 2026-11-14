@@ -63,17 +63,22 @@ export function AuthCredentialsScreen({
     : step === 'reset-otp' ? resetCode
     : step === 'new-password' ? newPassword : password;
 
-  return <View style={{ flex: 1, minHeight: 0, width: '100%', gap: compact ? spacing.md : spacing.xl }}>
+  return <View style={{ flex: 1, minHeight: 0, width: '100%',
+    gap: primarySignIn ? spacing.lg : compact ? spacing.md : spacing.xl }}>
     <View style={{ gap: spacing.sm }}>
-      <Text accessibilityRole="header" style={[typography.title, {
-        color: colors.text, fontSize: compact ? 32 : 38,
-        lineHeight: compact ? 39 : 46,
-        // Sign-in changes its heading in place; the email field stays put.
-        minHeight: primarySignIn
-          ? (compact ? authPreviewLayout.signInTitleMinHeightCompact
-            : authPreviewLayout.signInTitleMinHeight)
-          : undefined,
-      }]}>{title}</Text>
+      <Text accessibilityRole="header"
+        // The two sign-in headings share a single-line slot. Shrink long
+        // labels on narrow screens instead of reserving a blank second line.
+        numberOfLines={primarySignIn ? 1 : undefined}
+        adjustsFontSizeToFit={primarySignIn}
+        style={[typography.title, {
+          color: colors.text, fontSize: compact ? 32 : 38,
+          lineHeight: compact ? 39 : 46,
+          minHeight: primarySignIn
+            ? (compact ? authPreviewLayout.signInTitleMinHeightCompact
+              : authPreviewLayout.signInTitleMinHeight)
+            : undefined,
+        }]}>{title}</Text>
       {description ? <Text style={[typography.body, { color: colors.muted, opacity: 0.76 }]}>
         {description}
       </Text> : null}
