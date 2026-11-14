@@ -28,7 +28,7 @@
 
 | Ref | Decision needed | Working recommendation / selection | Risk if undecided | Owner status |
 |---|---|---|---|---|
-| D01 | Product name/identity | **Tnyx** display name; Android application ID and iOS bundle ID **`com.tnyx.tio`**; repo still `Tio-Workspace` | Medium | ✅ App name/ID selected (ADR-016); ⬜ platform ownership/registration pending; **black/white happy moving-person icon concept preferred**, final original SVG/platform asset QA/owner approval pending |
+| D01 | Product name/identity | **Tnyx** display name; Android application ID and iOS bundle ID **`com.tnyx.tio`**; repo still `Tio-Workspace` | Medium | ✅ App name/ID selected (ADR-016); ⬜ platform ownership/registration pending; **minimal white T monogram on black rounded-square icon concept preferred**, no reuse/tracing of reference art; final original SVG/platform asset QA/owner approval pending |
 | D02 | Sign-in options | Supabase **email/password + required email OTP signup verification**; no guest; Google/Apple optional later; rate/expiry config needs native/server validation | High | ✅ Auth policy selected (ADR-011/017); target numbers selected; provider enforcement unverified |
 | D03 | Offline session policy | Previously verified bound identity may log workouts offline; remote revocation is unknown until online | **High** | ✅ Trade-off accepted (ADR-011) |
 | D04 | **No account switching** / logout | **One locally bound account per installation**; no second login while bound; logout locks retained history, separately confirmed erase/reset required | **High** | ✅ Policy approved (ADR-011) |
@@ -94,7 +94,7 @@ flowchart TD
   F -->|Yes, separately recorded| H["Future: Expo setup"]
 ```
 
-**Current sign-off handoff:** the [Phase 0 final design and Phase 1 owner approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) compiles the existing selected policies into a design baseline and separate **Phase 1.1-only** authorization template. It selects **Tnyx** and Android/iOS ID **`com.tnyx.tio`** (store uniqueness/registration unverified), plus a **preferred monochrome moving-person icon concept** but **not a final original production asset**. It does **not** authorize implementation, satisfy later native test gates or require future Custom-font licensing for the English/system-font shell. Record any actual owner decisions back in this queue/decision register after approval.
+**Current sign-off handoff:** the [Phase 0 final design and Phase 1 owner approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) compiles the existing selected policies into a design baseline and separate **Phase 1.1-only** authorization template. It selects **Tnyx** and Android/iOS ID **`com.tnyx.tio`** (store uniqueness/registration unverified), plus a **preferred monochrome T monogram icon concept** but **not a final original production asset**. It does **not** authorize implementation, satisfy later native test gates or require future Custom-font licensing for the English/system-font shell. Record any actual owner decisions back in this queue/decision register after approval.
 
 ## 📋 Required owner sign-off
 

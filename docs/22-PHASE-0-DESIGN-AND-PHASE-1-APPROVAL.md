@@ -16,7 +16,7 @@
 | Functional scope | Auth, Home, Exercise Library, Plans, Active Workout, History, Progress, Settings — ADR-011 | Keep the selected screens; no new MVP feature |
 | Account/privacy | **Owner-selected** online email/password + verified signup OTP, no guest and correct bound UUID; previously verified same-account offline workouts still work | Password/OTP **numeric targets already selected**, but production email, provider/server enforcement, rate-limit security and native tests are **not yet configured/verified** (ADR-017) |
 | Storage | Local encrypted SQLite default; Personal Backup or future paid Sync is separately chosen, never both active | Preserve unchanged |
-| App identity | Tnyx display name and **Android application ID / iOS bundle ID `com.tnyx.tio`** owner-selected | Store registration/uniqueness, **icon concept preferred** (black rounded square, white celebratory motion figure and waist swoosh); final original vector, launcher-safe exports, trademark review and ownership unverified; repo remains `Tio-Workspace` |
+| App identity | Tnyx display name and **Android application ID / iOS bundle ID `com.tnyx.tio`** owner-selected | Store registration/uniqueness, **icon concept preferred** (black rounded square with minimal bold white T monogram; previous moving-person concept superseded; no copying references); final original vector, launcher-safe exports, trademark review and ownership unverified; repo remains `Tio-Workspace` |
 | UI shell / visual identity | **Owner-selected ADR-015:** initial four tabs Home/Workout/Library/You in **Standard full-width + Glass translucent bar**; reusable config allows future owner-approved tab count/order and future Pill layout; scroll-revealed root TopBar, nested immediate TopBar, Settings Solid/System(default)-Light-Dark and portrait-only, dumb/token-driven screens | Palette, typography, native OS-theme switching, icon, scroll threshold, native QA and any future Pill/count feature are pending |
 | Typography / i18n | **English-only OS/system font in MVP**, no Language/Custom Font setting or Hindi resources; centralized English messages, locale-aware formatters and shared typography roles (ADR-018) | Hindi/other-language translations, optional licensed Custom font/glyph QA are later separately approved phases |
 | Local lock | **Not in MVP** (ADR-017) | Optional PIN/biometrics considered only in a separately approved future slice |
@@ -82,7 +82,7 @@ A Personal Backup restore is not tied to the current/remembered upload mode, may
 | Ref | Required now to sign off shell | Deferred gate / risk |
 |---|---|---|
 | D16 / D17 / ADR-017 | Product numbers/password/username/program/routine saved title 3–25, creation-count/set limits and OTP targets **owner-selected**; future custom member cap 50; **CAPTCHA deferred** | Provider/server enforceability, rate limits and native/abuse tests pending; no member custom creation in MVP |
-| D01 / ADR-016 | **Tnyx and Android/iOS app ID `com.tnyx.tio`** selected | Store uniqueness/ownership/registration and monochrome moving-person concept preferred; final original editable vector/icon export + owner release approval pending |
+| D01 / ADR-016 | **Tnyx and Android/iOS app ID `com.tnyx.tio`** selected | Store uniqueness/ownership/registration and simple monochrome **T monogram concept preferred**, human figure superseded and stock/reference art never traced; final original editable vector/icon export + owner release approval pending |
 | Visual / language / orientation | Neutral UI; **System(default)/Light/Dark** with Glass/Solid; **portrait-only**, **English-only OS font** MVP (ADR-018); future accents/custom fonts/Hindi deferred | `UX-08/11/14 P0` native OS-follow/portrait/font/contrast tests pending; `UX-13/15` future-only |
 | D02–D06, D10, D13 | Already owner-selected via ADR-010/011; **do not reopen silently** | Native key lifecycle, encryption and migration tests must pass before local encrypted storage release |
 | D07 | Agree Personal Backup is **later** and manual export/import is the first feasibility target | Google Drive scopes, iCloud native path, crypto format, scheduler and fresh-install restore in Phase 3 |
@@ -95,6 +95,8 @@ A Personal Backup restore is not tied to the current/remembered upload mode, may
 No team or agent should mark a deferred high-risk test **passed** merely because the implementation is deferred.
 
 ## 4. Phase 1 readiness: split the approval from the exit tests
+
+**Merge-readiness boundary for PR #10 (docs-only):** Prefer the latest owner-selected T-monogram concept in design/ADR/handoff without requiring the final SVG/launcher exports for this documentation merge. Gate on current-HEAD independent review, disposition of any outstanding actionable findings, actual configured branch protections/checks, verified Markdown-only scope and owner **separate explicit PR merge permission**. Outdated GitHub review threads are not proof of outstanding current defects, but must be inspected; do not silently mark them resolved. A docs merge does not authorize Phase 1.1 implementation.
 
 ### 4.1 To approve **only Phase 1.1 — shell**
 
