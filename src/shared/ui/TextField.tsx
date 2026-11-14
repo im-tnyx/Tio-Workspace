@@ -14,13 +14,13 @@ type Props = {
   variant?: 'outlined' | 'bare';
 } & Pick<TextInputProps,
   'keyboardType' | 'autoCapitalize' | 'autoCorrect' | 'autoComplete'
-  | 'secureTextEntry' | 'returnKeyType' | 'textContentType'>;
+  | 'secureTextEntry' | 'returnKeyType' | 'textContentType' | 'maxLength'>;
 
 export function TextField({
   label, value, onChangeText, placeholder, editable = true,
   variant = 'outlined', ...inputProps
 }: Props) {
-  const { colors } = useAppearance();
+  const { colors, mode } = useAppearance();
   return <View style={{ gap: spacing.sm }}>
     {variant === 'outlined' ? <Text style={[typography.caption, { color: colors.text }]}>{label}</Text> : null}
     <TextInput
@@ -29,7 +29,7 @@ export function TextField({
       onChangeText={onChangeText}
       editable={editable}
       placeholder={placeholder}
-      placeholderTextColor={colors.muted}
+      placeholderTextColor={variant === 'bare' ? (mode === 'dark' ? '#858585' : '#767676') : colors.muted}
       accessibilityLabel={label}
       style={[typography.body, variant === 'bare' ? {
         // Reference-inspired borderless input: no filled box, line or card.
