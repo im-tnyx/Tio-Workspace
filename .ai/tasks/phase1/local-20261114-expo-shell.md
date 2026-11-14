@@ -72,3 +72,5 @@ Official Expo SDK 58, Expo Router and Expo Blur docs checked on 2026-11-14. Foll
 - Code: `AuthPreviewPage.tsx`, `authKeyboardGeometry.ts`, shell tests, Phase 1.1 guide and task note. Password eye and mock-only auth behavior retained. Current CI and fresh native QA/re-review required; no merge approval.
 
 - CI token-guard follow-up: replace inline numeric keyboard test inside `paddingBottom` expression with `Math.max(keyboardInset, insets.bottom)`, preserving native keyboard clearance while keeping the project's token guard satisfied. Recheck full CI at updated HEAD; original commit failed the token guard before TypeScript/tests ran.
+
+- Follow-up CI typecheck correction: React Native 0.88 strict types require `TextInputInstance` (not the `TextInput` component function) for the retained Email field `useRef` and reusable TextField `Ref` prop. Exact issue surfaced on previous HEAD after token guard passed; full CI must be rerun.

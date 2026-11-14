@@ -1,5 +1,5 @@
 import { Pressable, Text, TextInput, View } from 'react-native';
-import type { TextInputProps } from 'react-native';
+import type { TextInputInstance, TextInputProps } from 'react-native';
 import { useState } from 'react';
 import type { Ref } from 'react';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
@@ -40,7 +40,7 @@ type Props = {
   placeholder?: string;
   editable?: boolean;
   variant?: 'outlined' | 'bare';
-  inputRef?: Ref<TextInput>;
+  inputRef?: Ref<TextInputInstance>;
 } & Pick<TextInputProps,
   'keyboardType' | 'autoCapitalize' | 'autoCorrect' | 'autoComplete'
   | 'secureTextEntry' | 'returnKeyType' | 'textContentType' | 'maxLength' | 'autoFocus'>;

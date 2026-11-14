@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react';
-import { Dimensions, Text, TextInput, View } from 'react-native';
+import { Dimensions, Text, View } from 'react-native';
+import type { TextInputInstance } from 'react-native';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
 import { copy } from '@/shared/i18n/en';
 import { authPreviewLayout, spacing, typography } from '@/shared/theme/tokens';
@@ -36,7 +37,7 @@ export function AuthCredentialsScreen({
   const compact = Dimensions.get('screen').height < 700;
   const signingUp = mode === 'sign-up';
   const primarySignIn = !signingUp && (step === 'email' || step === 'password');
-  const signInEmailInput = useRef<TextInput>(null);
+  const signInEmailInput = useRef<TextInputInstance>(null);
   const previousStep = useRef<AuthPreviewStep>(step);
   useEffect(() => {
     const prior = previousStep.current;
