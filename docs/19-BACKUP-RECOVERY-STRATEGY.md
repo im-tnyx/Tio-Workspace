@@ -72,7 +72,7 @@ tio-backup-v1
 
 ## 06 · Restore UX
 
-**Owner-selected behavior (2026-11-14):** Personal backup is optional and **OFF until the user enables it**. A fresh login does not restore workouts from Supabase. After OS app-data clear, uninstall/reinstall, confirmed local erase/reset or replacement phone, an authenticated same-account user may choose **Restore backup** if there is a completed matching encrypted archive and their portable recovery secret. No archive / backup never enabled / upload failed / restore skipped → start with **empty local workout data**. A prior Supabase account and login identity may still exist; “new account” is a UX description of empty local history, **not** a newly created Auth user. Do not silently auto-restore.
+**Owner-selected behavior (2026-11-14; ADR-012/013):** Local Only is default. **Personal Backup** to user's Drive/iCloud is optional and encrypted, and never simultaneously enabled with future Supabase Sync. After clear-data/reinstall/phone change, same-account online login in Personal Backup mode may offer explicit **Restore Backup** if a completed matching archive and portable recovery secret are available; skipping it or no usable archive means empty history. **Only in a future, previously enabled and authorized Supabase Sync mode**, available server workout rows can **automatically rehydrate** the new local encrypted database after login, **without** Backup Restore. With **Local Only**, Auth login alone never reconstructs workouts. A prior Supabase Auth identity may still exist: “fresh” means empty local workouts, not a new Auth account. Do not promise auto-download until future sync is implemented and tested.
 
 **Backup settings reference:** a familiar, dedicated Settings → Backup page with last successful backup, **Back up now**, Off/Daily/Weekly/Monthly automatic backup (best effort), progress, failure/retry, storage management and recovery guidance. Cloud encryption is always required, even if a reference screenshot shows it off. Photo/video include switches are relevant **only if separately approved user attachments exist**, not as new Phase 1 features. Provider capability and exact background cadence require native validation. See [backup screen contract](05-BACKUP-AND-SYNC.md).
 
@@ -88,7 +88,7 @@ tio-backup-v1
 6. Import into a temporary/staging database; validate integrity; atomically switch current account's store only on success.
 7. Confirm new workouts/history are queryable before showing “Restored”; on failure keep existing local store intact.
 
-**Account mismatch / one-account installation:** never import a backup from another UUID into the bound installation, and never change the binding as part of restore. Fresh-install restore must bind the same verified Supabase user; importing into a different bound identity is blocked, not a switch/transfer UX.
+**Account mismatch / one-account installation:** never import a backup from another UUID into the bound installation, and never change the binding as part of restore. Fresh-install Restore Backup requires Personal Backup mode and the same verified Supabase user; future server sync hydration likewise requires verified account authorization. Neither is an account-switch/transfer UX. Changing cloud mode needs explicit handling of prior remote data, not implicit deletion.
 
 ## 07 · Failure and recovery matrix
 

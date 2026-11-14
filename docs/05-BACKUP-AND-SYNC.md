@@ -14,20 +14,20 @@
 
 **Status:** Design only. Google Drive/iCloud connection, permissions and native capabilities have **not** been configured or tested.
 
-## Three distinct storage modes
+## One active cloud mode — local SQLite always
 | Mode | Primary source | Other copy | Default? |
 |---|---|---|---|
 | **Local Only** | Account-specific local SQLite | None | **Yes** |
 | **Local + Personal Backup** | Local SQLite | Encrypted snapshots in user's chosen Drive/iCloud location | No, user opts in |
 | **Local + App Cloud Sync** | Local SQLite, synchronized | Separately built Tio server-side Supabase Postgres + RLS | **Future only**, separate opt-in/owner approval; no current server workout storage |
 
-A cloud backup is a restorable snapshot, **not** automatic cross-device realtime sync. Supabase login alone does not restore local-only workout history.
+A cloud backup is a restorable snapshot, **not** automatic cross-device realtime sync. **Supabase Auth login alone** does not restore local-only workout history. Only a **future, separately authorized and previously user-enabled** Supabase Sync mode may automatically download the same authenticated user's available server workout records into a new local SQLite store; that is *sync hydration*, not the **Restore Backup** action.
 
 ## Owner-selected backup behavior (2026-11-14; future phase)
 
 **Default: Backup OFF, Local Only.** The user can keep logging without choosing a provider, granting cloud permission or paying for cloud storage. **No workout records or backup archives are uploaded to Supabase Postgres/Storage by signing in or by enabling a personal backup**; Supabase Auth holds account/session information, not the workout archive. A personal backup is a separately consented, **client-encrypted archive saved only to the user's chosen Google Drive/iCloud location or manual encrypted file**, never to Tio-managed Supabase Storage/Postgres. The future sync backend must never be silently reused as the personal-backup destination.
 
-**Critical distinction:** (a) ordinary logout retains locked workout history and the sole account binding; same-account re-login reopens it, (b) a user-confirmed in-app erase/reset, OS app-data clear, uninstall/reinstall or phone loss may remove the local SQLite database and installation state. After **online login on a fresh/unbound installation**, show an **optional Restore backup** action for the same verified user UUID. When no compatible, successfully completed encrypted backup exists, or restore is skipped, open a **new empty local workout diary** even though the Supabase account still exists. **Never show old workout records merely because Auth succeeded.** Do not promise OS-level clear-data behavior is identical across Android/iOS: stale Keychain entries may persist on iOS; an installation marker and verified UUID/file/key consistency must gate any reuse.
+**Critical distinction:** Ordinary logout retains locked workout history and same-account re-login reopens it. A user-confirmed erase/reset, OS clear-data, uninstall/reinstall or phone loss may remove local SQLite. After online login to a fresh installation, recovery depends on the **previously enabled active cloud mode**: **Personal Backup** → offer explicit **Restore Backup** using a completed matching encrypted Drive/iCloud archive and user-held recovery secret; **future Supabase Sync** → verify the same account and **automatically download available server data** without a Backup Restore step; **Local Only** (or unavailable/failed cloud data) → empty local workout history. In all modes, never fabricate an old diary from Auth login alone. iOS Keychain entries can outlive uninstall; installation markers and verified file/key/UUID consistency must prevent stale-key data access.
 
 **Backup source of truth:** Only confirmed completed client-encrypted copies count as restorable. A failed/in-progress upload is not a backup. Automatic backup is **best effort**, only after user opt-in, and may be delayed or omitted by mobile OS scheduling. Backup OFF, disconnect, local erase and deleting a remote archive are distinct operations.
 
@@ -50,8 +50,9 @@ UX references: user-provided WhatsApp iOS/Android backup screenshots (2026-11-14
 
 1. **Local-first, mandatory baseline:** Exercise plans, sets, reps, workout history and progress are stored and read from encrypted on-device SQLite. Online sign-in does not enable any workout upload.
 2. **Optional personal backup, user-owned destination only:** Until a user expressly enables backup, **no personal-cloud upload** occurs. After consent, Tio prepares and encrypts an archive **on device** and transfers it to the user's explicitly selected Google Drive or iCloud (or creates a manually exported encrypted file). The archive is **not stored in Supabase Postgres or Supabase Storage**, and Tio's app backend must not serve as an implicit workout-data backup destination. Provider permission and recovery-secret setup are separate from signing in with Supabase Auth.
-3. **Future server sync, separate product:** A later, **individually authorized and opt-in** feature could use app-managed Supabase Postgres with server-side authorization/RLS, synchronization, conflict handling, costs/operations and deletion controls. **No such workout tables, server sync process or default upload are in scope now.** A sync-enabled user may choose not to use personal Drive/iCloud backup, but **sync is not a historical backup**: deletions or corruption may also synchronize. Do not tell users that sync guarantees recovery.
-4. **Independent toggles and lifecycle:** Leaving backup OFF must not block local logging; turning backup ON must not enable future server sync; enabling sync in a future phase must not silently turn on a personal backup. User must choose each separately. Supabase Auth account identity persists independently of either data destination.
+3. **Future server sync, separate product:** A later, **individually authorized and opt-in** feature could use app-managed Supabase Postgres with server-side authorization/RLS, synchronization, conflict handling, costs/operations and deletion controls. **No such workout tables, server sync process or default upload are in scope now.** If this *exclusive* cloud mode is enabled and server data still exists, same-account online login on a wiped/new device can **rehydrate local SQLite automatically** rather than requiring backup Restore. **Sync is not historical backup**: deletions/corruption can propagate; do not guarantee recovery of older versions.
+4. **Mutually exclusive cloud settings:** Settings shows **Local Only (default)**, **Personal Backup (Google Drive/iCloud)** or **Supabase Sync (future / unavailable now)** as *one active choice*, not two independently enabled switches. Backup ON requires Supabase Sync OFF; Sync ON requires Backup OFF. Choosing Local Only permits neither. Supabase Auth exists independently of all three modes.
+5. **Safe mode transition:** Before activating a different cloud mode, clearly explain that previous Google Drive/iCloud archives or Supabase rows may still exist. Require **separate, explicit consent to remove the prior cloud copy** and verify provider/server deletion where supported; if removal or permission verification fails, do **not** claim only one cloud copy exists or silently enable the new cloud mode. Do not erase workouts on device. Changing mode, disabling uploads, deleting prior remote data and deleting a Supabase Auth account are **distinct actions**. Manual user-exported files cannot be remotely erased, so no universal one-copy guarantee is possible.
 
 ## Backup format proposal
 ```text
@@ -83,14 +84,14 @@ tio-backup-v1/
 - As an initial fallback, offer encrypted export/import through system share/document pickers, then consider native provider integration.
 
 ## Settings UX (planned)
-- Storage mode: `Local Only (default)`, `Personal Backup` (connect provider and configure portable recovery secret), `Cloud Sync (coming later)`.
+- **Single-choice** cloud storage setting: `Local Only (default)`, `Personal Backup` (connect user Drive/iCloud + recovery secret), or `Supabase Sync (future; disabled/unavailable)`. Only one cloud destination may be active. A separate Backup screen appears only in Personal Backup mode; future Sync settings/status appear only in Sync mode.
 - Backup destination, **last successful** backup time/size, `Back up now`, `Restore backup`, **Off/Manual (on-demand)/Daily/Weekly/Monthly** frequency where OS allows, encryption/recovery setup, `Disconnect`, `Delete remote backup` (confirmed).
 - A toggle cannot claim a backup is protected until an upload and restore verification succeeded.
 - If upload fails (including full iCloud/Drive quota), never delete local data or overwrite the last good archive. Show actionable errors, retry/storage guidance and keep the last confirmed backup metadata.
 - Automatic scheduling is **best effort**; mobile OS background limits mean precise periodic backups are not guaranteed.
 
 ## Restore procedure
-1. On a new/unbound installation after reinstall, OS app-data clear, phone loss or explicit reset, **sign in online** to the same Supabase account; verify immutable user UUID. If no usable backup exists or the user skips restore, initialize an **empty** local store, not an invented cloud copy. Normal logout/relogin without erased data must instead reuse the retained local store.
+1. On a new/unbound installation after reinstall, OS app-data clear, phone loss or explicit reset, **sign in online** to the same Supabase account; verify immutable user UUID. **Personal Backup mode** may offer user-initiated restore of an available matching archive; **future, previously enabled Supabase Sync mode** may automatically hydrate the local store from authorized server workout records (not a backup Restore). **Local Only**, or absence of accessible data, results in an empty store. Normal logout/relogin without wiped local data must instead reuse the retained local store.
 2. Connect the user's backup provider and list available versioned archives.
 3. Retrieve archive, validate header/schema, decrypt with user recovery method, authenticate payload and match source account ID.
 4. Preview date/record counts. Default to **replace with confirmation**, preserving a local safety snapshot first; do not silently merge mismatched data.
@@ -101,7 +102,7 @@ tio-backup-v1/
 - **Not implemented or authorized now**. Only after a separate owner decision, server architecture/security review, explicit user opt-in and privacy terms. Local remains usable offline.
 - Create user-owned, RLS-protected Postgres tables and a `SyncEngine` using stable UUIDs, revision/change journal, idempotent uploads, cursors, tombstones and conflict rules.
 - Define initial migration/upload carefully, including server-to-local import for a fresh device, conflict UX, sync deletion and sign-out.
-- Disabling sync should stop new uploads; provide policy for existing server copies and a separate verified cloud-delete option.
+- Disabling sync should stop new uploads; provide explicit deletion controls for existing Supabase rows. Switching from Sync to Personal Backup (or vice versa) must **not** silently leave two active cloud modes or assume old remote copies disappeared; design provider deletion/consent and failure handling before implementation.
 - Reconcile duplicates and concurrent edits; backup file replacement alone is not sync.
 - Never enable upload solely because Supabase Auth is enabled. Future sync may make the user's workout history available again after online login if enabled and implemented, but it is **not automatically a point-in-time backup**; synchronize/delete semantics can propagate unintended changes. Never force personal Google Drive/iCloud backup just because future sync is active.
 

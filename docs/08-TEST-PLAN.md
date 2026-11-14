@@ -56,12 +56,15 @@
 | BKP-11 | P1 | Lost recovery secret, incorrect account, or incompatible encrypted backup | No restore possible without valid secret/identity; no backend bypass, no overwrite or false recovery promise |
 | BKP-12 | P1 | Future optional media attachments absent/present | No photo/video switches or uploads without approved attachment support and consent; when present, inclusion/size is correctly reflected |
 | BKP-13 | P1 | User enables personal backup to Google Drive/iCloud | Archive is client-encrypted and sent only to user-selected provider; **zero workout/backup data** in Supabase Postgres/Storage, with no Tio server archive copy |
-| BKP-14 | P1 | User leaves backup OFF and uses local workouts | No Drive/iCloud or Supabase workout payload transfer; local logging unaffected |
+| BKP-14 | P1 | User leaves personal backup OFF in Local Only mode and uses local workouts | No Drive/iCloud or Supabase workout payload transfer; local logging unaffected |
 | AUTH-10 | P0 | Fresh installation marker after OS clear/reinstall with stale OS Keychain entry | Do not trust orphaned key/session or show phantom history; require verified online identity and safe empty/restore flow |
 | SYNC-01 | P2 | Offline edits on two devices | Defined conflict policy works without silent loss |
 | SYNC-02 | P2 | User disables sync | No further uploads; existing cloud data policy honored |
 | SYNC-03 | P2 | User A attempts to read user B's cloud rows | Denied by RLS/authorization |
-| SYNC-04 | P2 | Future sync enabled/disabled independently of personal backup | User opt-in is separate; backup stays OFF unless independently enabled; synced deletion/conflicts do not masquerade as restorable historical backup |
+| SYNC-04 | P2 | Future settings select Local Only / Personal Backup / Supabase Sync | Exactly one active cloud mode; enabling backup disables/blocks sync and vice versa; default neither; no simultaneous cloud uploads |
+| SYNC-05 | P2 | Same-account login after OS wipe with previously enabled Sync and available authorized server records | Automatically rehydrate encrypted local SQLite from Supabase after online identity/authorization, without showing Personal Backup Restore; no claim of historical versions |
+| SYNC-06 | P2 | Switch Personal Backup ↔ future Sync with existing remote data | Show explicit prior-cloud-copy disclosure, require consent and verified cleanup; block/handle failed deletion; never silently retain two active destinations or destroy local diary |
+| SYNC-07 | P2 | Sync OFF/never enabled, no personal backup, then clear app data and same-user login | Empty local workouts; Auth alone cannot produce server workout data and Restore Backup is not offered without a matching archive |
 
 ## Test environments
 Physical Android and iPhone devices, current supported OS versions, actual Expo development/release builds, unstable network, background and device-kill scenarios, low storage, attempted second account on a bound installation, deliberate erase/reset, reinstallation and cross-device restores.

@@ -21,7 +21,7 @@
 | Offline workouts | Existing initialized account can log workouts without internet |
 | Workout privacy | Device SQLite is default; signup alone does **not** upload diary |
 | AI security | Provider credentials are server-side in Edge Function secrets |
-| Backup/sync separation | Backup **OFF by default**; encrypted archives **only in user's Drive/iCloud/exported file**, not Supabase Postgres/Storage. Tio app-server data sync is separately opt-in and **future only** |
+| Backup/sync separation | **One active cloud mode:** Local Only (default), encrypted user Drive/iCloud Personal Backup, or **future** Supabase Sync; **never simultaneous cloud modes**. Backup archives never stored in Supabase. |
 | Project order | Documentation and approvals precede app code |
 
 ## 🚦Decision queue
@@ -64,9 +64,9 @@ A key protected only by device secure storage is useful for **local** database s
 |---|---|---|---|
 | Local workout save | Default | Device | SQLite transaction |
 | Personal backup | Explicit opt-in, OFF by default | **Only user-selected Drive/iCloud or encrypted exported file — never Supabase** | Encrypted snapshot/restore with confirmation |
-| App cloud sync | Separate future opt-in; **not authorized now** | Future server-managed Supabase Postgres + RLS (not backup storage) | Two-way edits, tombstones, merge policy; sync is **not historical backup** |
+| App cloud sync | **Exclusive future opt-in; backup mode OFF**, not authorized now | Future Supabase Postgres + RLS (not backup storage) | Auto-download authorized same-user rows after new login when available; no Backup Restore, conflicts/tombstones, **not historical backup** |
 
-**Never** label personal backup a real-time synchronization feature, or future sync a guaranteed historical backup. A future sync-enabled user need not turn on personal Drive/iCloud backup; cloud-sync deletions may propagate. Local SQLite remains the authoritative first choice until any separately approved sync is explicitly enabled.
+**Never** label personal backup a real-time synchronization feature, or future sync a guaranteed historical backup. **ADR-013 requires exactly one active cloud destination, or none**: Personal Backup mode has a manual Restore; future Supabase Sync mode would auto-rehydrate from server data and has no backup Restore. Cloud-mode changes require consent and prior-copy deletion checks; disabled modes' **old remote copies are not magically removed**, and manual exports cannot be erased by Tio. Local SQLite is always primary; sync deletions may propagate.
 
 ## 🧩 Review order (to avoid wasted work)
 

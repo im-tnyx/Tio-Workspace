@@ -50,7 +50,7 @@ flowchart TD
 | Settings | View the sole bound account, logout and separate erase/reset | Mostly | Explicit offline labels, no add-account/switch UI, irreversible reset warning |
 | Personal Backup (later) | Optional Back up now / Restore / settings | Needs network for remote upload/download; manual encrypted file workflow depends on platform | OFF by default; last success/progress/failure/quota/recovery states |
 | AI Draft (later) | Generate then approve | No | AI unavailable; preserve local session |
-| Cloud Sync (future) | Explicit opt-in | Not part of MVP | Show “Not available yet”, never fake an active switch |
+| Cloud Sync (future) | Mutually exclusive alternative to Personal Backup | Not part of MVP | **Disabled/unavailable now**; when built, Settings offers one choice: Local Only / Personal Backup / Supabase Sync, never both ON |
 
 ## 03 · Happy path — first user
 
@@ -78,7 +78,9 @@ flowchart TD
 | Logout | “You'll be signed out. Your local workouts stay on this device and remain tied to this account.” | Explicit confirmation |
 | Local erase/reset | “Erase this device's workouts and unlink this account? Without a backup, they cannot be recovered.” | Separate destructive confirmation; never hidden behind logout |
 | No backup | “Backup is off. Clearing app data, uninstalling, or losing this phone can permanently remove your workout history.” | Visible in backup settings and before destructive reset |
-| Restore after fresh login | “No workouts on this device. Restore an existing encrypted backup?” | **Optional**; if none exists or user skips, show empty Home with no assumed cloud history |
+| Restore after fresh login (Personal Backup only) | “No workouts on this device. Restore an existing encrypted backup?” | **Optional** matching user Drive/iCloud archive + recovery secret; if none/declined and no server sync mode, show empty Home |
+| Future Sync after fresh login | “Downloading your workouts…” | After same-account authenticated login, hydrate from available authorized Supabase rows; **no Backup Restore button**; show truthful offline/error/empty states |
+| Cloud mode change (future) | “Choose one cloud option. Previous cloud copies may still exist.” | Never allow simultaneous Backup + Sync; disclose old copies, obtain consent and verify deletion/handling before asserting exclusive storage |
 | Backup failed | “Backup failed. Your workouts are still saved on this device.” | Show reason, Retry and storage guidance; retain last successful backup date |
 | AI draft | “Review and edit before saving” | Never auto-apply generated routines |
 | Reauth | “Sign in again with the account already linked to this device.” | Do not claim the account was deleted because internet is unavailable |
@@ -88,7 +90,7 @@ flowchart TD
 
 The owner-provided iOS/Android screenshots inform **information hierarchy only**, not an instruction to reproduce WhatsApp. Future Settings → Backup needs a visible **Off/default**, provider setup, **Back up now**, last **successful** backup date/size, optional schedule picker **Off/Daily/Weekly/Monthly**, current **Uploading** byte/percentage indicators when measurable, **Failed** reason/Retry/Manage storage, and a user-held encrypted recovery method. Encrypt every backup; no “E2E Off” switch. **Include photos/videos** is shown only if an approved attachment feature exists; it is **not** a workout MVP feature. OS-based automatic timing and iCloud/Drive availability are unverified.
 
-**Clear data distinction:** Normal app restart and logout do **not** wipe the diary. Android clear storage, reinstall, explicit erase/reset or lost device may leave **no SQLite workouts**; online Supabase login then shows an empty local Home, and only an optional, successful, same-user encrypted backup can restore history. No backup or declined restore means a fresh empty workout diary; Supabase has no default workout copy.
+**Clear data distinction:** Normal restart and logout do **not** wipe the diary. Clear storage/reinstall/reset may remove SQLite. After same-account online login, **Personal Backup** (if previously enabled) offers an explicit completed encrypted archive Restore; future **Supabase Sync** (if previously enabled, implemented and still authorized) downloads available server data automatically with no backup Restore; otherwise start with empty local history. Supabase Auth alone has no workout copy. Local Only remains default, and Backup + Sync cannot both be active.
 
 ## 06 · Component and state requirements
 
