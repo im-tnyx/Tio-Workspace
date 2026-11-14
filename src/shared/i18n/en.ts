@@ -9,7 +9,7 @@ export const en = {
   emailPlaceholder: 'tom@example.com', passwordPlaceholder: 'Password',
   continue: 'Continue', verificationCode: 'Verification code',
   enterEmail: 'Enter your email address',
-  emailStepIntro: 'Enter your email to preview the next step.',
+  emailStepIntro: "We'll send you a verification code when authentication is available.",
   emailPreviewNotice: 'UI preview only. No email or code will be sent.',
   enterCode: 'Enter verification code',
   otpStepIntro: 'Enter any six digits to preview the password step.',
