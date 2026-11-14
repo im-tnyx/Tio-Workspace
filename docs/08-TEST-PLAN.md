@@ -55,10 +55,13 @@
 | BKP-10 | P1 | Automatic backup OFF / Daily / Weekly / Monthly | No background transfer when off; any enabled schedule honors consent, OS best-effort rules, quota limits and actual completion timestamps |
 | BKP-11 | P1 | Lost recovery secret, incorrect account, or incompatible encrypted backup | No restore possible without valid secret/identity; no backend bypass, no overwrite or false recovery promise |
 | BKP-12 | P1 | Future optional media attachments absent/present | No photo/video switches or uploads without approved attachment support and consent; when present, inclusion/size is correctly reflected |
+| BKP-13 | P1 | User enables personal backup to Google Drive/iCloud | Archive is client-encrypted and sent only to user-selected provider; **zero workout/backup data** in Supabase Postgres/Storage, with no Tio server archive copy |
+| BKP-14 | P1 | User leaves backup OFF and uses local workouts | No Drive/iCloud or Supabase workout payload transfer; local logging unaffected |
 | AUTH-10 | P0 | Fresh installation marker after OS clear/reinstall with stale OS Keychain entry | Do not trust orphaned key/session or show phantom history; require verified online identity and safe empty/restore flow |
 | SYNC-01 | P2 | Offline edits on two devices | Defined conflict policy works without silent loss |
 | SYNC-02 | P2 | User disables sync | No further uploads; existing cloud data policy honored |
 | SYNC-03 | P2 | User A attempts to read user B's cloud rows | Denied by RLS/authorization |
+| SYNC-04 | P2 | Future sync enabled/disabled independently of personal backup | User opt-in is separate; backup stays OFF unless independently enabled; synced deletion/conflicts do not masquerade as restorable historical backup |
 
 ## Test environments
 Physical Android and iPhone devices, current supported OS versions, actual Expo development/release builds, unstable network, background and device-kill scenarios, low storage, attempted second account on a bound installation, deliberate erase/reset, reinstallation and cross-device restores.

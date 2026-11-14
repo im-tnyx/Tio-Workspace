@@ -50,10 +50,11 @@
 **Exit:** A real encrypted backup can be reliably restored by its rightful user.
 
 ## Phase 4 — Optional app-cloud database sync (FUTURE; NOT AUTHORIZED FOR INITIAL BUILD)
+- [ ] Make **separate owner decision and explicit user opt-in** for app-server Supabase workout storage; **none exists now**, and personal Drive/iCloud backup must never be redirected to Supabase.
 - [ ] Review privacy policy, consent and user controls.
 - [ ] Design Supabase Postgres schema and RLS ownership policies.
 - [ ] Build sync adapter, change journal, conflict resolution and failure recovery.
-- [ ] Test two devices offline concurrently; deletion tombstones and account removal.
+- [ ] Test two devices offline concurrently; deletion tombstones and account removal. Explain that sync may propagate deletion/corruption and therefore is not an historical backup, even when the user elects to skip separate personal backup.
 - [ ] Add explicit opt-in, progress state, and verified disable/delete-cloud-data flows.
 **Exit:** Optional multi-device sync behaves predictably without breaking local-only mode.
 

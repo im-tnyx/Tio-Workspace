@@ -10,7 +10,7 @@
 </div>
 
 > [!WARNING]
-> This specifies a **future** feature. No Google Drive, iCloud, native entitlement, key-derivation implementation or recovery flow has been integrated or tested. It is not safe to promise user data survives uninstall until full fresh-device restore testing succeeds.
+> This specifies a **future, user-opt-in-only** feature. A completed backup archive must be encrypted on device and stored only in the user's selected Google Drive/iCloud or a manually exported file, **not Supabase Postgres/Storage**. No Google Drive, iCloud, native entitlement, key-derivation implementation or recovery flow has been integrated or tested. It is not safe to promise user data survives uninstall until full fresh-device restore testing succeeds.
 
 ## 01 · Three distinct keys/copies
 

@@ -21,7 +21,7 @@
 | Offline workouts | Existing initialized account can log workouts without internet |
 | Workout privacy | Device SQLite is default; signup alone does **not** upload diary |
 | AI security | Provider credentials are server-side in Edge Function secrets |
-| Backup/sync separation | Personal backup is optional; app-database cloud sync is separately opt-in and **future only** |
+| Backup/sync separation | Backup **OFF by default**; encrypted archives **only in user's Drive/iCloud/exported file**, not Supabase Postgres/Storage. Tio app-server data sync is separately opt-in and **future only** |
 | Project order | Documentation and approvals precede app code |
 
 ## 🚦Decision queue
@@ -63,10 +63,10 @@ A key protected only by device secure storage is useful for **local** database s
 | Operation | User controls | Destination | Conflict handling |
 |---|---|---|---|
 | Local workout save | Default | Device | SQLite transaction |
-| Personal backup | Explicit opt-in | User's Drive/iCloud or exported file | Snapshot/restore with confirmation |
-| App cloud sync | Separate future opt-in | App-managed Postgres | Two-way edits, tombstones, merge policy |
+| Personal backup | Explicit opt-in, OFF by default | **Only user-selected Drive/iCloud or encrypted exported file — never Supabase** | Encrypted snapshot/restore with confirmation |
+| App cloud sync | Separate future opt-in; **not authorized now** | Future server-managed Supabase Postgres + RLS (not backup storage) | Two-way edits, tombstones, merge policy; sync is **not historical backup** |
 
-**Never** label personal backup a real-time synchronization feature.
+**Never** label personal backup a real-time synchronization feature, or future sync a guaranteed historical backup. A future sync-enabled user need not turn on personal Drive/iCloud backup; cloud-sync deletions may propagate. Local SQLite remains the authoritative first choice until any separately approved sync is explicitly enabled.
 
 ## 🧩 Review order (to avoid wasted work)
 
