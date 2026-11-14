@@ -20,7 +20,7 @@
 | Backup encryption key | Authenticated-encrypt portable archive | Must be recoverable **independently** of the original device |
 | Supabase auth session | Confirm account identity and protect online operations | Does **not** decrypt backup by itself |
 
-**Recommended design proposal:** derive or wrap a backup data-encryption key using a user-held high-entropy recovery code or adequately strong passphrase, with a vetted memory-hard password KDF and random salt, encrypted using a well-reviewed authenticated encryption implementation. The full cryptographic format needs an independent security review before launch. Do not invent cryptography or store the only recovery secret in the cloud archive.
+**Owner-approved principle (ADR-011):** a separate **portable user-held recovery secret** must protect future encrypted personal backups. **Unapproved implementation proposal:** derive or wrap a backup data-encryption key using a high-entropy recovery code or adequately strong passphrase, with a vetted memory-hard password KDF and random salt, encrypted using a well-reviewed authenticated encryption implementation. The full cryptographic format needs an independent security review before launch. Do not invent cryptography or store the only recovery secret in the cloud archive.
 
 ## 02 · Minimum viable backup order
 
@@ -80,7 +80,7 @@ tio-backup-v1
 6. Import into a temporary/staging database; validate integrity; atomically switch current account's store only on success.
 7. Confirm new workouts/history are queryable before showing “Restored”; on failure keep existing local store intact.
 
-**Account mismatch:** never silently import one account's backup into another account. Any future transfer/migration process requires an explicit, separate design and consent.
+**Account mismatch / one-account installation:** never import a backup from another UUID into the bound installation, and never change the binding as part of restore. Fresh-install restore must bind the same verified Supabase user; importing into a different bound identity is blocked, not a switch/transfer UX.
 
 ## 07 · Failure and recovery matrix
 
@@ -97,7 +97,7 @@ tio-backup-v1
 
 ## 08 · Owner decisions required
 
-- [ ] Recovery UX: high-entropy recovery code vs user passphrase vs other approved mechanism.
+- [x] Independent user-held portable recovery **principle** selected; [ ] choose the precise code/passphrase UX, cryptographic KDF/format and loss warnings after security review.
 - [ ] Should backups be manual first, with scheduling later?
 - [ ] Should user-facing backup file export be the initial cross-platform option?
 - [ ] Should Android default to appDataFolder and iOS start with Files export fallback?

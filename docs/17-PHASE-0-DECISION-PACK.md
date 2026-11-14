@@ -10,7 +10,7 @@
 </div>
 
 > [!IMPORTANT]
-> **D13 tooling selection is owner-approved (2026-11-14) via ADR-010 only.** D01–D12 and native/security implementation specifics remain pending proposals. The original product intentions in [09-DECISIONS.md](09-DECISIONS.md) remain the constraints. This document neither authorizes Phase 1 nor changes the default local-only privacy policy.
+> **ADR-010/011 owner decisions (2026-11-14):** D13 tooling plus D02–D06 core policies and D10 small exercise/MVP scope were accepted; **D04 explicitly forbids account switching/add-account**. D01, D07–D09, D11–D12 details and native/security implementations remain pending. The original product intentions in [09-DECISIONS.md](09-DECISIONS.md) remain the constraints. This document neither authorizes Phase 1 nor changes the default local-only privacy policy.
 
 ## ✅ Already specified by the owner
 
@@ -29,15 +29,15 @@
 | Ref | Decision needed | Working recommendation / selection | Risk if undecided | Owner status |
 |---|---|---|---|---|
 | D01 | Product name/identity | Use **Tio** provisionally; finalize identifiers before builds | Medium | ⬜ Pending |
-| D02 | Sign-in options | Email/password MVP; evaluate Google/Apple provider UX later | Medium | ⬜ Pending |
-| D03 | Offline session policy | Allow cached verified local identity for offline use with no claim of real-time server validity | **High** | ⬜ Pending |
-| D04 | User switching/log out | Separate encrypted per-account data; logout locks and retains existing logs; erase is a separate confirmed action | **High** | ⬜ Pending |
-| D05 | Local key lifecycle | Use native SQLCipher build, verify encryption, OS secure key storage, and reinstall behaviour | **High** | ⬜ Pending |
-| D06 | Backup recovery | Versioned authenticated encryption with independent, user-recoverable secret | **High** | ⬜ Pending |
+| D02 | Sign-in options | Supabase **email/password MVP**; Google/Apple optional later | Medium | ✅ Policy approved (ADR-011) |
+| D03 | Offline session policy | Previously verified bound identity may log workouts offline; remote revocation is unknown until online | **High** | ✅ Trade-off accepted (ADR-011) |
+| D04 | **No account switching** / logout | **One locally bound account per installation**; no second login while bound; logout locks retained history, separately confirmed erase/reset required | **High** | ✅ Policy approved (ADR-011) |
+| D05 | Local key lifecycle | Per-bound-user SQLCipher key in protected OS storage, fail closed; native build/reinstall validation outstanding | **High** | ✅ Principle approved; verification pending (ADR-011) |
+| D06 | Backup recovery | Future opt-in encrypted backup with **independent portable user-held recovery secret**; crypto/restore UX pending | **High** | ✅ Principle approved; implementation pending (ADR-011) |
 | D07 | Personal cloud provider | Android Drive appDataFolder feasibility; iOS iCloud native spike, fallback to encrypted file export | **High** | ⬜ Pending |
 | D08 | AI provider + request policy | Select provider after privacy, pricing, output schema and quota review | Medium | ⬜ Pending |
 | D09 | PIN/biometric | Offer optional app lock, with explicit recovery/lockout rules | Medium | ⬜ Pending |
-| D10 | Workout catalog & licensing | Start with a small curated/manual exercise catalog | Low | ⬜ Pending |
+| D10 | Workout catalog & licensing | MVP includes small curated/manual exercise entry; third-party licensing needs review | Low | ✅ MVP scope approved; licensing pending (ADR-011) |
 | D11 | Analytics and retention | No workout payload analytics by default; separate crash logs from workout content | Medium | ⬜ Pending |
 | D12 | Future sync deletion semantics | Separate disabling sync from deleting cloud copies; revisit in Phase 4 | **High later** | ⬜ Pending |
 | D13 | Local ORM and migration tooling | **Selected:** Expo SQLite + Drizzle ORM/Drizzle Kit + native SQLCipher; offline-bundled migrations. Unlock, key and recovery implementation require validation | **High** | ✅ Approved — stack only (ADR-010, 2026-11-14) |
@@ -52,7 +52,7 @@
 | **Recommended proposal:** cached locally verified identity + server validation when online | Works in gyms without connection | Revoked user can retain cached device-local access until online revalidation |
 | Permit completely unauthenticated local guest mode | Maximum offline availability | Violates required signup |
 
-Read the exact [session state machine](18-OFFLINE-SESSION-STATE-MACHINE.md). The owner must explicitly accept the offline revocation trade-off or choose additional local device authentication.
+Read the exact [session state machine](18-OFFLINE-SESSION-STATE-MACHINE.md). The owner **accepted** delayed remote revocation detection for local offline workouts on 2026-11-14 (ADR-011); any later optional PIN/biometrics still requires recovery/lockout UX review.
 
 ### Local database keys
 
@@ -84,11 +84,12 @@ flowchart TD
 
 ## 📋 Required owner sign-off
 
-- [ ] Approve/adjust the **D01–D12** recommendations above; record reasons and privacy consequences. **D13 tooling selected** does not waive D04–D06, native verification or separate Phase 1 authorization.
-- [ ] Confirm account switching, logout, account deletion and local erase semantics.
-- [ ] Accept or reject offline access after undetectable server revocation.
-- [ ] Approve recovery UX for encrypted backup **before** promising restore.
-- [ ] Approve [MVP screen/interaction proposal](20-MVP-UX-FLOWS.md).
+- [x] Record owner-selected **D02–D06 policy, D10 MVP scope and D13 tooling** in ADR-010/011; selection does not certify implementation security.
+- [ ] Resolve **D01, D07–D09, D11–D12** remaining scope/provider/UX/privacy details and native validation before relevant phases.
+- [x] Confirm **no account switching**, same-account re-login after logout, and separate confirmed erase/reset; server account deletion details remain a separate future UX.
+- [x] Accept offline local access despite unverifiable remote revocation until reconnection; online functions still require server authorization.
+- [x] Approve portable user-held recovery **principle**; [ ] finalize secure backup UX/cryptography and test fresh-device restore **before** promising recovery.
+- [x] Approve [MVP functional screens/flows](20-MVP-UX-FLOWS.md) for Home, Plans, Exercise Library, Workouts, History, Progress, Settings and Auth; [ ] finalize branding, visual hierarchy and detailed destructive/reset copy.
 - [ ] Validate on-device build feasibility for SQLCipher and iCloud before freezing plans.
 - [ ] Authorize Phase 1 **in a separate written approval**, never by merging a docs PR.
 

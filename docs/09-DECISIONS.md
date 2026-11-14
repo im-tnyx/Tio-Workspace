@@ -26,16 +26,17 @@
 | ADR-007 | Personal cloud backup is optional; future online DB sync separately opt-in | User control |
 | ADR-008 | Plan and document everything before implementation | User's explicit development order |
 | ADR-009 | **Feature-first Modular Monolith v2.1**: `src/app/` routes/providers, `src/features/*` business-owned modules, `src/platform/*` technical adapters, non-business `src/shared/*`, optional `src/bootstrap/`; feature `domain/` interfaces and `data/` implementations with optional complex use cases | **Chosen by owner on 2026-11-13** as the final source-layout architecture. No package-per-feature; see [canonical boundaries](10-REPOSITORY-STRUCTURE.md). Does **not** approve Phase 1 coding or pending security choices. |
-| ADR-010 | **Owner-selected local database technology stack:** Expo SQLite as on-device database, Drizzle ORM + Drizzle Kit for typed SQLite access and versioned generated migrations, and native SQLCipher for database-at-rest encryption | **Owner confirmed on 2026-11-14** after [PR #7](https://github.com/im-tnyx/Tio-Workspace/pull/7). This approves **technology selection only**, subject to native Android/iPhone compatibility, key lifecycle, migration/recovery security review and actual testing. It does **not** approve D03–D07 policies, app initialization, package installation, migration execution, or Phase 1. See [database contract](03-LOCAL-DATA-MODEL.md). |
+| ADR-010 | **Owner-selected local database technology stack:** Expo SQLite as on-device database, Drizzle ORM + Drizzle Kit for typed SQLite access and versioned generated migrations, and native SQLCipher for database-at-rest encryption | **Owner confirmed on 2026-11-14** after [PR #7](https://github.com/im-tnyx/Tio-Workspace/pull/7). This approves **technology selection only**, subject to Android/iPhone compatibility, key lifecycle, migration/recovery security review and testing. It does **not** approve implementation. See [database contract](03-LOCAL-DATA-MODEL.md). |
+| ADR-011 | **Owner-selected Phase 0 product/security policies:** one bound Supabase account per installation (**no add/switch**); email/password MVP; existing locally verified user may log workouts offline; logout locks and retains data/binding; a different identity is rejected until a separately confirmed erase/reset; per-bound-user OS-protected SQLCipher key and independent portable user-held backup recovery secret; functional MVP of exercises/plans, sets/reps/weight, history/progress/settings | **Owner confirmed 2026-11-14** with explicit rejection of account switching. Offline revocation cannot be checked in real time; server calls require fresh auth. This approves **policy/scope**, not a cryptographic design, native validation, future cloud-provider details or **Phase 1 coding**. See [requirements](01-PRODUCT-REQUIREMENTS.md), [session spec](18-OFFLINE-SESSION-STATE-MACHINE.md) and [readiness gate](21-PHASE-1-READINESS.md). |
 
-**Decision boundaries:** ADR-009 approves source organization and dependency rules; ADR-010 approves the **local database technology choices**, not their security implementation or demonstrated compatibility. Auth/session details, per-account key custody, native SQLCipher verification, migration/rollback behaviour, backups, AI, sync, CI and **all Phase 1 implementation** remain subject to separate approval/evidence. A merged documentation PR is not a deployment or build approval.
+**Decision boundaries:** ADR-009 approves source organization, ADR-010 database tooling, and ADR-011 the explicitly accepted **single-account/offline/MVP policy**. Exact key storage lifecycle and erase implementation, native SQLCipher verification, migration/rollback tests, portable backup cryptography/provider UX, AI vendor, future sync, CI and **all Phase 1 implementation** remain subject to separate approval/evidence. A merged documentation PR is not a deployment or build approval.
 
 ## Engineering proposals and feasibility checks — not blanket implementation approval
 | ID | Proposal | Validation needed |
 |---|---|---|
 | PROP-001 | Supabase Auth for accounts, Expo SecureStore-backed secure session adapter | Refresh, offline and logout tests |
 | PROP-002 | **Tooling selected by ADR-010**: Expo SQLite + native SQLCipher; security design remains open | Prove cipher availability, key lifecycle, account isolation and performance on Android/iOS |
-| PROP-003 | Separate per-account encrypted SQLite databases | User switching, cleanup and restore |
+| PROP-003 | **ADR-011: one bound local account and encrypted store per installation; no second account/switch UI** | Test same-account re-login, blocked second identity, explicit reset, key-loss and same-account restore |
 | PROP-004 | Repository interfaces from the beginning | Future sync integration without rewriting UI |
 | PROP-005 | Versioned encrypted backup format and user-held recovery method | Real cross-device recovery tests |
 | PROP-006 | Google Drive appDataFolder | OAuth scope, user consent and restore UX |
@@ -44,10 +45,10 @@
 
 ## Open product decisions (not blocking documentation)
 1. Final branding and app package identifiers.
-2. Signup options: email/password only, or Google/Apple auth as well.
-3. Should optional PIN/biometrics protect local data on app open?
-4. How should account deletion differ from logout and delete-local-data?
-5. Backup recovery choice: passphrase, recovery key, or another auditable design.
+2. **Decided for MVP:** Supabase email/password; Google/Apple login remains optional later.
+3. Optional future PIN/biometrics and recovery/lockout UX; **not required** for every MVP app open.
+4. **Policy chosen:** logout locks and retains data/binding; confirmed device erase/reset is separate; server account-deletion UX/retention still needs future design.
+5. **Policy chosen:** independent portable user-held recovery secret; exact recovery-code/passphrase UX, KDF, rotation and key-loss guidance still require security review.
 6. iCloud integration route, feasibility and backup frequency under OS restrictions.
 7. AI vendor, model, quotas, user consent copy and costs.
 8. Scope of exercise catalog and any third-party licensing.
@@ -56,9 +57,9 @@
 
 ## Phase 0 decision-review package (recommendations pending)
 
-The [Phase 0 Decision Review Pack](17-PHASE-0-DECISION-PACK.md) tracks **D13 as owner-selected tooling**, while D01–D12 and native/security verification remain pending, informed by the [offline session state machine](18-OFFLINE-SESSION-STATE-MACHINE.md), [encrypted backup recovery](19-BACKUP-RECOVERY-STRATEGY.md), [MVP UX flows](20-MVP-UX-FLOWS.md) and [Phase 1 readiness checklist](21-PHASE-1-READINESS.md). Other recommendations remain **proposals only**; ADR-010 records the newly selected stack, while the remaining owner decisions are tracked in [GitHub issue #2](https://github.com/im-tnyx/Tio-Workspace/issues/2).
+The [Phase 0 Decision Review Pack](17-PHASE-0-DECISION-PACK.md) tracks **D02–D06 policy choices, D10 MVP catalog scope and D13 tooling as owner-selected**, while D01, D07–D09, D11–D12 details and native/security verification still need follow-up, informed by the [offline session state machine](18-OFFLINE-SESSION-STATE-MACHINE.md), [encrypted backup recovery](19-BACKUP-RECOVERY-STRATEGY.md), [MVP UX flows](20-MVP-UX-FLOWS.md) and [Phase 1 readiness checklist](21-PHASE-1-READINESS.md). Remaining recommendations are not automatically approved; ADR-010/011 record selected tooling/policies, while unresolved details are tracked in [GitHub issue #2](https://github.com/im-tnyx/Tio-Workspace/issues/2).
 
-Important: Offline access to already-verified local data cannot guarantee real-time enforcement of a remote session revocation while the device has no network. This trade-off must receive explicit owner review. Local database encryption keys and portable backup recovery secrets must also be considered separately.
+Important: Offline access to already-verified local data cannot guarantee real-time enforcement of a remote session revocation while the device has no network. The owner accepted this trade-off for previously verified local access (2026-11-14); its timeout and optional local lock UX remain implementation questions. Local database encryption keys and portable backup recovery secrets must also be considered separately.
 
 ## Change control
 When a decision changes, update the relevant requirements/architecture/security/test documents first; log the change here with rationale and approval. Implementation starts only after Phase 0 review.

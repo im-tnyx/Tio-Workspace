@@ -20,7 +20,7 @@
 
 | Scenario | Planned safeguard | Verification |
 |---|---|---|
-| Account A data appears in B session | Account-specific store + authenticated identity binding | `AUTH-06`, `AUTH-07` |
+| Second user B is admitted to A-bound installation or sees A data | Single protected installation binding; reject different UUID, retain locked ciphertext | `AUTH-06`, `AUTH-07`, `AUTH-09` |
 | Device backup copied without authorization | Authenticated encryption and secure key custody | `SEC-02` and future restore negative tests |
 | Local key lost on reinstall | Independent recoverable **backup** encryption method | `BKP-01`, `BKP-05` |
 | App binary reverse engineered | No AI/vendor/service-role secrets in client | `SEC-01` |

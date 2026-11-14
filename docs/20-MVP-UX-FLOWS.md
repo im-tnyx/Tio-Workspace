@@ -3,14 +3,14 @@
 # 📱 MVP Screens & User Flows
 **Design the offline workout experience before building screens.**
 
-![Status](https://img.shields.io/badge/UX-PROPOSED-6D5EF8?style=flat-square)
+![Status](https://img.shields.io/badge/FUNCTIONAL%20SCOPE-OWNER%20SELECTED-6D5EF8?style=flat-square)
 
 [← Docs hub](00-INDEX.md) · [🎨 Design system](../DESIGN.md) · [🎯 Requirements](01-PRODUCT-REQUIREMENTS.md)
 
 </div>
 
 > [!NOTE]
-> This is a **text-first UX specification**. No Figma file, final icon, screenshot or running prototype exists. Visual tokens in [DESIGN.md](../DESIGN.md) are proposals, not implemented components.
+> The **functional MVP screen scope** (Auth, Home, Exercises, Plans, Workouts, History, Progress, Settings) is owner-selected (ADR-011), with **no account switching**. This is a text-first UX specification. No Figma file, final icon, screenshot or running prototype exists. Visual tokens in [DESIGN.md](../DESIGN.md) are proposals, not implemented components.
 
 ## 01 · Proposed navigation
 
@@ -18,7 +18,9 @@
 flowchart TD
   S["App start / session gate"] -->|First login or signed out| A["Welcome / Sign in / Sign up"]
   S -->|Eligible stored account| H["Home"]
-  A -->|Online verified login| H
+  A -->|Same bound user / first verified login| H
+  A -->|Different UUID while installation bound| M["Account mismatch: denied"]
+  M --> A
   H --> W["Active Workout"]
   H --> P["Workout Plans"]
   H --> L["Exercise Library"]
@@ -38,14 +40,14 @@ flowchart TD
 | Screen | Primary CTA | Offline | Empty/error state |
 |---|---|---|---|
 | Session gate | Resume existing authenticated user | Yes if account is initialized and locally eligible | Need login / reauth / unavailable key |
-| Auth | Create account / Sign in | No for first-time login | Network error, invalid credentials, email verification |
+| Auth | First signup / same-bound-user Sign in | No for first-time login | Network error, invalid credentials, different-account denied, email verification |
 | Home | Start / Resume Workout | Yes | “Create your first plan” / “Start a free workout” |
 | Exercise Library | Add exercise | Yes, local list | No results; add custom exercise |
 | Plan Editor | Save workout plan | Yes | Missing required exercise fields |
 | Active Workout | Log/complete sets | Yes | Autosave/transaction failure and resume |
 | History | Open past session | Yes | No logged sessions |
 | Progress | View PRs / volume | Yes | Insufficient data, unit selection |
-| Settings | View account and storage | Mostly | Explicit offline labels for network actions |
+| Settings | View the sole bound account, logout and separate erase/reset | Mostly | Explicit offline labels, no add-account/switch UI, irreversible reset warning |
 | Personal Backup (later) | Backup / Restore | Needs connection for remote provider | Last good backup, missing permission |
 | AI Draft (later) | Generate then approve | No | AI unavailable; preserve local session |
 | Cloud Sync (future) | Explicit opt-in | Not part of MVP | Show “Not available yet”, never fake an active switch |
@@ -73,11 +75,12 @@ flowchart TD
 |---|---|---|
 | First saved set | “Saved on this device” | Short, non-blocking success feedback |
 | Offline | “Offline · Workouts still work” | Icon + text, not only colored dot |
-| Logout | “You'll be signed out. Your local workouts stay on this device.” | Explicit confirmation |
-| Local delete | “Delete workouts from this device?” | Separate destructive flow, never hidden behind logout |
+| Logout | “You'll be signed out. Your local workouts stay on this device and remain tied to this account.” | Explicit confirmation |
+| Local erase/reset | “Erase this device's workouts and unlink this account? Without a backup, they cannot be recovered.” | Separate destructive confirmation; never hidden behind logout |
 | No backup | “Without backup, uninstalling or losing your phone may lose your workout history.” | Visible in backup screen |
 | AI draft | “Review and edit before saving” | Never auto-apply generated routines |
-| Reauth | “Sign in again to confirm your account.” | Do not claim the account was deleted because internet is unavailable |
+| Reauth | “Sign in again with the account already linked to this device.” | Do not claim the account was deleted because internet is unavailable |
+| Different account login | “This device is linked to another Tio account. Sign in with that account; changing accounts is not supported.” | Block before data access; no automatic reset |
 
 ## 06 · Component and state requirements
 
@@ -86,14 +89,14 @@ flowchart TD
 - Workout autosave shows *local* persistence status, not “Synced”.
 - Confirmation for irreversible delete; allow editing an unfinished session after restart.
 - Each screen covers `loading`, `empty`, `offline`, `error`, and account-safety states.
-- No screen should accidentally show the previous user's cached data during identity switching.
+- Never expose cached workout data when a different account attempts login; **no identity-switching flow exists**.
 
 ## 07 · Design acceptance checklist
 
 - [ ] Final home screen hierarchy selected.
-- [ ] Auth and session-gate screen transitions reviewed with [session specification](18-OFFLINE-SESSION-STATE-MACHINE.md).
+- [x] Functional MVP screens and single-account auth/session-gate transitions selected (ADR-011; [session specification](18-OFFLINE-SESSION-STATE-MACHINE.md)); visual design/real-device tests pending.
 - [ ] Workout set editor tested for one-handed operation and large text.
-- [ ] Logout/delete/recovery copy approved.
+- [ ] Exact logout/erase/recovery wording and accessibility behavior reviewed in a design acceptance pass; policy selected.
 - [ ] Android and iOS navigation behaviours documented.
 - [ ] All cloud states explicitly distinguish default local-only from later opt-in features.
 
