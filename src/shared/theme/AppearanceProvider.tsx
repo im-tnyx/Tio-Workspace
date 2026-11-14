@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { StatusBar } from 'expo-status-bar';
+import * as SystemUI from 'expo-system-ui';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { AccessibilityInfo, Platform, useColorScheme } from 'react-native';
@@ -58,6 +59,15 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
   const setAppearance = useCallback((x: AppearanceChoice) => update({ appearance: x }), [update]);
   const setMaterial = useCallback((x: MaterialChoice) => update({ material: x }), [update]);
   const mode = resolveMode(prefs.appearance, osMode === 'dark' ? 'dark' : 'light');
+
+  useEffect(() => {
+    // Android's root background must follow the same resolved palette as
+    // the edge-to-edge content. Three-button OS contrast scrims may remain
+    // in Expo Go; this does not control the host app's native window flags.
+    if (Platform.OS !== 'android') return;
+    void SystemUI.setBackgroundColorAsync(palettes[mode].background).catch(() => {});
+  }, [mode]);
+
   const value = useMemo<AppearanceContextValue>(() => ({
     appearance: prefs.appearance, material: prefs.material,
     effectiveMaterial: reduceTransparency ? 'solid' : prefs.material,
