@@ -10,7 +10,7 @@
 </div>
 
 > [!IMPORTANT]
-> **ADR-010/011/012 owner decisions (2026-11-14):** D13 tooling plus D02–D06 core policies and D10 small exercise/MVP scope were accepted; **D04 explicitly forbids account switching/add-account**. D01, D07–D09, D11–D12 details and native/security implementations remain pending. The original product intentions in [09-DECISIONS.md](09-DECISIONS.md) remain the constraints. This document neither authorizes Phase 1 nor changes the default local-only privacy policy.
+> **ADR-010/011/012/013/014 owner decisions (2026-11-14):** D13 tooling, D02–D06 core policies, D10 MVP scope, future exclusive cloud mode choice and future paid, separately opt-in Supabase Sync were accepted; **D04 explicitly forbids account switching/add-account**. D01, D07–D09, D11–D12 details and native/security implementations remain pending. The original product intentions in [09-DECISIONS.md](09-DECISIONS.md) remain the constraints. This document neither authorizes Phase 1 nor changes the default local-only privacy policy.
 
 ## ✅ Already specified by the owner
 

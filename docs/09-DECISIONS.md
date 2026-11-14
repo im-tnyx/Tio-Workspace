@@ -12,7 +12,7 @@
 
 ---
 
-**Status as of 2026-11-14:** Initial intentions derive from the product brief; ADR-009 and ADR-010 record owner-selected architecture/tooling only. **No deployment or Phase 1 implementation is approved yet**.
+**Status as of 2026-11-14:** Initial intentions derive from the product brief. **ADR-009–014 record owner-selected architecture, local tooling, single-account/MVP behavior, personal-backup UX, exclusive cloud-mode policy and future optional paid Sync business scope**. None approves cloud integration or billing implementation. **No deployment or Phase 1 implementation is approved yet**.
 
 ## Agreed product intentions
 | ID | Decision | Reason / consequence |
@@ -33,7 +33,7 @@
 
 | ADR-014 | **Owner-selected future paid Supabase Sync:** complete supported workout dataset stored/synced in Supabase Postgres, available only via optional **paid Tio membership + separate explicit Sync opt-in**. Local Only and user-owned Drive/iCloud Personal Backup remain independent choices without Sync membership | **Owner confirmed 2026-11-14.** Membership alone must never turn on workout upload; ADR-013 keeps Backup and Sync mutually exclusive. Pricing, billing/provider, trials/renewals, expiry/grace, entitlement, retention/export and deletion policies remain open. **No Phase 1 or cloud/billing implementation authorized**. See [backup & sync](05-BACKUP-AND-SYNC.md), [roadmap](06-ROADMAP.md), [tests](08-TEST-PLAN.md). |
 
-**Decision boundaries:** ADR-009 approves source organization, ADR-010 database tooling, ADR-011 the explicitly accepted **single-account/offline/MVP policy**, ADR-012 the **future optional backup/fresh-install recovery UX policy**. **ADR-013 further selects mutually exclusive future cloud modes and their recovery behavior**. Exact key storage lifecycle and erase implementation, native SQLCipher verification, migration/rollback tests, portable backup cryptography/provider UX, AI vendor, future sync, CI and **all Phase 1 implementation** remain subject to separate approval/evidence. A merged documentation PR is not a deployment or build approval.
+**Decision boundaries:** ADR-009 approves source organization, ADR-010 database tooling, ADR-011 the explicitly accepted **single-account/offline/MVP policy**, ADR-012 the **future optional backup/fresh-install recovery UX policy**. **ADR-013 further selects mutually exclusive future cloud modes and their recovery behavior; ADR-014 selects paid membership plus separate user consent for future full-data Supabase Sync only**. Exact key storage lifecycle and erase implementation, native SQLCipher verification, migration/rollback tests, portable backup cryptography/provider UX, AI vendor, future sync, CI and **all Phase 1 implementation** remain subject to separate approval/evidence. A merged documentation PR is not a deployment or build approval.
 
 ## Engineering proposals and feasibility checks — not blanket implementation approval
 | ID | Proposal | Validation needed |

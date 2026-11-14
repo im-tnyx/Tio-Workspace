@@ -52,7 +52,8 @@
 ## Phase 4 — Optional paid full-workout Supabase Sync (FUTURE; NOT AUTHORIZED FOR INITIAL BUILD)
 
 **ADR-014 selects the future paid-membership business rule, not implementation.** A valid subscription **and** independent opt-in are required for full supported workout-data sync. Local-only workout features and Personal Backup remain usable without membership. No paid plan, billing integration or server workout tables are authorized.
-- [ ] Make **separate owner decision and explicit user opt-in** for app-server Supabase workout storage; **none exists now**, and personal Drive/iCloud backup must never be redirected to Supabase.
+- [x] Record **ADR-013/014** owner decision: future paid full-data Supabase Sync is a separate optional cloud mode with explicit consent, never a personal-backup destination. **Policy selected, implementation not authorized**.
+- [ ] Before implementing, separately approve billing, entitlement, privacy/RLS/server architecture, provider costs, retention/expiry and testable opt-in/disable rules; obtain each user's explicit Sync consent. No Supabase workout tables or uploads exist today.
 - [ ] Review privacy policy, consent and user controls.
 - [ ] Design Supabase Postgres schema and RLS ownership policies.
 - [ ] Build sync adapter, change journal, conflict resolution and failure recovery.

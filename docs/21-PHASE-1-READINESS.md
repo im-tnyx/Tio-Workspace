@@ -64,7 +64,7 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 
 **Owner future-business choice (ADR-014):** Full supported workout-data Supabase Sync is a later **opt-in paid membership** feature, not in Phase 1. Membership does not by itself authorize workout uploads; local logging and optional Personal Backup remain available without paid Sync. Billing/entitlement/security/retention remain pending.
 
-**Current Phase 1 authorization:** None recorded in this document. **Phase 0 owner decisions:** ADR-010 selected the database stack; ADR-011 selected email/password, single-account/no-switch policy, offline access risk, retained logout data and MVP functional scope; ADR-012 selected future optional backup defaults and fresh-login recovery UX (2026-11-14). Neither approves code, native key/erase implementation, migration execution or deployment.
+**Current Phase 1 authorization:** None recorded in this document. **Phase 0 owner decisions:** ADR-010 selected the database stack; ADR-011 selected email/password, single-account/no-switch policy, offline access risk, retained logout data and MVP functional scope; ADR-012 selected future optional personal backup and manual restore UX; ADR-013 selected exclusive cloud modes and future auto-hydration for previously enabled authorized Sync; ADR-014 selected optional paid membership **plus independent consent** for future full-workout server Sync (2026-11-14). These approve policy only, **not** code, billing, native key/erase, migration, backend or deployment.
 
 ## 05 · Go/no-go
 
