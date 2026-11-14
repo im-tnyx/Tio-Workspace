@@ -61,9 +61,9 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 
 ### Review-ready acceptance for the proposed design baseline (not yet executed)
 
-- [ ] Phase 1 **P0 UX-01–05 and UX-08** documented in [test plan](08-TEST-PLAN.md), including four-tab root-only dock, shared TopBar/controls, four theme combinations and iOS/Android accessibility evidence after implementation. **UX-06 (P1 Backup/Phase 3)** and **UX-07 (P2 Sync/Phase 4)** are not Phase 1 release blockers.
-- [x] Owner selected four root tabs, shared TopBar/reusable controls and independent Glass/Solid × Light/Dark themes (ADR-015; design policy only).
-- [ ] Confirm or change existing violet/mint tokens, typography, initial theme defaults and final visual QA (see [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md)).
+- [ ] Phase 1 **P0 UX-01–05 and UX-08/09** documented in [test plan](08-TEST-PLAN.md), including default translucent Glass root-only dock, root scroll-revealed/nested immediate shared TopBar, Settings-only Solid, four material/appearance combinations, central `src/shared/theme/tokens/` and dumb-screen boundaries. Native accessibility evidence required after implementation; **UX-06 P1 Backup and UX-07 P2 Sync** remain later phase gates.
+- [x] Owner selected four root tabs, **default Glass translucent dock**, root scroll-revealed TopBar, nested immediate back TopBar, Settings-only Solid, independent Light/Dark and token-driven dumb screens (ADR-015; design policy only).
+- [ ] Confirm violet/mint colors, typography, **initial Light/Dark preference**, scroll threshold/animation and final visual QA (Glass material default is already selected; see [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md)).
 - [ ] Owner documents application identifiers and whether logo/app icon remain provisional; no fake design-signoff claims.
 - [ ] Scope exclusions for the initial **Phase 1.1 shell** are explicit: no auth connection, SQLCipher workout store, AI, backups, paid Sync, billing or release.
 - [ ] Later native security and portability gates remain pending until real Android/iOS builds produce evidence.

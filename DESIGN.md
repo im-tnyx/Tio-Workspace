@@ -11,7 +11,7 @@
 </div>
 
 > [!NOTE]
-> This is a **visual specification**, not a delivered UI kit or a promise that any screens currently exist. **Owner-selected (ADR-015, 2026-11-14):** iOS-inspired Glass/Solid material, independent Light/Dark appearance, shared TopBar/reusable controls, and exactly four bottom tab roots (Home/Workout/Library/You). Remaining colors, icon/logo, initial theme defaults and native render/accessibility remain proposed or unverified.
+> This is a **visual specification**, not a delivered UI kit or a promise that any screens currently exist. **Owner-selected (ADR-015, 2026-11-14):** iOS-inspired Glass/Solid material, independent Light/Dark appearance, shared TopBar/reusable controls, and exactly four bottom tab roots (Home/Workout/Library/You). Glass is now the owner-selected default material; final Light/Dark startup preference, colors/icon/logo and native render/accessibility remain proposed or unverified.
 
 ## 01 · Product personality
 
@@ -44,11 +44,11 @@ Tokens must be checked for accessible text contrast in real light/dark UI; these
 
 The uploaded iOS app screenshot is **visual reference only**, showing a translucent rounded top header and grouped action treatment. Do not copy HEVY branding, image, icons or unapproved features. iOS-inspired styling should be supported across **both** iOS and Android when technically feasible.
 
-- **Settings → Appearance has two independent choices:** **Material = Glass / Solid** and **Appearance = Light / Dark**. Four combinations are required: Glass+Light, Glass+Dark, Solid+Light, Solid+Dark. Exact default combination and optional OS-following preference remain undecided.
-- **Glass:** background-aware, translucent/tinted surfaces with restrained backdrop blur, fine borders and rounded corners for shared navigation and suitable surfaces. **Solid:** matching geometry and semantics with opaque background tokens; no blur. Apply to every shared component rather than screen-by-screen copies.
-- **Shared `TopBar`:** a single screen-configured title/back/optional-action component, with large-title/root and compact-back/nested variants, safe-area padding and theme material. The OS status bar remains native. Do not invent search/notification functionality because those icons appear in a reference image.
-- **Shared `BottomTabBar`:** exactly **Home, Workout, Library, You**, visible **only on those four root-tab screens**. Hide on Active Workout, Plan Editor, exercise detail, History, Progress, Settings, personal backup, Auth and all other nested/modal/full-screen routes.
-- **Reusable controls:** `Button`, `TextField`, `SearchField`, `Card`, `SheetSurface`, `Dialog`, `Switch`, `Select`, `StatusMessage`, `TopBar`, `BottomTabBar` and typography/icons share one theme token source. When code is approved, `src/shared/` owns non-business primitives and `src/app/` owns route layouts; feature screens only compose them, per [architecture](docs/10-REPOSITORY-STRUCTURE.md).
+- **Settings → Appearance has two independent choices:** **Material = Glass / Solid** and **Appearance = Light / Dark**. Four combinations are required: Glass+Light, Glass+Dark, Solid+Light, Solid+Dark. **Glass is the default** until the user chooses Solid from Settings; Light/Dark startup choice and optional OS-following preference remain undecided.
+- **Glass (default):** visibly background-translucent, rounded iOS-style TopBar and **floating bottom tab dock**, with restrained blur, tint, fine border and readable text; consistent material for appropriate cards/fields/buttons/sheets. **Solid:** matching geometry but opaque surfaces, selectable **only from Settings → Appearance**, never a per-screen control. Accessibility/reduced-transparency or unsupported blur may temporarily show an opaque fallback without altering the stored preference.
+- **Shared `TopBar`:** a single component with title/back/optional actions and safe-area padding. **Root screens:** show a hero/title in content; the compact TopBar is **hidden at the initial top scroll position and reveals only after scrolling past a threshold**, with smooth reduced-motion-friendly transition/hysteresis and hiding again at top. **Nested screens:** shared compact/back TopBar is **visible immediately** for navigation. Root scroll threshold/visibility is computed in the **shared route shell/scroll coordinator, never inside a dumb screen**. Native OS status bar is separate; screenshot search/notification icons do not authorize those features.
+- **Shared `BottomTabBar`:** exactly **Home, Workout, Library, You** on the four tab roots **throughout scrolling**. Default is a **translucent rounded Glass dock showing content beneath it**. Solid uses the same layout only when selected in Settings (or an accessibility/no-blur fallback is required). Hide on Active Workout, Plan Editor, exercise detail, History, Progress, Settings, personal backup, Auth and every nested/modal/full-screen route.
+- **Theme tokens:** future canonical folder **`src/shared/theme/tokens/`** holds colors, foreground text, glass tint/opacity/blur, surfaces, borders, shadows, spacing, radii, typography, icon sizes, motion and semantic component aliases. Light/Dark and Glass/Solid resolve centrally; no hardcoded theme branches per screen. `src/shared/ui/` owns reusable `TopBar`, `BottomTabBar`, `Button`, `TextField`, `SearchField`, `Card`, `SheetSurface`, `Dialog`, `Switch`, `Select` and status components. `src/app/` owns navigation/scroll coordination. Features compose primitives, per [architecture](docs/10-REPOSITORY-STRUCTURE.md).
 - **Accessibility & Android fallback:** maintain readable contrast over dynamic content, large text, predictable keyboard/safe areas, 44pt/48dp minimum touch targets, reduced-motion and reduce-transparency controls. If blur is unsupported or unreadable, render a legible tinted **Solid fallback** without changing the user's saved preference. Native implementation/QA is still pending.
 - **Privacy:** appearance preferences are local UI state; toggling them cannot enable workout uploads, backup, sync, or change bound account identity.
 
@@ -62,6 +62,12 @@ The uploaded iOS app screenshot is **visual reference only**, showing a transluc
 - **Accessibility:** dynamic font sizes, voice labels, focus order, reduced-motion support, dark mode, and color-blind-friendly status cues.
 
 Review proposed [MVP screens & interaction flows](docs/20-MVP-UX-FLOWS.md) before locking navigation and states. The owner-selected shell policy is recorded; exact mockups, color tokens and device testing still need review.
+
+### Dumb/presentational screen rule (ADR-015)
+
+**Every screen is dumb:** it renders typed view state and shared token-driven components, and forwards typed user-intent callbacks. It does **not** fetch data, call repositories/SQLite/Supabase/SecureStore/HTTP, decide auth state, calculate workout rules, compute theme materials, or own TopBar scroll thresholds. Feature hooks/controllers coordinate presentation and effects **outside screens**; feature domain/application owns business logic; feature data/platform adapters own I/O. Route layouts/shared scroll coordinator own tab visibility and root TopBar reveal. Small transient focus/animation state in reusable controls is presentation only, not workout/business logic.
+
+These are **future folder boundaries only**: no application code or folders have been created.
 
 ## 04 · Screens to design
 
@@ -103,7 +109,7 @@ Suggested hierarchy: **Overview → Decisions → Flows → Edge cases → Verif
 
 ## 06A · Proposed Phase 0 visual freeze for owner review
 
-**Owner-selected (ADR-015):** exactly four bottom-root screens **Home, Workout, Library, You**, and root-only bottom bar; all detailed screens hide the dock. Shared iOS-style TopBar/controls and independent Glass/Solid × Light/Dark preferences. **Not yet finalized:** exact violet/mint colors, typography, initial defaults, final name/IDs, detailed screen hierarchy, contrast, native blur fallback and real device screenshots.
+**Owner-selected (ADR-015):** exactly four bottom-root screens **Home, Workout, Library, You**, and root-only bottom bar; all detailed screens hide the dock. Shared scroll-revealed root TopBar (nested immediately visible), default translucent Glass bottom dock, centralized theme tokens, dumb screens and independent Glass/Solid × Light/Dark preferences. **Not yet finalized:** violet/mint colors, typography, initial Light/Dark choice, exact scroll threshold/motion, name/IDs, detailed hierarchy, contrast, native blur fallback and device screenshots.
 
 Use the [Phase 0 design and Phase 1 approval pack](docs/22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) for exact review choices, Restore/Skip versus future Sync automatic hydration copy, acceptance criteria and the owner sign-off template. Do not read this paragraph as sign-off, app code authorization or a delivered UI.
 

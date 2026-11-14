@@ -41,7 +41,7 @@
 | D11 | Analytics and retention | No workout payload analytics by default; separate crash logs from workout content | Medium | ⬜ Pending |
 | D12 | Future sync deletion semantics | Separate disabling sync from deleting cloud copies; revisit in Phase 4 | **High later** | ⬜ Pending |
 | D13 | Local ORM and migration tooling | **Selected:** Expo SQLite + Drizzle ORM/Drizzle Kit + native SQLCipher; offline-bundled migrations. Unlock, key and recovery implementation require validation | **High** | ✅ Approved — stack only (ADR-010, 2026-11-14) |
-| D14 | iOS-inspired shared UI shell | Shared TopBar/reusable controls; root-only Home/Workout/Library/You bottom dock; independent Glass/Solid and Light/Dark settings | Medium | ✅ Owner-selected ADR-015 (2026-11-14); native visual QA pending |
+| D14 | iOS-inspired shared UI shell | **Default Glass** translucent dock on four roots, scroll-reveal root TopBar and immediately visible nested Back TopBar; Solid only from Settings, independent Light/Dark; token-driven dumb screens | Medium | ✅ Owner-selected ADR-015 (2026-11-14); exact motion/native visual QA pending |
 
 ## 🧱 Architecture trade-offs at a glance
 

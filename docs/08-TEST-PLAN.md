@@ -80,7 +80,7 @@
 
 | ID | Priority | Scenario | Expected result |
 |---|---|---|---|
-| UX-01 | P0 | Home/Workout/Library/You as exactly four bottom-root tabs; navigate to Active Workout, Plan Editor, Exercise Detail, History, Progress and Settings | Bottom dock visible **only** on the four roots, hidden on nested/Auth/full-screen routes; shared TopBar title/back variants, no account switching |
+| UX-01 | P0 | Four root screens Home/Workout/Library/You; scroll below/above hero threshold; open nested Active Workout, Plan Editor, Exercise Detail, History, Progress, Settings | Default translucent Glass bottom dock stays on four roots **throughout scrolling**, hides on nested/Auth/full-screen; root compact TopBar shows **only after scroll** (no flicker), nested back TopBar immediately shows; no account switching |
 | UX-02 | P0 | Edit sets/reps/weight one-handed with large accessibility text and screen reader | No clipped controls, understandable focus/labels and device-appropriate touch targets |
 | UX-03 | P0 | Previously initialized user opens and saves an active workout offline | “Saved on this device” reflects actual local persistence, no misleading “Synced” or blocked logging |
 | UX-04 | P0 | Logout, wrong-bound-account attempt and separately confirmed local erase | Exact identity/privacy warning states; no accidental erase/account switch, cancellation is safe |
@@ -88,9 +88,11 @@
 
 | UX-06 | P1 | **Phase 3 only:** user locates verified, encrypted same-account Personal Backup after reinstall | Optional **Restore / Skip**; Skip unchanged, confirmed restore after independent secret; no implicit upload or mode enablement |
 | UX-07 | P2 | **Phase 4 only:** prior explicitly opted-in and currently authorized paid Supabase Sync on fresh install | Auto-hydrate available server rows **without Backup Restore dialog**, accurate empty/error states |
-| UX-08 | P0 | Glass/Solid × Light/Dark permutations on Android/iOS and root/nested routes | All four combinations update shared TopBar, bottom dock, button, TextField and sheets consistently; readable native Solid fallback for unsupported/reduced transparency |
+| UX-08 | P0 | Default Glass and Settings-selected Solid × independent Light/Dark on Android/iOS, root and nested routes | All four combinations update shared TopBar, dock, Button, TextField and sheets consistently; supported Glass is visibly translucent, Solid opaque, accessibility/no-blur fallback readable without mutating stored Glass |
 
-These are **planned**, unexecuted acceptance criteria. The first workout MVP requires **P0 UX-01–05 and UX-08**; **P1 UX-06 belongs to Personal Backup (Phase 3)** and **P2 UX-07 to paid Supabase Sync (Phase 4)**. A screenshot reference is not test evidence or an asset license.
+| UX-09 | P0 | Audit screen modules, shared route shell and token ownership after Phase 1 implementation | Screens render props/callbacks without data fetching, business/SDK calls or scroll-threshold logic; shared `src/shared/theme/tokens/` + `src/shared/ui/` drive common components, app layout owns scroll TopBar and tab visibility |
+
+These are **planned**, unexecuted acceptance criteria. The first workout MVP requires **P0 UX-01–05 and UX-08/09**; **P1 UX-06 belongs to Personal Backup (Phase 3)** and **P2 UX-07 to paid Supabase Sync (Phase 4)**. A screenshot reference is not test evidence or an asset license.
 
 ## Test environments
 Physical Android and iPhone devices, current supported OS versions, actual Expo development/release builds, unstable network, background and device-kill scenarios, low storage, attempted second account on a bound installation, deliberate erase/reset, reinstallation and cross-device restores.

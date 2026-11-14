@@ -55,6 +55,14 @@ Tio-Workspace/
 
 **Optional complexity layer:** add `features/<name>/application/` or `use-cases/` if multi-step workflow, recovery, several repositories or transaction coordination justify it. Simple feature hooks may call injected repository-facing services; never embed complex domain/business rules permanently in React hooks.
 
+### Dedicated theme tokens and dumb screens (ADR-015 — future implementation only)
+
+The approved source-organization principle remains `src/app/` (navigation/layout), `src/shared/` (reusable non-business UI/theme), `src/features/` (feature presentation/domain/data), `src/platform/` (technical adapters). Within that structure, the **planned canonical token path is `src/shared/theme/tokens/`**, for semantic colors/text, glass tint-opacity-blur, opaque surfaces, borders, shadows, spacing, radius, typography, icons, motion and component aliases. `src/shared/theme/` centrally resolves **default Glass vs Settings-selected Solid** and **Light vs Dark** into tokens. `src/shared/ui/` owns one set of TopBar, BottomTabBar, TextField, Button, Card, SheetSurface and other primitives. These paths are **not created yet**.
+
+**Dumb screen rule:** a screen composes shared components, receives typed view state/props and emits callbacks. It performs **no business logic, async data fetching, auth/session decisions, direct repository/SDK/SQL calls, theme-material calculation or scroll-threshold detection**. Presentation orchestration and effects go in separate feature hooks/controllers; domain/application owns rules and workflows; data/platform own I/O. Optional `application/` layers are justified only by complexity, not created empty. Route shell/shared scroll coordinator decides root/nested TopBar display and tab visibility.
+
+**Chrome policy:** **Glass is the default**, including a translucent floating bottom dock remaining visible on four root screens Home/Workout/Library/You while scrolling. Only Settings → Appearance offers a persistent **Solid** choice; technical or OS accessibility fallback may temporarily render opaque surfaces without changing preference. Root compact shared TopBar starts hidden, reveals only after scroll (threshold/hysteresis in shell), hides when returning to top; nested compact/back TopBar appears immediately. Bottom dock hides on every nested/modal/full-screen/Auth route. Respect safe areas, keyboard, readable contrast, reduced transparency/motion and native platform differences.
+
 ## 3 · Dependency and import matrix
 
 | Caller | Allowed | Forbidden |
@@ -101,7 +109,7 @@ flowchart TD
 
 ## 6 · Agent acceptance criteria
 
-- Thin route files; features own presentation and business behavior.
+- Thin routes; dumb screens only render view state and forward callbacks, while feature hooks/controllers/application/domain own behavior. No business/SDK/theme-scroll decision logic inside screen files.
 - Feature domain ports can be tested without Expo/SQL/Supabase.
 - Feature data adapters use technical platform services; platform is not business-aware.
 - No deep cross-feature imports; public `index.ts` exports only what other features need.

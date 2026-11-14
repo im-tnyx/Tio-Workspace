@@ -36,14 +36,14 @@ flowchart TD
   Settings --> Sync["Paid Sync - future"]
 ```
 
-**Exact four tab buttons:** **Home, Workout, Library, You**. The dock is a **bottom tab bar, not a modal bottom sheet**. Show it **only** on those four root screens. Hide for Active Workout, Plan Editor, History, Progress, exercise details, Settings, Backup, all Auth routes and every other nested/full-screen route. The same shared TopBar handles root large-title/action and nested compact-back variants. Workout root links plans/history and active sessions; Library root owns exercise lookup; You root links Progress and Settings; Home is a start/resume dashboard. These routes preserve every owner-selected ADR-011 functional MVP screen.
+**Exact four tab buttons:** **Home, Workout, Library, You**. This is a bottom tab dock, not a modal sheet. Its **default is translucent iPhone-like Glass**, showing content under the rounded dock, and it stays present while scrolling these four root screens. It hides on Active Workout, Plan Editor, History, Progress, exercise details, Settings, Backup, all Auth/nested/full-screen routes. **Root compact TopBar is hidden at scroll top and appears only after scrolling**; nested routes show shared compact/back TopBar immediately. Workout links plans/history/session, Library has exercise lookup, You links Progress/Settings and Home start/resume.
 
 ### Shared shell and theme choices (owner-selected)
 
-- Settings → Appearance: **Material Glass/Solid** and **Appearance Light/Dark** are independent; all four combinations required. Defaults still require a final choice. No cloud upload or account change.
-- One **TopBar** uses the reference's rounded, translucent grouped-header feel without copying a third-party logo or introducing unapproved search/notification functions.
-- One **BottomTabBar** draws a safe-area-aware, four-item glass/solid dock only on roots. All shared text inputs, buttons, cards, sheets, switches/selects and typography use central tokens in both light and dark.
-- Reusable non-business primitives are owned by future `src/shared/` UI/theme; `src/app/` owns layout/navigation; features compose shared primitives, per [module architecture](10-REPOSITORY-STRUCTURE.md). These are **future paths only**.
+- Settings → Appearance: **Glass is the default**, **Solid only via this Settings control**, and Light/Dark independent. All four combinations required; initial Light/Dark choice still pending. Technical/reduced-transparency fallback may render Solid without changing saved Glass. No cloud upload/account change.
+- One **TopBar** takes the reference's rounded/translucent grouped style without copied branding or unapproved search/notifications. On root tab screens the compact TopBar is **hidden initially**, revealing **after scrolling** via centrally owned threshold/reduced-motion-friendly transition and hiding when back at top. On nested screens it is **visible immediately** with back affordance.
+- One **BottomTabBar** draws a safe-area-aware, four-item **default background-translucent Glass dock** on roots at every scroll position; opaque Solid only by Settings preference (or accessibility fallback). All shared text fields, buttons, cards, sheets, switches, selects and typography use the central future `src/shared/theme/tokens/` in both light and dark.
+- Future `src/shared/theme/tokens/` supplies tokens, `src/shared/ui/` supplies shared primitives, `src/app/` owns routes/tab visibility and shared scroll TopBar coordinator; features compose them. **Every screen stays dumb** (view state/props and callbacks only), with async/state orchestration in feature hooks/controllers, business rules in domain/application and SDK/I/O in data/platform. See [module architecture](10-REPOSITORY-STRUCTURE.md). **Future paths only**.
 - Glass uses readable tinted translucent/blurred surfaces with borders; Solid uses opaque equivalents. Validate iOS/Android text contrast, keyboard/safe areas, 44pt/48dp touch targets, dynamic type and reduce-transparency/high-contrast fallback after implementation. If blur unavailable, render Solid fallback without changing saved preference.
 
 ## 02 · Screen contract
@@ -119,7 +119,7 @@ The owner-provided iOS/Android screenshots inform **information hierarchy only**
 - Each screen covers `loading`, `empty`, `offline`, `error`, and account-safety states.
 - Never expose cached workout data when a different account attempts login; **no identity-switching flow exists**.
 
-**Owner-selected shell (ADR-015):** four root tabs Home / Workout / Library / You, bottom dock only on roots; iOS-inspired Glass/Solid selectable independently from Light/Dark; shared TopBar and reusable text fields/buttons/surfaces. Existing MVP features remain nested. See the [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) and P0 UX-01–05/08 versus later P1 UX-06, P2 UX-07; final palette/QA/screenshot sign-off remains pending.
+**Owner-selected shell (ADR-015):** four root tabs Home / Workout / Library / You, **default Glass translucent dock** only on roots; root compact TopBar **scroll-revealed only**, nested TopBar immediately visible; Settings-only Solid option, independent Light/Dark; centralized theme tokens and dumb screens. Existing MVP features remain nested. See the [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) and P0 UX-01–05/08 versus later P1 UX-06, P2 UX-07; final palette/QA/screenshot sign-off remains pending.
 
 ## 07 · Design acceptance checklist
 
