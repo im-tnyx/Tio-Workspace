@@ -1,7 +1,6 @@
-import { Pressable, ScrollView, Text, View } from 'react-native';
+import { Platform, Pressable, ScrollView, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button } from '@/shared/ui/Button';
-import { Card } from '@/shared/ui/Card';
 import { TypewriterHeading } from '@/shared/ui/TypewriterHeading';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
 import { spacing, typography } from '@/shared/theme/tokens';
@@ -21,6 +20,7 @@ export function WelcomePanel({
 }: Props) {
   const { colors } = useAppearance();
   const insets = useSafeAreaInsets();
+  const android = Platform.OS === 'android';
   const headingStyle = {
     color: colors.text, fontSize: 54, lineHeight: 65,
     fontWeight: '800' as const, letterSpacing: 5, textAlign: 'center' as const,
@@ -31,50 +31,64 @@ export function WelcomePanel({
   const buttons = actions.map(action => <Button
     key={action.label} label={action.label}
     onPress={action.onPress} variant={action.variant} />);
+  const bottomActions = <View style={{ gap: spacing.sm }}>
+    {buttons}
+    {bottomLink ? <View style={{
+      flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center',
+      alignItems: 'center',
+    }}>
+      <Text style={[typography.body, { color: colors.muted }]}>{bottomLink.prompt}{' '}</Text>
+      <Pressable onPress={bottomLink.onPress} accessibilityRole="link"
+        accessibilityLabel={bottomLink.label}
+        style={({ pressed }) => ({
+          minHeight: 48, minWidth: 48, justifyContent: 'center', alignItems: 'center',
+          opacity: pressed ? 0.7 : 1,
+        })}>
+        <Text style={[typography.body, {
+          color: colors.text, fontWeight: '700', textDecorationLine: 'underline',
+        }]}>{bottomLink.label}</Text>
+      </Pressable>
+    </View> : null}
+  </View>;
 
-  return <View style={{
-    flex: 1, backgroundColor: colors.background,
-    paddingHorizontal: spacing.lg,
-  }}>
-    {actionPlacement === 'bottom' ? <>
+  return <View style={{ flex: 1, backgroundColor: colors.background }}>
+    {actionPlacement === 'bottom' ? <ScrollView
+      style={{ flex: 1 }} showsVerticalScrollIndicator={false}
+      contentContainerStyle={{ flexGrow: 1 }}>
       <View style={{
-        flex: 1, justifyContent: 'center', alignItems: 'center',
-        paddingTop: insets.top,
+        flexGrow: 1, minHeight: 180, justifyContent: 'center', alignItems: 'center',
+        paddingHorizontal: spacing.lg, paddingTop: insets.top + spacing.sm,
       }}>{heading}</View>
-      <View style={{
-        width: '100%', alignSelf: 'center',
-        gap: spacing.md,
-        // The CTA has matching 16pt side/bottom padding, plus the device safe area.
-        paddingBottom: insets.bottom + spacing.lg,
-      }}><Card>
-        {buttons}
-        {bottomLink ? <View style={{
-          flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'center',
-          alignItems: 'center',
-        }}>
-          <Text style={[typography.body, { color: colors.muted }]}>{bottomLink.prompt}{' '}</Text>
-          <Pressable onPress={bottomLink.onPress} accessibilityRole="link"
-            accessibilityLabel={bottomLink.label}
-            style={({ pressed }) => ({
-              minHeight: 48, minWidth: 48, justifyContent: 'center', alignItems: 'center',
-              opacity: pressed ? 0.7 : 1,
-            })}>
-            <Text style={[typography.body, {
-              color: colors.text, fontWeight: '700', textDecorationLine: 'underline',
-            }]}>{bottomLink.label}</Text>
-          </Pressable>
-        </View> : null}
-      </Card></View>
-    </> : <ScrollView
-      style={{ flex: 1 }}
+      {android ? <View style={{
+        backgroundColor: colors.card,
+        borderTopLeftRadius: 32, borderTopRightRadius: 32,
+        borderTopWidth: 1, borderLeftWidth: 1, borderRightWidth: 1,
+        borderColor: colors.border,
+        paddingTop: spacing.lg, paddingHorizontal: spacing.lg,
+        // Sheet reaches the screen bottom; inset is INSIDE the surface,
+        // so buttons remain above gesture/3-button navigation controls.
+        paddingBottom: insets.bottom + spacing.sm,
+      }}>{bottomActions}</View> : <View style={{
+        paddingHorizontal: spacing.sm, paddingBottom: insets.bottom + spacing.xs,
+      }}>
+        <View style={{
+          backgroundColor: colors.card, borderRadius: 32,
+          borderWidth: 1, borderColor: colors.border,
+          padding: spacing.lg,
+        }}>{bottomActions}</View>
+      </View>}
+    </ScrollView> : <ScrollView style={{ flex: 1 }}
       showsVerticalScrollIndicator={false}
       contentContainerStyle={{
         flexGrow: 1, justifyContent: 'center', alignItems: 'center',
+        paddingHorizontal: spacing.lg,
         paddingTop: insets.top + spacing.lg,
         paddingBottom: insets.bottom + spacing.lg,
       }}>
-      <View style={{ width: '100%', maxWidth: 330,
-        alignItems: 'center', gap: 48 }}>
+      <View style={{
+        width: '100%', maxWidth: 330,
+        alignItems: 'center', gap: 48,
+      }}>
         {heading}
         <View style={{ width: '100%', gap: spacing.md }}>{buttons}</View>
       </View>
