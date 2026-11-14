@@ -47,16 +47,18 @@ export function AuthCredentialsScreen({
         color: colors.text, fontSize: compact ? 32 : 38,
         lineHeight: compact ? 39 : 46,
       }]}>{title}</Text>
-      <Text style={[typography.body, { color: colors.muted }]}>{description}</Text>
+      <Text style={[typography.body, { color: colors.muted, opacity: 0.76 }]}>{description}</Text>
     </View>
     <View>
       {step === 'email' ? <TextField
+        key="email" autoFocus
         label={copy('email')} variant="bare"
         value={email} onChangeText={onChangeEmail}
         placeholder={copy('emailPlaceholder')}
         keyboardType="email-address" autoCapitalize="none" autoCorrect={false}
         autoComplete="off" textContentType="none" returnKeyType="done"
       /> : step === 'otp' ? <TextField
+        key="otp" autoFocus
         label={copy('verificationCode')} variant="bare"
         value={code}
         onChangeText={next => onChangeCode(next.replace(/\D/g, '').slice(0, 6))}
@@ -64,6 +66,7 @@ export function AuthCredentialsScreen({
         keyboardType="number-pad" maxLength={6}
         autoComplete="off" textContentType="none" returnKeyType="done"
       /> : <TextField
+        key="password" autoFocus
         label={copy('password')} variant="bare"
         value={password} onChangeText={onChangePassword}
         placeholder={copy('passwordPlaceholder')} secureTextEntry
