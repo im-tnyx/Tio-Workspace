@@ -6,8 +6,8 @@ import { useAppearance } from '@/shared/theme/AppearanceProvider';
 import { spacing } from '@/shared/theme/tokens';
 import { copy } from '@/shared/i18n/en';
 
-// One fixed page per step. NO ScrollView or swipe scrolling; compact spacing
-// and KeyboardAvoidingView keep the current single field/action in view.
+// The header is OUTSIDE KeyboardAvoidingView and never changes its top inset.
+// Only the form below it resizes when the keyboard is visible. No ScrollView.
 export function AuthPreviewPage({ onBack, children }: {
   onBack: () => void; children: ReactNode;
 }) {
@@ -20,34 +20,37 @@ export function AuthPreviewPage({ onBack, children }: {
     return () => { show.remove(); hide.remove(); };
   }, []);
 
-  return <KeyboardAvoidingView
-    behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-    style={{ flex: 1, backgroundColor: colors.background }}>
+  return <View style={{ flex: 1, backgroundColor: colors.background }}>
+    {/* Fixed back arrow: identical safe-area position before/after focus. */}
     <View style={{
-      flex: 1, paddingTop: insets.top + (keyboardShown ? 0 : spacing.sm),
-      paddingBottom: keyboardShown ? 0 : insets.bottom + spacing.sm,
-      gap: keyboardShown ? spacing.sm : spacing.md,
+      paddingTop: insets.top + spacing.sm,
+      paddingHorizontal: spacing.lg,
+      minHeight: insets.top + spacing.sm + 54,
+      justifyContent: 'flex-end',
     }}>
-      <View style={{
-        minHeight: 54, flexDirection: 'row', alignItems: 'center',
-        paddingHorizontal: spacing.lg,
-      }}>
+      <View style={{ minHeight: 54, justifyContent: 'center' }}>
         <Pressable onPress={onBack} accessibilityRole="button"
           accessibilityLabel={copy('back')}
           style={({ pressed }) => ({
-            minWidth: 48, minHeight: 48, alignItems: 'flex-start',
+            minWidth: 48, minHeight: 48, alignSelf: 'flex-start',
             justifyContent: 'center', opacity: pressed ? 0.65 : 1,
           })}>
           <Text accessibilityElementsHidden
             style={{ color: colors.text, fontSize: 32, lineHeight: 38 }}>{'←'}</Text>
         </Pressable>
       </View>
+    </View>
+    <KeyboardAvoidingView
+      style={{ flex: 1 }}
+      behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
       <View style={{
         flex: 1, minHeight: 0, paddingHorizontal: spacing.lg,
-        paddingTop: keyboardShown ? 0 : spacing.md,
+        paddingTop: spacing.xl,
+        // The keyboard already owns the lower safe area when visible.
+        paddingBottom: keyboardShown ? spacing.sm : insets.bottom + spacing.sm,
       }}>
         {children}
       </View>
-    </View>
-  </KeyboardAvoidingView>;
+    </KeyboardAvoidingView>
+  </View>;
 }
