@@ -33,6 +33,7 @@ export const authPreviewLayout = {
   // Fixed footer note slot prevents different preview messages from shifting CTA.
   // The Text may grow beyond this minimum for accessibility font scaling.
   footerNoticeMinHeight: 57,
+  authMiddleMinHeight: 0,
 } as const;
 export const typography = {
   title: { fontSize: 34, lineHeight: 41, fontWeight: '700' as const },
