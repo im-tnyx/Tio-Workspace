@@ -28,7 +28,7 @@
 
 | Ref | Decision needed | Working recommendation / selection | Risk if undecided | Owner status |
 |---|---|---|---|---|
-| D01 | Product name/identity | **Tnyx** display name; Android application ID and iOS bundle ID **`com.tnyx.tio`**; repo still `Tio-Workspace` | Medium | ✅ App name/ID selected (ADR-016); ⬜ platform ownership/registration and original icon pending |
+| D01 | Product name/identity | **Tnyx** display name; Android application ID and iOS bundle ID **`com.tnyx.tio`**; repo still `Tio-Workspace` | Medium | ✅ App name/ID selected (ADR-016); ⬜ platform ownership/registration pending; **black/white happy moving-person icon concept preferred**, final original SVG/platform asset QA/owner approval pending |
 | D02 | Sign-in options | Supabase **email/password + required email OTP signup verification**; no guest; Google/Apple optional later; rate/expiry config needs native/server validation | High | ✅ Auth policy selected (ADR-011/017); target numbers selected; provider enforcement unverified |
 | D03 | Offline session policy | Previously verified bound identity may log workouts offline; remote revocation is unknown until online | **High** | ✅ Trade-off accepted (ADR-011) |
 | D04 | **No account switching** / logout | **One locally bound account per installation**; no second login while bound; logout locks retained history, separately confirmed erase/reset required | **High** | ✅ Policy approved (ADR-011) |

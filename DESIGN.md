@@ -137,6 +137,12 @@ Suggested hierarchy: **Overview → Decisions → Flows → Edge cases → Verif
 
 Use the [Phase 0 design and Phase 1 approval pack](docs/22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) for exact review choices, Restore/Skip versus future Sync automatic hydration copy, acceptance criteria and the owner sign-off template. Do not read this paragraph as sign-off, app code authorization or a delivered UI.
 
+### Owner-preferred Tnyx app icon concept (visual selection, not production asset)
+
+The owner prefers the **second black-and-white human-in-motion icon concept** shared in the design chat (2026-11-14): a solid **black rounded-square icon field** with a **white, joyful, energetic abstract human silhouette**, round head, one arm raised/sweeping outward, dynamic angled legs and a clean curved orbit/swoosh crossing the waist. **Flat monochrome shapes only**: no Teal, no gradients, no tagline, no tiny type, no extra decorative colors. The symbol communicates positive movement/fitness without reproducing any third-party physiotherapy/fitness brand logo.
+
+**Approval boundary:** Owner said this concept “looks right”, so preserve it as the **preferred visual direction**, not a final traced/approved production vector or trademark-clear icon. The shown generative concept is a **raster mockup**, not proof the final SVG geometry matches it. After an explicitly scoped asset-creation/implementation approval, create a **new original editable SVG** and iOS/Android icon variants (including Android adaptive icon foreground/background, safe zone and monochrome behavior), inspect at small launcher sizes, verify platform masks, accessibility and similarity/trademark risk, and obtain final owner icon approval. **Do not embed a chat-generated screenshot, copy a reference brand, add a runtime icon asset or change the app's primary neutral theme in Phase 0.**
+
 ## 07 · Future design assets
 
 When implementation is approved: create real Figma/source assets, app icon, splash screen, state screenshots and a screenshot/asset provenance index. Do not use fake product screenshots in the current documentation-only README.

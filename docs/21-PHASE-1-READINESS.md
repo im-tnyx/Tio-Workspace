@@ -73,7 +73,7 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 - [x] Tnyx uses **Black/White/Gray with no forced Teal** by default; future named user-selectable accent colors are planned but **no MVP picker** (ADR-016).
 - [ ] Test System OS-follow vs Light/Dark manual override, supported Android/iPhone portrait-only rotation through Auth/workout/keyboard, and English-only system-font scaling/shared message keys. **UX-08/11/14 P0**, future UX-13 accent picker and UX-15 Hindi/custom fonts excluded from MVP.
 - [x] Owner selected **Android application ID + iOS bundle ID `com.tnyx.tio`**.
-- [ ] Verify store/platform uniqueness, signing/ownership, original icon and Custom font licensing; repository unchanged.
+- [ ] Verify store/platform uniqueness, signing/ownership, preferred monochrome moving-person icon's final original vector/trademark and app-icon variants and Custom font licensing; repository unchanged.
 - [ ] Scope exclusions for the initial **Phase 1.1 shell** are explicit: no auth connection, SQLCipher workout store, AI, backups, paid Sync, billing or release.
 - [ ] Later native security and portability gates remain pending until real Android/iOS builds produce evidence.
 
