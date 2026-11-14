@@ -37,7 +37,7 @@ Official Expo SDK 58, Expo Router and Expo Blur docs checked on 2026-11-14. Foll
 
 ## Validation & review status
 
-- **Static/local test evidence:** record actual commands or explicitly mark unrun in PR. This environment cannot currently install npm dependencies; lockfile not generated and reproducible release build not claimed.
+- **Static/local test evidence:** record actual commands or explicitly mark unrun in PR. The local execution environment cannot fetch npm registry packages; npm lockfile generated and committed via GitHub Actions; `npm ci` is used for deterministic install, but no reproducible native release build is claimed.
 - **Review requested:** independent Codex review on actual PR HEAD after implementation.
 - **Merge authorization:** not granted. No deployment.
 

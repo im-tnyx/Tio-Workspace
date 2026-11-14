@@ -31,18 +31,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
-      # A lockfile is not yet available from this environment. npm install is
-      # intentionally used instead of npm ci; generating/reviewing a lockfile is
-      # a follow-up before reproducible release builds.
-      - name: Install pinned SDK dependencies
-        run: npm install --no-audit --no-fund
-      - name: Archive generated lockfile for review
-        uses: actions/upload-artifact@v4
-        with:
-          name: generated-lockfile
-          path: package-lock.json
-          if-no-files-found: error
-          retention-days: 1
+          cache: 'npm'
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
       - name: Verify Expo SDK package compatibility
         run: npm run expo:check
       - name: TypeScript

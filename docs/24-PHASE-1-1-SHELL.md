@@ -10,7 +10,7 @@
 - Root compact TopBar revealed by shared scroll coordinator; nested TopBar/back immediately present.
 - Central neutral tokens and System(default)/Light/Dark, Glass(default)/Solid preferences. Device accessibility/Glass fallback and persisted UI-only settings; no workout storage.
 - English-only placeholder copy, system fonts, centralized strings and locale-aware formatting seams; dumb screens and common UI primitives.
-- TypeScript, ESLint, pure shell tests and a CI workflow. **No dependency lockfile yet**, because npm registry access was unavailable in the implementation environment; CI uses `npm install` and is not proof of reproducibility.
+- TypeScript, ESLint, pure shell tests and a CI workflow. **Committed npm lockfile generated on GitHub runner**, with `npm ci` in CI for repeatable dependency installation; native validation and complete CI pass are still required.
 
 ## Excluded and unimplemented
 
