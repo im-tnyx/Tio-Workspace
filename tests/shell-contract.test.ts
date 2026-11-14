@@ -5,6 +5,7 @@ import { tabGeometry } from '../src/shared/navigation/tabTypes.ts';
 import { DEFAULT_PREFERENCES, decodePreferences, resolveMode } from '../src/shared/theme/preferences.ts';
 import { copy, formatNumber } from '../src/shared/i18n/en.ts';
 import { canOpenShellPreview } from '../src/bootstrap/shell/shellPreviewAccess.ts';
+import { canContinueAuthPreview, nextAuthPreviewStep, previousAuthPreviewStep } from '../src/features/onboarding/authPreviewSteps.ts';
 import { controlSizes, radii, spacing } from '../src/shared/theme/tokens/index.ts';
 import { BRAND_TYPING_INTERVAL_MS, BRAND_DOT_DIAMETER, BRAND_DOT_GAP, BRAND_DOT_FINAL_HOLD_MS, visibleTypingText } from '../src/shared/ui/typing.ts';
 
@@ -62,6 +63,23 @@ test('Welcome entry and auth choice labels are centrally defined', () => {
   assert.match(copy('signInPreviewNotice'), /real password/);
   assert.match(copy('signUpPreviewNotice'), /not available yet/);
   assert.match(copy('signUpPreviewNotice'), /real password/);
+});
+
+test('auth UI preview progresses email to code to password without backend', () => {
+  assert.equal(nextAuthPreviewStep('email'), 'otp');
+  assert.equal(nextAuthPreviewStep('otp'), 'password');
+  assert.equal(previousAuthPreviewStep('password'), 'otp');
+  assert.equal(previousAuthPreviewStep('otp'), 'email');
+  assert.equal(canContinueAuthPreview('email', 'tom@example.com'), true);
+  assert.equal(canContinueAuthPreview('email', 'invalid-email'), false);
+  assert.equal(canContinueAuthPreview('otp', '123456'), true);
+  assert.equal(canContinueAuthPreview('otp', '12345'), false);
+  assert.equal(canContinueAuthPreview('otp', 'abcdef'), false);
+  assert.equal(canContinueAuthPreview('password', ''), false);
+  assert.equal(canContinueAuthPreview('password', 'preview-only'), true);
+  assert.equal(copy('emailPlaceholder'), 'tom@example.com');
+  assert.match(copy('otpPreviewNotice'), /No code was sent or verified/);
+  assert.match(copy('emailPreviewNotice'), /No email or code will be sent/);
 });
 
 test('unverified users cannot reach the mock shell in release builds', () => {
