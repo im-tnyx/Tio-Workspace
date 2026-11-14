@@ -14,7 +14,7 @@ type Props = {
   variant?: 'outlined' | 'bare';
 } & Pick<TextInputProps,
   'keyboardType' | 'autoCapitalize' | 'autoCorrect' | 'autoComplete'
-  | 'secureTextEntry' | 'returnKeyType' | 'textContentType' | 'maxLength'>;
+  | 'secureTextEntry' | 'returnKeyType' | 'textContentType' | 'maxLength' | 'autoFocus'>;
 
 export function TextField({
   label, value, onChangeText, placeholder, editable = true,
@@ -31,6 +31,7 @@ export function TextField({
       placeholder={placeholder}
       placeholderTextColor={variant === 'bare' ? (mode === 'dark' ? '#858585' : '#767676') : colors.muted}
       accessibilityLabel={label}
+      underlineColorAndroid="transparent"
       style={[typography.body, variant === 'bare' ? {
         // Reference-inspired borderless input: no filled box, line or card.
         // Keep the field's label available to assistive technologies.
