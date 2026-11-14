@@ -3,14 +3,20 @@ import type { ReactNode } from 'react';
 import { Keyboard, KeyboardAvoidingView, Platform, Pressable, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
-import { spacing } from '@/shared/theme/tokens';
+import { authPreviewLayout, spacing, typography } from '@/shared/theme/tokens';
+import { Button } from './Button';
 import { copy } from '@/shared/i18n/en';
 
 // The header is OUTSIDE KeyboardAvoidingView and never changes its top inset.
 // Only the form below it resizes when the keyboard is visible. No ScrollView.
-export function AuthPreviewPage({ onBack, children, headerActionLabel, onHeaderAction }: {
+export function AuthPreviewPage({
+  onBack, children, headerActionLabel, onHeaderAction,
+  footerLabel, footerDisabled, footerNotice, onFooterPress,
+}: {
   onBack: () => void; children: ReactNode;
   headerActionLabel?: string; onHeaderAction?: () => void;
+  footerLabel: string; footerDisabled: boolean; footerNotice: string;
+  onFooterPress: () => void;
 }) {
   const insets = useSafeAreaInsets();
   const { colors } = useAppearance();
@@ -72,7 +78,22 @@ export function AuthPreviewPage({ onBack, children, headerActionLabel, onHeaderA
         // Without a keyboard keep full home-indicator clearance.
         paddingBottom: keyboardVisible ? spacing.sm : insets.bottom + spacing.sm,
       }}>
-        {children}
+        {/* Only this middle content updates between Email, OTP and Password. */}
+        <View style={{ flex: 1, minHeight: 0 }}>
+          {children}
+        </View>
+        {/* A single persistent footer: neither Button nor its containing View
+            unmounts when the auth step changes. */}
+        <View style={{ gap: spacing.md, paddingTop: spacing.sm }}>
+          <Button size="onboarding"
+            label={footerLabel} onPress={onFooterPress}
+            disabledTone="soft" disabled={footerDisabled}
+          />
+          <Text style={[typography.caption, {
+            color: colors.muted, textAlign: 'center',
+            minHeight: authPreviewLayout.footerNoticeMinHeight,
+          }]}>{footerNotice}</Text>
+        </View>
       </View>
     </KeyboardAvoidingView>
   </View>;
