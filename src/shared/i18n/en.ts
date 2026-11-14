@@ -2,6 +2,11 @@
 export const en = {
   brandTitle: 'TNYX', getStarted: 'GET STARTED',
   signIn: 'Sign in', signUp: 'Sign up',
+  createAccount: 'Create account',
+  signUpIntro: 'Sign up with an email and password.',
+  email: 'Email', password: 'Password',
+  emailPlaceholder: 'Email address', passwordPlaceholder: 'Enter password',
+  signUpPreviewNotice: 'UI preview only. Do not enter your real password. Account creation is not available yet.',
   alreadyHaveAccount: 'Already have an account?', logIn: 'Log in',
   authComingLater: 'Authentication is not available in this preview. No account can be created or accessed.',
   app: 'Tnyx', home: 'Home', workout: 'Workout', library: 'Library', you: 'You',
