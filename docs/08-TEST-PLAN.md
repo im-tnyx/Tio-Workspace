@@ -80,7 +80,7 @@
 
 | ID | Priority | Scenario | Expected result |
 |---|---|---|---|
-| UX-01 | P0 | Four root screens Home/Workout/Library/You; scroll below/above hero threshold; open nested Active Workout, Plan Editor, Exercise Detail, History, Progress, Settings | Default translucent Glass bottom dock stays on four roots **throughout scrolling**, hides on nested/Auth/full-screen; root compact TopBar shows **only after scroll** (no flicker), nested back TopBar immediately shows; no account switching |
+| UX-01 | P0 | **Initial configuration** Home/Workout/Library/You in **Standard** bottom bar; scroll roots, then navigate into nested Active Workout, Plan Editor, Exercise Detail, History, Progress, Settings | Default Glass Standard bar remains visible on configured roots while scrolling; disappears on nested/Auth/full-screen routes; root compact TopBar reveals only after scroll; nested back TopBar immediately visible; no account switching |
 | UX-02 | P0 | Edit sets/reps/weight one-handed with large accessibility text and screen reader | No clipped controls, understandable focus/labels and device-appropriate touch targets |
 | UX-03 | P0 | Previously initialized user opens and saves an active workout offline | “Saved on this device” reflects actual local persistence, no misleading “Synced” or blocked logging |
 | UX-04 | P0 | Logout, wrong-bound-account attempt and separately confirmed local erase | Exact identity/privacy warning states; no accidental erase/account switch, cancellation is safe |
@@ -88,11 +88,13 @@
 
 | UX-06 | P1 | **Phase 3 only:** user locates verified, encrypted same-account Personal Backup after reinstall | Optional **Restore / Skip**; Skip unchanged, confirmed restore after independent secret; no implicit upload or mode enablement |
 | UX-07 | P2 | **Phase 4 only:** prior explicitly opted-in and currently authorized paid Supabase Sync on fresh install | Auto-hydrate available server rows **without Backup Restore dialog**, accurate empty/error states |
-| UX-08 | P0 | Default Glass and Settings-selected Solid × independent Light/Dark on Android/iOS, root and nested routes | All four combinations update shared TopBar, dock, Button, TextField and sheets consistently; supported Glass is visibly translucent, Solid opaque, accessibility/no-blur fallback readable without mutating stored Glass |
+| UX-08 | P0 | **Standard** nav layout with default Glass vs Settings Solid × independent Light/Dark on Android/iOS, root and nested routes | Four material/appearance combinations update TopBar, Standard bottom bar, Button, TextField and sheets; **Standard + Glass is translucent**, not automatically Pill; Solid opaque; accessibility fallback does not change saved preference |
 
-| UX-09 | P0 | Audit screen modules, shared route shell and token ownership after Phase 1 implementation | Screens render props/callbacks without data fetching, business/SDK calls or scroll-threshold logic; shared `src/shared/theme/tokens/` + `src/shared/ui/` drive common components, app layout owns scroll TopBar and tab visibility |
+| UX-09 | P0 | Audit screen modules, root navigation registry, shared route shell and token ownership after Phase 1 implementation | Screens render props/callbacks with no data-fetching/business/SDK or scroll logic; shared `src/shared/theme/tokens/` + `src/shared/ui/` drive nav/controls; tab items/routes are sourced from ordered app config, not hardcoded four-item indexes, and shell owns visibility |
 
-These are **planned**, unexecuted acceptance criteria. The first workout MVP requires **P0 UX-01–05 and UX-08/09**; **P1 UX-06 belongs to Personal Backup (Phase 3)** and **P2 UX-07 to paid Supabase Sync (Phase 4)**. A screenshot reference is not test evidence or an asset license.
+| UX-10 | P0 | With mock **3, 4 and 5+ tab configurations** supplied to the reusable bottom-bar/layout boundary, test small screens and larger text | Initial four-tab Standard UI remains unchanged; tab keys/labels/routes/selection remain valid with fewer/more configured tabs; no crash, inaccessible destinations, overlapping/clipped controls or hardcoded widths; overflow/adaptive handling documented. This tests **extensibility**, not shipping additional tabs or a Pill switch |
+
+These are **planned**, unexecuted acceptance criteria. The first workout MVP requires **P0 UX-01–05 and UX-08–10**; **P1 UX-06 belongs to Personal Backup (Phase 3)** and **P2 UX-07 to paid Supabase Sync (Phase 4)**. A screenshot reference is not test evidence or an asset license.
 
 ## Test environments
 Physical Android and iPhone devices, current supported OS versions, actual Expo development/release builds, unstable network, background and device-kill scenarios, low storage, attempted second account on a bound installation, deliberate erase/reset, reinstallation and cross-device restores.

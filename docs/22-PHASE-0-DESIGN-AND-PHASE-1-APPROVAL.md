@@ -17,7 +17,7 @@
 | Account/privacy | Supabase email/password, single locally bound UUID, offline local workouts; no account switching | Preserve unchanged |
 | Storage | Local encrypted SQLite default; Personal Backup or future paid Sync is separately chosen, never both active | Preserve unchanged |
 | Product name | Tio is used provisionally | **Confirm “Tio” or specify final name**, app display name, Android application ID and iOS bundle ID before native release configuration |
-| UI shell / visual identity | **Owner-selected ADR-015:** default translucent Glass dock on Home/Workout/Library/You, scroll-revealed root TopBar/nested immediate TopBar, Settings-only Solid and independent Light/Dark, shared tokens/dumb screens | Violet/mint colors, typography, Light/Dark startup, logo/icon, precise scroll threshold and native QA remain pending |
+| UI shell / visual identity | **Owner-selected ADR-015:** initial four tabs Home/Workout/Library/You in **Standard full-width + Glass translucent bar**; reusable config allows future owner-approved tab count/order and future Pill layout; scroll-revealed root TopBar, nested immediate TopBar, Settings Solid/independent Light-Dark, dumb/token-driven screens | Palette, typography, Light/Dark startup, icon, scroll threshold, native QA and any future Pill/count feature are pending |
 | Local lock | PIN/biometrics undecided | **Defer** to a separate consent/recovery decision; do not imply an always-on unlock prompt |
 | Phase 1 | No implementation authorized | Prefer **Phase 1.1-only written approval**, after design and tooling/startup plan sign-off |
 
@@ -30,7 +30,7 @@
 - Product personality: **minimal, focused, strong, calm and trustworthy**. Optimize for legibility while resting between sets, not for gamification or health claims.
 - Reuse `DESIGN.md` tokens as the **candidate**, not a new competing palette: violet `brand.primary` (`#6658E8` light / `#9389FF` dark), mint `brand.mint` (`#13B89A` / `#4DE0BC`), neutral surfaces and explicit danger colors.
 - System fonts initially; proposed spacing steps **4/8/12/16/24/32**, 16px card radii, restrained elevation and a consistent 24px outline-icon style.
-- **ADR-015 selected:** **Glass is default**, with translucent iOS-inspired TopBar and bottom tab dock; **Solid only selected from Settings → Appearance**, independently of Light/Dark (four combinations). Root TopBar is scroll-revealed and nested back TopBar immediate; theme tokens and dumb screens are mandatory. Light/Dark startup, exact thresholds, contrast, blur fallback, assets and native screenshots are **unvalidated**.
+- **ADR-015 selected:** **Glass material is default**, with translucent iOS-inspired TopBar and **Standard full-width bottom navigation** now; **Pill is a future layout variant, not today's material or Settings control**. Solid material is selected only through Settings → Appearance, independently of Light/Dark (four combinations). The future app shell supplies root tabs from owner-controlled configuration (initial four, fewer/more later); root TopBar scroll-revealed and nested back TopBar immediate. Light/Dark startup, exact thresholds, contrast, blur fallback and native screenshots remain unvalidated.
 - Accessible controls: at least **44 × 44 pt iOS / 48 × 48 dp Android** targets as design goals, dynamic text scaling, screen-reader labels, clear focus order, reduced-motion support, and no color-only status.
 
 ### 2.2 Owner-selected four-root navigation and screen hierarchy (ADR-015)
@@ -45,9 +45,9 @@
 | **Plans / History / Progress / Settings** — nested | All existing ADR-011 MVP functionality retained | Dock hidden; shared themed input/button/sheet components |
 | **Auth/session gate** — outside tabs | Sign in, sign up, same-bound re-login | Dock hidden; online first login, reject second UUID |
 
-**Exactly four root dock buttons:** Home, Workout, Library, You. Default translucent Glass dock persists on these roots while scrolling; Solid is selected only in Settings (with native/accessibility fallback exception). Nested/full-screen/Auth routes never render bottom dock. Root shared compact TopBar appears **only after scrolling** and hides at scroll top; nested back TopBar is immediately visible. Shared route layout owns scroll/visibility, not screens; OS status bar separate. iOS images are visual references only, not copied assets or extra features.
+**Four current root buttons:** Home, Workout, Library, You, supplied by a **tab registry**, not a hardcoded four-item UI. The default layout is **Standard full-width**, the material is **translucent Glass**; the **floating Pill layout is deferred** but future-compatible. An owner-approved revision can change the configured root tab count/order without replacing screens. The Standard bar persists on configured roots while scrolling; Solid is selected only in Settings (accessibility/no-blur fallback excepted). Nested/full-screen/Auth routes never render bottom navigation. Root shared compact TopBar appears **only after scrolling** and hides at scroll top; nested back TopBar is immediately visible. Shared route layout owns scroll/visibility, not screens; OS status bar separate. iOS images are visual references only, not copied assets or extra features.
 
-**Reusable theme/UI contract:** Settings → Appearance supports **Glass (default) vs Solid** and independent Light vs Dark (four combinations); preferences are local, never enabling backup/sync. **Future `src/shared/theme/tokens/`** defines semantic colors/text, glass tint/opacity/blur, opaque surfaces, border/shadow, spacing, radii, typography/icons, motion and component aliases. `src/shared/ui/` components TopBar, BottomTabBar, TextField, Button, Card, SheetSurface, Switch, Select and Dialog all use these tokens, not per-screen style branches. **Dumb screens** only compose props/view state and callbacks; app shell owns scrolling/tab visibility, feature hooks/controllers and domain/application own state/rules, data/platform own SDK/I/O. Unsupported blur/reduced transparency uses temporary readable Solid fallback, without changing preference. Native blur/performance/a11y untested. Initial Light/Dark, scroll threshold and final visuals pending.
+**Reusable theme/UI contract:** Navigation has **three independent dimensions**: ordered owner-controlled root tab config (initial four), layout variant **Standard now / Pill future**, and Settings' **Glass (default) vs Solid** material, plus independent Light/Dark appearance. Settings does **not** currently expose layout or tab-count editing; preferences are local and never enable backup/sync. **Future `src/shared/theme/tokens/`** defines semantic colors/text, glass tint/opacity/blur, opaque surfaces, border/shadow, spacing, radii, typography/icons, motion and component aliases. `src/shared/ui/` components TopBar, BottomTabBar, TextField, Button, Card, SheetSurface, Switch, Select and Dialog all use these tokens, not per-screen style branches. **Dumb screens** only compose props/view state and callbacks; app shell owns scrolling/tab visibility, feature hooks/controllers and domain/application own state/rules, data/platform own SDK/I/O. Unsupported blur/reduced transparency uses temporary readable Solid fallback, without changing preference. Native blur/performance/a11y untested. Initial Light/Dark, scroll threshold and final visuals pending.
 
 ### 2.3 Required UI states and copy
 
@@ -71,7 +71,7 @@ A Personal Backup restore is not tied to the current/remembered upload mode, may
 | Ref | Required now to sign off shell | Deferred gate / risk |
 |---|---|---|
 | D01 | Confirm display name, provisional/final app identifiers and brand usage; no fake app icon approval | Final distributable icon/splash/legal trademark review before store release |
-| Visual | **ADR-015 selects default Glass dock, scroll-reveal root TopBar, immediate nested TopBar, Settings-only Solid, token-driven dumb screens**; remaining colors/startup Light-Dark and workout details pending | iOS/Android screenshots, scroll/flicker, contrast, text scaling, blur/keyboard QA pending |
+| Visual | **ADR-015 selects Standard+Glass initial four tabs with future-configurable count and Pill layout reserved**, root scroll-revealed/nested immediate TopBar, Settings Solid and token-driven dumb screens; exact colors/startup Light-Dark and workout details pending | iOS/Android screenshots, 3/4/5+ tab fixture layouts, scroll, overflow, contrast, blur/keyboard QA pending |
 | D02–D06, D10, D13 | Already owner-selected via ADR-010/011; **do not reopen silently** | Native key lifecycle, encryption and migration tests must pass before local encrypted storage release |
 | D07 | Agree Personal Backup is **later** and manual export/import is the first feasibility target | Google Drive scopes, iCloud native path, crypto format, scheduler and fresh-install restore in Phase 3 |
 | D08 | Exclude AI from Phase 1 | Provider, privacy, output contract, quota and Edge Function design in Phase 2 |
@@ -86,7 +86,7 @@ No team or agent should mark a deferred high-risk test **passed** merely because
 
 ### 4.1 To approve **only Phase 1.1 — shell**
 
-- [ ] Owner confirms remaining colors/type/**initial Light/Dark**, scroll-tuning and name/IDs; **Glass default, scroll-reveal TopBar, root-only dock and token-driven dumb screens already selected** under ADR-015.
+- [ ] Owner confirms remaining colors/type/**initial Light/Dark**, scroll-tuning and name/IDs; **Standard Glass initial tab bar, future config-driven tab count/Pill variant, scroll-reveal TopBar and dumb token-driven screens already selected** under ADR-015.
 - [ ] Owner states exact Phase 1.1 scope and excludes Auth credentials/project setup, encryption/storage implementation, real workouts, AI, backups, server sync, billing and releases.
 - [ ] Review Expo SDK and React Native compatibility on the actual implementation date; select a native development-build and iOS/Android test approach. No packages/config are installed in this PR.
 - [ ] Owner accepts that SQLCipher, Drizzle, secure storage and OS backup controls are **unverified** and must remain blocked until their later implementation gates.
@@ -102,7 +102,7 @@ No team or agent should mark a deferred high-risk test **passed** merely because
 | 1.2 Auth | Separate owner-allowed setup, session persistence and identity-binding specification | First online signup, same-user re-login, persistence/offline eligibility, blocked second UUID tests |
 | 1.3 Secure SQLite | Native SQLCipher/Drizzle compatibility and OS key lifecycle reviewed | `PRAGMA cipher_version`, fail-closed missing-key path, account binding before unlock, migrations; Android/iOS backup/transfer exclusion evidence |
 | 1.4–1.6 Workout MVP | Local DB/security slice validated | Exercises/plans, transactional sets/reps, crash recovery, local History/Progress, separate erase versus logout |
-| 1.7 Release candidate | Full device validation | Phase 1 **P0 AUTH/DATA/SEC + UX-01–05/UX-08/UX-09** with device evidence; P1 UX-06 Backup and P2 UX-07 Sync are later gates |
+| 1.7 Release candidate | Full device validation | Phase 1 **P0 AUTH/DATA/SEC + UX-01–05/UX-08–10** with device evidence; P1 UX-06 Backup and P2 UX-07 Sync are later gates |
 
 **Important sequencing:** native proof cannot legitimately be marked complete before its test build exists. Approve **bounded work** and keep security-release gates pending; do not use a broad “Phase 1 approved” label to bypass them. Any Supabase project/credential, new permission or privacy-changing action needs explicit scoped approval before execution.
 
@@ -113,7 +113,7 @@ Record this separately in [issue #2](https://github.com/im-tnyx/Tio-Workspace/is
 | Field | Owner must provide |
 |---|---|
 | Approver / date | Repository owner identity and ISO date |
-| Design decision | ADR-015 default Glass/root scroll-reveal/central tokens/dumb screens owner-selected; record remaining palette, initial Light/Dark, name and detailed layout |
+| Design decision | ADR-015 **Standard layout with Glass default**, initial four roots, configurable future count and reserved Pill, scroll-reveal/shared token/dumb screens selected; record remaining palette, initial Light/Dark and name |
 | Platform identifiers | Android application ID / iOS bundle ID, provisional or final |
 | Phase authorization | “Approve **Phase 1.1 app shell only**” **or** a precisely enumerated alternate slice |
 | Explicit exclusions | Auth project/credentials, workout database, AI, personal backup, paid Sync, deployment unless independently approved |
@@ -123,7 +123,7 @@ Record this separately in [issue #2](https://github.com/im-tnyx/Tio-Workspace/is
 
 Recommended sign-off wording (copy only if actually intended by the owner):
 
-> I confirm remaining Tio visual details and separately authorize **Phase 1.1 (Expo/TypeScript shell, ADR-015 default Glass dock, root scroll-reveal TopBar, shared theme tokens/dumb-screen placeholders and basic tooling only)**. No Auth integration, SQLCipher/Drizzle database, workout feature, AI, cloud backup/sync, billing or deployment is authorized by this approval. Native/security gates remain pending. Owner/date/identifiers: [complete before posting].
+> I confirm remaining Tio visual details and separately authorize **Phase 1.1 (Expo/TypeScript shell, ADR-015 Standard + Glass initial four-tab bar (registry-based), root scroll-reveal TopBar, shared theme tokens/dumb-screen placeholders and basic tooling only)**. No Auth integration, SQLCipher/Drizzle database, workout feature, AI, cloud backup/sync, billing or deployment is authorized by this approval. Native/security gates remain pending. Owner/date/identifiers: [complete before posting].
 
 ## 6. Verification and handoff
 

@@ -10,7 +10,7 @@
 </div>
 
 > [!IMPORTANT]
-> **ADR-010/011/012/013/014/015 owner decisions (2026-11-14):** D13 tooling, D02–D06 core policies, D10 MVP scope, future exclusive cloud mode choice, future paid separately opt-in Supabase Sync and the shared four-tab/Glass-Solid UI shell were accepted; **D04 explicitly forbids account switching/add-account**. D01, D07–D09, D11–D12 details and native/security implementations remain pending. The original product intentions in [09-DECISIONS.md](09-DECISIONS.md) remain the constraints. This document neither authorizes Phase 1 nor changes the default local-only privacy policy.
+> **ADR-010/011/012/013/014/015 owner decisions (2026-11-14):** D13 tooling, D02–D06 core policies, D10 MVP scope, future exclusive cloud mode choice, future paid separately opt-in Supabase Sync and an initially four-tab **Standard** bar with default Glass and future optional Pill/configurable tab count were accepted; **D04 explicitly forbids account switching/add-account**. D01, D07–D09, D11–D12 details and native/security implementations remain pending. The original product intentions in [09-DECISIONS.md](09-DECISIONS.md) remain the constraints. This document neither authorizes Phase 1 nor changes the default local-only privacy policy.
 
 ## ✅ Already specified by the owner
 
@@ -41,7 +41,7 @@
 | D11 | Analytics and retention | No workout payload analytics by default; separate crash logs from workout content | Medium | ⬜ Pending |
 | D12 | Future sync deletion semantics | Separate disabling sync from deleting cloud copies; revisit in Phase 4 | **High later** | ⬜ Pending |
 | D13 | Local ORM and migration tooling | **Selected:** Expo SQLite + Drizzle ORM/Drizzle Kit + native SQLCipher; offline-bundled migrations. Unlock, key and recovery implementation require validation | **High** | ✅ Approved — stack only (ADR-010, 2026-11-14) |
-| D14 | iOS-inspired shared UI shell | **Default Glass** translucent dock on four roots, scroll-reveal root TopBar and immediately visible nested Back TopBar; Solid only from Settings, independent Light/Dark; token-driven dumb screens | Medium | ✅ Owner-selected ADR-015 (2026-11-14); exact motion/native visual QA pending |
+| D14 | iOS-inspired shared UI shell | **Initial four roots** Home/Workout/Library/You; **Standard + Glass bottom bar now**, owner-configurable tab count/order later; **Pill layout deferred**. Solid in Settings, Light/Dark independent; root scroll-reveal TopBar, dumb token-driven screens | Medium | ✅ Owner-selected ADR-015 (2026-11-14); tab registry/layout/native QA pending |
 
 ## 🧱 Architecture trade-offs at a glance
 
@@ -95,7 +95,7 @@ flowchart TD
 - [x] Accept offline local access despite unverifiable remote revocation until reconnection; online functions still require server authorization.
 - [x] Approve portable user-held recovery **principle** and **optional-backup OFF default + clear-data empty/restore UX** (ADR-012).
 - [ ] Finalize recovery-code UX, cryptography, native Drive/iCloud integration and real fresh-device restore testing **before** promising recovery.
-- [x] Approve [MVP functional screens/flows](20-MVP-UX-FLOWS.md) (ADR-011) and [shared four-tab/theme shell](../DESIGN.md) (ADR-015). Home, Workout, Library and You are the only tab roots; Plans, History, Progress, Settings and Auth remain in scope as nested/Auth routes.
+- [x] Approve [MVP functional screens/flows](20-MVP-UX-FLOWS.md) (ADR-011) and [config-driven Standard bottom navigation/theme shell](../DESIGN.md) (ADR-015). Home, Workout, Library and You are the only **initial** tab roots; Plans, History, Progress, Settings and Auth remain in scope as nested/Auth routes.
 - [ ] Finalize branding, visual hierarchy and detailed destructive/reset copy.
 - [ ] Validate on-device build feasibility for SQLCipher and iCloud before freezing plans.
 - [ ] Authorize Phase 1 **in a separate written approval**, never by merging a docs PR.

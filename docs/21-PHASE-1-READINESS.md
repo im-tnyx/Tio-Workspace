@@ -12,7 +12,7 @@
 > [!IMPORTANT]
 > **This is a readiness checklist, not an implementation task.** Completing/merging this document does not authorize writing application code, generating secrets or deploying Supabase.
 
-**Owner-facing approval draft:** use the [Phase 0 design and Phase 1 sign-off pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) for the owner-selected four-tab, Glass/Solid × Light/Dark shared shell (ADR-015), exact remaining decisions and narrower **Phase 1.1 shell-only** scope. No owner has approved that scope by merely requesting this document; the matrix below remains pending where marked.
+**Owner-facing approval draft:** use the [Phase 0 design and Phase 1 sign-off pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) for the owner-selected initially four-tab **config-driven Standard layout**, future Pill option and Glass/Solid × Light/Dark shared shell (ADR-015), exact remaining decisions and narrower **Phase 1.1 shell-only** scope. No owner has approved that scope by merely requesting this document; the matrix below remains pending where marked.
 
 **Gate distinction:** approval to *start a bounded Phase 1.1 shell* requires accepted design/implementation limits and written owner authorization. Runtime SQLCipher, Drizzle and OS-backup tests are **later native implementation/release exit gates**, not tests falsely claimed before any native build exists. They must pass before enabling protected local workout storage or releasing the MVP.
 
@@ -61,8 +61,8 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 
 ### Review-ready acceptance for the proposed design baseline (not yet executed)
 
-- [ ] Phase 1 **P0 UX-01–05 and UX-08/09** documented in [test plan](08-TEST-PLAN.md), including default translucent Glass root-only dock, root scroll-revealed/nested immediate shared TopBar, Settings-only Solid, four material/appearance combinations, central `src/shared/theme/tokens/` and dumb-screen boundaries. Native accessibility evidence required after implementation; **UX-06 P1 Backup and UX-07 P2 Sync** remain later phase gates.
-- [x] Owner selected four root tabs, **default Glass translucent dock**, root scroll-revealed TopBar, nested immediate back TopBar, Settings-only Solid, independent Light/Dark and token-driven dumb screens (ADR-015; design policy only).
+- [ ] Phase 1 **P0 UX-01–05 and UX-08–10** documented in [test plan](08-TEST-PLAN.md), including **Standard translucent Glass bar** on configured roots (initial four), future variable-count architecture, root scroll-revealed/nested immediate TopBar, Settings-only Solid, four material/appearance combinations, central `src/shared/theme/tokens/` and dumb-screen boundaries; **Pill is future only**. Native accessibility evidence required after implementation; **UX-06 P1 Backup and UX-07 P2 Sync** remain later phase gates.
+- [x] Owner selected **four initial root tabs in a Standard bottom bar with default Glass material**, config-driven future tab counts/order and optional future Pill layout; root scroll-revealed TopBar, nested back TopBar, Settings-only Solid, Light/Dark and dumb token-driven screens (ADR-015; design policy only).
 - [ ] Confirm violet/mint colors, typography, **initial Light/Dark preference**, scroll threshold/animation and final visual QA (Glass material default is already selected; see [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md)).
 - [ ] Owner documents application identifiers and whether logo/app icon remain provisional; no fake design-signoff claims.
 - [ ] Scope exclusions for the initial **Phase 1.1 shell** are explicit: no auth connection, SQLCipher workout store, AI, backups, paid Sync, billing or release.

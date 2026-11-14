@@ -16,7 +16,7 @@
 
 ```mermaid
 flowchart TD
-  S["Session gate"] -->|Previously verified account| Dock["Bottom dock - four root tabs"]
+  S["Session gate"] -->|Previously verified account| Dock["Configured bottom nav - initial four roots"]
   S -->|First login / signed out| Auth["Welcome / Sign in / Sign up"]
   Auth -->|Same bound account| Dock
   Auth -->|Different UUID| Denied["Account mismatch - blocked"]
@@ -36,15 +36,17 @@ flowchart TD
   Settings --> Sync["Paid Sync - future"]
 ```
 
-**Exact four tab buttons:** **Home, Workout, Library, You**. This is a bottom tab dock, not a modal sheet. Its **default is translucent iPhone-like Glass**, showing content under the rounded dock, and it stays present while scrolling these four root screens. It hides on Active Workout, Plan Editor, History, Progress, exercise details, Settings, Backup, all Auth/nested/full-screen routes. **Root compact TopBar is hidden at scroll top and appears only after scrolling**; nested routes show shared compact/back TopBar immediately. Workout links plans/history/session, Library has exercise lookup, You links Progress/Settings and Home start/resume.
+**Initial configured root tabs:** **Home, Workout, Library, You** (four for this MVP). This is a **Standard full-width bottom navigation bar now**, not a floating Pill or modal sheet. Its **material is default iPhone-inspired translucent Glass**, so **Standard + Glass** has background showing through; Solid is the separate Settings preference. A **Pill layout is a later presentation option, not included or user-selectable now**. The shared bar must consume an ordered **tab registry/config** so future owner-selected fewer/more/reordered roots work without hardcoded screen logic. The current Standard bar persists while scrolling configured root screens and hides on Active Workout, Plan Editor, History, Progress, exercise details, Settings, Backup and all non-tab/Auth/nested/full-screen routes. **Root compact TopBar is hidden at scroll top and appears only after scrolling**; nested routes show shared compact/back TopBar immediately. Workout links plans/history/session, Library has exercise lookup, You links Progress/Settings and Home start/resume.
 
 ### Shared shell and theme choices (owner-selected)
 
 - Settings → Appearance: **Glass is the default**, **Solid only via this Settings control**, and Light/Dark independent. All four combinations required; initial Light/Dark choice still pending. Technical/reduced-transparency fallback may render Solid without changing saved Glass. No cloud upload/account change.
 - One **TopBar** takes the reference's rounded/translucent grouped style without copied branding or unapproved search/notifications. On root tab screens the compact TopBar is **hidden initially**, revealing **after scrolling** via centrally owned threshold/reduced-motion-friendly transition and hiding when back at top. On nested screens it is **visible immediately** with back affordance.
-- One **BottomTabBar** draws a safe-area-aware, four-item **default background-translucent Glass dock** on roots at every scroll position; opaque Solid only by Settings preference (or accessibility fallback). All shared text fields, buttons, cards, sheets, switches, selects and typography use the central future `src/shared/theme/tokens/` in both light and dark.
+- One **BottomTabBar** draws the current **Standard safe-area-aligned, full-width bar**, with default background-translucent **Glass** or Settings-selected **Solid** material at any root scroll position. Its destinations come from the future **app-owned ordered tab config** (initial Home/Workout/Library/You, changeable later), not a four-slot constant; optional floating **Pill** is a later layout variant. All shared fields, buttons, cards, sheets, switches/selects and text use `src/shared/theme/tokens/` in light/dark.
 - Future `src/shared/theme/tokens/` supplies tokens, `src/shared/ui/` supplies shared primitives, `src/app/` owns routes/tab visibility and shared scroll TopBar coordinator; features compose them. **Every screen stays dumb** (view state/props and callbacks only), with async/state orchestration in feature hooks/controllers, business rules in domain/application and SDK/I/O in data/platform. See [module architecture](10-REPOSITORY-STRUCTURE.md). **Future paths only**.
 - Glass uses readable tinted translucent/blurred surfaces with borders; Solid uses opaque equivalents. Validate iOS/Android text contrast, keyboard/safe areas, 44pt/48dp touch targets, dynamic type and reduce-transparency/high-contrast fallback after implementation. If blur unavailable, render Solid fallback without changing saved preference.
+
+**Config-driven tab contract (owner-selected architecture, not an active management screen):** future app shell supplies ordered root-tab descriptors with stable keys, accessible icon/label, valid destination and root/nested visibility. `BottomTabBar` accepts descriptors and a layout variant; Standard is the initial product selection, Pill reserved for later approval. No per-screen tab list, duplicated navigation logic, implicit extra tabs or user-facing tab editor in MVP. A count change may require new real destination screens and a separate reviewed product decision. Use responsive item distribution, safe-area and keyboard handling; verify 3/4/5+ tab fixtures and larger font sizes without clipped or unreachable tabs.
 
 ## 02 · Screen contract
 
@@ -119,7 +121,7 @@ The owner-provided iOS/Android screenshots inform **information hierarchy only**
 - Each screen covers `loading`, `empty`, `offline`, `error`, and account-safety states.
 - Never expose cached workout data when a different account attempts login; **no identity-switching flow exists**.
 
-**Owner-selected shell (ADR-015):** four root tabs Home / Workout / Library / You, **default Glass translucent dock** only on roots; root compact TopBar **scroll-revealed only**, nested TopBar immediately visible; Settings-only Solid option, independent Light/Dark; centralized theme tokens and dumb screens. Existing MVP features remain nested. See the [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) and P0 UX-01–05/08 versus later P1 UX-06, P2 UX-07; final palette/QA/screenshot sign-off remains pending.
+**Owner-selected shell (ADR-015):** **initial** four tab roots Home / Workout / Library / You in a **Standard full-width layout with default Glass translucency**, future tab count/order via config and Pill layout deferred; root compact TopBar **scroll-revealed only**, nested TopBar immediately visible; Settings-only Solid option, independent Light/Dark; centralized theme tokens and dumb screens. Existing MVP features remain nested. See the [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) and P0 UX-01–05/08 versus later P1 UX-06, P2 UX-07; final palette/QA/screenshot sign-off remains pending.
 
 ## 07 · Design acceptance checklist
 
@@ -127,7 +129,7 @@ The owner-provided iOS/Android screenshots inform **information hierarchy only**
 - [x] Functional MVP screens and single-account auth/session-gate transitions selected (ADR-011; [session specification](18-OFFLINE-SESSION-STATE-MACHINE.md)); visual design/real-device tests pending.
 - [ ] Workout set editor tested for one-handed operation and large text.
 - [ ] Exact logout/erase/recovery wording and accessibility behavior reviewed in a design acceptance pass; policy selected.
-- [x] Intended iOS/Android root-only four-tab dock, nested hide and shared TopBar variants recorded (ADR-015); not tested in native builds.
+- [x] Intended iOS/Android configured-root-only Standard Glass bar, initial four destinations, future tab-count/layout extensibility, nested hide and shared TopBar variants recorded (ADR-015); not tested in native builds.
 - [ ] iOS/Android Glass/Solid × Light/Dark, contrast and fallback validated on actual devices.
 - [ ] All cloud states explicitly distinguish default local-only from later opt-in features.
 
