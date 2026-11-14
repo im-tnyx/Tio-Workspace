@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Alert } from 'react-native';
 import { router } from 'expo-router';
-import { SignUpScreen } from '@/features/onboarding';
+import { AuthCredentialsScreen } from '@/features/onboarding';
 import { copy } from '@/shared/i18n/en';
 import { AuthPreviewPage } from '@/shared/ui/AuthPreviewPage';
 
@@ -15,12 +15,13 @@ export default function SignUpRoute() {
     if (router.canGoBack()) router.back();
     else router.replace('/');
   }}>
-    <SignUpScreen
+    <AuthCredentialsScreen
+      mode="sign-up"
       email={email}
       password={password}
       onChangeEmail={setEmail}
       onChangePassword={setPassword}
-      onSignUp={() => Alert.alert(copy('signUp'), copy('authComingLater'))}
+      onSubmit={() => Alert.alert(copy('signUp'), copy('authComingLater'))}
     />
   </AuthPreviewPage>;
 }
