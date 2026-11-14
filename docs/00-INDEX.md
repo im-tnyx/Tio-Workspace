@@ -1,6 +1,6 @@
 <div align="center">
 
-# 📚 TIO DOCUMENTATION
+# 📚 Tnyx App · Tio Workspace Documentation
 **One map for the product vision, technical boundaries and engineering workflow.**
 
 ![Documentation](https://img.shields.io/badge/STAGE-PLANNING-6D5EF8?style=flat-square)
@@ -16,7 +16,7 @@
 
 | **I'm here to…** | **Start with** | **Then read** |
 |---|---|---|
-| Review what needs approval before coding | [Phase 0 decision review](17-PHASE-0-DECISION-PACK.md) | [Phase 1 readiness gate](21-PHASE-1-READINESS.md) |
+| Review what needs approval before coding | [Phase 0 final design + owner approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) | [Phase 1 readiness gate](21-PHASE-1-READINESS.md) |
 | Understand the app | [Product requirements](01-PRODUCT-REQUIREMENTS.md) | [Roadmap](06-ROADMAP.md) |
 | Review its architecture | [System architecture](02-SYSTEM-ARCHITECTURE.md) | [Local data model](03-LOCAL-DATA-MODEL.md) |
 | Check privacy & account design | [Auth & security](04-AUTH-AND-SECURITY.md) | [Threat model](14-THREAT-MODEL.md) |
@@ -53,6 +53,8 @@
 | 19 | [Backup & recovery strategy](19-BACKUP-RECOVERY-STRATEGY.md) | Encryption, fresh-device restore and provider feasibility |
 | 20 | [MVP UX flows](20-MVP-UX-FLOWS.md) | Navigation and workout screen states |
 | 21 | [Phase 1 readiness](21-PHASE-1-READINESS.md) | Documented go/no-go for future implementation |
+| 22 | [Phase 0 design & Phase 1 owner approval](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) | Proposed visual freeze, deferred risks and explicit sign-off template |
+| 23 | [Input limits, OTP & deferred membership](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md) | Proposed numeric caps, approved verified-signup and membership deferment policy |
 
 ## 🔁 How documents stay reliable
 

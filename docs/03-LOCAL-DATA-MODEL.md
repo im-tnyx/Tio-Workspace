@@ -39,6 +39,12 @@
 
 Official references (recheck versions at implementation): [Drizzle + Expo SQLite](https://orm.drizzle.team/docs/sqlite/connect-expo-sqlite), [migration fundamentals](https://orm.drizzle.team/docs/migrations), [Expo SQLite SQLCipher](https://docs.expo.dev/versions/latest/sdk/sqlite/).
 
+## Validation and cardinality limits (planned, not implemented)
+
+**Owner-selected product bounds (ADR-017):** password 8–64, optional username 3–16, program creation **max 50/account**, routine creation **max 30/program** with **zero permitted**, max 30 planned exercises/routine and **1–8 sets/session exercise** (max 40 exercises/completed session). **Saved program and routine titles require 3–25 Unicode graphemes**; creation-count maxima are separate and permit zero. Future paid-member custom exercises cap at **50** and creation must not be implemented in MVP; `is_custom` can remain in schema for forward compatibility. Validate applicable limits in domain/application and local transaction constraints; no business/validation logic in dumb screens. See [canonical limits](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md).
+
+`workout_plans` = programs; `plan_days` = routines; `plan_exercises` = planned exercise slots; `session_exercises` and `workout_sets` are live session content. Do not reinterpret plan limits as a cap on total completed workout history or retroactively delete existing records when a policy changes. Keep schema ownership, stable UUIDs and future sync/tombstones compatible **without** adding membership columns, paywalls or server workout uploads in Phase 1.
+
 ## Design rules
 - Locally persisted data is authoritative until future sync is explicitly enabled.
 - Use stable random UUID-style IDs for records created offline. Never rely on sequential IDs for cross-device identity.

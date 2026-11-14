@@ -88,7 +88,7 @@ OS clear-data/reinstall or a fresh phone may erase the remembered backup prefere
 
 ### Restore steps
 
-1. On new device: successfully sign in to Tio online and confirm account identity.
+1. On new device: successfully sign in to Tnyx online and confirm account identity.
 2. Select user-owned backup destination and file/version.
 3. Enter recovery passphrase/code or use an explicitly approved recovery flow.
 4. Validate authenticated integrity, compatible schema, source account ID, record totals and size limits.
@@ -108,7 +108,7 @@ OS clear-data/reinstall or a fresh phone may erase the remembered backup prefere
 | Backup deletion from provider | Warn no remote copy; don't imply restore is available |
 | Phone lost, no backup | Local-only history may be unrecoverable |
 | Upload interrupted | No success badge; retain previous verified snapshot |
-| Wrong signed-in Tio account | Stop restore and explain account mismatch |
+| Wrong signed-in Tnyx account | Stop restore and explain account mismatch |
 | New device without local SQLCipher key | Restore is a **future test target**, possible only with a completed compatible encrypted backup and independent recovery secret; not yet a proven capability |
 
 ## 08 · Owner decisions required

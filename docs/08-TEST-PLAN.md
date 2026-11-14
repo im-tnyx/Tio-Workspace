@@ -21,6 +21,10 @@
 
 | ID | Priority | Scenario | Expected result |
 |---|---|---|---|
+| AUTH-11 | P0 | Fresh signup email+password, pending email verification, invalid code, then correct OTP | Unverified signup and invalid OTP cannot initialize/unlock any workout store; only verified same-bound-user UUID can access; first signup requires online connection |
+| AUTH-12 | P0 | OTP 6 digits, 10-minute expiry, 60 s resend, 5 sends/hour, 5 failures/challenge, 15-minute cooldown; replay/flood/429 | Real **provider/server-backed** throttles and no-guest verification; app countdown insufficient; **no CAPTCHA in MVP**; never claim current implementation passed |
+| AUTH-13 | P0 | Fresh install no login, anonymous Supabase session, wrong UUID, logout or reauth required | No protected local workout UI/CRUD without previously verified and permitted same-bound-user state; no guest path; signed-out store locked |
+| AUTH-14 | P0 | Verified user reopens offline with retained protected binding, then later online revocation | Offline local workout use still works per ADR-011 without repeated OTP; server operations revalidate, confirmed invalid session requires reauth; no cross-account unlock |
 | AUTH-01 | P0 | Fresh install -> register online | Verified user account and correct local partition |
 | AUTH-02 | P0 | Force-close and reopen after login | Dashboard opens without requiring another login |
 | AUTH-03 | P0 | Disable internet and reopen app | Already initialized user's local workouts accessible |
@@ -29,6 +33,12 @@
 | AUTH-06 | P0 | Attempt different user B login on installation bound to A (even after A logout) | B rejected; binding, key and A's ciphertext preserved; B never reads A's records |
 | AUTH-07 | P0 | Log back in as same bound user A after logout | A's history opens; neither auth logout nor wrong-account attempt erased it |
 | AUTH-08 | P0 | Remote session invalid while device offline | Previously verified account may access locally under accepted trust policy; online protected calls blocked until revalidation |
+| LIMIT-05 | P0 | Free MVP Library on empty/search/detail flows without membership | Curated exercises selectable; **no active custom-exercise create screen, payment gate, subscription or CAPTCHA**, local workouts unaffected |
+| LIMIT-06 | P2 | **Later paid custom exercise feature**, owner-approved entitlement, 49/50/51 records, expired/forged entitlement | Max 50 custom exercises per authorized member and strict server entitlement; curated library/core data never blocked, no retroactive deletion |
+| LIMIT-01 | P0 | Password 7/8/64/65 and optional Unicode/Hindi username 2/3/16/17 grapheme boundaries | Accept owner-selected 8–64 password and 3–16 username; no trimming, server/feature enforcement, no auth bypass |
+| LIMIT-02 | P0 | Create 0/50/51 programs/account and 0/30/31 routines/program; test Hindi program/routine title lengths 2/3/25/26 graphemes | **Creation count** zero allowed with max 50/30; **saved name length** min 3 max 25; atomic validation, readable errors and no silent truncation |
+| LIMIT-03 | P0 | Create 0/30/31 exercise slots per routine and 0/1/8/9 sets per workout exercise; session 1/40/41 exercises | 1–8 sets per saved exercise, draft 0 allowed; max slot/session caps enforced transactionally; no truncation |
+| LIMIT-04 | P0 | Legacy workouts above later limits; navigate curated library without membership | Historic data remains readable when safe and never silently deleted; no Create Custom Exercise button or paywall in MVP |
 | DATA-01 | P0 | Complete workouts offline | Sets, reps, weights, timestamps persist in SQLite |
 | DATA-02 | P0 | App killed mid workout | Last committed autosaved state recovers |
 | DATA-03 | P0 | Edit/delete and restart | Correct record changes; no phantom duplicates |
@@ -36,10 +46,11 @@
 | DATA-05 | P0 | Interrupted migration, insufficient storage or faulty SQL | Fail-closed recovery UI; no silent DB reset/plaintext fallback, verified encrypted snapshot can restore all data |
 | DATA-06 | P0 | Attempt second account while local SQLCipher DB has an existing migration journal | New account blocked before opening/migrating; original bound DB and journal unchanged |
 | DATA-07 | P0 | Repeat startup and restore compatible older-schema backup | Migration idempotent on current version; older restore verified for user/integrity and migrated after unlock |
+| SEC-06 | P0 | Attack signup/OTP endpoints and local gate with automation, replayed codes, forged login state, mismatched UUID and unverified account | Server/provider throttles and configured Auth verification independently enforce gate; no anonymous workout access, token/OTP logs, cross-account DB read or promise of perfect security |
 | SEC-01 | P0 | Inspect mobile APK/IPA/config | No AI provider, Supabase service-role or backend secret key |
 | SEC-02 | P0 | SQLCipher-enabled native build | `cipher_version` detected; raw database unreadable without key |
 | SEC-03 | P0 | Wrong/missing key or native build without SQLCipher | Storage fails closed before ORM migration or workout UI; no plaintext replacement created |
-| SEC-04 | P0 | Local Only: inspect Android pre-12 backup XML, Android 12+ cloud/device-transfer rules and actual copied SQLite, WAL/SHM, local snapshots | Effective native exclusions verified; any OS/OEM limitations documented, no implied Tio cloud upload |
+| SEC-04 | P0 | Local Only: inspect Android pre-12 backup XML, Android 12+ cloud/device-transfer rules and actual copied SQLite, WAL/SHM, local snapshots | Effective native exclusions verified; any OS/OEM limitations documented, no implied Tnyx cloud upload |
 | SEC-05 | P0 | Local Only: inspect iOS app-data/iCloud backup and device migration, then restore with missing/stale Keychain key | Effective native exclusion verified; no wrong-account unlock, plaintext fallback, phantom data or silent erase |
 
 | AUTH-09 | P0 | Explicit erase/reset installation vs logout | Logout preserves binding/history; reset warns of permanent loss, requires confirmation, and only then permits fresh online account binding |
@@ -58,7 +69,7 @@
 | BKP-10 | P1 | Automatic backup OFF / Daily / Weekly / Monthly | No background transfer when off; any enabled schedule honors consent, OS best-effort rules, quota limits and actual completion timestamps |
 | BKP-11 | P1 | Lost recovery secret, incorrect account, or incompatible encrypted backup | No restore possible without valid secret/identity; no backend bypass, no overwrite or false recovery promise |
 | BKP-12 | P1 | Future optional media attachments absent/present | No photo/video switches or uploads without approved attachment support and consent; when present, inclusion/size is correctly reflected |
-| BKP-13 | P1 | User enables personal backup to Google Drive/iCloud | Archive is client-encrypted and sent only to user-selected provider; **zero workout/backup data** in Supabase Postgres/Storage, with no Tio server archive copy |
+| BKP-13 | P1 | User enables personal backup to Google Drive/iCloud | Archive is client-encrypted and sent only to user-selected provider; **zero workout/backup data** in Supabase Postgres/Storage, with no Tnyx server archive copy |
 | BKP-14 | P1 | User leaves personal backup OFF in Local Only mode and uses local workouts | No Drive/iCloud or Supabase workout payload transfer; local logging unaffected |
 | BKP-15 | P1 | Completed encrypted backup → clear app settings/reinstall → same-account sign-in with no local backup mode/provider → user selects Find backup | Explicit provider authorization discovers matching archive; **Restore / Skip** shown after validation, user may Restore without enabling Backup or may Skip without altering local data/mode; no implicit upload or second-account binding |
 | BKP-16 | P1 | Fresh device with wrong Drive/iCloud account, revoked consent, missing archive, changed app identity or unavailable iCloud container | Honest not-found/error and encrypted import fallback; local data untouched and no implicit backup or Supabase sync |
@@ -75,6 +86,35 @@
 | SYNC-08 | P2 | No paid entitlement or member without separate Sync consent | No Supabase workout upload; Local Only works and user-owned Personal Backup remains optional |
 | SYNC-09 | P2 | Paid member explicitly turns on future Sync | Complete supported workout history/plans/exercises/sessions/sets and progress source data sync under user-bound RLS; can rehydrate new device |
 | SYNC-10 | P2 | Membership expires or is cancelled | Block unauthorized new uploads, retain local SQLite, and follow separately approved server export/retention/deletion policy |
+
+## Proposed visual/UX acceptance scenarios — execute after approved UI implementation
+
+| ID | Priority | Scenario | Expected result |
+|---|---|---|---|
+| UX-01 | P0 | **Initial configuration** Home/Workout/Library/You in **Standard** bottom bar; scroll roots, then navigate into nested Active Workout, Plan Editor, Exercise Detail, History, Progress, Settings | Default Glass Standard bar remains visible on configured roots while scrolling; disappears on nested/Auth/full-screen routes; root compact TopBar reveals only after scroll; nested back TopBar immediately visible; no account switching |
+| UX-02 | P0 | Edit sets/reps/weight one-handed with large accessibility text and screen reader | No clipped controls, understandable focus/labels and device-appropriate touch targets |
+| UX-03 | P0 | Previously initialized user opens and saves an active workout offline | “Saved on this device” reflects actual local persistence, no misleading “Synced” or blocked logging |
+| UX-04 | P0 | Logout, wrong-bound-account attempt and separately confirmed local erase | Exact identity/privacy warning states; no accidental erase/account switch, cancellation is safe |
+| UX-05 | P0 | Phase 1 Local Only default and Supabase Auth with no implemented cloud workout service | No default workout upload, no fake restore/sync screen, honest local-save/data-loss wording |
+
+| UX-06 | P1 | **Phase 3 only:** user locates verified, encrypted same-account Personal Backup after reinstall | Optional **Restore / Skip**; Skip unchanged, confirmed restore after independent secret; no implicit upload or mode enablement |
+| UX-07 | P2 | **Phase 4 only:** prior explicitly opted-in and currently authorized paid Supabase Sync on fresh install | Auto-hydrate available server rows **without Backup Restore dialog**, accurate empty/error states |
+| UX-08 | P0 | Appearance **System (initial default), Light, Dark** with Glass(default)/Solid on Android/iOS; change OS theme while System; restart and toggle manual override | OS updates live in System and manual Light/Dark persists, reselecting System resumes OS-follow; **6 stored preference combinations, 4 resolved render states**, contrast/status bar/Glass centralized; fallback doesn't mutate preference |
+
+| UX-09 | P0 | Audit screen modules, root navigation registry, shared route shell and token ownership after Phase 1 implementation | Screens render props/callbacks with no data-fetching/business/SDK or scroll logic; shared `src/shared/theme/tokens/` + `src/shared/ui/` drive nav/controls; tab items/routes are sourced from ordered app config, not hardcoded four-item indexes, and shell owns visibility |
+
+| UX-10 | P0 | With mock **3, 4 and 5+ tab configurations** supplied to the reusable bottom-bar/layout boundary, test small screens and larger text | Initial four-tab Standard UI remains unchanged; tab keys/labels/routes/selection remain valid with fewer/more configured tabs; no crash, inaccessible destinations, overlapping/clipped controls or hardcoded widths; overflow/adaptive handling documented. This tests **extensibility**, not shipping additional tabs or a Pill switch |
+
+| UX-11 | P0 | **English-only interface + OS/system fonts** in Auth, workout, Library, settings, errors and accessibility on Android/iPhone | English labels sourced from shared message keys/typed view models; font scaling, unit/date formatting and wrapping work; **no Hindi resource, Language switch or Custom Font UI/binaries** in MVP |
+
+| UX-12 | P0 | Neutral-default Light/Dark × Glass/Solid on iOS/Android: primary CTA, selected tabs, progress, links, focus, English labels | **Black/White/Gray works without mandatory Teal or an Accent Color picker**; controls pass contrast, accessible icons and Glass-over-content tests with no color-only statuses |
+
+| UX-13 | P1 (future) | After separate approval, select named Accent Color preset, reset to Neutral, restart and use Light/Dark × Glass/Solid | Local preference persists, accessible foreground/disabled states per palette, no changes to workout/auth/cloud data; **picker is NOT MVP functionality** |
+
+| UX-14 | P0 | Rotate real Android/iPhone through Auth/OTP, Home, tabs, active workout, nested edit, modal, keyboard, background/resume | **Portrait-only** supported phone UI; no landscape route/layout or rotation toggle; no data loss, keyboard/safe-area break or navigation crash. Validate native configs/device behavior and document tablet/multitasking exceptions |
+| UX-15 | P1 (future) | With separate owner approval, add Hindi/another locale and an optional script-capable licensed Custom font | Shared keys, localized dates/numbers/units/plurals, glyphs, accessibility and flexible layouts work without screen/domain rewrite; **not an MVP feature** |
+
+These are **planned**, unexecuted acceptance criteria. The first workout MVP requires **P0 UX-01–05 and UX-08–12 plus UX-14**; **P1 UX-06 belongs to Personal Backup (Phase 3)** and **P2 UX-07 to paid Supabase Sync (Phase 4)**. UX-13 and UX-15 are future-only. A screenshot reference is not test evidence or an asset license.
 
 ## Test environments
 Physical Android and iPhone devices, current supported OS versions, actual Expo development/release builds, unstable network, background and device-kill scenarios, low storage, attempted second account on a bound installation, deliberate erase/reset, reinstallation and cross-device restores.

@@ -55,6 +55,16 @@ Tio-Workspace/
 
 **Optional complexity layer:** add `features/<name>/application/` or `use-cases/` if multi-step workflow, recovery, several repositories or transaction coordination justify it. Simple feature hooks may call injected repository-facing services; never embed complex domain/business rules permanently in React hooks.
 
+### Dedicated theme tokens and dumb screens (ADR-015 — future implementation only)
+
+The approved source-organization principle remains `src/app/` (navigation/layout), `src/shared/` (reusable non-business UI/theme), `src/features/` (feature presentation/domain/data), `src/platform/` (technical adapters). Within that structure, the **planned canonical token path is `src/shared/theme/tokens/`**, for semantic colors/text, glass tint-opacity-blur, opaque surfaces, borders, shadows, spacing, radius, typography, icons, motion and component aliases. `src/shared/theme/` centrally resolves **default Glass vs Settings-selected Solid** and **System(default)/Light/Dark preference** (resolved centrally) into tokens. `src/shared/ui/` owns one set of TopBar, BottomTabBar, TextField, Button, Card, SheetSurface and other primitives. Plan central typed English catalog and locale-ready formatting in shared presentation/i18n adapter, **not hard-coded screen/business strings**; future Custom/Hindi only after approval. Central app-shell/native orientation policy is **portrait-only** for supported phones, without screen-level rotation handling. These paths are **not created yet**.
+
+**Tab count and presentation ownership:** `src/app/` owns a future single tab registry (stable `key`, `label`, `icon`, valid `route`, order/visibility), and tab-root membership is derived from the **configured registered routes** rather than a fixed list of four. The shared presentation component accepts tab items, selected key, select callback, `layoutVariant` (Standard **now**, Pill **future**) and resolved material/theme. Do not put tab lists or layout branching in feature screens, or expose arbitrary tab-count editing to users now. Test 3/4/5+ configured tabs, narrow widths, large labels/text, accessibility, valid route fallback, safe-area/keyboard and overflow without silent missing tabs. Future extra destinations/variants need explicit owner-approved scope.
+
+**Dumb screen rule:** a screen composes shared components, receives typed view state/props and emits callbacks. It performs **no business logic, async data fetching, auth/session decisions, direct repository/SDK/SQL calls, theme-material calculation or scroll-threshold detection**. Presentation orchestration and effects go in separate feature hooks/controllers; domain/application owns rules and workflows; data/platform own I/O. Optional `application/` layers are justified only by complexity, not created empty. Route shell/shared scroll coordinator decides root/nested TopBar display and tab visibility.
+
+**Chrome policy:** **Glass is default material**, but **Standard is the selected bar layout**: a translucent **full-width, safe-area-aligned bottom bar**, not a floating Pill. App-level **ordered root-tab configuration** initially lists Home/Workout/Library/You; shared `BottomTabBar` renders any approved valid tab list instead of assuming four positions. A separate future `Standard | Pill` layout variant may be owner-approved without changing features, screens or material preferences. Only Settings → Appearance offers persistent **Solid** material; accessibility/no-blur fallback may render opaque surfaces without changing preference. Root compact shared TopBar starts hidden, reveals only after scroll (threshold/hysteresis in shell), hides when returning to top; nested compact/back TopBar appears immediately. Bottom bar hides on every **non-registered nested/modal/full-screen/Auth route**; future configured root additions/removals are handled centrally. Respect safe areas, keyboard, readable contrast, reduced transparency/motion and native platform differences.
+
 ## 3 · Dependency and import matrix
 
 | Caller | Allowed | Forbidden |
@@ -101,7 +111,7 @@ flowchart TD
 
 ## 6 · Agent acceptance criteria
 
-- Thin route files; features own presentation and business behavior.
+- Thin routes; dumb screens only render view state and forward callbacks, while feature hooks/controllers/application/domain own behavior. No business/SDK/theme-scroll decision logic inside screen files.
 - Feature domain ports can be tested without Expo/SQL/Supabase.
 - Feature data adapters use technical platform services; platform is not business-aware.
 - No deep cross-feature imports; public `index.ts` exports only what other features need.
