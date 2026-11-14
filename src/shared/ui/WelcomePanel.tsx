@@ -1,4 +1,4 @@
-import { Platform, Pressable, ScrollView, Text, View, useWindowDimensions } from 'react-native';
+import { Pressable, ScrollView, Text, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button } from '@/shared/ui/Button';
 import { TypewriterHeading } from '@/shared/ui/TypewriterHeading';
@@ -20,7 +20,6 @@ export function WelcomePanel({
 }: Props) {
   const { colors } = useAppearance();
   const insets = useSafeAreaInsets();
-  const android = Platform.OS === 'android';
   const { height } = useWindowDimensions();
   // Welcome is a fixed, non-scrolling screen. Scale down its decorative
   // heading on short devices while keeping the action area reachable.
@@ -63,23 +62,12 @@ export function WelcomePanel({
         flex: 1, minHeight: 0, justifyContent: 'center', alignItems: 'center',
         paddingHorizontal: spacing.lg, paddingTop: insets.top + spacing.sm,
       }}>{heading}</View>
-      {android ? <View style={{
-        backgroundColor: colors.card,
-        borderTopLeftRadius: 32, borderTopRightRadius: 32,
-        borderTopWidth: 1, borderLeftWidth: 1, borderRightWidth: 1,
-        borderColor: colors.border,
-        paddingTop: spacing.lg, paddingHorizontal: spacing.lg,
-        // Sheet reaches the screen bottom; inset is INSIDE the surface,
-        // so buttons remain above gesture/3-button navigation controls.
-        paddingBottom: insets.bottom + spacing.sm,
-      }}>{bottomActions}</View> : <View style={{
-        // On iOS there is no card or surrounding surface: the button and
-        // text link sit directly on the Welcome background.
+      <View style={{
+        // Same minimal cardless bottom actions on iOS and Android.
+        // Only the system navigation safe area is added below the touch target.
         paddingHorizontal: spacing.lg,
-        // A 48pt login hit target already adds ~12pt below the 23pt text line.
-        // Do not add further bottom padding beyond the OS safe-area inset.
         paddingBottom: insets.bottom,
-      }}>{bottomActions}</View>}
+      }}>{bottomActions}</View>
     </> : <ScrollView style={{ flex: 1 }}
       showsVerticalScrollIndicator={false}
       contentContainerStyle={{
