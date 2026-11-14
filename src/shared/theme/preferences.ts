@@ -16,9 +16,3 @@ export function decodePreferences(raw: unknown): ShellPreferences {
 export function resolveMode(preference: AppearanceChoice, systemMode: ColorMode | null): ColorMode {
   return preference === 'system' ? (systemMode === 'dark' ? 'dark' : 'light') : preference;
 }
-
-// NavigationBar.style describes the BUTTONS, not the background.
-// Dark screens require light navigation buttons; light screens require dark ones.
-export function navigationButtonStyleForMode(mode: ColorMode): 'light' | 'dark' {
-  return mode === 'dark' ? 'light' : 'dark';
-}
