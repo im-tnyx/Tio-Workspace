@@ -114,6 +114,7 @@ test('unverified users cannot reach the mock shell in release builds', () => {
 
 test('app-wide button size and welcome bottom spacing are shared tokens', () => {
   assert.equal(controlSizes.buttonMinHeight, 42);
+  assert.equal(controlSizes.onboardingButtonMinHeight, 46);
   assert.equal(controlSizes.buttonRadius, radii.pill);
   assert.equal(controlSizes.buttonHitSlopVertical, 3);
   assert.equal(spacing.lg, 16);
