@@ -1,11 +1,12 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Constants from 'expo-constants';
 import { StatusBar } from 'expo-status-bar';
 import { NavigationBar } from 'expo-navigation-bar';
 import * as SystemUI from 'expo-system-ui';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { AccessibilityInfo, Platform, useColorScheme } from 'react-native';
-import { decodePreferences, DEFAULT_PREFERENCES, resolveMode, UI_PREFERENCE_KEY } from './preferences';
+import { decodePreferences, DEFAULT_PREFERENCES, navigationButtonStyleForMode, resolveMode, UI_PREFERENCE_KEY } from './preferences';
 import type { AppearanceChoice, MaterialChoice, ShellPreferences } from './preferences';
 import { palettes } from './tokens';
 import type { ColorMode, ColorTokens } from './tokens';
@@ -77,9 +78,12 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
   if (!loaded) return null;
   return <Context.Provider value={value}>
     <StatusBar style={mode === 'dark' ? 'light' : 'dark'} />
-    {/* Three-button navigation icons follow the app theme in native builds.
-        The native enforceContrast=false setting requires a rebuilt APK. */}
-    {Platform.OS === 'android' ? <NavigationBar style={mode === 'dark' ? 'dark' : 'light'} /> : null}
+    {/* Do not change navigation bar styling inside Expo Go/development hosts:
+        the host APK cannot inherit our native enforceContrast=false flag.
+        In a standalone Android app, light icons belong on dark backgrounds. */}
+    {Platform.OS === 'android' && Constants.executionEnvironment !== 'storeClient'
+      ? <NavigationBar style={navigationButtonStyleForMode(mode)} />
+      : null}
     {children}
   </Context.Provider>;
 }
