@@ -27,9 +27,19 @@ A cloud backup is a restorable snapshot, **not** automatic cross-device realtime
 
 **Default: Backup OFF, Local Only.** The user can keep logging without choosing a provider, granting cloud permission or paying for cloud storage. **No workout records or backup archives are uploaded to Supabase Postgres/Storage by signing in or by enabling a personal backup**; Supabase Auth holds account/session information, not the workout archive. A personal backup is a separately consented, **client-encrypted archive saved only to the user's chosen Google Drive/iCloud location or manual encrypted file**, never to Tio-managed Supabase Storage/Postgres. The future sync backend must never be silently reused as the personal-backup destination.
 
-**Critical distinction:** Ordinary logout retains locked workout history and same-account re-login reopens it. A user-confirmed erase/reset, OS clear-data, uninstall/reinstall or phone loss may remove local SQLite. After online login to a fresh installation, recovery depends on the **previously enabled active cloud mode**: **Personal Backup** → offer explicit **Restore Backup** using a completed matching encrypted Drive/iCloud archive and user-held recovery secret; **future Supabase Sync** → verify the same account and **automatically download available server data** without a Backup Restore step; **Local Only** (or unavailable/failed cloud data) → empty local workout history. In all modes, never fabricate an old diary from Auth login alone. iOS Keychain entries can outlive uninstall; installation markers and verified file/key/UUID consistency must prevent stale-key data access.
+**Critical distinction:** Ordinary logout retains locked workout history and same-account re-login reopens it. A user-confirmed erase/reset, OS clear-data, uninstall/reinstall or phone loss may remove local SQLite. After online login to a fresh installation, previous backup-mode settings may be gone: **Personal Backup** → offer optional **Find/Restore existing encrypted backup** that reconnects the user's Drive/iCloud account and validates a completed same-account archive and portable recovery secret; **future Supabase Sync** → verify the same account and **automatically download available server data** without a Backup Restore step; **Local Only** (or unavailable/failed cloud data) → empty local workout history. In all modes, never fabricate an old diary from Auth login alone. iOS Keychain entries can outlive uninstall; installation markers and verified file/key/UUID consistency must prevent stale-key data access.
 
 **Backup source of truth:** Only confirmed completed client-encrypted copies count as restorable. A failed/in-progress upload is not a backup. Automatic backup is **best effort**, only after user opt-in, and may be delayed or omitted by mobile OS scheduling. Backup OFF, disconnect, local erase and deleting a remote archive are distinct operations.
+
+## OS-managed backup and device-transfer boundary (implementation gate)
+
+**Local Only / Backup OFF** prevents Tio-managed personal archive uploads and Supabase workout sync, but does **not** automatically disable Android Auto Backup, direct phone transfers or iOS device/iCloud backups. Before production, protect the local SQLite file, WAL/SHM sidecars, account-bearing staging/snapshots and sensitive installation metadata from **unrequested OS-managed copies** using verified native exclusions. Explicit user-exported encrypted backup files in a chosen destination are separate.
+
+- **Android:** Inspect legacy `android:fullBackupContent` (Android 11 and older) and `android:dataExtractionRules` (Android 12+). Verify appropriate `cloud-backup` **and** `device-transfer` exclusion rules. `android:allowBackup="false"` does not uniformly cover every OEM/device-transfer mechanism.
+- **iOS:** Review actual on-disk paths and native `URLResourceValues.isExcludedFromBackup` / `NSURLIsExcludedFromBackupKey` for the database and relevant files. Apple's device/iCloud backup is distinct from a chosen encrypted Personal Backup provider integration. Verify real-device iCloud/device migration behaviour.
+- **Validation:** Inspect generated Expo native configuration and test Android/iPhone backup, restore and transfer. Missing/foreign OS-restored SQLCipher keys must fail closed without wrong-account access, plaintext fallback or silent data loss. Disclose any platform/OEM limitations; do not promise absolute prevention of all external copies.
+
+These are **documented future requirements**, not existing exclusions or tested behaviour.
 
 ## WhatsApp-inspired backup screen contract (not a clone)
 
@@ -98,6 +108,12 @@ tio-backup-v1/
 - If upload fails (including full iCloud/Drive quota), never delete local data or overwrite the last good archive. Show actionable errors, retry/storage guidance and keep the last confirmed backup metadata.
 - Automatic scheduling is **best effort**; mobile OS background limits mean precise periodic backups are not guaranteed.
 
+## Fresh-install discovery without remembered settings (future)
+
+Never gate archived-backup discovery on `backup_opt_in`, locally remembered provider ID or last-success metadata; they may disappear on OS data clear/reinstall. After **same Tio-account online login**, offer an optional **Find existing encrypted backup** action on the recovery/empty-history screen. Only following explicit user selection, connect their Google Drive/iCloud account (or import an encrypted file), list accessible versioned archives, verify immutable source Tio UUID/format/integrity, request the independent recovery secret and preview a safe restore. Neither authentication nor discovery uploads workouts, enables backup/sync or proves a backup exists.
+
+For Google Drive `appDataFolder`, list files in the `appDataFolder` space using the properly authorized app identity. Those archives are hidden from normal Drive; changed Google account, OAuth app identity, revoked consent or deleted folder can make them inaccessible. On iOS, actual iCloud container discovery must first be proven in a native build; encrypted file import remains the fallback. No verified archive means **no available backup**, not implied data from Supabase Auth. Do not silently change the one active cloud-mode preference or bound Tio account.
+
 ## Restore procedure
 1. On a new/unbound installation after reinstall, OS app-data clear, phone loss or explicit reset, **sign in online** to the same Supabase account; verify immutable user UUID. **Personal Backup mode** may offer user-initiated restore of an available matching archive; **future, previously enabled Supabase Sync mode** may automatically hydrate the local store from authorized server workout records (not a backup Restore). **Local Only**, or absence of accessible data, results in an empty store. Normal logout/relogin without wiped local data must instead reuse the retained local store.
 2. Connect the user's backup provider and list available versioned archives.
@@ -118,6 +134,9 @@ tio-backup-v1/
 - https://developers.google.com/workspace/drive/api/guides/appdata
 - https://docs.expo.dev/versions/latest/sdk/sqlite/
 - https://developer.apple.com/icloud/
+- https://developer.android.com/identity/data/autobackup
+- https://developer.android.com/about/versions/12/behavior-changes-12#backup-restore
+- https://developer.apple.com/documentation/foundation/using-the-file-system-effectively
 
 ---
 

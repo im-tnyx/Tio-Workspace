@@ -29,6 +29,10 @@ A trustworthy Android/iOS workout diary that **requires an account** but stores 
 9. The owner accepts that previously verified offline local access can continue until online revalidation; offline mode cannot detect remote revocation in real time. Server operations require valid server-side authorization.
 10. The owner selected an OS-protected **per-bound-account SQLCipher key** and a distinct **portable user-held backup recovery secret** as design principles. Actual key lifecycle, cryptographic format, recovery UX and Android/iOS validation are separate security gates.
 
+**OS-managed backup boundary (future native gate):** “Local Only / Backup OFF” must not accidentally use Android Auto Backup, Android device-to-device transfer, or iOS device/iCloud app backup to copy local workout SQLite, sidecars, snapshots or sensitive account material. Define and test platform-specific exclusions; an in-app backup switch alone cannot control OS transfers. Do not promise absolute no-copy guarantees beyond verified platform control. See [backup & sync](05-BACKUP-AND-SYNC.md).
+
+**Fresh-install backup discovery (future):** Reinstall/OS clear-data may erase the remembered backup choice. After same-account online authentication, offer voluntary **Find/Restore existing encrypted backup** even when local settings are empty/unknown. The user selects and authorizes their Drive/iCloud account (or imports an encrypted file), verifies a same-user archive and supplies a portable recovery secret. Discovery must not turn on backup, upload workouts or enable paid Supabase Sync.
+
 **Future membership policy (ADR-014):** Supabase Sync will synchronize the **complete supported workout dataset** only for a paid Tio member who **separately enables Sync** in Settings. Membership purchase alone cannot trigger upload. Default Local Only and user-owned Google Drive/iCloud Personal Backup do **not** require Sync membership. Price, subscription lifecycle and implementation are not yet approved.
 
 ## Target platforms and proposed stack

@@ -23,6 +23,7 @@
 | Migrations | **ADR-010 tooling selected**; compatible native versions/bundling, account-specific journal, safe migration and recovery still require validation/sign-off | ⬜ Technical gate pending |
 | Privacy | Workouts stay local; cloud upload disabled by default | ✅ Requirement recorded, **not tested** |
 | Secrets | AI provider secrets server-side; publishable keys understood | ✅ Requirement recorded, **not tested** |
+| OS-managed backup privacy | Android legacy/12+ cloud/device-transfer and iOS native exclusions, plus stale-key fail-closed recovery | ⬜ Native validation pending (`SEC-04/05`) |
 | Backup | **ADR-012 optional backup OFF by default** and cleared-data empty/restore UX selected; portable secret required. Providers, encryption implementation, auto timing and restore proofs deferred to later phase | ✅ UX policy recorded; future tests pending |
 | Tests | Owner-selected MVP and single-account acceptance scenarios defined; native/device execution and exact release thresholds still required | ⬜ Runtime evidence pending |
 | Owner authorization | Explicit written approval for Phase 1 implementation | ⬜ Pending |
@@ -46,6 +47,9 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 - [ ] `AUTH-01/02/03/04/05/06/07/08/09`: signup, reopening, offline access, denied second account, same-user re-login, revoked session and explicit reset.
 - [ ] `DATA-01/02/03/04/05/06/07`: persistence, crash recovery, deletion, offline upgrades, interrupted migrations and account isolation.
 - [ ] `SEC-01/02/03`: no production secrets in mobile binary; verified SQLCipher and fail-closed key/cipher failure.
+- [ ] `SEC-04/05`: validate Local Only Android/iOS OS-managed backup/device-transfer exclusions and stale-key recovery on real native builds.
+- [ ] Future Personal Backup phase `BKP-15/16`: voluntary discovery after erased local settings, matching encrypted archive restore and safe provider-not-found errors.
+
 - [ ] Real Android + iPhone developer/release build tests recorded.
 - [ ] Measured navigation, local query and autosave performance with representative workouts.
 - [ ] Clear backup-loss warning for local-only mode: OS clear data/reinstall/erase may remove workouts; login alone does not restore them. Future opt-in backup/restore tested in its own phase.

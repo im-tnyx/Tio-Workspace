@@ -36,6 +36,9 @@
 - Never hardcode SQLCipher encryption keys or API keys; manage small key material via platform-protected storage (e.g., Expo SecureStore) with appropriate lifecycle handling.
 - Consider backup/restore of the **encryption key** carefully: a device-bound key must not be the only means of decrypting a cloud backup on a new device.
 - Expo SecureStore behaviour differs by OS on uninstall. Do not promise that it survives reinstall or that deleting an app always deletes iOS Keychain values.
+- **OS backup and transfer (future implementation):** Exclude workout SQLite, WAL/SHM, local snapshots/staging files and account-sensitive metadata from unintended OS-managed backups and transfers where supported. Review Android pre-12 `fullBackupContent`, Android 12+ `dataExtractionRules` for `cloud-backup` and `device-transfer`, and iOS `URLResourceValues.isExcludedFromBackup` / `NSURLIsExcludedFromBackupKey`. `allowBackup=false` alone is not universal protection. Confirm effective native Expo config and actual device behaviour; this is not yet implemented.
+- **Restore safety:** Reject orphaned OS-restored database/key/installation state without a matching verified account UUID, installation marker and decryptable account key; never open a mismatched DB, fall back to plaintext or silently erase. Portable encrypted Personal Backup remains separately user-opted and independently recoverable.
+
 - Sensitive logs/tokens must not be printed to console, crash reports or analytics; clean debug traces.
 
 ## Proposed SQLCipher unlock before Drizzle migrations

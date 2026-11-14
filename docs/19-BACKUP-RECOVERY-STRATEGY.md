@@ -70,6 +70,14 @@ tio-backup-v1
 - Import should be atomic, with a local safety checkpoint and a non-destructive validation preview.
 - Refuse unrecognized future versions by default; support documented migration paths rather than silently dropping fields.
 
+### OS backup is not a Personal Backup archive
+
+App Backup OFF does not control all OS device/iCloud backup and device-transfer paths. The future native policy must check Android legacy/cloud/D2D exclusions and iOS backup-exclusion flags for SQLite and sidecars; see [the detailed OS backup gate](05-BACKUP-AND-SYNC.md). A transferred device-bound key is not a portable decryption method, and an accidental OS-restored database is not a verified user-consented archive. Device validation remains pending.
+
+### Recovery when local mode and provider settings are lost
+
+OS clear-data/reinstall or a fresh phone may erase the remembered backup preference. After **same-account online identity verification**, offer a voluntary **Find existing encrypted backup** action regardless of a missing/unknown local mode. The user picks and authorizes Google Drive/iCloud (or selects an encrypted exported file); list provider-accessible archives, authenticate the archive and owner UUID, then require the portable recovery secret and explicit Restore confirmation. Discovery neither uploads workouts nor enables backup/sync. Wrong provider, unavailable appDataFolder/iCloud integration, revoked permission or deleted archive must produce an honest no-result/error state rather than fabricated Supabase Auth recovery.
+
 ## 06 · Restore UX
 
 **Owner-selected behavior (2026-11-14; ADR-012/013):** Local Only is default. **Personal Backup** to user's Drive/iCloud is optional and encrypted, and never simultaneously enabled with future Supabase Sync. After clear-data/reinstall/phone change, same-account online login in Personal Backup mode may offer explicit **Restore Backup** if a completed matching archive and portable recovery secret are available; skipping it or no usable archive means empty history. **Only in a future, previously enabled and authorized Supabase Sync mode**, available server workout rows can **automatically rehydrate** the new local encrypted database after login, **without** Backup Restore. With **Local Only**, Auth login alone never reconstructs workouts. A prior Supabase Auth identity may still exist: “fresh” means empty local workouts, not a new Auth account. Do not promise auto-download until future sync is implemented and tested.

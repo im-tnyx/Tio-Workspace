@@ -39,6 +39,9 @@
 | SEC-01 | P0 | Inspect mobile APK/IPA/config | No AI provider, Supabase service-role or backend secret key |
 | SEC-02 | P0 | SQLCipher-enabled native build | `cipher_version` detected; raw database unreadable without key |
 | SEC-03 | P0 | Wrong/missing key or native build without SQLCipher | Storage fails closed before ORM migration or workout UI; no plaintext replacement created |
+| SEC-04 | P0 | Local Only: inspect Android pre-12 backup XML, Android 12+ cloud/device-transfer rules and actual copied SQLite, WAL/SHM, local snapshots | Effective native exclusions verified; any OS/OEM limitations documented, no implied Tio cloud upload |
+| SEC-05 | P0 | Local Only: inspect iOS app-data/iCloud backup and device migration, then restore with missing/stale Keychain key | Effective native exclusion verified; no wrong-account unlock, plaintext fallback, phantom data or silent erase |
+
 | AUTH-09 | P0 | Explicit erase/reset installation vs logout | Logout preserves binding/history; reset warns of permanent loss, requires confirmation, and only then permits fresh online account binding |
 | AI-01 | P1 | Call function without valid user token | Denied and no vendor API call |
 | AI-02 | P1 | Valid plan generation | Preview/edit response; saves only on user acceptance |
@@ -57,6 +60,9 @@
 | BKP-12 | P1 | Future optional media attachments absent/present | No photo/video switches or uploads without approved attachment support and consent; when present, inclusion/size is correctly reflected |
 | BKP-13 | P1 | User enables personal backup to Google Drive/iCloud | Archive is client-encrypted and sent only to user-selected provider; **zero workout/backup data** in Supabase Postgres/Storage, with no Tio server archive copy |
 | BKP-14 | P1 | User leaves personal backup OFF in Local Only mode and uses local workouts | No Drive/iCloud or Supabase workout payload transfer; local logging unaffected |
+| BKP-15 | P1 | Completed encrypted backup → clear app settings/reinstall → same-account sign-in with no local backup mode/provider → user selects Find backup | Explicit provider authorization discovers matching archive; user recovery secret restores without implicit upload, mode change or second-account binding |
+| BKP-16 | P1 | Fresh device with wrong Drive/iCloud account, revoked consent, missing archive, changed app identity or unavailable iCloud container | Honest not-found/error and encrypted import fallback; local data untouched and no implicit backup or Supabase sync |
+
 | AUTH-10 | P0 | Fresh installation marker after OS clear/reinstall with stale OS Keychain entry | Do not trust orphaned key/session or show phantom history; require verified online identity and safe empty/restore flow |
 | SYNC-01 | P2 | Offline edits on two devices | Defined conflict policy works without silent loss |
 | SYNC-02 | P2 | User disables sync | No further uploads; existing cloud data policy honored |
