@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import test from 'node:test';
 import { ROOT_TABS, validateTabs } from '../src/bootstrap/shell/tabRegistry.ts';
 import { tabGeometry } from '../src/shared/navigation/tabTypes.ts';
@@ -119,11 +120,30 @@ test('app-wide button size and welcome bottom spacing are shared tokens', () => 
   assert.equal(controlSizes.onboardingButtonMinHeight, 46);
   assert.equal(authPreviewLayout.signInTitleMinHeight, 46);
   assert.equal(authPreviewLayout.signInTitleMinHeightCompact, 39);
+  assert.equal(authPreviewLayout.footerNoticeMinHeight, 57);
   assert.equal(controlSizes.buttonRadius, radii.pill);
   assert.equal(controlSizes.buttonHitSlopVertical, 3);
   assert.equal(spacing.lg, 16);
   assert.equal(spacing.xl, 24);
   assert.equal(radii.md, 16); // Other surfaces remain rounded.
+});
+
+test('post-Welcome auth uses persistent parent header and CTA, middle-only step content', () => {
+  const page = readFileSync('src/shared/ui/AuthPreviewPage.tsx', 'utf8');
+  const middle = readFileSync('src/features/onboarding/screens/AuthCredentialsScreen.tsx', 'utf8');
+  const controller = readFileSync('src/features/onboarding/screens/AuthPreviewFlow.tsx', 'utf8');
+  const welcome = readFileSync('src/features/onboarding/screens/WelcomeScreen.tsx', 'utf8');
+
+  assert.match(page, /<KeyboardAvoidingView/);
+  assert.match(page, /\\{children\\}/);
+  assert.match(page, /<Button size="onboarding"/);
+  assert.match(page, /label=\\{footerLabel\\}/);
+  assert.match(page, /\\{footerNotice\\}/);
+  assert.match(page, /footerNoticeMinHeight/);
+  assert.doesNotMatch(middle, /<Button(?:\\s|>)/);
+  assert.doesNotMatch(middle, /\\{footerNotice\\}/);
+  assert.match(controller, /footerDisabled=\\{!canContinueAuthPreview/);
+  assert.match(welcome, /actionPlacement="bottom"/);
 });
 
 test('auth-only disabled button and bare placeholder use soft shades', () => {
