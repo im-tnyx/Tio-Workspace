@@ -39,3 +39,10 @@ Verify static architecture and mock-only behavior first; ensure no SDK/storage/A
 - **GET STARTED → Sign in / Sign up choice screen**. Choices open explicitly nonfunctional placeholders in Phase 1.1: no Supabase account, OTP, stored session or fake successful entry.
 - Real signup/signin flows remain **Phase 1.2 only** and will replace placeholders after separate authorization. Production builds cannot deep-link into preview Home/Workout/Library/You before verified authentication; development-only mock shell navigation is for UI review, with no personal or workout data.
 - Onboarding and auth screen copy uses centralized English catalog, system font, System/Light/Dark neutral appearance. No backend, guest mode or workout access is introduced.
+
+### Welcome placement and app-wide button sizing (owner refinement, 2026-11-14)
+
+- **Welcome:** uppercase `TNYX` centered in the remaining main region; its **single GET STARTED button anchored at screen bottom**, not next to the heading. Sign in/Sign up choice is a separate, centered screen and remains mock-only.
+- **Shared button token:** `controlSizes.buttonMinHeight = 56` in `src/shared/theme/tokens/index.ts`, used by the shared `Button` component for **all button variants**. iOS measures in **points**, Android in **density-independent pixels (dp)**; this is a **minimum** height, so dynamic text may expand it.
+- **Button shape:** `radii.md = 16`; **horizontal screen padding** `spacing.xl = 24`; **Welcome CTA bottom gap** = safe-area bottom inset + `spacing.xl = 24`, so the iOS home indicator is never overlapped. CTA width fills available content width, up to 400dp/pt.
+- **BottomTabBar is not the same component as CTA Button**; keep its own height and accessible tap targets. Final visual/safe-area behavior remains subject to device QA and owner sign-off.

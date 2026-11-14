@@ -70,6 +70,7 @@ The uploaded iOS app screenshot is **visual reference only**, showing a transluc
 - **Cards:** 16px radius proposed; clear grouping; avoid decorative shadows that reduce legibility.
 - **MVP typography:** device OS/system fonts and **English-only** copy, with shared type roles and dynamic scaling. Future Language and Custom Font settings, Hindi translations and custom binaries are **deferred**, not part of the MVP.
 - **Touch targets:** aim for at least 44 × 44 pt on iOS and 48 × 48 dp on Android, with larger workout controls.
+- **Global button sizing (owner-selected 2026-11-14):** shared `controlSizes.buttonMinHeight = 56` (iOS points / Android dp) for app-wide `Button` variants, `radii.md = 16` and `spacing.xl = 24` horizontal screen margin. Use minimum, not rigid, height for dynamic type. **Welcome `GET STARTED` CTA** sits at bottom, `24 + safeAreaInsets.bottom` above the device edge; the `TNYX` wordmark remains centered in the available main region. Bottom-tab bar has independent sizing.
 - **Icons:** consistent 24px outline icon family; always pair unfamiliar icons with labels.
 - **Accessibility:** dynamic font sizes, voice labels, focus order, reduced-motion support, dark mode, and color-blind-friendly status cues.
 

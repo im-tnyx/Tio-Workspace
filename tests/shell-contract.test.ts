@@ -5,6 +5,7 @@ import { tabGeometry } from '../src/shared/navigation/tabTypes.ts';
 import { DEFAULT_PREFERENCES, decodePreferences, resolveMode } from '../src/shared/theme/preferences.ts';
 import { copy, formatNumber } from '../src/shared/i18n/en.ts';
 import { canOpenShellPreview } from '../src/bootstrap/shell/shellPreviewAccess.ts';
+import { controlSizes, radii, spacing } from '../src/shared/theme/tokens/index.ts';
 
 test('initial root navigation has four stable, distinct routes', () => {
   assert.deepEqual(ROOT_TABS.map(item => item.routeName), ['home', 'workout', 'library', 'you']);
@@ -55,4 +56,10 @@ test('Welcome entry and auth choice labels are centrally defined', () => {
 test('unverified users cannot reach the mock shell in release builds', () => {
   assert.equal(canOpenShellPreview(false), false);
   assert.equal(canOpenShellPreview(true), true);
+});
+
+test('app-wide button size and welcome bottom spacing are shared tokens', () => {
+  assert.equal(controlSizes.buttonMinHeight, 56);
+  assert.equal(spacing.xl, 24);
+  assert.equal(radii.md, 16);
 });
