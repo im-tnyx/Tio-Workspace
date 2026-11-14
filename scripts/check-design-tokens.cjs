@@ -34,7 +34,7 @@ const SIZE_PROPS = new Set([
   'top', 'bottom', 'left', 'right',
   'shadowRadius', 'shadowOffset', 'elevation',
 ]);
-const COLOR_SYNTAX = /^(?:#[\da-fA-F]{3,8}|(?:rgb|rgba|hsl|hsla)\s*\(|(?:transparent|white|black|red|blue|green|gray|grey|yellow|pink|purple|orange))$/i;
+const COLOR_SYNTAX = /^(?:#[\da-fA-F]{3,8}|(?:rgb|rgba|hsl|hsla)\s*\([^)]*\)|transparent|white|black|red|blue|green|gray|grey|yellow|pink|purple|orange)$/i;
 const LENGTH_SYNTAX = /^-?\d+(?:\.\d+)?(?:px|dp|pt|rem|em|vh|vw)$/i;
 
 function listSourceFiles(dir, result = []) {
