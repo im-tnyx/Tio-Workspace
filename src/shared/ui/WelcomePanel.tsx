@@ -32,10 +32,10 @@ export function WelcomePanel({ title, actions, actionPlacement = 'center' }: Pro
         paddingTop: insets.top,
       }}>{heading}</View>
       <View style={{
-        width: '100%', maxWidth: 400, alignSelf: 'center',
+        width: '100%', alignSelf: 'center',
         gap: spacing.md,
-        // Keep the CTA 24pt/dp above the safe-area boundary on every iPhone.
-        paddingBottom: insets.bottom + spacing.xl,
+        // The CTA has matching 16pt side/bottom padding, plus the device safe area.
+        paddingBottom: insets.bottom + spacing.lg,
       }}>{buttons}</View>
     </> : <View style={{
       flex: 1, alignItems: 'center', justifyContent: 'center',
