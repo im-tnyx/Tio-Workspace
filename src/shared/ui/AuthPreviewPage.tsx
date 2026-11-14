@@ -73,10 +73,11 @@ export function AuthPreviewPage({
       <View style={{
         flex: 1, minHeight: 0, paddingHorizontal: spacing.lg,
         paddingTop: spacing.xl,
-        // The keyboard covers the home-indicator inset. Shrink it during
-        // keyboardWillShow (not after keyboardDidShow) in the SAME animation.
-        // Without a keyboard keep full home-indicator clearance.
-        paddingBottom: keyboardVisible ? spacing.sm : insets.bottom + spacing.sm,
+        // Keep an equal 16pt logical gutter at the sides and bottom.
+        // When the keyboard hides, allow for the system safe-area *in addition*
+        // to that gutter; when it opens, the keyboard covers the home indicator.
+        // iOS updates alongside keyboardWillShow/WillHide, not after animation.
+        paddingBottom: keyboardVisible ? spacing.lg : insets.bottom + spacing.lg,
       }}>
         {/* Only this middle content updates between Email, OTP and Password. */}
         <View style={{ flex: 1, minHeight: authPreviewLayout.authMiddleMinHeight }}>
