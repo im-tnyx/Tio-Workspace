@@ -29,7 +29,7 @@ export function TextField({
       onChangeText={onChangeText}
       editable={editable}
       placeholder={placeholder}
-      placeholderTextColor={variant === 'bare' ? (mode === 'dark' ? '#858585' : '#767676') : colors.muted}
+      placeholderTextColor={variant === 'bare' ? (mode === 'dark' ? '#707070' : '#929292') : colors.muted}
       accessibilityLabel={label}
       underlineColorAndroid="transparent"
       style={[typography.body, variant === 'bare' ? {
