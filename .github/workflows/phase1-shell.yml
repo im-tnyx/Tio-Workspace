@@ -36,6 +36,13 @@ jobs:
       # a follow-up before reproducible release builds.
       - name: Install pinned SDK dependencies
         run: npm install --no-audit --no-fund
+      - name: Archive generated lockfile for review
+        uses: actions/upload-artifact@v4
+        with:
+          name: generated-lockfile
+          path: package-lock.json
+          if-no-files-found: error
+          retention-days: 1
       - name: Verify Expo SDK package compatibility
         run: npm run expo:check
       - name: TypeScript

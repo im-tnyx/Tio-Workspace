@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { ScrollView, Text, View, useWindowDimensions } from 'react-native';
 import { useFocusEffect } from 'expo-router';
@@ -12,12 +12,17 @@ export function RootPage({ title, children }: { title: string; children: ReactNo
   const { height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const { activate, onOffset } = useRootChrome();
-  useFocusEffect(useCallback(() => { activate(title); }, [activate, title]));
+  const retainedOffset = useRef(0);
+  useFocusEffect(useCallback(() => { activate(title, retainedOffset.current); }, [activate, title]));
   return <ScrollView style={{ backgroundColor: colors.background }}
     contentContainerStyle={{ paddingHorizontal: spacing.lg,
       paddingTop: insets.top + spacing.xl, minHeight: height + 170,
       paddingBottom: spacing.xxl }}
-    scrollEventThrottle={16} onScroll={e => onOffset(e.nativeEvent.contentOffset.y)}>
+    scrollEventThrottle={16} onScroll={e => {
+      const y = e.nativeEvent.contentOffset.y;
+      retainedOffset.current = y;
+      onOffset(y);
+    }}>
     <Text style={[typography.title, { color: colors.text,
       marginBottom: spacing.xl }]}>{title}</Text>
     <View style={{ gap: spacing.lg }}>{children}</View>

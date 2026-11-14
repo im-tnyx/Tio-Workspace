@@ -21,7 +21,7 @@
 
 ## Approved work
 
-- Expo SDK 58 + React Native 0.88 + React 19.3 / TypeScript strict, Expo Router.
+- Expo SDK 58 + React Native 0.88.1 + React 19.3 / TypeScript strict, Expo Router.
 - App display Tnyx, `com.tnyx.tio` Android/iOS, portrait only, English-only system font and no production icon asset yet.
 - Neutral Black/White/Gray, appearance System(default)/Light/Dark, Glass(default)/Solid UI preference persisted only as non-sensitive local UI settings.
 - Reusable tokens, primitives, root/nested TopBar, Standard config-driven bottom bar (4 roots initially), hero/scroll reveal, mock routed screens.

@@ -4,7 +4,7 @@
 
 ## What is scaffolded
 
-- Expo SDK 58, React Native 0.88, TypeScript, Expo Router under `src/app/`.
+- Expo SDK 58, React Native 0.88.1, TypeScript, Expo Router under `src/app/`.
 - Tnyx / `com.tnyx.tio` iOS/Android configuration and **portrait-only** preference (native device verification pending).
 - Four root mock tabs: Home, Workout, Library, You; Standard full-width bottom navigation from ordered tab config. Nested screen routes hide the dock.
 - Root compact TopBar revealed by shared scroll coordinator; nested TopBar/back immediately present.

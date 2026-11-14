@@ -6,15 +6,18 @@ import { chromeMotion } from '@/shared/theme/tokens';
 import { TopBar } from './TopBar';
 
 type Chrome = { title: string; visible: boolean;
-  activate: (name: string) => void; onOffset: (offset: number) => void };
+  activate: (name: string, retainedOffset: number) => void; onOffset: (offset: number) => void };
 const Context = createContext<Chrome | null>(null);
 
 export function RootChromeProvider({ children }: { children: ReactNode }) {
   const [title, setTitle] = useState('');
   const [visible, setVisible] = useState(false);
   const current = useRef(false);
-  const activate = useCallback((name: string) => {
-    setTitle(name); current.current = false; setVisible(false);
+  const activate = useCallback((name: string, retainedOffset: number) => {
+    const shouldShow = retainedOffset >= chromeMotion.showThreshold;
+    setTitle(name);
+    current.current = shouldShow;
+    setVisible(shouldShow);
   }, []);
   const onOffset = useCallback((offset: number) => {
     const next = offset >= chromeMotion.showThreshold ? true
