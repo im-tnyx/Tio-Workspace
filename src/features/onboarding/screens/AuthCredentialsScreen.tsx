@@ -117,6 +117,7 @@ export function AuthCredentialsScreen({
         label={step === 'new-password' ? copy('resetPassword')
           : step === 'password' ? copy(signingUp ? 'signUp' : 'signIn') : copy('continue')}
         onPress={onSubmit}
+        disabledTone="soft"
         disabled={!canContinueAuthPreview(step, value)}
       />
       <Text style={[typography.caption, { color: colors.muted, textAlign: 'center' }]}>
