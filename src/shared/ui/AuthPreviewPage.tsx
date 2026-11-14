@@ -1,6 +1,5 @@
-import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Keyboard, KeyboardAvoidingView, Platform, Pressable, Text, View } from 'react-native';
+import { KeyboardAvoidingView, Platform, Pressable, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
 import { spacing } from '@/shared/theme/tokens';
@@ -14,13 +13,6 @@ export function AuthPreviewPage({ onBack, children, headerActionLabel, onHeaderA
 }) {
   const insets = useSafeAreaInsets();
   const { colors } = useAppearance();
-  const [keyboardShown, setKeyboardShown] = useState(false);
-  useEffect(() => {
-    const show = Keyboard.addListener('keyboardDidShow', () => setKeyboardShown(true));
-    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardShown(false));
-    return () => { show.remove(); hide.remove(); };
-  }, []);
-
   return <View style={{ flex: 1, backgroundColor: colors.background }}>
     {/* Fixed back arrow: identical safe-area position before/after focus. */}
     <View style={{
@@ -58,8 +50,10 @@ export function AuthPreviewPage({ onBack, children, headerActionLabel, onHeaderA
       <View style={{
         flex: 1, minHeight: 0, paddingHorizontal: spacing.lg,
         paddingTop: spacing.xl,
-        // The keyboard already owns the lower safe area when visible.
-        paddingBottom: keyboardShown ? spacing.sm : insets.bottom + spacing.sm,
+        // A constant inset prevents a second abrupt bottom-layout update when
+        // keyboardDidShow fires. KeyboardAvoidingView handles iOS movement.
+        // Keep home-indicator clearance when the keyboard is dismissed.
+        paddingBottom: insets.bottom + spacing.sm,
       }}>
         {children}
       </View>
