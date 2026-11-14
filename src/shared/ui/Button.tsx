@@ -8,9 +8,10 @@ type Props = {
   disabled?: boolean;
   /** Auth-only low-emphasis disabled treatment; other Buttons keep the default. */
   disabledTone?: 'soft';
+  size?: 'app' | 'onboarding';
 };
 export function Button({
-  label, onPress, variant = 'primary', disabled = false, disabledTone,
+  label, onPress, variant = 'primary', disabled = false, disabledTone, size = 'app',
 }: Props) {
   const { colors, mode } = useAppearance();
   const primary = variant === 'primary';
@@ -24,7 +25,8 @@ export function Button({
   return <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label}
     hitSlop={{ top: controlSizes.buttonHitSlopVertical, bottom: controlSizes.buttonHitSlopVertical }}
     disabled={disabled} accessibilityState={{ disabled }} style={({ pressed }) => ({
-      minHeight: controlSizes.buttonMinHeight, justifyContent: 'center', alignItems: 'center',
+      minHeight: size === 'onboarding' ? controlSizes.onboardingButtonMinHeight : controlSizes.buttonMinHeight,
+      justifyContent: 'center', alignItems: 'center',
       paddingHorizontal: spacing.lg, paddingVertical: spacing.sm,
       borderRadius: controlSizes.buttonRadius,
       backgroundColor,
