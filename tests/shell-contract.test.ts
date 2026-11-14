@@ -78,6 +78,8 @@ test('auth UI preview progresses email to code to password without backend', () 
   assert.equal(canContinueAuthPreview('password', ''), false);
   assert.equal(canContinueAuthPreview('password', 'preview-only'), true);
   assert.equal(copy('emailPlaceholder'), 'tom@example.com');
+  assert.match(copy('emailStepIntro'), /send you a verification code/);
+  assert.match(copy('emailStepIntro'), /authentication is available/);
   assert.match(copy('otpPreviewNotice'), /No code was sent or verified/);
   assert.match(copy('emailPreviewNotice'), /No email or code will be sent/);
 });
