@@ -12,6 +12,10 @@
 > [!IMPORTANT]
 > **This is a readiness checklist, not an implementation task.** Completing/merging this document does not authorize writing application code, generating secrets or deploying Supabase.
 
+**Owner-facing approval draft:** use the [Phase 0 design and Phase 1 sign-off pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) for the proposed visual baseline, exact pending owner decisions and narrower **Phase 1.1 shell-only** scope. No owner has approved that scope by merely requesting this document; the matrix below remains pending where marked.
+
+**Gate distinction:** approval to *start a bounded Phase 1.1 shell* requires accepted design/implementation limits and written owner authorization. Runtime SQLCipher, Drizzle and OS-backup tests are **later native implementation/release exit gates**, not tests falsely claimed before any native build exists. They must pass before enabling protected local workout storage or releasing the MVP.
+
 ## 01 · Prerequisite decisions
 
 | Gate | What must be true | Current |
@@ -54,6 +58,14 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 - [ ] Measured navigation, local query and autosave performance with representative workouts.
 - [ ] Clear backup-loss warning for local-only mode: OS clear data/reinstall/erase may remove workouts; login alone does not restore them. Future opt-in backup/restore tested in its own phase.
 - [ ] No runtime app logs contain raw workout values or auth credentials.
+
+### Review-ready acceptance for the proposed design baseline (not yet executed)
+
+- [ ] **UX-01–05** documented in [test plan](08-TEST-PLAN.md), with iOS/Android large-text, one-handed entry, offline status and destructive confirmation evidence after implementation.
+- [ ] Owner explicitly selects or changes the candidate five-area navigation and existing violet/mint tokens (see [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md)).
+- [ ] Owner documents application identifiers and whether logo/app icon remain provisional; no fake design-signoff claims.
+- [ ] Scope exclusions for the initial **Phase 1.1 shell** are explicit: no auth connection, SQLCipher workout store, AI, backups, paid Sync, billing or release.
+- [ ] Later native security and portability gates remain pending until real Android/iOS builds produce evidence.
 
 ## 04 · Change approval record
 

@@ -106,6 +106,8 @@ The owner-provided iOS/Android screenshots inform **information hierarchy only**
 - Each screen covers `loading`, `empty`, `offline`, `error`, and account-safety states.
 - Never expose cached workout data when a different account attempts login; **no identity-switching flow exists**.
 
+**Phase 0 proposed design freeze (not approved):** five main areas (Home / Plans / History / Progress / Settings), focused full-screen Workout, contextual Exercise Library, and violet/mint light/dark tokens are the recommended review baseline. See the [design and approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) for explicit owner choices and tests `UX-01–05`; final visual hierarchy, accessibility proof and platform screenshot sign-off remain pending.
+
 ## 07 · Design acceptance checklist
 
 - [ ] Final home screen hierarchy selected.

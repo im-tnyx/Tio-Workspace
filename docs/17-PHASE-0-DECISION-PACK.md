@@ -84,6 +84,8 @@ flowchart TD
   F -->|Yes, separately recorded| H["Future: Expo setup"]
 ```
 
+**Current sign-off handoff:** the [Phase 0 final design and Phase 1 owner approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) compiles the existing selected policies into a design baseline and separate **Phase 1.1-only** authorization template. It does **not** close D01/D07–D09/D11–D12, complete native validation or grant coding permission. Record any actual owner decisions back in this queue/decision register after approval.
+
 ## 📋 Required owner sign-off
 
 - [x] Record owner-selected **D02–D06 policy, D10 MVP scope and D13 tooling** in ADR-010/011; selection does not certify implementation security.

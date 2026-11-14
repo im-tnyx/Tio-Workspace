@@ -89,6 +89,12 @@ Use the same quality bar for **every** Markdown document:
 
 Suggested hierarchy: **Overview → Decisions → Flows → Edge cases → Verification → References**. Important warnings use GitHub callouts sparingly (1–2 per document).
 
+## 06A · Proposed Phase 0 visual freeze for owner review
+
+The **candidate baseline** is the existing violet/mint tokens above, five main navigation areas (Home, Plans, History, Progress, Settings), a focused full-screen Workout, and contextual Exercise Library. These design choices are **recommended, not owner-approved**. The functional MVP screen list is already owner-selected; visual hierarchy, final product name/IDs, touch and type scaling, accessible contrast, actual error states and native screenshots remain to be reviewed.
+
+Use the [Phase 0 design and Phase 1 approval pack](docs/22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) for exact review choices, Restore/Skip versus future Sync automatic hydration copy, acceptance criteria and the owner sign-off template. Do not read this paragraph as sign-off, app code authorization or a delivered UI.
+
 ## 07 · Future design assets
 
 When implementation is approved: create real Figma/source assets, app icon, splash screen, state screenshots and a screenshot/asset provenance index. Do not use fake product screenshots in the current documentation-only README.

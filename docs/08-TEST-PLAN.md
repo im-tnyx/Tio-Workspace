@@ -76,6 +76,18 @@
 | SYNC-09 | P2 | Paid member explicitly turns on future Sync | Complete supported workout history/plans/exercises/sessions/sets and progress source data sync under user-bound RLS; can rehydrate new device |
 | SYNC-10 | P2 | Membership expires or is cancelled | Block unauthorized new uploads, retain local SQLite, and follow separately approved server export/retention/deletion policy |
 
+## Proposed visual/UX acceptance scenarios — execute after approved UI implementation
+
+| ID | Priority | Scenario | Expected result |
+|---|---|---|---|
+| UX-01 | P0 | Home/Plans/History/Progress/Settings and focused Active Workout in light/dark mode | Agreed navigation, clear primary actions, no feature/screen for switching accounts |
+| UX-02 | P0 | Edit sets/reps/weight one-handed with large accessibility text and screen reader | No clipped controls, understandable focus/labels and device-appropriate touch targets |
+| UX-03 | P0 | Previously initialized user opens and saves an active workout offline | “Saved on this device” reflects actual local persistence, no misleading “Synced” or blocked logging |
+| UX-04 | P0 | Logout, wrong-bound-account attempt and separately confirmed local erase | Exact identity/privacy warning states; no accidental erase/account switch, cancellation is safe |
+| UX-05 | P0 | Later optional Personal Backup restore / future authorized Supabase Sync UX | Restore / Skip only after user-selected archive validation; Sync hydration has no Backup Restore prompt; no automatic uploads from Auth |
+
+These are **acceptance criteria**, not performed tests, and the cloud-specific UX segment of UX-05 is a **later-phase validation**, not a Phase 1 feature requirement. Owner review of the visual baseline is still pending.
+
 ## Test environments
 Physical Android and iPhone devices, current supported OS versions, actual Expo development/release builds, unstable network, background and device-kill scenarios, low storage, attempted second account on a bound installation, deliberate erase/reset, reinstallation and cross-device restores.
 
