@@ -112,7 +112,12 @@ export function AuthCredentialsScreen({
         />
       </>}
     </View>
-    <View style={{ marginTop: 'auto', gap: spacing.md, paddingTop: spacing.sm }}>
+    <View style={{ marginTop: 'auto', gap: spacing.sm, paddingTop: spacing.sm }}>
+      {/* Keep the preview-only safety note above the CTA so it no longer
+          creates a large empty-looking gap between Continue and keyboard. */}
+      <Text style={[typography.caption, { color: colors.muted, textAlign: 'center' }]}>
+        {notice}
+      </Text>
       <Button size="onboarding"
         label={step === 'new-password' ? copy('resetPassword')
           : step === 'password' ? copy(signingUp ? 'signUp' : 'signIn') : copy('continue')}
@@ -120,9 +125,6 @@ export function AuthCredentialsScreen({
         disabledTone="soft"
         disabled={!canContinueAuthPreview(step, value)}
       />
-      <Text style={[typography.caption, { color: colors.muted, textAlign: 'center' }]}>
-        {notice}
-      </Text>
     </View>
   </View>;
 }
