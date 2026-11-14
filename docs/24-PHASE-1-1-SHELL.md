@@ -139,7 +139,7 @@ Verify static architecture and mock-only behavior first; ensure no SDK/storage/A
 
 ## Fixed in-place Sign in email → password expansion (owner refinement, 2026-11-15)
 
-- On **Sign in only**, the initial heading is **Enter your email** (not "Enter your email address"), with **no introductory description**. The existing soft `tom@example.com` borderless Email field sits under a heading area with a reserved two-line minimum height in both stages.
+- On **Sign in only**, the initial heading is **Enter your email** (not "Enter your email address"), with **no introductory description**. The existing soft `tom@example.com` borderless Email field sits close beneath a **single-line reserved heading** in both stages, with no wasted second-line space.
 - After a valid email and Continue, the heading changes **in place** to **Enter your password**. The same keyed, controlled Email `TextField` remains mounted in exactly the same field group at the same vertical position, with the entered email visible. A masked, auto-focused reusable Password `TextField` is **added below** it. The email input remains editable while focus transfers, preventing a forced keyboard close/reopen between stages. No route transition, new page animation, ScrollView, header movement, or extra description. `Forgot password` continues to appear top-right on the password stage and its existing mock recovery flow is unchanged.
 - `authPreviewLayout` theme tokens define the reserved Sign in title slots for regular/compact sizes; existing heading font and button-size variants remain. Sign up still follows Email → demo OTP → Password with its original copy. **No authentication, OTP verification or credential persistence**; preview warning remains above the CTA. Check the transition and keyboard focus in Expo Go before considering iPhone/Android UX verified.
 
@@ -147,3 +147,9 @@ Verify static architecture and mock-only behavior first; ensure no SDK/storage/A
 
 - The earlier switch placing the `UI preview only` notice **above** the Continue CTA made the button appear too close to the open keyboard. The notice is now back **below** the button, with `spacing.md` separating them. The notice remains visible and honest; its height provides the prior breathing room between the CTA and keyboard.
 - No change to `AuthPreviewPage` keyboard handling or bottom inset, fixed top header, 46pt onboarding CTA, 42pt app CTA, input focus, Sign in layout, design tokens, or mock auth functionality. Physical-device keyboard spacing and motion verification remains pending. This section supersedes the older note-above-CTA descriptions.
+
+## Compact Sign in heading-to-email spacing (owner refinement, 2026-11-15)
+
+- The earlier attempt to avoid Email → Password layout movement reserved a **two-line heading height** (92pt normal, 78pt compact), which created an obvious empty gap between **Enter your email** and the Email input. This is now a **single-line heading slot**, 46pt normal or 39pt compact, defined in the shared `authPreviewLayout` tokens.
+- On Sign in only, the heading uses `numberOfLines={1}` with `adjustsFontSizeToFit` so **Enter your email** and **Enter your password** fit the *same* slot even on narrower screens, preserving the email input's location as the password input appears underneath. The form's sign-in heading-to-field gap uses `spacing.lg` (16pt), not the generic 24pt; Sign up and recovery layout remains unchanged.
+- No change to keyboard padding, CTA positioning, disabled shades, mock preview notices, 46pt onboarding button minimum, 42pt app button minimum, or the no-real-auth limitation. Real device visual confirmation, particularly large accessibility text and narrow screens, remains necessary.
