@@ -86,7 +86,7 @@ export function AuthPreviewFlow({ mode, onExit }: {
     : step === 'password' ? copy(mode === 'sign-up' ? 'signUp' : 'signIn')
     : copy('continue');
   const footerNotice = step === 'email'
-    ? copy(mode === 'sign-up' ? 'emailPreviewNotice' : 'signInEmailPreviewNotice')
+    ? copy(mode === 'sign-up' ? 'emailPreviewNotice' : 'signInPreviewNotice')
     : step === 'reset-email' ? copy('resetEmailPreviewNotice')
     : step === 'otp' ? copy('otpPreviewNotice')
     : step === 'reset-otp' ? copy('resetOtpPreviewNotice')
@@ -102,6 +102,7 @@ export function AuthPreviewFlow({ mode, onExit }: {
     footerLabel={footerLabel}
     footerNotice={footerNotice}
     footerDisabled={!canContinueAuthPreview(step, currentValue)}
+    footerKeepAppearance={mode === 'sign-in' && step === 'password'}
     onFooterPress={onContinue}>
     <AuthCredentialsScreen
       mode={mode} step={step}

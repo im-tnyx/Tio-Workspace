@@ -160,6 +160,7 @@ test('both Sign in and Sign up routes use the same persistent auth parent', () =
   const flow = readFileSync('src/features/onboarding/screens/AuthPreviewFlow.tsx', 'utf8');
   const page = readFileSync('src/shared/ui/AuthPreviewPage.tsx', 'utf8');
   const middle = readFileSync('src/features/onboarding/screens/AuthCredentialsScreen.tsx', 'utf8');
+  const button = readFileSync('src/shared/ui/Button.tsx', 'utf8');
 
   assert.match(signIn, /<AuthPreviewFlow mode="sign-in"/);
   assert.match(signUp, /<AuthPreviewFlow mode="sign-up"/);
@@ -170,6 +171,14 @@ test('both Sign in and Sign up routes use the same persistent auth parent', () =
   assert.equal((page.match(/<Button size="onboarding"/g) || []).length, 1);
   assert.doesNotMatch(flow, /<Button(?:\s|>)/);
   assert.doesNotMatch(middle, /<Button(?:\s|>)/);
+  // After Email validates, the same CTA keeps its visible appearance on the
+  // empty Password step, even though interaction remains disabled until typed.
+  assert.match(flow, /footerKeepAppearance=\{mode === 'sign-in' && step === 'password'\}/);
+  assert.match(page, /disabledAppearance=\{footerKeepAppearance \? 'enabled' : 'muted'\}/);
+  assert.match(button, /const visuallyDisabled = disabled && disabledAppearance !== 'enabled';/);
+  assert.match(button, /disabled=\{disabled\} accessibilityState=\{\{ disabled \}\}/);
+  // Same preview notice at both Sign-in steps prevents CTA height reflow.
+  assert.match(flow, /mode === 'sign-up' \? 'emailPreviewNotice' : 'signInPreviewNotice'/);
 });
 
 test('auth-only disabled button and bare placeholder use soft shades', () => {

@@ -11,11 +11,12 @@ import { copy } from '@/shared/i18n/en';
 // Only the form below it resizes when the keyboard is visible. No ScrollView.
 export function AuthPreviewPage({
   onBack, children, headerActionLabel, onHeaderAction,
-  footerLabel, footerDisabled, footerNotice, onFooterPress,
+  footerLabel, footerDisabled, footerKeepAppearance = false, footerNotice, onFooterPress,
 }: {
   onBack: () => void; children: ReactNode;
   headerActionLabel?: string; onHeaderAction?: () => void;
-  footerLabel: string; footerDisabled: boolean; footerNotice?: string;
+  footerLabel: string; footerDisabled: boolean; footerKeepAppearance?: boolean;
+  footerNotice?: string;
   onFooterPress: () => void;
 }) {
   const insets = useSafeAreaInsets();
@@ -89,6 +90,7 @@ export function AuthPreviewPage({
           <Button size="onboarding"
             label={footerLabel} onPress={onFooterPress}
             disabledTone="soft" disabled={footerDisabled}
+            disabledAppearance={footerKeepAppearance ? 'enabled' : 'muted'}
           />
           {/* Preview copy is temporary. Once removed, the parent still retains
               the exact same side/bottom gutter around the CTA. */}
