@@ -154,6 +154,24 @@ test('post-Welcome auth uses persistent parent header and CTA, middle-only step 
   assert.match(welcome, /actionPlacement="bottom"/);
 });
 
+test('both Sign in and Sign up routes use the same persistent auth parent', () => {
+  const signIn = readFileSync('src/app/auth/sign-in.tsx', 'utf8');
+  const signUp = readFileSync('src/app/auth/sign-up.tsx', 'utf8');
+  const flow = readFileSync('src/features/onboarding/screens/AuthPreviewFlow.tsx', 'utf8');
+  const page = readFileSync('src/shared/ui/AuthPreviewPage.tsx', 'utf8');
+  const middle = readFileSync('src/features/onboarding/screens/AuthCredentialsScreen.tsx', 'utf8');
+
+  assert.match(signIn, /<AuthPreviewFlow mode="sign-in"/);
+  assert.match(signUp, /<AuthPreviewFlow mode="sign-up"/);
+  assert.match(flow, /return <AuthPreviewPage/);
+  assert.match(flow, /<AuthCredentialsScreen/);
+  // The parent renders ONE persistent CTA. Step labels and disabled state
+  // update through props; no sign-in-specific footer is ever mounted.
+  assert.equal((page.match(/<Button size="onboarding"/g) || []).length, 1);
+  assert.doesNotMatch(flow, /<Button(?:\s|>)/);
+  assert.doesNotMatch(middle, /<Button(?:\s|>)/);
+});
+
 test('auth-only disabled button and bare placeholder use soft shades', () => {
   assert.deepEqual(authPreviewMuted.dark, {
     disabledBackground: '#282828', disabledText: '#858585', placeholder: '#707070',
