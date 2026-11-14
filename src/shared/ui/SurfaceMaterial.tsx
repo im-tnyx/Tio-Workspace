@@ -12,7 +12,7 @@ export function SurfaceMaterial({ children, style, testID }: Props) {
       borderColor: colors.border }, style,
   ]}>
     {glass ? <BlurView intensity={40} tint={mode === 'dark' ? 'dark' : 'light'}
-      style={StyleSheet.absoluteFillObject} /> : null}
+      style={StyleSheet.absoluteFill} /> : null}
     {children}
   </View>;
 }

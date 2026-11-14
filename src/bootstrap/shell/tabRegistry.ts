@@ -15,3 +15,11 @@ export function validateTabs(tabs: readonly TabDefinition[]): void {
     keys.add(tab.key); routes.add(tab.routeName);
   }
 }
+
+/** App-shell route targets; new approved tabs add a route here, not in shared UI. */
+export const ROOT_TAB_HREFS = {
+  home: '/(tabs)/home',
+  workout: '/(tabs)/workout',
+  library: '/(tabs)/library',
+  you: '/(tabs)/you',
+} as const satisfies Record<TabDefinition['routeName'], string>;
