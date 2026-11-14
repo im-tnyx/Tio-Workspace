@@ -20,7 +20,7 @@
 | Session | Persistent online login + offline account-policy edge cases approved | ⬜ Pending |
 | Data isolation | Account-specific SQLite/key lifecycle and logout/erase semantics approved | ⬜ Pending |
 | Native build | SQLCipher build/validation strategy accepted (Expo Go limitations understood) | ⬜ Pending |
-| Migrations | D13 Drizzle proposal, compatible versions/bundling, account-specific journal and fail-closed recovery approved | ⬜ Pending |
+| Migrations | **ADR-010 tooling selected**; compatible native versions/bundling, account-specific journal, safe migration and recovery still require validation/sign-off | ⬜ Technical gate pending |
 | Privacy | Workouts stay local; cloud upload disabled by default | ✅ Requirement recorded, **not tested** |
 | Secrets | AI provider secrets server-side; publishable keys understood | ✅ Requirement recorded, **not tested** |
 | Backup | Later-phase recovery principles agreed, no false restore promises | ⬜ Pending |
@@ -33,7 +33,7 @@
 |---|---|---|
 | 1.1 | Expo TypeScript app shell, routing/theme, basic CI | Physical device starts shell, test command documented |
 | 1.2 | Auth sign-up/sign-in/forgot password; secure persistence adapter | Correct persistent login and offline session flows |
-| 1.3 | Encrypted account-local SQLite + Drizzle migration manager **if D13 approved** | `PRAGMA cipher_version` verified in native build; offline migration, failure-recovery and account-switch tests |
+| 1.3 | Encrypted account-local SQLite + **owner-selected Drizzle migration tooling** (after Phase 1 authorization) | `PRAGMA cipher_version` verified in native build; offline migration, failure-recovery and account-switch tests |
 | 1.4 | Exercise library and plan editor | Local creation/edit/restart works without network |
 | 1.5 | Workout sets/session logging | Atomic autosave and crash/restart recovery |
 | 1.6 | History/progress, logout, local erase UX | Correct account isolation, privacy and offline tests |
@@ -62,7 +62,7 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 | Security exceptions | Explicitly listed and accepted, or “none” |
 | Review evidence | Linked PR or issue comment recording approval |
 
-**Current approval:** None recorded in this document.
+**Current Phase 1 authorization:** None recorded in this document. **Separate Phase 0 technology decision:** ADR-010 / D13 approved on 2026-11-14 for stack selection only, not for build, native key policy, migration execution or deployment.
 
 ## 05 · Go/no-go
 

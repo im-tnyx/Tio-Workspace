@@ -10,7 +10,7 @@
 </div>
 
 > [!IMPORTANT]
-> **No new decisions in this document are owner-approved.** Recommendations are starting points for review. The original product intentions in [09-DECISIONS.md](09-DECISIONS.md) remain the constraints. This document neither authorizes Phase 1 nor changes the default local-only privacy policy.
+> **D13 tooling selection is owner-approved (2026-11-14) via ADR-010 only.** D01–D12 and native/security implementation specifics remain pending proposals. The original product intentions in [09-DECISIONS.md](09-DECISIONS.md) remain the constraints. This document neither authorizes Phase 1 nor changes the default local-only privacy policy.
 
 ## ✅ Already specified by the owner
 
@@ -26,7 +26,7 @@
 
 ## 🚦Decision queue
 
-| Ref | Decision needed | Working recommendation — **not approved** | Risk if undecided | Owner status |
+| Ref | Decision needed | Working recommendation / selection | Risk if undecided | Owner status |
 |---|---|---|---|---|
 | D01 | Product name/identity | Use **Tio** provisionally; finalize identifiers before builds | Medium | ⬜ Pending |
 | D02 | Sign-in options | Email/password MVP; evaluate Google/Apple provider UX later | Medium | ⬜ Pending |
@@ -40,7 +40,7 @@
 | D10 | Workout catalog & licensing | Start with a small curated/manual exercise catalog | Low | ⬜ Pending |
 | D11 | Analytics and retention | No workout payload analytics by default; separate crash logs from workout content | Medium | ⬜ Pending |
 | D12 | Future sync deletion semantics | Separate disabling sync from deleting cloud copies; revisit in Phase 4 | **High later** | ⬜ Pending |
-| D13 | Local ORM and migration tooling | Propose Drizzle ORM + offline-bundled SQLite migrations after SQLCipher unlock, with fail-closed encrypted recovery | **High** | ⬜ Pending |
+| D13 | Local ORM and migration tooling | **Selected:** Expo SQLite + Drizzle ORM/Drizzle Kit + native SQLCipher; offline-bundled migrations. Unlock, key and recovery implementation require validation | **High** | ✅ Approved — stack only (ADR-010, 2026-11-14) |
 
 ## 🧱 Architecture trade-offs at a glance
 
@@ -84,7 +84,7 @@ flowchart TD
 
 ## 📋 Required owner sign-off
 
-- [ ] Approve/adjust the D01–D13 recommendations above; record reasons and privacy consequences (D13 does not waive D04–D06).
+- [ ] Approve/adjust the **D01–D12** recommendations above; record reasons and privacy consequences. **D13 tooling selected** does not waive D04–D06, native verification or separate Phase 1 authorization.
 - [ ] Confirm account switching, logout, account deletion and local erase semantics.
 - [ ] Accept or reject offline access after undetectable server revocation.
 - [ ] Approve recovery UX for encrypted backup **before** promising restore.

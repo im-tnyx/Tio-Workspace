@@ -73,7 +73,7 @@ Feature repository **interfaces live in `features/<name>/domain/`** and feature-
 - `features/plans/domain/PlanRepository` handles plans and assigned workout days; its adapter remains feature-owned.
 - A feature-level session coordinator uses the technical `platform/auth/` adapter; the Expo Router gate chooses Login or Dashboard. Cached identity remains subject to pending offline-session approval.
 - The proposed `platform/database/LocalDatabaseManager` opens/closes/rebinds the matching account's SQLite store and owns migrations; encrypted partitions and key lifecycle require separate owner approval and native testing.
-- **Candidate, not approved:** `platform/database/` owns the native Expo SQLite + SQLCipher adapter and bundled Drizzle migration runner. Feature `data/` implementations may query with Drizzle behind domain repository interfaces; routes, screens, hooks and domain models do not import the ORM. Follow the [local migration proposal](03-LOCAL-DATA-MODEL.md) for unlock order and failure handling.
+- **ADR-010 owner-selected database tooling (not implemented):** `platform/database/` is the planned home of the native Expo SQLite + SQLCipher adapter and bundled Drizzle migration runner. Feature `data/` implementations may query through Drizzle behind domain repository interfaces; routes, screens, hooks and domain models must not import the ORM. The [local migration contract](03-LOCAL-DATA-MODEL.md) still requires native/security validation and separate Phase 1 authorization.
 - `BackupPort` exports/imports a **versioned, encrypted** snapshot with provider-specific adapters.
 - `SyncPort` is a future optional online synchronization boundary; its absence must not affect local operations.
 

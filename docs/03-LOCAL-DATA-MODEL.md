@@ -14,10 +14,10 @@
 
 **Not implemented:** This is a schema specification, not a migration script. Actual SQLite DDL, constraints and indexes will be reviewed before development.
 
-## Proposed Drizzle ORM and local migration contract
+## Selected Drizzle ORM tooling and proposed local migration contract
 
 > [!IMPORTANT]
-> **Phase 0 proposal — owner decision pending.** Drizzle is a query/schema toolkit, **not** a database or remote storage service. No application code, packages, native builds, migrations or Supabase infrastructure are authorized by this document.
+> **ADR-010 selected the technology stack on 2026-11-14:** Expo SQLite + Drizzle ORM/Drizzle Kit + native SQLCipher. Drizzle is a query/schema toolkit, **not** a database or remote storage service. The lifecycle, key custody and recovery details below still require security validation; no app code, packages, native builds, migrations or Supabase infrastructure are authorized by this selection.
 
 | Responsibility | Proposed owner |
 |---|---|
@@ -35,7 +35,7 @@
 
 **Minimal MVP:** create only the *approved* tables needed for a meaningful workout-log slice. The complete logical schema below is a proposal, not a commitment to migrate every table in release one. Keep necessary exercise/session/set relations and user ownership; do not collapse joins solely to minimize table count. Agree weight precision, foreign keys and first migration subset before coding.
 
-**Phase 1 feasibility gate:** pin compatible Expo SDK / `expo-sqlite` / `drizzle-orm` / `drizzle-kit` versions; validate SQL file bundling, migration journal and any required Metro/Babel support. Exercise the flow on real Android/iPhone native builds. Expo Go is insufficient to validate SQLCipher. See [security order](04-AUTH-AND-SECURITY.md), [migration acceptance tests](08-TEST-PLAN.md) and [readiness gate](21-PHASE-1-READINESS.md).
+**Phase 1 feasibility gate (still pending despite tooling approval):** pin compatible Expo SDK / `expo-sqlite` / `drizzle-orm` / `drizzle-kit` versions; validate SQL file bundling, migration journal and any required Metro/Babel support. Exercise the flow on real Android/iPhone native builds. Expo Go is insufficient to validate SQLCipher. See [security order](04-AUTH-AND-SECURITY.md), [migration acceptance tests](08-TEST-PLAN.md) and [readiness gate](21-PHASE-1-READINESS.md).
 
 Official references (recheck versions at implementation): [Drizzle + Expo SQLite](https://orm.drizzle.team/docs/sqlite/connect-expo-sqlite), [migration fundamentals](https://orm.drizzle.team/docs/migrations), [Expo SQLite SQLCipher](https://docs.expo.dev/versions/latest/sdk/sqlite/).
 
