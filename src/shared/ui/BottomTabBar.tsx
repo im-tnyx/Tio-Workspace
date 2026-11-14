@@ -7,9 +7,9 @@ import { useAppearance } from '@/shared/theme/AppearanceProvider';
 import { spacing, typography } from '@/shared/theme/tokens';
 import { SurfaceMaterial } from './SurfaceMaterial';
 
-export function BottomTabBar({ tabs, selectedRoute, onSelect }: {
-  tabs: readonly TabViewItem[]; selectedRoute: string;
-  onSelect: (tab: TabViewItem) => void;
+export function BottomTabBar<TTab extends TabViewItem>({ tabs, selectedRoute, onSelect }: {
+  tabs: readonly TTab[]; selectedRoute: string;
+  onSelect: (tab: TTab) => void;
 }) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
