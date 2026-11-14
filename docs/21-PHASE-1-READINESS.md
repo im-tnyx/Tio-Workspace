@@ -12,7 +12,7 @@
 > [!IMPORTANT]
 > **This is a readiness checklist, not an implementation task.** Completing/merging this document does not authorize writing application code, generating secrets or deploying Supabase.
 
-**Owner-facing approval draft:** use the [Phase 0 design and Phase 1 sign-off pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) for the proposed visual baseline, exact pending owner decisions and narrower **Phase 1.1 shell-only** scope. No owner has approved that scope by merely requesting this document; the matrix below remains pending where marked.
+**Owner-facing approval draft:** use the [Phase 0 design and Phase 1 sign-off pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) for the owner-selected four-tab, Glass/Solid × Light/Dark shared shell (ADR-015), exact remaining decisions and narrower **Phase 1.1 shell-only** scope. No owner has approved that scope by merely requesting this document; the matrix below remains pending where marked.
 
 **Gate distinction:** approval to *start a bounded Phase 1.1 shell* requires accepted design/implementation limits and written owner authorization. Runtime SQLCipher, Drizzle and OS-backup tests are **later native implementation/release exit gates**, not tests falsely claimed before any native build exists. They must pass before enabling protected local workout storage or releasing the MVP.
 
@@ -61,8 +61,9 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 
 ### Review-ready acceptance for the proposed design baseline (not yet executed)
 
-- [ ] **UX-01–05** documented in [test plan](08-TEST-PLAN.md), with iOS/Android large-text, one-handed entry, offline status and destructive confirmation evidence after implementation.
-- [ ] Owner explicitly selects or changes the candidate five-area navigation and existing violet/mint tokens (see [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md)).
+- [ ] Phase 1 **P0 UX-01–05 and UX-08** documented in [test plan](08-TEST-PLAN.md), including four-tab root-only dock, shared TopBar/controls, four theme combinations and iOS/Android accessibility evidence after implementation. **UX-06 (P1 Backup/Phase 3)** and **UX-07 (P2 Sync/Phase 4)** are not Phase 1 release blockers.
+- [x] Owner selected four root tabs, shared TopBar/reusable controls and independent Glass/Solid × Light/Dark themes (ADR-015; design policy only).
+- [ ] Confirm or change existing violet/mint tokens, typography, initial theme defaults and final visual QA (see [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md)).
 - [ ] Owner documents application identifiers and whether logo/app icon remain provisional; no fake design-signoff claims.
 - [ ] Scope exclusions for the initial **Phase 1.1 shell** are explicit: no auth connection, SQLCipher workout store, AI, backups, paid Sync, billing or release.
 - [ ] Later native security and portability gates remain pending until real Android/iOS builds produce evidence.

@@ -12,28 +12,39 @@
 > [!NOTE]
 > The **functional MVP screen scope** (Auth, Home, Exercises, Plans, Workouts, History, Progress, Settings) is owner-selected (ADR-011), with **no account switching**. This is a text-first UX specification. No Figma file, final icon, screenshot or running prototype exists. Visual tokens in [DESIGN.md](../DESIGN.md) are proposals, not implemented components.
 
-## 01 · Proposed navigation
+## 01 · Owner-selected root navigation (ADR-015)
 
 ```mermaid
 flowchart TD
-  S["App start / session gate"] -->|First login or signed out| A["Welcome / Sign in / Sign up"]
-  S -->|Eligible stored account| H["Home"]
-  A -->|Same bound user / first verified login| H
-  A -->|Different UUID while installation bound| M["Account mismatch: denied"]
-  M --> A
-  H --> W["Active Workout"]
-  H --> P["Workout Plans"]
-  H --> L["Exercise Library"]
-  H --> T["History"]
-  H --> R["Progress"]
-  H --> E["Settings"]
-  E --> B["Personal Backup (later)"]
-  E --> X["Cloud Sync (future, disabled)"]
-  P --> W
-  W --> T
+  S["Session gate"] -->|Previously verified account| Dock["Bottom dock - four root tabs"]
+  S -->|First login / signed out| Auth["Welcome / Sign in / Sign up"]
+  Auth -->|Same bound account| Dock
+  Auth -->|Different UUID| Denied["Account mismatch - blocked"]
+  Dock --> Home["Home - root"]
+  Dock --> Workout["Workout - root"]
+  Dock --> Library["Library - root"]
+  Dock --> You["You - root"]
+  Home --> Active["Active Workout - nested, dock hidden"]
+  Workout --> Plans["Plans / Plan Editor - nested"]
+  Workout --> Active
+  Workout --> History["History - nested"]
+  Library --> Exercise["Exercise detail / editor - nested"]
+  You --> Progress["Progress - nested"]
+  You --> Settings["Settings - nested"]
+  Settings --> Appear["Appearance: Glass/Solid, Light/Dark"]
+  Settings --> Backup["Personal Backup - later"]
+  Settings --> Sync["Paid Sync - future"]
 ```
 
-**Navigation recommendation:** Home, Plans, History, Progress and Settings as the main areas. Exercise library opens from planning/workout editing; workout session is a focused full-screen flow.
+**Exact four tab buttons:** **Home, Workout, Library, You**. The dock is a **bottom tab bar, not a modal bottom sheet**. Show it **only** on those four root screens. Hide for Active Workout, Plan Editor, History, Progress, exercise details, Settings, Backup, all Auth routes and every other nested/full-screen route. The same shared TopBar handles root large-title/action and nested compact-back variants. Workout root links plans/history and active sessions; Library root owns exercise lookup; You root links Progress and Settings; Home is a start/resume dashboard. These routes preserve every owner-selected ADR-011 functional MVP screen.
+
+### Shared shell and theme choices (owner-selected)
+
+- Settings → Appearance: **Material Glass/Solid** and **Appearance Light/Dark** are independent; all four combinations required. Defaults still require a final choice. No cloud upload or account change.
+- One **TopBar** uses the reference's rounded, translucent grouped-header feel without copying a third-party logo or introducing unapproved search/notification functions.
+- One **BottomTabBar** draws a safe-area-aware, four-item glass/solid dock only on roots. All shared text inputs, buttons, cards, sheets, switches/selects and typography use central tokens in both light and dark.
+- Reusable non-business primitives are owned by future `src/shared/` UI/theme; `src/app/` owns layout/navigation; features compose shared primitives, per [module architecture](10-REPOSITORY-STRUCTURE.md). These are **future paths only**.
+- Glass uses readable tinted translucent/blurred surfaces with borders; Solid uses opaque equivalents. Validate iOS/Android text contrast, keyboard/safe areas, 44pt/48dp touch targets, dynamic type and reduce-transparency/high-contrast fallback after implementation. If blur unavailable, render Solid fallback without changing saved preference.
 
 ## 02 · Screen contract
 
@@ -42,12 +53,14 @@ flowchart TD
 | Session gate | Resume existing authenticated user | Yes if account is initialized and locally eligible | Need login / reauth / unavailable key |
 | Auth | First signup / same-bound-user Sign in | No for first-time login | Network error, invalid credentials, different-account denied, email verification |
 | Home | Start / Resume Workout | Yes | “Create your first plan” / “Start a free workout” |
-| Exercise Library | Add exercise | Yes, local list | No results; add custom exercise |
+| Workout (root) | Start/resume, plans and history links | Yes | Empty plans, in-progress resume |
+| Exercise Library (Library root) | Add exercise | Yes, local list | No results; add custom exercise |
+| You (root) | Account, Progress and Settings links | Mostly | Bound identity / offline state |
 | Plan Editor | Save workout plan | Yes | Missing required exercise fields |
 | Active Workout | Log/complete sets | Yes | Autosave/transaction failure and resume |
 | History | Open past session | Yes | No logged sessions |
 | Progress | View PRs / volume | Yes | Insufficient data, unit selection |
-| Settings | View the sole bound account, logout and separate erase/reset | Mostly | Explicit offline labels, no add-account/switch UI, irreversible reset warning |
+| Settings (nested) | Glass/Solid + Light/Dark, bound account, logout and separate erase/reset | Mostly | Independent persisted theme choices, no add/switch account UI, irreversible reset warning |
 | Personal Backup (later) | Optional Back up now / Restore / settings | Needs network for remote upload/download; manual encrypted file workflow depends on platform | OFF by default; last success/progress/failure/quota/recovery states |
 | AI Draft (later) | Generate then approve | No | AI unavailable; preserve local session |
 | Supabase Sync (future paid membership) | Full-workout-data premium alternative to Personal Backup | Not part of MVP | **Disabled/unavailable now**; when built, Settings offers one choice: Local Only / Personal Backup / Supabase Sync, never both ON |
@@ -106,7 +119,7 @@ The owner-provided iOS/Android screenshots inform **information hierarchy only**
 - Each screen covers `loading`, `empty`, `offline`, `error`, and account-safety states.
 - Never expose cached workout data when a different account attempts login; **no identity-switching flow exists**.
 
-**Phase 0 proposed design freeze (not approved):** five main areas (Home / Plans / History / Progress / Settings), focused full-screen Workout, contextual Exercise Library, and violet/mint light/dark tokens are the recommended review baseline. See the [design and approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) for explicit owner choices and tests `UX-01–05`; final visual hierarchy, accessibility proof and platform screenshot sign-off remain pending.
+**Owner-selected shell (ADR-015):** four root tabs Home / Workout / Library / You, bottom dock only on roots; iOS-inspired Glass/Solid selectable independently from Light/Dark; shared TopBar and reusable text fields/buttons/surfaces. Existing MVP features remain nested. See the [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) and P0 UX-01–05/08 versus later P1 UX-06, P2 UX-07; final palette/QA/screenshot sign-off remains pending.
 
 ## 07 · Design acceptance checklist
 
@@ -114,7 +127,8 @@ The owner-provided iOS/Android screenshots inform **information hierarchy only**
 - [x] Functional MVP screens and single-account auth/session-gate transitions selected (ADR-011; [session specification](18-OFFLINE-SESSION-STATE-MACHINE.md)); visual design/real-device tests pending.
 - [ ] Workout set editor tested for one-handed operation and large text.
 - [ ] Exact logout/erase/recovery wording and accessibility behavior reviewed in a design acceptance pass; policy selected.
-- [ ] Android and iOS navigation behaviours documented.
+- [x] Intended iOS/Android root-only four-tab dock, nested hide and shared TopBar variants recorded (ADR-015); not tested in native builds.
+- [ ] iOS/Android Glass/Solid × Light/Dark, contrast and fallback validated on actual devices.
 - [ ] All cloud states explicitly distinguish default local-only from later opt-in features.
 
 ---

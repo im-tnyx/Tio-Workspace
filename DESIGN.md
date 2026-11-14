@@ -11,7 +11,7 @@
 </div>
 
 > [!NOTE]
-> This is a **visual specification**, not a delivered UI kit or a promise that any screens currently exist. Preview designs, tokens and screenshots require explicit review during implementation.
+> This is a **visual specification**, not a delivered UI kit or a promise that any screens currently exist. **Owner-selected (ADR-015, 2026-11-14):** iOS-inspired Glass/Solid material, independent Light/Dark appearance, shared TopBar/reusable controls, and exactly four bottom tab roots (Home/Workout/Library/You). Remaining colors, icon/logo, initial theme defaults and native render/accessibility remain proposed or unverified.
 
 ## 01 · Product personality
 
@@ -40,6 +40,18 @@
 
 Tokens must be checked for accessible text contrast in real light/dark UI; these are proposals pending visual QA. No hard-coded color values inside feature screens once a token system exists.
 
+## 02A · Owner-selected iOS-inspired shared shell (ADR-015)
+
+The uploaded iOS app screenshot is **visual reference only**, showing a translucent rounded top header and grouped action treatment. Do not copy HEVY branding, image, icons or unapproved features. iOS-inspired styling should be supported across **both** iOS and Android when technically feasible.
+
+- **Settings → Appearance has two independent choices:** **Material = Glass / Solid** and **Appearance = Light / Dark**. Four combinations are required: Glass+Light, Glass+Dark, Solid+Light, Solid+Dark. Exact default combination and optional OS-following preference remain undecided.
+- **Glass:** background-aware, translucent/tinted surfaces with restrained backdrop blur, fine borders and rounded corners for shared navigation and suitable surfaces. **Solid:** matching geometry and semantics with opaque background tokens; no blur. Apply to every shared component rather than screen-by-screen copies.
+- **Shared `TopBar`:** a single screen-configured title/back/optional-action component, with large-title/root and compact-back/nested variants, safe-area padding and theme material. The OS status bar remains native. Do not invent search/notification functionality because those icons appear in a reference image.
+- **Shared `BottomTabBar`:** exactly **Home, Workout, Library, You**, visible **only on those four root-tab screens**. Hide on Active Workout, Plan Editor, exercise detail, History, Progress, Settings, personal backup, Auth and all other nested/modal/full-screen routes.
+- **Reusable controls:** `Button`, `TextField`, `SearchField`, `Card`, `SheetSurface`, `Dialog`, `Switch`, `Select`, `StatusMessage`, `TopBar`, `BottomTabBar` and typography/icons share one theme token source. When code is approved, `src/shared/` owns non-business primitives and `src/app/` owns route layouts; feature screens only compose them, per [architecture](docs/10-REPOSITORY-STRUCTURE.md).
+- **Accessibility & Android fallback:** maintain readable contrast over dynamic content, large text, predictable keyboard/safe areas, 44pt/48dp minimum touch targets, reduced-motion and reduce-transparency controls. If blur is unsupported or unreadable, render a legible tinted **Solid fallback** without changing the user's saved preference. Native implementation/QA is still pending.
+- **Privacy:** appearance preferences are local UI state; toggling them cannot enable workout uploads, backup, sync, or change bound account identity.
+
 ## 03 · Layout and type
 
 - **Spacing rhythm:** 4 / 8 / 12 / 16 / 24 / 32 px, subject to responsive scaling.
@@ -49,7 +61,7 @@ Tokens must be checked for accessible text contrast in real light/dark UI; these
 - **Icons:** consistent 24px outline icon family; always pair unfamiliar icons with labels.
 - **Accessibility:** dynamic font sizes, voice labels, focus order, reduced-motion support, dark mode, and color-blind-friendly status cues.
 
-Review proposed [MVP screens & interaction flows](docs/20-MVP-UX-FLOWS.md) before locking navigation and states. They remain unapproved until owner review.
+Review proposed [MVP screens & interaction flows](docs/20-MVP-UX-FLOWS.md) before locking navigation and states. The owner-selected shell policy is recorded; exact mockups, color tokens and device testing still need review.
 
 ## 04 · Screens to design
 
@@ -62,7 +74,7 @@ Review proposed [MVP screens & interaction flows](docs/20-MVP-UX-FLOWS.md) befor
 | Workout Plan | Edit schedule | Reorder with explicit save state |
 | History | Inspect previous workouts | Fast filtering and stable historical values |
 | Progress | View local insights | Accessible charts, explicit units |
-| Settings | Manage account and storage | Show Local Only as default |
+| You / Settings | Profile, appearance, account and storage | You is a root tab; Settings nested; Glass/Solid and Light/Dark independent; Local Only remains default for workout storage |
 | Backup (later) | Back up / Restore | Last success, recovery, permission states |
 | AI Draft (later) | Review generated plan | Human approval before saving |
 
@@ -70,7 +82,7 @@ Review proposed [MVP screens & interaction flows](docs/20-MVP-UX-FLOWS.md) befor
 
 ## 05 · Component vocabulary (proposal)
 
-`Button` (primary/secondary/destructive), `WorkoutCard`, `ExerciseRow`, `SetEditor`, `NumberInput`, `UnitPicker`, `StatusMessage`, `EmptyState`, `ConfirmationSheet`, `BackupStatus`, `SyncConsent` and `ProgressChart`.
+**Shared primitives:** `TopBar`, `BottomTabBar`, `ThemeProvider`, `Button`, `TextField`, `SearchField`, `Switch`, `Select`, `Card`, `SheetSurface`, `Dialog`/`ConfirmationSheet`, `StatusMessage`, `EmptyState`, typography/icons. **Composed feature components:** `WorkoutCard`, `ExerciseRow`, `SetEditor`, `NumberInput`, `UnitPicker`, `BackupStatus`, `SyncConsent`, `ProgressChart` (cloud components only in later phases).
 
 Design tokens and reusable components should be implemented independently of data fetching. No screens should directly read Supabase workout tables in local-only mode.
 
@@ -91,7 +103,7 @@ Suggested hierarchy: **Overview → Decisions → Flows → Edge cases → Verif
 
 ## 06A · Proposed Phase 0 visual freeze for owner review
 
-The **candidate baseline** is the existing violet/mint tokens above, five main navigation areas (Home, Plans, History, Progress, Settings), a focused full-screen Workout, and contextual Exercise Library. These design choices are **recommended, not owner-approved**. The functional MVP screen list is already owner-selected; visual hierarchy, final product name/IDs, touch and type scaling, accessible contrast, actual error states and native screenshots remain to be reviewed.
+**Owner-selected (ADR-015):** exactly four bottom-root screens **Home, Workout, Library, You**, and root-only bottom bar; all detailed screens hide the dock. Shared iOS-style TopBar/controls and independent Glass/Solid × Light/Dark preferences. **Not yet finalized:** exact violet/mint colors, typography, initial defaults, final name/IDs, detailed screen hierarchy, contrast, native blur fallback and real device screenshots.
 
 Use the [Phase 0 design and Phase 1 approval pack](docs/22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) for exact review choices, Restore/Skip versus future Sync automatic hydration copy, acceptance criteria and the owner sign-off template. Do not read this paragraph as sign-off, app code authorization or a delivered UI.
 

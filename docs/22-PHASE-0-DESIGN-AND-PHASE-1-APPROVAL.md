@@ -17,11 +17,11 @@
 | Account/privacy | Supabase email/password, single locally bound UUID, offline local workouts; no account switching | Preserve unchanged |
 | Storage | Local encrypted SQLite default; Personal Backup or future paid Sync is separately chosen, never both active | Preserve unchanged |
 | Product name | Tio is used provisionally | **Confirm “Tio” or specify final name**, app display name, Android application ID and iOS bundle ID before native release configuration |
-| Visual identity | Violet/mint light/dark tokens in `DESIGN.md` are proposals | Approve as design baseline **or request exact changes**; logo and app icon remain unapproved |
+| UI shell / visual identity | **Owner-selected ADR-015:** four root tabs Home/Workout/Library/You, shared TopBar/controls, independent Glass/Solid and Light/Dark settings | Violet/mint colors, typography, initial defaults, logo/icon and native visual QA remain pending |
 | Local lock | PIN/biometrics undecided | **Defer** to a separate consent/recovery decision; do not imply an always-on unlock prompt |
 | Phase 1 | No implementation authorized | Prefer **Phase 1.1-only written approval**, after design and tooling/startup plan sign-off |
 
-**Owner decision fields — all pending:** name/identifiers; color/type/navigation acceptance; app-shell platform/tooling acceptance; initial acceptance thresholds; exact Phase 1 slice and exclusions; security exceptions, if any.
+**Still-pending owner decisions:** name/identifiers, exact palette/type/default appearance, detailed visual QA, app-shell platform/tooling, acceptance thresholds, scoped Phase 1 authorization/exclusions and security exceptions. **ADR-015 shell/navigation/theme choices are already owner-selected.**
 
 ## 2. Proposed MVP visual baseline (approval pending)
 
@@ -30,23 +30,24 @@
 - Product personality: **minimal, focused, strong, calm and trustworthy**. Optimize for legibility while resting between sets, not for gamification or health claims.
 - Reuse `DESIGN.md` tokens as the **candidate**, not a new competing palette: violet `brand.primary` (`#6658E8` light / `#9389FF` dark), mint `brand.mint` (`#13B89A` / `#4DE0BC`), neutral surfaces and explicit danger colors.
 - System fonts initially; proposed spacing steps **4/8/12/16/24/32**, 16px card radii, restrained elevation and a consistent 24px outline-icon style.
-- Light and dark theme must both be reviewed. Specific tokens, contrast, brand assets and layout screenshots are **not approved/validated** merely by this proposal.
+- **ADR-015 selected:** Glass/Solid material and Light/Dark appearance are independent Settings controls, creating four combinations. Shared TopBar, tab dock, fields, buttons and sheets update consistently. Exact defaults, accessible contrast, blur fallback, brand assets and native screenshots are **not validated or approved** by this proposal.
 - Accessible controls: at least **44 × 44 pt iOS / 48 × 48 dp Android** targets as design goals, dynamic text scaling, screen-reader labels, clear focus order, reduced-motion support, and no color-only status.
 
-### 2.2 Navigation and screen hierarchy
+### 2.2 Owner-selected four-root navigation and screen hierarchy (ADR-015)
 
-| Surface | Proposed primary content/action | Safeguards and validation |
+| Surface | Owner-selected route / primary action | Safety and visual contract |
 |---|---|---|
-| **Home** (main tab) | Today's plan, resume in-progress session, **Start Workout** as dominant CTA, recent log summary | Blank state with “Start a free workout”; offline never disables local logging |
-| **Plans** (main tab) | Plan list; create/edit plan, schedule and exercise order | Save state and validation; Exercise Library available from planning |
-| **History** (main tab) | Completed sessions, dates, searchable/filterable local records | Stable units; empty-state CTA; deleted data not shown as cached |
-| **Progress** (main tab) | Personal bests, trends and local calculations | Readable charts/tables; “not enough data” explanation; no health diagnosis |
-| **Settings** (main tab) | Bound account, units, Local Only storage, logout, separate confirmed local erase | No add/switch account UI; mode and privacy descriptions are explicit |
-| **Active Workout** (focused full-screen flow) | Session header; large set/reps/weight inputs; Add/Complete Set; Finish | Thumb-friendly editing, autosave state “Saved on this device,” crash resume; no fake “Synced” status |
-| **Exercise Library** (from Plans/Workout) | Local search, curated/manual custom exercise entry | No licensing-dependent catalog guarantee; empty results allow Add |
-| **Auth/session gate** (outside tabs) | Welcome, Sign in, Sign up, forgot password, same-bound-account re-login | First login online; persisted session on normal app reopen; block different UUID before DB unlock |
+| **Home** — root tab 1 | Dashboard, today's plan, Start/Resume Workout | Dock visible only here and three other roots; offline local action enabled |
+| **Workout** — root tab 2 | Start/resume, Plan list/editor and History links | Only root has dock; Plan Editor, Active Workout and History hide it |
+| **Library** — root tab 3 | Search/add curated or custom exercises | Root has dock; exercise detail/editor nested without dock |
+| **You** — root tab 4 | Bound account overview, Progress and Settings | Root has dock; Progress/Settings nested without dock; no switch-account UI |
+| **Active Workout** — nested full screen | Thumb-friendly sets/reps/weight, Finish, autosave | Dock hidden; shared TopBar compact/back variant |
+| **Plans / History / Progress / Settings** — nested | All existing ADR-011 MVP functionality retained | Dock hidden; shared themed input/button/sheet components |
+| **Auth/session gate** — outside tabs | Sign in, sign up, same-bound re-login | Dock hidden; online first login, reject second UUID |
 
-Navigation choice is **proposed**: five main areas (Home/Plans/History/Progress/Settings), with Workout full-screen and Exercise Library contextual. Owner must review real wireframes/flows before calling visual design final.
+**Exactly four root dock buttons:** Home, Workout, Library, You; no other bottom-tab destinations. Nested/full-screen/Auth routes never render bottom navigation. A single shared TopBar changes title, optional action and back variant per screen; the OS status bar remains native. The user-supplied iOS glass screenshot is inspiration for a translucent pill-style header and dock only, not permission to use its branding/assets or add unapproved features.
+
+**Reusable theme/UI contract:** Settings → Appearance provides **Glass vs Solid** and **Light vs Dark** as independent preferences (Glass+Light, Glass+Dark, Solid+Light, Solid+Dark). Save locally; never enable backup/sync. The TopBar, BottomTabBar, TextField, Button, Card, SheetSurface, Switch, Select, Dialog and typographic tokens come from shared primitives, not copies per feature. If blur is unreadable, unsupported or reduced transparency requested, provide a readable solid fallback without altering the saved choice. **Actual native blur, performance and accessibility remain untested.** Final default theme, exact palette and visual polish are still pending.
 
 ### 2.3 Required UI states and copy
 
@@ -70,7 +71,7 @@ A Personal Backup restore is not tied to the current/remembered upload mode, may
 | Ref | Required now to sign off shell | Deferred gate / risk |
 |---|---|---|
 | D01 | Confirm display name, provisional/final app identifiers and brand usage; no fake app icon approval | Final distributable icon/splash/legal trademark review before store release |
-| Visual | Confirm or revise baseline tokens, five-tab navigation, workout editor hierarchy and proposed safety copy | Actual clickable wireframes, iOS/Android screenshots, text-scaling and contrast tests before UI exit |
+| Visual | **ADR-015 already selects four roots/shared shell and Glass/Solid × Light/Dark**; remaining tokens/defaults/workout layout still need decisions | iOS/Android real UI screenshots, contrast, text scaling, blur fallback and keyboard tests pending |
 | D02–D06, D10, D13 | Already owner-selected via ADR-010/011; **do not reopen silently** | Native key lifecycle, encryption and migration tests must pass before local encrypted storage release |
 | D07 | Agree Personal Backup is **later** and manual export/import is the first feasibility target | Google Drive scopes, iCloud native path, crypto format, scheduler and fresh-install restore in Phase 3 |
 | D08 | Exclude AI from Phase 1 | Provider, privacy, output contract, quota and Edge Function design in Phase 2 |
@@ -85,7 +86,7 @@ No team or agent should mark a deferred high-risk test **passed** merely because
 
 ### 4.1 To approve **only Phase 1.1 — shell**
 
-- [ ] Owner confirms the proposed design baseline, initial name/identifier approach and navigation hierarchy, or documents revisions.
+- [ ] Owner confirms remaining color/type/default theme and name/identifier choices; **four-root navigation and shared adaptive shell already selected** under ADR-015.
 - [ ] Owner states exact Phase 1.1 scope and excludes Auth credentials/project setup, encryption/storage implementation, real workouts, AI, backups, server sync, billing and releases.
 - [ ] Review Expo SDK and React Native compatibility on the actual implementation date; select a native development-build and iOS/Android test approach. No packages/config are installed in this PR.
 - [ ] Owner accepts that SQLCipher, Drizzle, secure storage and OS backup controls are **unverified** and must remain blocked until their later implementation gates.
@@ -101,7 +102,7 @@ No team or agent should mark a deferred high-risk test **passed** merely because
 | 1.2 Auth | Separate owner-allowed setup, session persistence and identity-binding specification | First online signup, same-user re-login, persistence/offline eligibility, blocked second UUID tests |
 | 1.3 Secure SQLite | Native SQLCipher/Drizzle compatibility and OS key lifecycle reviewed | `PRAGMA cipher_version`, fail-closed missing-key path, account binding before unlock, migrations; Android/iOS backup/transfer exclusion evidence |
 | 1.4–1.6 Workout MVP | Local DB/security slice validated | Exercises/plans, transactional sets/reps, crash recovery, local History/Progress, separate erase versus logout |
-| 1.7 Release candidate | Full device validation | P0 AUTH/DATA/SEC and UX cases pass with recorded device/build evidence, no default workout upload, accessible UI |
+| 1.7 Release candidate | Full device validation | Phase 1 **P0 AUTH/DATA/SEC + UX-01–05/UX-08** with device evidence; P1 UX-06 Backup and P2 UX-07 Sync are later gates |
 
 **Important sequencing:** native proof cannot legitimately be marked complete before its test build exists. Approve **bounded work** and keep security-release gates pending; do not use a broad “Phase 1 approved” label to bypass them. Any Supabase project/credential, new permission or privacy-changing action needs explicit scoped approval before execution.
 
@@ -112,7 +113,7 @@ Record this separately in [issue #2](https://github.com/im-tnyx/Tio-Workspace/is
 | Field | Owner must provide |
 |---|---|
 | Approver / date | Repository owner identity and ISO date |
-| Design decision | “Approve proposed Tio baseline” **or** exact visual/name/UX changes |
+| Design decision | ADR-015 four-root/shared theme is owner-selected; record acceptance/changes for remaining palette, defaults, name and detailed layout |
 | Platform identifiers | Android application ID / iOS bundle ID, provisional or final |
 | Phase authorization | “Approve **Phase 1.1 app shell only**” **or** a precisely enumerated alternate slice |
 | Explicit exclusions | Auth project/credentials, workout database, AI, personal backup, paid Sync, deployment unless independently approved |
@@ -122,11 +123,11 @@ Record this separately in [issue #2](https://github.com/im-tnyx/Tio-Workspace/is
 
 Recommended sign-off wording (copy only if actually intended by the owner):
 
-> I approve the proposed Tio Phase 0 visual baseline and authorize **Phase 1.1 (Expo/TypeScript app shell, navigation/theme placeholders and basic tooling only)**. No Auth integration, SQLCipher/Drizzle database, workout feature, AI, cloud backup/sync, billing or deployment is authorized by this approval. Native/security gates remain pending. Owner/date/identifiers: [complete before posting].
+> I confirm the remaining Tio visual baseline and authorize **Phase 1.1 (Expo/TypeScript app shell, ADR-015 four-root navigation, shared TopBar/theme/controls placeholders and basic tooling only)**. No Auth integration, SQLCipher/Drizzle database, workout feature, AI, cloud backup/sync, billing or deployment is authorized by this approval. Native/security gates remain pending. Owner/date/identifiers: [complete before posting].
 
 ## 6. Verification and handoff
 
-- This pack is **documentation only**. It does not report a prototype, UI screenshots, device measurements, release proof, CI success, a Supabase project or user sign-off.
+- This pack is **documentation only**. It records the owner's ADR-015 shell/theme selection, not a prototype, implemented UI, device measurements, release proof, CI success, Supabase project or separate **Phase 1 implementation sign-off**.
 - On this documentation PR: check changed-file scope, all relative links, Markdown tables/fences and consistency with ADR-010–014, the UX flows, recovery specification and test plan.
 - Independent review + explicit owner permission are still required **before merging the docs PR**.
 - After docs merge and separate owner sign-off, start **Phase 1.1** in a new implementation PR with test evidence. Leave [issue #2](https://github.com/im-tnyx/Tio-Workspace/issues/2) open while Phase 0 decisions or approval remain unresolved.
