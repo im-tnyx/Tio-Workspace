@@ -23,6 +23,29 @@
 
 A cloud backup is a restorable snapshot, **not** automatic cross-device realtime sync. Supabase login alone does not restore local-only workout history.
 
+## Owner-selected backup behavior (2026-11-14; future phase)
+
+**Default: Backup OFF, Local Only.** The user can keep logging without choosing a provider, granting cloud permission or paying for cloud storage. **No workout records or backup archives are uploaded to Supabase Postgres/Storage by signing in or by enabling a personal backup**; Supabase Auth holds account/session information, not the workout archive. A personal backup is a separately consented, client-encrypted archive in the user's selected Drive/iCloud destination or a manually exported encrypted file.
+
+**Critical distinction:** (a) ordinary logout retains locked workout history and the sole account binding; same-account re-login reopens it, (b) a user-confirmed in-app erase/reset, OS app-data clear, uninstall/reinstall or phone loss may remove the local SQLite database and installation state. After **online login on a fresh/unbound installation**, show an **optional Restore backup** action for the same verified user UUID. When no compatible, successfully completed encrypted backup exists, or restore is skipped, open a **new empty local workout diary** even though the Supabase account still exists. **Never show old workout records merely because Auth succeeded.** Do not promise OS-level clear-data behavior is identical across Android/iOS: stale Keychain entries may persist on iOS; an installation marker and verified UUID/file/key consistency must gate any reuse.
+
+**Backup source of truth:** Only confirmed completed client-encrypted copies count as restorable. A failed/in-progress upload is not a backup. Automatic backup is **best effort**, only after user opt-in, and may be delayed or omitted by mobile OS scheduling. Backup OFF, disconnect, local erase and deleting a remote archive are distinct operations.
+
+## WhatsApp-inspired backup screen contract (not a clone)
+
+| Section | Planned behavior |
+|---|---|
+| Settings → Backup | Separate optional page with backup OFF by default, destination/provider, latest **successful** backup timestamp/size, and clear recovery warning |
+| Back up now | Available after explicit provider/storage setup and recovery-secret preparation; creates a consistent authenticated-encrypted snapshot |
+| Automatic backup | User selects **Off / Daily / Weekly / Monthly** where platform scheduling is proven feasible; no guarantee of exact timing; manual backups remain user initiated |
+| Include photos / videos | **Only display when Tio actually supports user-created workout/progress attachments in a later approved feature**; both are separately consented, may substantially increase upload size and cloud quota use; no such media scope is authorized for the initial MVP |
+| Backup encryption | **Always enabled** before cloud upload or manual export; do not copy an “End-to-end encryption: Off” setting. User-held portable recovery secret must be configured and retained |
+| In progress | Show genuine state, bytes/total and percent **only if measurable**, with last successful backup shown separately. Never label an in-progress upload “Backed up” |
+| Failed | Show actionable reason (e.g. iCloud/Drive storage quota, no network, permission revoked), **Retry** and **Manage storage** where supported; retain last good backup and local workouts |
+| Manage backup | Explicit controls for provider choice, scheduling, backup now, restore, disconnect, remote delete (confirmed), recovery guidance; no silent cloud deletion |
+
+UX references: user-provided WhatsApp iOS/Android backup screenshots (2026-11-14) illustrate **status card, progress/error presentation, scheduling picker and optional media controls**. They are inspiration for behavior, **not copied branding, platform capabilities, images or security defaults**. Google Drive/iCloud and automatic scheduling still require platform feasibility testing.
+
 ## Backup format proposal
 ```text
 tio-backup-v1/
@@ -53,14 +76,14 @@ tio-backup-v1/
 - As an initial fallback, offer encrypted export/import through system share/document pickers, then consider native provider integration.
 
 ## Settings UX (planned)
-- Storage mode: `Local Only (default)`, `Personal Backup` (connect provider), `Cloud Sync (coming later)`.
-- Backup destination, last successful backup time and size, `Back up now`, `Restore backup`, frequency where OS allows, encryption/recovery setup, `Disconnect`, `Delete remote backup` (confirmed).
+- Storage mode: `Local Only (default)`, `Personal Backup` (connect provider and configure portable recovery secret), `Cloud Sync (coming later)`.
+- Backup destination, **last successful** backup time/size, `Back up now`, `Restore backup`, **Off/Manual (on-demand)/Daily/Weekly/Monthly** frequency where OS allows, encryption/recovery setup, `Disconnect`, `Delete remote backup` (confirmed).
 - A toggle cannot claim a backup is protected until an upload and restore verification succeeded.
-- If upload fails, never delete local data. Show actionable errors and keep the last confirmed backup metadata.
+- If upload fails (including full iCloud/Drive quota), never delete local data or overwrite the last good archive. Show actionable errors, retry/storage guidance and keep the last confirmed backup metadata.
 - Automatic scheduling is **best effort**; mobile OS background limits mean precise periodic backups are not guaranteed.
 
 ## Restore procedure
-1. Reauthenticate the Tio account if needed and verify ownership of target account.
+1. On a new/unbound installation after reinstall, OS app-data clear, phone loss or explicit reset, **sign in online** to the same Supabase account; verify immutable user UUID. If no usable backup exists or the user skips restore, initialize an **empty** local store, not an invented cloud copy. Normal logout/relogin without erased data must instead reuse the retained local store.
 2. Connect the user's backup provider and list available versioned archives.
 3. Retrieve archive, validate header/schema, decrypt with user recovery method, authenticate payload and match source account ID.
 4. Preview date/record counts. Default to **replace with confirmation**, preserving a local safety snapshot first; do not silently merge mismatched data.

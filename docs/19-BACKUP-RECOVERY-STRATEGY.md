@@ -72,6 +72,14 @@ tio-backup-v1
 
 ## 06 · Restore UX
 
+**Owner-selected behavior (2026-11-14):** Personal backup is optional and **OFF until the user enables it**. A fresh login does not restore workouts from Supabase. After OS app-data clear, uninstall/reinstall, confirmed local erase/reset or replacement phone, an authenticated same-account user may choose **Restore backup** if there is a completed matching encrypted archive and their portable recovery secret. No archive / backup never enabled / upload failed / restore skipped → start with **empty local workout data**. A prior Supabase account and login identity may still exist; “new account” is a UX description of empty local history, **not** a newly created Auth user. Do not silently auto-restore.
+
+**Backup settings reference:** a familiar, dedicated Settings → Backup page with last successful backup, **Back up now**, Off/Daily/Weekly/Monthly automatic backup (best effort), progress, failure/retry, storage management and recovery guidance. Cloud encryption is always required, even if a reference screenshot shows it off. Photo/video include switches are relevant **only if separately approved user attachments exist**, not as new Phase 1 features. Provider capability and exact background cadence require native validation. See [backup screen contract](05-BACKUP-AND-SYNC.md).
+
+**Platform wipe nuance:** Android app-data removal commonly deletes sandbox data, but iOS Keychain entries can outlive uninstall. Detect a fresh installation independently from Keychain remnants; a missing/unknown SQLite file or install marker must not be interpreted as a successfully restored workout history. Fail closed on inconsistent binding/key/file states.
+
+## 06A · Restore steps
+
 1. On new device: successfully sign in to Tio online and confirm account identity.
 2. Select user-owned backup destination and file/version.
 3. Enter recovery passphrase/code or use an explicitly approved recovery flow.
@@ -98,8 +106,8 @@ tio-backup-v1
 ## 08 · Owner decisions required
 
 - [x] Independent user-held portable recovery **principle** selected; [ ] choose the precise code/passphrase UX, cryptographic KDF/format and loss warnings after security review.
-- [ ] Should backups be manual first, with scheduling later?
-- [ ] Should user-facing backup file export be the initial cross-platform option?
+- [x] User can select no backup; **manual backup on demand** and optional future scheduled backups chosen as UX policy. Native schedule feasibility and exact cadence still require testing.
+- [ ] Decide cross-platform encrypted file export delivery order after feasibility tests; do not claim it is implemented.
 - [ ] Should Android default to appDataFolder and iOS start with Files export fallback?
 - [ ] Retention/rotation, file deletion, last successful backup metadata and key-loss warnings.
 

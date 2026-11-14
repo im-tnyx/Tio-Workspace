@@ -72,7 +72,7 @@ stateDiagram-v2
 | Close app | Persist, subject to policy | Retain account-specific data | Unchanged |
 | Logout | Clear/revoke applicable auth credentials, close DB and clear in-memory keys | **Retained, locked** | Unchanged; show explicit distinction |
 | Attempt different account login | **Reject** different Supabase UUID while installation is bound | Keep existing encrypted DB/key and binding untouched; no switch UI | No transfer |
-| Explicit erase/reset installation | Clear bound identity only after separate destructive confirmation and loss warning | Delete local ciphertext/key only by the approved explicit workflow; next online setup may bind a fresh identity | Does not automatically delete personal backups or server account |
+| Explicit erase/reset installation | Clear bound identity only after separate destructive confirmation and loss warning | Delete local ciphertext/key only by the approved explicit workflow; next online setup may bind a fresh identity | Does not automatically delete personal backups or server account; restore requires matching identity and an earlier successful encrypted backup |
 | Delete workout records only (optional future separate control) | Requires confirmation | Erase workout records **without** releasing the installation binding or reusing its key for another user | Does not silently remove backup/cloud copies |
 | Delete account (future flow) | Requires recent online reauth and server-side confirmation | Explicit data-deletion choice and recovery warning | Must separately handle third-party backup and any future sync copies |
 
@@ -102,7 +102,8 @@ Expo Auth tutorials demonstrate different persistence adapters. Treat the exact 
 | S-08 | Same account login again | Existing local history preserved |
 | S-09 | Reinstall/clear app data without backup | Explicit recovery explanation; do not promise history |
 | S-10 | Cannot unlock encrypted DB | Safe error, no plaintext fallback, no overwrite |
-| S-11 | User explicitly erases local data and resets installation | Confirm irreversible loss, clear binding/key/data only after verified completion; next setup requires online auth |
+| S-11 | User explicitly erases local data and resets installation | Warn history may be permanently lost; clear binding/key/data only after confirmed completion; next setup requires online auth and optional same-user backup restore |
+| S-12 | OS clear-data/reinstall + old account re-login | If local DB missing, show fresh empty history or explicit matching encrypted backup restore; Auth login alone cannot recreate workouts |
 
 ## 08 · Owner decisions required
 

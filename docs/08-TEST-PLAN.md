@@ -49,6 +49,13 @@
 | BKP-04 | P1 | Upload interrupted or cloud quota exhausted | Local data and last good backup preserved |
 | BKP-05 | P1 | Uninstall without a successful backup | Correctly communicate that local data can be lost |
 | BKP-06 | P1 | Offline background / OS kills job | No false 'backup successful' indication |
+| BKP-07 | P1 | Backup OFF; perform workouts then OS-clear app data/reinstall and same-account login | No default Supabase workout upload; fresh empty workout store, accurate loss warning; no automatic history recovery |
+| BKP-08 | P1 | Optional encrypted successful backup → clear app data/reinstall → same-account login | Offer optional restore, require matching UUID + portable recovery secret; verify complete records before declaring restore successful |
+| BKP-09 | P1 | Backup in progress/fails due to no network, storage quota or permission | Last successful timestamp and archive unchanged; local workouts remain; actionable Retry/Manage storage, never false success |
+| BKP-10 | P1 | Automatic backup OFF / Daily / Weekly / Monthly | No background transfer when off; any enabled schedule honors consent, OS best-effort rules, quota limits and actual completion timestamps |
+| BKP-11 | P1 | Lost recovery secret, incorrect account, or incompatible encrypted backup | No restore possible without valid secret/identity; no backend bypass, no overwrite or false recovery promise |
+| BKP-12 | P1 | Future optional media attachments absent/present | No photo/video switches or uploads without approved attachment support and consent; when present, inclusion/size is correctly reflected |
+| AUTH-10 | P0 | Fresh installation marker after OS clear/reinstall with stale OS Keychain entry | Do not trust orphaned key/session or show phantom history; require verified online identity and safe empty/restore flow |
 | SYNC-01 | P2 | Offline edits on two devices | Defined conflict policy works without silent loss |
 | SYNC-02 | P2 | User disables sync | No further uploads; existing cloud data policy honored |
 | SYNC-03 | P2 | User A attempts to read user B's cloud rows | Denied by RLS/authorization |
