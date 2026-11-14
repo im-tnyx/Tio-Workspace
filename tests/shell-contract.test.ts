@@ -50,6 +50,8 @@ test('English-only catalog exposes root titles without a language picker', () =>
 test('Welcome entry and auth choice labels are centrally defined', () => {
   assert.equal(copy('brandTitle'), 'TNYX');
   assert.equal(copy('getStarted'), 'GET STARTED');
+  assert.equal(copy('alreadyHaveAccount'), 'Already have an account?');
+  assert.equal(copy('logIn'), 'Log in');
   assert.equal(copy('signIn'), 'Sign in');
   assert.equal(copy('signUp'), 'Sign up');
 });
