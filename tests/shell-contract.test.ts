@@ -57,6 +57,9 @@ test('Welcome entry and auth choice labels are centrally defined', () => {
   assert.equal(copy('createAccount'), 'Create account');
   assert.equal(copy('email'), 'Email');
   assert.equal(copy('password'), 'Password');
+  assert.equal(copy('signInIntro'), 'Sign in with your email and password.');
+  assert.match(copy('signInPreviewNotice'), /not available yet/);
+  assert.match(copy('signInPreviewNotice'), /real password/);
   assert.match(copy('signUpPreviewNotice'), /not available yet/);
   assert.match(copy('signUpPreviewNotice'), /real password/);
 });
