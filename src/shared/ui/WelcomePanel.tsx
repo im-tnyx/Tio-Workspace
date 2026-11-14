@@ -1,4 +1,4 @@
-import { Platform, Pressable, ScrollView, Text, View } from 'react-native';
+import { Platform, Pressable, ScrollView, Text, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { Button } from '@/shared/ui/Button';
 import { TypewriterHeading } from '@/shared/ui/TypewriterHeading';
@@ -21,9 +21,15 @@ export function WelcomePanel({
   const { colors } = useAppearance();
   const insets = useSafeAreaInsets();
   const android = Platform.OS === 'android';
+  const { height } = useWindowDimensions();
+  // Welcome is a fixed, non-scrolling screen. Scale down its decorative
+  // heading on short devices while keeping the action area reachable.
+  const compactWelcome = actionPlacement === 'bottom' && height < 620;
   const headingStyle = {
-    color: colors.text, fontSize: 54, lineHeight: 65,
-    fontWeight: '800' as const, letterSpacing: 5, textAlign: 'center' as const,
+    color: colors.text, fontSize: compactWelcome ? 40 : 54,
+    lineHeight: compactWelcome ? 48 : 65,
+    fontWeight: '800' as const, letterSpacing: compactWelcome ? 3 : 5,
+    textAlign: 'center' as const,
   };
   const heading = animatedTitle
     ? <TypewriterHeading title={title} textStyle={headingStyle} />
@@ -52,11 +58,9 @@ export function WelcomePanel({
   </View>;
 
   return <View style={{ flex: 1, backgroundColor: colors.background }}>
-    {actionPlacement === 'bottom' ? <ScrollView
-      style={{ flex: 1 }} showsVerticalScrollIndicator={false}
-      contentContainerStyle={{ flexGrow: 1 }}>
+    {actionPlacement === 'bottom' ? <>
       <View style={{
-        flexGrow: 1, minHeight: 180, justifyContent: 'center', alignItems: 'center',
+        flex: 1, minHeight: 0, justifyContent: 'center', alignItems: 'center',
         paddingHorizontal: spacing.lg, paddingTop: insets.top + spacing.sm,
       }}>{heading}</View>
       {android ? <View style={{
@@ -79,7 +83,7 @@ export function WelcomePanel({
           paddingBottom: insets.bottom + spacing.sm,
         }}>{bottomActions}</View>
       </View>}
-    </ScrollView> : <ScrollView style={{ flex: 1 }}
+    </> : <ScrollView style={{ flex: 1 }}
       showsVerticalScrollIndicator={false}
       contentContainerStyle={{
         flexGrow: 1, justifyContent: 'center', alignItems: 'center',
