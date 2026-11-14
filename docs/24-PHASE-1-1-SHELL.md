@@ -95,3 +95,9 @@ Verify static architecture and mock-only behavior first; ensure no SDK/storage/A
 
 - Both Sign up and Sign in use the same plain header in `AuthPreviewPage`: an accessible 48pt/dp **icon-only back chevron** and the short screen title, with **no visible "Back" text, enclosing card, or header border**. The arrow still announces **Back** to screen readers. Form heading, email/password fields, keyboard scrolling and preview-only auth behavior remain unchanged.
 - The shared `TopBar` used elsewhere stays untouched; this is restricted to auth preview routes. Real device/iOS and Android visual accessibility testing remains pending.
+
+## Borderless auth screen reference refinement (owner screenshot, 2026-11-15)
+
+- Sign up and Sign in reuse the **same** `AuthCredentialsScreen`, with a reference-inspired minimal layout: one plain back arrow at top, a single large heading, muted explanatory copy, oversized Email/Password placeholders and **no border, underline, input card, or filled field background**. The reusable `TextField` now supports an opt-in `variant="bare"`; default outlined fields elsewhere are unchanged. Labels remain accessible through `accessibilityLabel` even though the bare fields omit separate visible field labels.
+- The form action and warning are pushed toward the bottom when space allows, while the shared auth page remains scroll-reachable around the keyboard. Small-screen/accessibility behavior must be checked in Expo Go on devices.
+- The visual reference shows a **Use phone** action and verification-code promise, but neither is implemented or implied here; both auth screens continue to be **email and password preview only**, with no real auth, credential transmission, or OTP. Warning not to enter a real password remains visible. Welcome screen and Android navigation styling unchanged.
