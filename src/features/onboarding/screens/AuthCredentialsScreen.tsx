@@ -24,18 +24,19 @@ export function AuthCredentialsScreen({
   const { colors } = useAppearance();
   const signingUp = mode === 'sign-up';
 
-  return <View style={{ width: '100%', gap: spacing.xl }}>
+  return <View style={{ width: '100%', flexGrow: 1, gap: spacing.xl }}>
     <View style={{ gap: spacing.sm }}>
-      <Text accessibilityRole="header" style={[typography.title, { color: colors.text }]}>
+      <Text accessibilityRole="header" style={[typography.title, { color: colors.text, fontSize: 38, lineHeight: 46 }]}>
         {copy(signingUp ? 'createAccount' : 'signIn')}
       </Text>
       <Text style={[typography.body, { color: colors.muted }]}>
         {copy(signingUp ? 'signUpIntro' : 'signInIntro')}
       </Text>
     </View>
-    <View style={{ gap: spacing.lg }}>
+    <View style={{ gap: spacing.xxl }}>
       <TextField
         label={copy('email')}
+        variant="bare"
         value={email}
         onChangeText={onChangeEmail}
         placeholder={copy('emailPlaceholder')}
@@ -48,9 +49,10 @@ export function AuthCredentialsScreen({
       />
       <TextField
         label={copy('password')}
+        variant="bare"
         value={password}
         onChangeText={onChangePassword}
-        placeholder={copy('passwordPlaceholder')}
+        placeholder={copy('password')}
         secureTextEntry
         autoCapitalize="none"
         autoCorrect={false}
@@ -59,7 +61,7 @@ export function AuthCredentialsScreen({
         returnKeyType="done"
       />
     </View>
-    <View style={{ gap: spacing.md }}>
+    <View style={{ gap: spacing.md, marginTop: 'auto', paddingTop: spacing.xl }}>
       <Button label={copy(signingUp ? 'signUp' : 'signIn')} onPress={onSubmit} />
       <Text style={[typography.caption, { color: colors.muted, textAlign: 'center' }]}>
         {copy(signingUp ? 'signUpPreviewNotice' : 'signInPreviewNotice')}
