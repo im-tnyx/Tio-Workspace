@@ -113,7 +113,7 @@ export function AuthCredentialsScreen({
       </>}
     </View>
     <View style={{ marginTop: 'auto', gap: spacing.md, paddingTop: spacing.sm }}>
-      <Button
+      <Button size="onboarding"
         label={step === 'new-password' ? copy('resetPassword')
           : step === 'password' ? copy(signingUp ? 'signUp' : 'signIn') : copy('continue')}
         onPress={onSubmit}
