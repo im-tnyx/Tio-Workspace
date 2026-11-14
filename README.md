@@ -4,7 +4,7 @@
 
 ### Train offline. Own your progress.
 
-**A thoughtfully planned, local-first workout tracker for iOS & Android.**  
+**A thoughtfully planned, local-first workout tracker for iOS & Android.**
 Your account stays signed in. Your workout history stays on your device.
 
 <br />
@@ -68,7 +68,7 @@ flowchart TD
 
 <div align="center">
 
-**Default path:** Workout → Local SQLite → Dashboard  
+**Default path:** Workout → Local SQLite → Dashboard
 **Optional paths:** AI plan request · Personal backup · Future cloud sync
 
 </div>
