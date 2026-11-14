@@ -3,11 +3,10 @@
   "tasks": [
     {
       "label": "Pull Latest TNYX",
-      "type": "shell",
+      "type": "process",
       "command": "bash",
       "args": [
-        "-c",
-        "set -euo pipefail\nexpected='feat/phase1-1-expo-shell-20261114'\ncurrent=\"$(git branch --show-current)\"\nif [ \"$current\" != \"$expected\" ]; then\n  printf 'Stopped: current branch is %s, expected %s. Switch to the PR branch first.\\n' \"$current\" \"$expected\"\n  exit 1\nfi\nif [ -n \"$(git status --porcelain)\" ]; then\n  printf 'Stopped: local changes exist. Commit or safely stash them first.\\n'\n  git status --short\n  exit 1\nfi\ngit pull --ff-only origin \"$expected\"\nprintf 'TNYX updated to commit: '\ngit rev-parse --short HEAD"
+        "${workspaceFolder}/.vscode/pull-tnyx.sh"
       ],
       "options": {
         "cwd": "${workspaceFolder}"
