@@ -141,6 +141,10 @@ test('post-Welcome auth uses persistent parent header and CTA, middle-only step 
   assert.match(page, /label=\{footerLabel\}/);
   assert.match(page, /\{footerNotice\}/);
   assert.match(page, /footerNoticeMinHeight/);
+  // Temporary warning comes BEFORE the CTA so the bottom edge is 16pt away.
+  assert.ok(page.indexOf('{footerNotice ? <Text') < page.indexOf('<Button size="onboarding"'));
+  assert.doesNotMatch(page, /<ScrollView/);
+  assert.match(page, /if \(keyboardVisibleRef\.current\) return;/);
   // 16pt side and bottom gutter uses the same semantic spacing token.
   // The hidden-keyboard inset is extra system-safe-area clearance.
   assert.match(page, /paddingHorizontal: spacing\.lg/);
@@ -179,6 +183,15 @@ test('both Sign in and Sign up routes use the same persistent auth parent', () =
   assert.match(button, /disabled=\{disabled\} accessibilityState=\{\{ disabled \}\}/);
   // Same preview notice at both Sign-in steps prevents CTA height reflow.
   assert.match(flow, /mode === 'sign-up' \? 'emailPreviewNotice' : 'signInPreviewNotice'/);
+});
+
+test('Android system Back follows the same auth-step Back handler', () => {
+  const flow = readFileSync('src/features/onboarding/screens/AuthPreviewFlow.tsx', 'utf8');
+  assert.match(flow, /useFocusEffect\(useCallback/);
+  assert.match(flow, /BackHandler\.addEventListener\('hardwareBackPress'/);
+  assert.match(flow, /onBack\(\);\s*return true;/);
+  assert.match(flow, /subscription\.remove\(\)/);
+  assert.match(flow, /previousAuthPreviewStep\(step, mode\)/);
 });
 
 test('auth-only disabled button and bare placeholder use soft shades', () => {

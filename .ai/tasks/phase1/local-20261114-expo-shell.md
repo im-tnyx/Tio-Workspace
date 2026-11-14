@@ -48,3 +48,9 @@ Official Expo SDK 58, Expo Router and Expo Blur docs checked on 2026-11-14. Foll
 **Post-merge sync/archive:** yes, only after owner-authorized merge.
 
 [Task template](../TEMPLATE.md) · [Readiness](../../../docs/21-PHASE-1-READINESS.md)
+
+## Owner screenshot correction / agent handoff (2026-11-15)
+
+- Owner authorized bounded Phase 1.1 UI fixes to the auth footer, Email to Password motion and review-related Android system Back; no scrolling and no other phase.
+- Agent: ChatGPT GitHub connector implementation session on PR #11. Modified AuthPreviewPage, AuthPreviewFlow, static tests, Phase 1.1 guide and this record in a single Git commit; use live branch SHA as ground truth.
+- Validation before merge: new-HEAD CI, real iPhone keyboard motion and equal gutters, Android system Back, short-screen and large-text accessibility, independent recorded PR review. No native device/build validation was performed in this session; no merge approval.

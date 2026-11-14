@@ -1,5 +1,6 @@
-import { useState } from 'react';
-import { Alert, Keyboard } from 'react-native';
+import { useCallback, useState } from 'react';
+import { Alert, BackHandler, Keyboard, Platform } from 'react-native';
+import { useFocusEffect } from 'expo-router';
 import { AuthPreviewPage } from '@/shared/ui/AuthPreviewPage';
 import { copy } from '@/shared/i18n/en';
 import {
@@ -24,7 +25,7 @@ export function AuthPreviewFlow({ mode, onExit }: {
   const [resetCode, setResetCode] = useState('');
   const [newPassword, setNewPassword] = useState('');
 
-  const onBack = () => {
+  const onBack = useCallback(() => {
     if (step === 'email') {
       Keyboard.dismiss();
       setCode('');
@@ -40,7 +41,18 @@ export function AuthPreviewFlow({ mode, onExit }: {
     if (step === 'new-password') setNewPassword('');
     // Keep the keyboard open between stages for automatic focus.
     setStep(previousAuthPreviewStep(step, mode));
-  };
+  }, [mode, onExit, step]);
+
+  // Android's system Back should navigate the in-place auth steps rather
+  // than popping the whole route. Listen only while this route is focused.
+  useFocusEffect(useCallback(() => {
+    if (Platform.OS !== 'android') return;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      onBack();
+      return true;
+    });
+    return () => subscription.remove();
+  }, [onBack]));
 
   const onForgotPassword = () => {
     // Prefill the confirm-email stage, but let the user correct the address.

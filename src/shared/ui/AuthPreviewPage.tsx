@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Keyboard, KeyboardAvoidingView, Platform, Pressable, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -22,15 +22,22 @@ export function AuthPreviewPage({
   const insets = useSafeAreaInsets();
   const { colors } = useAppearance();
   const [keyboardVisible, setKeyboardVisible] = useState(false);
+  const keyboardVisibleRef = useRef(false);
   useEffect(() => {
     if (Platform.OS !== 'ios') return;
     // Unlike keyboardDidShow, these fire BEFORE movement; animate our safe-area
     // padding together with the system keyboard and KeyboardAvoidingView.
     const show = Keyboard.addListener('keyboardWillShow', event => {
+      // Email -> Password can change the keyboard layout without closing it.
+      // Avoid scheduling a second JS animation for an already visible keyboard.
+      if (keyboardVisibleRef.current) return;
+      keyboardVisibleRef.current = true;
       Keyboard.scheduleLayoutAnimation(event);
       setKeyboardVisible(true);
     });
     const hide = Keyboard.addListener('keyboardWillHide', event => {
+      if (!keyboardVisibleRef.current) return;
+      keyboardVisibleRef.current = false;
       Keyboard.scheduleLayoutAnimation(event);
       setKeyboardVisible(false);
     });
@@ -84,20 +91,21 @@ export function AuthPreviewPage({
         <View style={{ flex: 1, minHeight: authPreviewLayout.authMiddleMinHeight }}>
           {children}
         </View>
-        {/* A single persistent footer: neither Button nor its containing View
-            unmounts when the auth step changes. */}
+        {/* Persistent footer: stable temporary notice ABOVE the same CTA. */}
         <View style={{ gap: spacing.md, paddingTop: spacing.sm }}>
+          {/* Three-line minimum slot keeps different preview messages from
+              shifting the CTA as the Email and Password stages change. */}
+          {footerNotice ? <Text style={[typography.caption, {
+            color: colors.muted, textAlign: 'center',
+            minHeight: authPreviewLayout.footerNoticeMinHeight,
+          }]}>{footerNotice}</Text> : null}
+          {/* Button is last: bottom and side gutters are both 16pt against
+              the visible keyboard; hidden keyboard adds the safe-area inset. */}
           <Button size="onboarding"
             label={footerLabel} onPress={onFooterPress}
             disabledTone="soft" disabled={footerDisabled}
             disabledAppearance={footerKeepAppearance ? 'enabled' : 'muted'}
           />
-          {/* Preview copy is temporary. Once removed, the parent still retains
-              the exact same side/bottom gutter around the CTA. */}
-          {footerNotice ? <Text style={[typography.caption, {
-            color: colors.muted, textAlign: 'center',
-            minHeight: authPreviewLayout.footerNoticeMinHeight,
-          }]}>{footerNotice}</Text> : null}
         </View>
       </View>
     </KeyboardAvoidingView>
