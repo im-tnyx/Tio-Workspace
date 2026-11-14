@@ -29,6 +29,8 @@ A trustworthy Android/iOS workout diary that **requires an account** but stores 
 9. The owner accepts that previously verified offline local access can continue until online revalidation; offline mode cannot detect remote revocation in real time. Server operations require valid server-side authorization.
 10. The owner selected an OS-protected **per-bound-account SQLCipher key** and a distinct **portable user-held backup recovery secret** as design principles. Actual key lifecycle, cryptographic format, recovery UX and Android/iOS validation are separate security gates.
 
+**Future membership policy (ADR-014):** Supabase Sync will synchronize the **complete supported workout dataset** only for a paid Tio member who **separately enables Sync** in Settings. Membership purchase alone cannot trigger upload. Default Local Only and user-owned Google Drive/iCloud Personal Backup do **not** require Sync membership. Price, subscription lifecycle and implementation are not yet approved.
+
 ## Target platforms and proposed stack
 - iOS and Android through React Native, Expo, TypeScript and Expo Router.
 - Supabase Auth only for the initial account/login requirement. Supabase Edge Functions only when online functionality needs a server.
@@ -50,7 +52,7 @@ A trustworthy Android/iOS workout diary that **requires an account** but stores 
 | Profile & settings | Change preferences; logout; manage data | Mostly |
 | Backup & Restore (later milestone) | Save/recover encrypted personal backup | Transfer requires internet |
 | AI Plan Generator (later milestone) | Get a generated draft plan | No |
-| Cloud Sync toggle (future) | Opt in/out of app database sync | Toggle controls online syncing |
+| Supabase Sync (future membership) | Full supported workout-data Sync with paid entitlement and explicit user opt-in | Online; **not in MVP** |
 
 ## Workout entry behaviour
 - Let users create an exercise with a name, muscle group, equipment and optional notes.

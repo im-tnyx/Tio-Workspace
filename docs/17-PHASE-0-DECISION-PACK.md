@@ -60,6 +60,8 @@ A key protected only by device secure storage is useful for **local** database s
 
 ### Backup vs sync
 
+**ADR-014 (paid full-data Sync):** Future Supabase Sync requires **paid membership plus separate explicit user opt-in** to sync the user's complete supported workout dataset. Local Only is the default and Personal Backup on user Drive/iCloud is optional without Sync membership. Price, billing and membership lapse/export/retention rules are still undecided.
+
 | Operation | User controls | Destination | Conflict handling |
 |---|---|---|---|
 | Local workout save | Default | Device | SQLite transaction |

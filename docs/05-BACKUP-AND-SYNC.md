@@ -19,7 +19,7 @@
 |---|---|---|---|
 | **Local Only** | Account-specific local SQLite | None | **Yes** |
 | **Local + Personal Backup** | Local SQLite | Encrypted snapshots in user's chosen Drive/iCloud location | No, user opts in |
-| **Local + App Cloud Sync** | Local SQLite, synchronized | Separately built Tio server-side Supabase Postgres + RLS | **Future only**, separate opt-in/owner approval; no current server workout storage |
+| **Local + App Cloud Sync** | Local SQLite, synchronized | Separately built Tio server-side Supabase Postgres + RLS | **Future paid membership + separate user opt-in only**; no current server workout storage |
 
 A cloud backup is a restorable snapshot, **not** automatic cross-device realtime sync. **Supabase Auth login alone** does not restore local-only workout history. Only a **future, separately authorized and previously user-enabled** Supabase Sync mode may automatically download the same authenticated user's available server workout records into a new local SQLite store; that is *sync hydration*, not the **Restore Backup** action.
 
@@ -53,6 +53,14 @@ UX references: user-provided WhatsApp iOS/Android backup screenshots (2026-11-14
 3. **Future server sync, separate product:** A later, **individually authorized and opt-in** feature could use app-managed Supabase Postgres with server-side authorization/RLS, synchronization, conflict handling, costs/operations and deletion controls. **No such workout tables, server sync process or default upload are in scope now.** If this *exclusive* cloud mode is enabled and server data still exists, same-account online login on a wiped/new device can **rehydrate local SQLite automatically** rather than requiring backup Restore. **Sync is not historical backup**: deletions/corruption can propagate; do not guarantee recovery of older versions.
 4. **Mutually exclusive cloud settings:** Settings shows **Local Only (default)**, **Personal Backup (Google Drive/iCloud)** or **Supabase Sync (future / unavailable now)** as *one active choice*, not two independently enabled switches. Backup ON requires Supabase Sync OFF; Sync ON requires Backup OFF. Choosing Local Only permits neither. Supabase Auth exists independently of all three modes.
 5. **Safe mode transition:** Before activating a different cloud mode, clearly explain that previous Google Drive/iCloud archives or Supabase rows may still exist. Require **separate, explicit consent to remove the prior cloud copy** and verify provider/server deletion where supported; if removal or permission verification fails, do **not** claim only one cloud copy exists or silently enable the new cloud mode. Do not erase workouts on device. Changing mode, disabling uploads, deleting prior remote data and deleting a Supabase Auth account are **distinct actions**. Manual user-exported files cannot be remotely erased, so no universal one-copy guarantee is possible.
+
+## Future paid membership for full Supabase Sync (owner policy ADR-014)
+
+**Future Supabase Sync is optional paid Tio membership, not default.** Only after a user has a valid paid membership **and separately, explicitly enables Sync** may the app upload and synchronize the **complete supported workout dataset** (exercises, workout plans, sessions, sets/reps/weights, notes, history and progress source records) to Supabase Postgres with per-user authorization/RLS. Buying membership alone does **not** grant consent to upload workouts. Local encrypted SQLite remains the primary offline store.
+
+**Free/local-only logging and optional Personal Backup to the user's Google Drive/iCloud do not require this Tio Sync membership.** ADR-013 permits **only one active cloud mode**: Personal Backup **or** paid Supabase Sync (or neither). Future paid Sync may download available server workouts automatically after same-account sign-in, without a Personal Backup Restore step. Sync can propagate deletes; it is not a historical backup.
+
+The price, membership tiers, billing provider, trials, renewals, expiry/grace periods, entitlement checks, cancellation, user data export, retention and cloud deletion policy are **not decided**. Expiry must not delete the local workout database or silently enable another cloud mode. No billing, server workout tables, SyncEngine or entitlement integration is authorized/implemented today.
 
 ## Backup format proposal
 ```text

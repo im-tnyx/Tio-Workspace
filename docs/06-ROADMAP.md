@@ -49,7 +49,9 @@
 - [ ] Run full OS clear-data/reinstall/phone-loss, same-account optional restore, **no-backup → empty diary**, missing recovery key, quota-failure, wrong-account and interrupted-backup tests; photo/video include controls only if a separate attachment feature is later approved.
 **Exit:** A real encrypted backup can be reliably restored by its rightful user.
 
-## Phase 4 — Optional app-cloud database sync (FUTURE; NOT AUTHORIZED FOR INITIAL BUILD)
+## Phase 4 — Optional paid full-workout Supabase Sync (FUTURE; NOT AUTHORIZED FOR INITIAL BUILD)
+
+**ADR-014 selects the future paid-membership business rule, not implementation.** A valid subscription **and** independent opt-in are required for full supported workout-data sync. Local-only workout features and Personal Backup remain usable without membership. No paid plan, billing integration or server workout tables are authorized.
 - [ ] Make **separate owner decision and explicit user opt-in** for app-server Supabase workout storage; **none exists now**, and personal Drive/iCloud backup must never be redirected to Supabase.
 - [ ] Review privacy policy, consent and user controls.
 - [ ] Design Supabase Postgres schema and RLS ownership policies.

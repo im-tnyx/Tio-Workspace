@@ -65,6 +65,9 @@
 | SYNC-05 | P2 | Same-account login after OS wipe with previously enabled Sync and available authorized server records | Automatically rehydrate encrypted local SQLite from Supabase after online identity/authorization, without showing Personal Backup Restore; no claim of historical versions |
 | SYNC-06 | P2 | Switch Personal Backup ↔ future Sync with existing remote data | Show explicit prior-cloud-copy disclosure, require consent and verified cleanup; block/handle failed deletion; never silently retain two active destinations or destroy local diary |
 | SYNC-07 | P2 | Sync OFF/never enabled, no personal backup, then clear app data and same-user login | Empty local workouts; Auth alone cannot produce server workout data and Restore Backup is not offered without a matching archive |
+| SYNC-08 | P2 | No paid entitlement or member without separate Sync consent | No Supabase workout upload; Local Only works and user-owned Personal Backup remains optional |
+| SYNC-09 | P2 | Paid member explicitly turns on future Sync | Complete supported workout history/plans/exercises/sessions/sets and progress source data sync under user-bound RLS; can rehydrate new device |
+| SYNC-10 | P2 | Membership expires or is cancelled | Block unauthorized new uploads, retain local SQLite, and follow separately approved server export/retention/deletion policy |
 
 ## Test environments
 Physical Android and iPhone devices, current supported OS versions, actual Expo development/release builds, unstable network, background and device-kill scenarios, low storage, attempted second account on a bound installation, deliberate erase/reset, reinstallation and cross-device restores.
