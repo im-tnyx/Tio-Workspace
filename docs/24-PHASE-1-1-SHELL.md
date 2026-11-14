@@ -90,3 +90,8 @@ Verify static architecture and mock-only behavior first; ensure no SDK/storage/A
 - In Sign up mode only the heading (Create account), description, primary button (Sign up), and preview notice differ from Sign in mode (Sign in heading and button, sign-in description/notice). These strings are centralized in `src/shared/i18n/en.ts`.
 - Routes own transient in-memory text and show an unavailable-auth alert on action; they neither authenticate nor submit/store credentials. The user is warned not to enter a real password. Back from a direct sign-in link falls back to Welcome, consistent with direct sign-up.
 - The redundant earlier `SignUpScreen` was removed; auth choice remains a separate optional mock page and the Welcome entry routes remain unchanged. No Phase 1.2 auth backend or session behavior implemented. Android/iOS device keyboard/large-text and screen-reader QA remain pending.
+
+## Borderless auth header (owner screenshot refinement, 2026-11-15)
+
+- Both Sign up and Sign in use the same plain header in `AuthPreviewPage`: an accessible 48pt/dp **icon-only back chevron** and the short screen title, with **no visible "Back" text, enclosing card, or header border**. The arrow still announces **Back** to screen readers. Form heading, email/password fields, keyboard scrolling and preview-only auth behavior remain unchanged.
+- The shared `TopBar` used elsewhere stays untouched; this is restricted to auth preview routes. Real device/iOS and Android visual accessibility testing remains pending.
