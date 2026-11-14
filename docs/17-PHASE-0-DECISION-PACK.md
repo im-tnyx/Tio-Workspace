@@ -94,7 +94,7 @@ flowchart TD
   F -->|Yes, separately recorded| H["Future: Expo setup"]
 ```
 
-**Current sign-off handoff:** the [Phase 0 final design and Phase 1 owner approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) compiles the existing selected policies into a design baseline and separate **Phase 1.1-only** authorization template. It selects the D01 app name but does **not** settle package IDs/icon, D07–D09/D11–D12, font licensing, native validation or implementation permission. Record any actual owner decisions back in this queue/decision register after approval.
+**Current sign-off handoff:** the [Phase 0 final design and Phase 1 owner approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) compiles the existing selected policies into a design baseline and separate **Phase 1.1-only** authorization template. It selects **Tnyx** and Android/iOS ID **`com.tnyx.tio`** (store uniqueness/registration unverified), plus a **preferred monochrome moving-person icon concept** but **not a final original production asset**. It does **not** authorize implementation, satisfy later native test gates or require future Custom-font licensing for the English/system-font shell. Record any actual owner decisions back in this queue/decision register after approval.
 
 ## 📋 Required owner sign-off
 
