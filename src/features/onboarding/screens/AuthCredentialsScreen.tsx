@@ -1,7 +1,7 @@
 import { Dimensions, Text, View } from 'react-native';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
 import { copy } from '@/shared/i18n/en';
-import { spacing, typography } from '@/shared/theme/tokens';
+import { authPreviewLayout, spacing, typography } from '@/shared/theme/tokens';
 import { Button } from '@/shared/ui/Button';
 import { TextField } from '@/shared/ui/TextField';
 import { canContinueAuthPreview } from '../authPreviewSteps';
@@ -37,15 +37,16 @@ export function AuthCredentialsScreen({
   // Physical screen height is stable while Android resizes for the keyboard.
   const compact = Dimensions.get('screen').height < 700;
   const signingUp = mode === 'sign-up';
-  const recovery = step === 'reset-email' || step === 'reset-otp' || step === 'new-password';
+  const primarySignIn = !signingUp && (step === 'email' || step === 'password');
 
-  const title = step === 'email' ? copy('enterEmail')
+
+  const title = step === 'email' ? copy(signingUp ? 'enterEmail' : 'signInEnterEmail')
     : step === 'reset-email' ? copy('confirmEmail')
     : step === 'otp' || step === 'reset-otp' ? copy('enterCode')
     : step === 'new-password' ? copy('createNewPassword')
     : copy(signingUp ? 'createPassword' : 'enterPassword');
   const description = step === 'email'
-    ? copy(signingUp ? 'emailStepIntro' : 'signInEmailIntro')
+    ? (signingUp ? copy('emailStepIntro') : '')
     : step === 'reset-email' ? copy('confirmEmailIntro')
     : step === 'otp' ? copy('otpStepIntro')
     : step === 'reset-otp' ? copy('resetOtpIntro')
@@ -68,13 +69,39 @@ export function AuthCredentialsScreen({
       <Text accessibilityRole="header" style={[typography.title, {
         color: colors.text, fontSize: compact ? 32 : 38,
         lineHeight: compact ? 39 : 46,
+        // Sign-in changes its heading in place; the email field stays put.
+        minHeight: primarySignIn
+          ? (compact ? authPreviewLayout.signInTitleMinHeightCompact
+            : authPreviewLayout.signInTitleMinHeight)
+          : undefined,
       }]}>{title}</Text>
       {description ? <Text style={[typography.body, { color: colors.muted, opacity: 0.76 }]}>
         {description}
       </Text> : null}
     </View>
     <View style={{ gap: spacing.sm }}>
-      {step === 'email' || step === 'reset-email' ? <TextField
+      {primarySignIn ? <>
+        {/* Keep this SAME controlled email TextField mounted across both
+            stages. Only the heading changes and Password appears below. */}
+        <TextField
+          key="sign-in-email"
+          autoFocus={step === 'email'}
+          editable={step === 'email'}
+          label={copy('email')} variant="bare"
+          value={email} onChangeText={onChangeEmail}
+          placeholder={copy('emailPlaceholder')}
+          keyboardType="email-address" autoCapitalize="none" autoCorrect={false}
+          autoComplete="off" textContentType="none" returnKeyType="done"
+        />
+        {step === 'password' ? <TextField
+          key="sign-in-password" autoFocus
+          label={copy('password')} variant="bare"
+          value={password} onChangeText={onChangePassword}
+          placeholder={copy('passwordPlaceholder')} secureTextEntry
+          autoCapitalize="none" autoCorrect={false}
+          autoComplete="off" textContentType="none" returnKeyType="done"
+        /> : null}
+      </> : step === 'email' || step === 'reset-email' ? <TextField
         key={step} autoFocus
         label={copy('email')} variant="bare"
         value={step === 'email' ? email : recoveryEmail}
@@ -95,12 +122,6 @@ export function AuthCredentialsScreen({
         keyboardType="number-pad" maxLength={6}
         autoComplete="off" textContentType="none" returnKeyType="done"
       /> : <>
-        {step === 'password' && !signingUp && !recovery ? <Text
-          accessibilityLabel={email}
-          numberOfLines={2}
-          style={{ color: colors.text, fontSize: compact ? 22 : 26, lineHeight: compact ? 28 : 34 }}>
-          {email}
-        </Text> : null}
         <TextField
           key={step} autoFocus
           label={copy('password')} variant="bare"
