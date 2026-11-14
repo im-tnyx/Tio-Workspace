@@ -39,7 +39,9 @@ A trustworthy Android/iOS workout diary that **requires an account** but stores 
 
 **Future membership policy (ADR-014):** Supabase Sync will synchronize the **complete supported workout dataset** only for a paid Tnyx member who **separately enables Sync** in Settings. Membership purchase alone cannot trigger upload. Default Local Only and user-owned Google Drive/iCloud Personal Backup do **not** require Sync membership. Price, subscription lifecycle and implementation are not yet approved.
 
-**Owner-selected limits/security and deferred business policy (ADR-017):** Define **minimum and maximum** bounds for passwords, optional display username, exercise/program/routine names and counts, custom exercises, exercise slots and sets. Exact **candidate values** and validation boundaries are in [limits/OTP review pack](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md) and are **not yet approved**. Server-enforced OTP resend/verify protection, email confirmation and no-guest access are required; cached previously verified offline sessions remain permitted. **Optional PIN/biometric app lock is not part of MVP. Membership/paywall, billing and premium sync are deferred until after the workout MVP is complete**; preserve future capability interfaces, UUIDs and consent boundaries now to reduce rework, without implementing or gating local workouts.
+**Owner-selected limits/OTP/membership (ADR-017):** password **8–64**, optional username **3–16** graphemes, **max 50 programs/account and 30 routines/program** with no creation minimum (these are count quotas, **not title length caps**), max 30 exercises/routine, **sets per exercise 1–8**, max 40 completed-session exercises. **Custom exercise creation is FUTURE paid-membership-only, max 50/member**; free MVP provides curated Library, plans/routines and local workouts **without a Create Custom Exercise action**. Signup OTP targets are 6 digits/10 min/60 s resend/5 sends per email-hour/5 wrong attempts/15 min cooldown, subject to provider/server enforcement. **CAPTCHA deferred**, as are app lock, membership/payments and premium Sync. See [canonical limits](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md); the code/backend have not been configured.
+
+**Selected application identifiers:** Android application ID and iOS bundle ID **`com.tnyx.tio`**. Keep visible app name **Tnyx** and existing repo/backup identifiers unchanged; ownership, store uniqueness, build signing and native registration require verification.
 
 ## Target platforms and proposed stack
 - iOS and Android through React Native, Expo, TypeScript and Expo Router.
@@ -47,6 +49,8 @@ A trustworthy Android/iOS workout diary that **requires an account** but stores 
 - **Owner-selected:** Expo SQLite + Drizzle ORM/Drizzle Kit + native SQLCipher for local records and versioned migrations (ADR-010); functionality and encryption are not yet tested.
 - Expo SecureStore for small secrets/key material and a secure session storage adapter.
 - Google Drive/iCloud integrations are **planned**, not currently set up.
+
+**Exercise-library MVP scope refinement:** free app uses the **curated exercise catalog only**; do not expose functional custom exercise creation before the separately approved membership phase (later maximum 50 per eligible member). Program/routine creation and core workout logging remain free, with no membership gates.
 
 ## MVP screens and flows
 | Screen | User goal | Offline availability |
@@ -90,7 +94,7 @@ No multi-account/add-account/switch-account UI, community features, social feed,
 Workout save reliability, crash-free sessions, startup-to-dashboard time, offline completion rate, restore success in tests and percentage of users who explicitly activate cloud features. Avoid analytics on workout content without informed consent.
 
 ## Open product decisions
-Final app branding/IDs and visual polish; exercise catalog licensing; future Google/Apple login; optional PIN/biometrics and recovery/lockout UX; exact key lifecycle and future backup cryptography/provider UX; AI provider and quotas. **Approved MVP scope:** email/password, local exercises/plans, offline workout sets/reps/weight, history/progress, settings, logout and explicit erase warnings. Not a Phase 1 implementation approval.
+Original app icon, ID uniqueness/registration and visual polish; exercise catalog licensing; future Google/Apple login; optional PIN/biometrics and recovery/lockout UX; exact key lifecycle and future backup cryptography/provider UX; AI provider and quotas. **Approved MVP scope:** email/password, local exercises/plans, offline workout sets/reps/weight, history/progress, settings, logout and explicit erase warnings. Not a Phase 1 implementation approval.
 
 ---
 

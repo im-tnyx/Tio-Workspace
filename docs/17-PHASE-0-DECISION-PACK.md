@@ -28,7 +28,7 @@
 
 | Ref | Decision needed | Working recommendation / selection | Risk if undecided | Owner status |
 |---|---|---|---|---|
-| D01 | Product name/identity | **Tnyx** final app display name; repo stays `Tio-Workspace`; choose Android application ID, iOS bundle ID and original icon/logo | Medium | ✅ Name selected (ADR-016); ⬜ IDs/icon pending |
+| D01 | Product name/identity | **Tnyx** display name; Android application ID and iOS bundle ID **`com.tnyx.tio`**; repo still `Tio-Workspace` | Medium | ✅ App name/ID selected (ADR-016); ⬜ platform ownership/registration and original icon pending |
 | D02 | Sign-in options | Supabase **email/password + required email OTP signup verification**; no guest; Google/Apple optional later; rate/expiry config needs native/server validation | High | ✅ Auth policy selected (ADR-011/017); quota numbers pending |
 | D03 | Offline session policy | Previously verified bound identity may log workouts offline; remote revocation is unknown until online | **High** | ✅ Trade-off accepted (ADR-011) |
 | D04 | **No account switching** / logout | **One locally bound account per installation**; no second login while bound; logout locks retained history, separately confirmed erase/reset required | **High** | ✅ Policy approved (ADR-011) |
@@ -46,9 +46,9 @@
 
 **D15 — Typography, Hindi and internationalization (latest ADR-016):** Default OS / Custom app font with Hindi fallback; future language selection is separate. **Minimal neutral Light/Dark UI is primary; Teal `#00BFBF` is a restrained accent**, superseding earlier Violet/full-Teal proposals. Neutral CTAs, neutral Glass tints and optional small Teal selection/progress cues; contrast-safe variants remain proposed, not verified. See [DESIGN](../DESIGN.md) and [UX-11/12](08-TEST-PLAN.md).
 
-**D16 — Input and count limits:** min **and** max are required for password, optional profile username, exercise/program/routine names, number of programs/custom exercises/routines, exercises per routine and sets. [Candidate numeric caps](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md) are **pending owner approval** and native/domain/provider validation, not selected values. Do not conflate current program quotas with future paid membership.
+**D16 — Owner-selected limits:** password **8–64**, optional username **3–16**, program count max **50/account**, routines max **30/program**, exercises/routine max **30**, sets/exercise **1–8**, completed-session exercises max **40**. **No program/routine creation minimum or title-length product limit.** Custom exercise creation **future paid member only, max 50**, not present in MVP. Provider/native evidence pending; see [canonical limits](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md).
 
-**D17 — Verified signup / deferred membership:** online email/password + **email OTP signup verification** with server-enforced spam/attempt controls; no guest/unverified workout access; preserve previously verified cached offline workout use. App lock is deferred. **Membership/paywall/paid Sync are deferred until after core workout MVP is complete**; keep stable UUID and clean future entitlement/consent interfaces without shipping any billing or upload now (ADR-017).
+**D17 — Verified signup and future membership:** mandatory online email/password + signup OTP with **6-digit/10-minute/60-second resend/5 sends-email-hour/5 wrong attempts/15-minute cooldown targets** and **server-side enforcement yet to verify**. No CAPTCHA in current MVP; app lock deferred. No guest; previously verified offline same-account use remains. Membership, billing, paid Sync and member-only custom exercise creation all deferred until after core MVP; stable domain boundaries planned only (ADR-017).
 
 ## 🧱 Architecture trade-offs at a glance
 
@@ -97,7 +97,7 @@ flowchart TD
 ## 📋 Required owner sign-off
 
 - [x] Record owner-selected **D02–D06 policy, D10 MVP scope and D13 tooling** in ADR-010/011; selection does not certify implementation security.
-- [ ] Resolve **D01 package IDs/icon**, D07–D08, D11–D12, numerical D16/OTP D17 provider settings, Custom font license and relevant native validation before their implementation phases; **D09 app lock deliberately deferred**.
+- [ ] Verify owner-selected **`com.tnyx.tio`** uniqueness/registration and original icon; remaining D07–D08/D11–D12, actual Supabase OTP/password rate enforcement, custom font/license and native QA remain gated. Product limit numbers approved; **CAPTCHA and app lock deferred**.
 - [x] Confirm **no account switching**, same-account re-login after logout, and separate confirmed erase/reset; server account deletion details remain a separate future UX.
 - [x] Accept offline local access despite unverifiable remote revocation until reconnection; online functions still require server authorization.
 - [x] Approve portable user-held recovery **principle** and **optional-backup OFF default + clear-data empty/restore UX** (ADR-012).

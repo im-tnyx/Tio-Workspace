@@ -20,7 +20,7 @@
 
 | Gate | What must be true | Current |
 |---|---|---|
-| Product | **Tnyx name, Minimal neutral dominant UI with limited Teal `#00BFBF` accent, Default/Custom Hindi-ready typography** and MVP scope selected (ADR-016/011); app IDs/icon, exact theme tokens/font and native QA pending | ⬜ Detailed design/native QA pending |
+| Product | **Tnyx name, Minimal neutral dominant UI with limited Teal `#00BFBF` accent, Default/Custom Hindi-ready typography** and MVP scope selected (ADR-016/011); app ID `com.tnyx.tio` selected, ownership check/icon, exact theme tokens/font and native QA pending | ⬜ Detailed design/native QA pending |
 | Session | **Email/password + mandatory signup email OTP, no guest, server anti-abuse controls** (ADR-017), plus previously verified offline access (ADR-011); test revocation and errors | ⬜ Provider/numeric settings & runtime evidence pending |
 | Data isolation | **One account/installation, no switching, logout retains data; separate reset** selected; native key/erase lifecycle and tests still required | ⬜ Technical validation pending |
 | Native build | SQLCipher build/validation strategy accepted (Expo Go limitations understood) | ⬜ Pending |
@@ -29,10 +29,10 @@
 | Secrets | AI provider secrets server-side; publishable keys understood | ✅ Requirement recorded, **not tested** |
 | OS-managed backup privacy | Android legacy/12+ cloud/device-transfer and iOS native exclusions, plus stale-key fail-closed recovery | ⬜ Native validation pending (`SEC-04/05`) |
 | Backup | **ADR-012 optional backup OFF by default** and cleared-data empty/restore UX selected; portable secret required. Providers, encryption implementation, auto timing and restore proofs deferred to later phase | ✅ UX policy recorded; future tests pending |
-| Tests | Owner-selected mandatory email OTP/no guest and min/max validation, plus existing single-account acceptance; **candidate numeric caps and provider rate values still require owner/provider validation** | ⬜ Runtime evidence pending |
+| Tests | Password 8–64, optional username 3–16, program/routine count max 50/30, sets 1–8 and deferred member-only custom exercises max 50 selected; OTP targets approved, **provider/server feasibility unverified** | ⬜ Runtime evidence pending |
 | Owner authorization | Explicit written approval for Phase 1 implementation | ⬜ Pending |
 
-**New prerequisite from ADR-017:** Phase 1.1 stays a **shell with mock/nonfunctional Auth placeholder only**, no signup emails, OTP configuration, Supabase Auth or workout encryption. Phase 1.2 implements email/password registration with **email OTP confirmation, no guest access and enforced anti-abuse** after separate approval and provider configuration. Phase 1.4–1.6 implement exact **owner-approved min/max input/cap validators** for custom exercises, plans/programs, routines and sets; test without hidden history truncation. No optional app lock. Membership/billing and paid Sync start **only after the core workout MVP is complete** in separately gated work; feature/domain/data contracts should stay future-compatible without premature paywall implementation.
+**ADR-017 refined scope:** Phase 1.1 is shell placeholders only; Phase 1.2 separately implements verified email OTP with selected server-enforced targets and **no CAPTCHA**. Phase 1.4–1.6 implement **count-based program/routine/exercise/sets caps** with free curated Library, **no functional Create Custom Exercise UI or membership gate**. Later approved membership enables max 50 custom exercises/member and separately gated paid Sync; app lock, billing and paywall are deferred. All native/provider tests pending.
 
 ## 02 · Proposed Phase 1 slices **after** approval
 
@@ -51,7 +51,8 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 ## 03 · Validation matrix
 
 - [ ] `AUTH-01–14` (including `AUTH-10`): signup **email OTP**, no-guest verification gate, brute-force/resend handling, reopening and previously verified offline access, wrong user, revoked session and explicit reset.
-- [ ] **Proposed numeric policy owner-approved before implementation** and `LIMIT-01–04` for min/max lengths/counts, Unicode/Hindi labels, transactional maxes and no silent legacy data truncation.
+- [x] Product numbers selected: password **8–64**, username **3–16**, programs max 50, routines/program max 30, planned exercise slots max 30, sets **1–8**, sessions max 40 and later members' custom exercises max 50. No program/routine creation minimum or title-length quota.
+- [ ] Implement and test **LIMIT-01–05 P0** in appropriate approved slices, **LIMIT-06 P2** only in future membership; independently verify actual Auth/OTP provider rate limits and anti-abuse without CAPTCHA.
 - [ ] `SEC-06` for OTP/replay/abuse, unverified/anonymous/wrong-account bypass and sensitive logging, in addition to `SEC-01–05`.
 - [ ] `DATA-01/02/03/04/05/06/07`: persistence, crash recovery, deletion, offline upgrades, interrupted migrations and account isolation.
 - [ ] `SEC-01/02/03`: no production secrets in mobile binary; verified SQLCipher and fail-closed key/cipher failure.
@@ -69,7 +70,8 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 - [x] Owner selected **four initial root tabs in a Standard bottom bar with default Glass material**, config-driven future tab counts/order and optional future Pill layout; root scroll-revealed TopBar, nested back TopBar, Settings-only Solid, Light/Dark and dumb token-driven screens (ADR-015; design policy only).
 - [x] Owner selected **Tnyx name, minimal neutral black/white/gray theme with only limited `#00BFBF` Teal accent, and Default/Custom Hindi-ready typography** (ADR-016; design direction only).
 - [ ] Verify proposed **neutral black/white/gray tokens, Glass tint/overlay and limited Teal `#00BFBF` accent contrast** on Light/Dark and Android/iOS, including selected tab labels and neutral primary CTAs; no decorative extra accent. Custom font family/license/weights, first locale release, initial Light/Dark, scroll thresholds and real-device Hindi/accessibility QA still pending. See [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md).
-- [ ] Owner documents **Tnyx** Android application ID, iOS bundle ID, logo/icon and Custom font licensing. Repo remains `Tio-Workspace`; no fake design sign-off.
+- [x] Owner selected **Android application ID + iOS bundle ID `com.tnyx.tio`**.
+- [ ] Verify store/platform uniqueness, signing/ownership, original icon and Custom font licensing; repository unchanged.
 - [ ] Scope exclusions for the initial **Phase 1.1 shell** are explicit: no auth connection, SQLCipher workout store, AI, backups, paid Sync, billing or release.
 - [ ] Later native security and portability gates remain pending until real Android/iOS builds produce evidence.
 

@@ -13,7 +13,7 @@ Your account stays signed in. Your workout history stays on your device.
 ![Architecture](https://img.shields.io/badge/ARCHITECTURE-LOCAL--FIRST-13B89A?style=for-the-badge)
 ![Platforms](https://img.shields.io/badge/PLATFORMS-iOS%20%2B%20Android-334155?style=for-the-badge)
 
-**Owner-selected app display name:** **Tnyx** (2026-11-14). The existing repository is still `im-tnyx/Tio-Workspace`; GitHub paths and versioned backup format names are not renamed. Android application ID, iOS bundle ID and logo/icon still require separate approval.
+**Owner-selected app display name:** **Tnyx** (2026-11-14). The existing repository is still `im-tnyx/Tio-Workspace`; GitHub paths and versioned backup format names are not renamed. Android application ID and iOS bundle ID are owner-selected as `com.tnyx.tio` (registration/ownership unverified); logo/icon remains pending.
 
 ![React Native](https://img.shields.io/badge/React_Native-Planned-20232A?style=flat-square&logo=react&logoColor=61DAFB)
 ![Expo](https://img.shields.io/badge/Expo-Planned-111827?style=flat-square&logo=expo&logoColor=white)

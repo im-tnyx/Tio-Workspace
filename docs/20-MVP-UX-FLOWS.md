@@ -52,6 +52,8 @@ flowchart TD
 
 **Final selected palette direction (ADR-016):** Tnyx uses a **minimal monochrome base** (white/near-white in Light, near-black/charcoal in Dark) with **limited Aqua Teal `#00BFBF` accent** from the uploaded reference for selected tabs, progress and small highlights. **Default primary buttons remain neutral black/white**; no Teal-heavy backgrounds, extra decorative colors or gradients. Glass/Solid navigation uses neutral tints; color never alone indicates status. Bright Teal with small white labels is only ~2.28:1 contrast, so use approved semantic accessible ink/link variants. See [DESIGN](../DESIGN.md) and [UX-12](08-TEST-PLAN.md).
 
+**Application ID:** `com.tnyx.tio` selected for Android and iOS, subject to ownership/registration verification. Visible name is Tnyx; repo and versioned archive IDs remain unchanged.
+
 ## 02 · Screen contract
 
 | Screen | Primary CTA | Offline | Empty/error state |
@@ -60,7 +62,7 @@ flowchart TD
 | Auth | **Online email/password Signup → Email OTP verify**; existing same-bound Sign in | No for new signup/verification | Pending/wrong/expired OTP, resend 429/cooldown, no guest, account mismatch denied, network error; unverified cannot open Home/workout DB |
 | Home | Start / Resume Workout | Yes | “Create your first plan” / “Start a free workout” |
 | Workout (root) | Start/resume, plans and history links | Yes | Empty plans, in-progress resume |
-| Exercise Library (Library root) | Add exercise | Yes, local list | No results; add custom exercise |
+| Exercise Library (Library root) | Browse/search **curated exercises only** in current MVP | Yes, offline curated list | Empty results, choose exercise; **no custom-create screen until future membership, max 50/member** |
 | You (root) | Account, Progress and Settings links | Mostly | Bound identity / offline state |
 | Plan Editor | Save workout plan | Yes | Missing required exercise fields |
 | Active Workout | Log/complete sets | Yes | Autosave/transaction failure and resume |
@@ -106,7 +108,7 @@ flowchart TD
 | Reauth | “Sign in again with the account already linked to this device.” | Do not claim the account was deleted because internet is unavailable |
 | Different account login | “This device is linked to another Tnyx account. Sign in with that account; changing accounts is not supported.” | Block before data access; no automatic reset |
 
-**Owner-approved security/limit UX (ADR-017):** Signup is online **email/password plus required email OTP code verification** with server-side resend/attempt defenses; countdown/disabled resend are presentation only. Show clear locked/unverified, code-expired, rate-limited, network and recovery states; never reveal whether an email already exists unnecessarily. Offline cached workout use remains available **only** for a previously verified matching installation under ADR-011. The optional username is a **profile display field**, not a sign-in ID; shared inputs use localized min/max feedback and grapheme-safe Hindi counters. Candidate numeric lengths/counts are in the [limits pack](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md), **not yet approved**. **No PIN/biometric app lock, membership purchase or paywall UI in MVP.**
+**Owner-selected security/limit UX (ADR-017):** required email/password signup OTP and no-guest access; target 6 digits/10-minute expiry/60-second resend/5 sends-hour/5 incorrect attempts/15-minute cooldown, requiring real provider/server verification; **CAPTCHA not in MVP**. Password 8–64, optional username 3–16 graphemes, program/routine creation max 50/30 (no minimum; **not name-length limits**), sets 1–8. Free Library uses curated exercises; **custom exercise creation reserved for later paid members (max 50)**, with no current paywall or add-custom action. Previously verified same-account offline use retained. See [limits](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md).
 
 ## 05A · Future paid Sync membership gate
 
