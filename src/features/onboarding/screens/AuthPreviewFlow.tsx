@@ -20,8 +20,8 @@ export function AuthPreviewFlow({ mode, onExit }: {
   const [password, setPassword] = useState('');
 
   const onBack = () => {
-    Keyboard.dismiss();
     if (step === 'email') {
+      Keyboard.dismiss();
       setCode('');
       setPassword('');
       onExit();
@@ -35,13 +35,15 @@ export function AuthPreviewFlow({ mode, onExit }: {
   const onContinue = () => {
     const value = step === 'email' ? email : step === 'otp' ? code : password;
     if (!canContinueAuthPreview(step, value)) return;
-    Keyboard.dismiss();
     if (step === 'password') {
+      Keyboard.dismiss();
       // Never transmit credentials, mark a fake OTP verified, or enter the app.
       setPassword('');
       Alert.alert(copy(mode === 'sign-up' ? 'signUp' : 'signIn'), copy('authComingLater'));
       return;
     }
+    // Don't dismiss the keyboard between steps. The keyed next input
+    // autofocuses so its email/numeric/password keyboard is ready immediately.
     setStep(nextAuthPreviewStep(step));
   };
 
