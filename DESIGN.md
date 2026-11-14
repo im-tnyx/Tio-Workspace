@@ -25,7 +25,7 @@
 | Accessibility | Text scaling, touch targets, screen reader labels | Color-only statuses |
 | Consistency | Shared spacing, typography and form states | Different patterns for the same task |
 
-## 02 · Owner-selected minimal neutral UI + limited Teal accent
+## 02 · Neutral default; future user-selectable accents
 
 | Semantic token | Light | Dark | Use |
 |---|---|---|---|
@@ -36,18 +36,20 @@
 | `text.primary` | `#111111` | `#F7F7F7` | Main content text |
 | `text.secondary` | `#646464` | `#AAAAAA` | Supporting labels/metadata (candidate) |
 | `stroke.default` | `#E5E5E5` | `#34363B` | Subtle separation (candidate) |
-| `brand.accent` | `#00BFBF` | `#00BFBF` | **Limited Aqua Teal accent**: selected tab state, progress, small highlights |
-| `brand.onAccent` | `#062629` | `#062629` | Readable dark text/icons only when a Teal-filled chip/segment is necessary |
-| `brand.link` | `#006A6A` | `#57E2E2` | Candidate accessible text-link treatment, not bright teal on white |
+| `accent.selected` | `#111111` | `#F7F7F7` | **Current default: Neutral**, for selected tabs and progress; no mandatory colored accent |
+| `accent.future.teal` | `#00BFBF` | `#00BFBF` | **Future preset candidate**, NOT current default or implemented user setting |
+| `action.link` | `#111111` | `#F7F7F7` | Neutral link ink now; future accent-aware contrast-safe variant later |
 | `status.danger` | `#C73853` | `#FF758D` | Meaningful error/destructive state only, never decorative |
 
-**Latest owner selection (ADR-016 update, 2026-11-14): Minimal + Teal accent**, replacing the prior teal-led primary CTA direction. The UI uses **neutral black/white/gray backgrounds, primary actions and typography**; the screenshot-sampled Aqua Teal **`#00BFBF` is an accent only** for selected tab indicators, progress and restrained highlights. Avoid competing decorative accent colors, unnecessary colored surfaces, decorative gradients and copied third-party branding. Error/destructive color remains an essential semantic exception. **These neutral hex values and link/Glass-derived variants are candidate tokens** pending accessibility/device QA; the minimal color-role decision is owner-selected.
+**Owner-selected latest change (ADR-016): Black/White/Gray is the DEFAULT, with no compulsory Teal or other chromatic accent.** Primary buttons, navigation selection and progress use neutral tones. A **future Settings → Appearance → Accent Color** selector may offer user-chosen named presets like those visible in the screenshots (Blue, Cyan, Green, Lime, Yellow, Orange, Pink, Magenta, Purple, White/Neutral), with Teal `#00BFBF` only one additional possible color. Exact palette and user controls need separate approval; **no accent picker in initial MVP**. No copying third-party UI/branding; semantic warning/error colors remain independent.
 
-**Contrast design warning:** `#00BFBF` + white small text yields only about **2.28:1**. Main CTAs use candidate **neutral `action.primary` / `action.onPrimary`** instead. For an occasional Teal-filled chip, candidate dark `#062629` gives readable contrast; on white, use a darker link token such as `#006A6A`. Verify all foregrounds, Glass overlays, selected/deselected tab labels, disabled/focus states and dynamic type on both devices. This palette is **not certified by documentation alone**.
+**Contrast:** Small white labels on bright Teal `#00BFBF` are only ~2.28:1, so a future color palette needs semantic foreground and accessible variant resolution. Neutral default must also meet native Light/Dark × Glass/Solid contrast. Never apply one accent to every surface or use color alone to communicate state.
 
 Tokens must be checked for accessible text contrast in real light/dark UI; these are proposals pending visual QA. No hard-coded color values inside feature screens once a token system exists.
 
-**UI treatment across themes:** Light = white/near-white base with dark primary text/actions; Dark = near-black/charcoal base with white primary text/actions. Glass surfaces use **neutral** blur/tint in both themes, not saturated Teal. Selected BottomTabBar icon/label may use Teal if its contrast passes; otherwise use neutral high-contrast ink plus a small Teal indicator. Solid surfaces stay opaque and neutral. Keep the default Standard tab layout and future Pill possibility independent from material/color.
+**Current themes:** Light = white/near-white with dark selected elements, Dark = charcoal/black with white selected elements; buttons, links, focus and progress remain functional in Neutral. Glass and Solid have neutral tints. Future accent preference is independent of Light/Dark, Glass/Solid, font and tab layout. Picker is **future-only**, not part of MVP; OS-following Light/Dark startup remains a separate decision.
+
+**Future theme contract:** central `src/shared/theme/tokens/` resolves `appearance × material × accentPreference`; default `accentPreference = Neutral`. Future curated named presets persist locally, require contrast-safe foreground/focus/disabled states and fallback to Neutral if invalid/unavailable. The future preference must never change account binding, workouts, backups or sync. This is architectural extensibility only: **no accent choice control in initial MVP**.
 
 ## 02A · Owner-selected iOS-inspired shared shell (ADR-015)
 
@@ -75,7 +77,7 @@ Review proposed [MVP screens & interaction flows](docs/20-MVP-UX-FLOWS.md) befor
 
 ### Brand, typography and multilingual foundation (owner-selected ADR-016)
 
-**App display name: Tnyx.** Repository `Tio-Workspace` stays unchanged. **Owner-selected Minimal + Teal accent** means neutral UI is dominant; screenshot Aqua Teal `#00BFBF` is **not the default button or page background**. Use it sparingly for selection/progress; no separate decorative Mint accent, only necessary semantic status colors. Exact neutrals/contrast need device QA.
+**App display name: Tnyx.** Repo `Tio-Workspace` unchanged. Default **Black/White/Gray with no colored accent**; future user-selected accent (Teal, Blue, etc.) may influence only safe semantic highlights, not page backgrounds or core action colors. Future palette and native contrast QA remain pending.
 
 **Settings → Appearance → Typography** offers two independent, persistent local choices:
 - **Default:** device/system font stack, including OS language/script fallback.
@@ -98,7 +100,7 @@ These are **future folder boundaries only**: no application code or folders have
 | Auth | Sign up / Sign in | Simple form, error clarity, stay signed in |
 | Home | Start Workout | One dominant action and resume state |
 | Live Workout | Add / complete set | Giant legible numbers; immediate autosave feedback |
-| Exercise Library | Search / add exercise | Local-first search, clear custom exercise UI |
+| Exercise Library | Browse/search curated exercises | Current free MVP curated-only; custom exercise creation future paid-member feature (max 50) |
 | Workout Plan | Edit schedule | Reorder with explicit save state |
 | History | Inspect previous workouts | Fast filtering and stable historical values |
 | Progress | View local insights | Accessible charts, explicit units |
@@ -131,7 +133,7 @@ Suggested hierarchy: **Overview → Decisions → Flows → Edge cases → Verif
 
 ## 06A · Proposed Phase 0 visual freeze for owner review
 
-**Owner-selected (ADR-015):** **initially four bottom-root screens Home, Workout, Library, You** through a **changeable navigation registry** (future number/order owner-controlled), a **Standard bar layout now**, and optional Pill layout reserved for later; all detailed screens hide the bottom bar. Shared scroll-revealed root TopBar (nested immediately visible), **config-driven Standard bottom bar with default Glass material** (Pill layout deferred), centralized theme tokens, dumb screens and independent Glass/Solid × Light/Dark preferences. **Selected (ADR-016):** Tnyx name, **Minimal neutral black/white/gray UI with limited `#00BFBF` Teal accent**, and Default/Custom Hindi-ready typography. **Pending:** exact contrast-tested neutral/link/Glass tokens, Custom font/license, initial Light/Dark, scroll reveal tuning, Android/iOS application IDs, icon and real-device QA.
+**Owner-selected (ADR-015):** **initially four bottom-root screens Home, Workout, Library, You** through a **changeable navigation registry** (future number/order owner-controlled), a **Standard bar layout now**, and optional Pill layout reserved for later; all detailed screens hide the bottom bar. Shared scroll-revealed root TopBar (nested immediately visible), **config-driven Standard bottom bar with default Glass material** (Pill layout deferred), centralized theme tokens, dumb screens and independent Glass/Solid × Light/Dark preferences. **Selected (ADR-016):** Tnyx, **neutral black/white/gray default without Teal**, optional user-selectable accent picker later (not in MVP), Hindi-ready fonts. **ADR-017:** saved program and routine titles 3–25 Unicode graphemes, in addition to separate maximum creation counts.
 
 Use the [Phase 0 design and Phase 1 approval pack](docs/22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) for exact review choices, Restore/Skip versus future Sync automatic hydration copy, acceptance criteria and the owner sign-off template. Do not read this paragraph as sign-off, app code authorization or a delivered UI.
 

@@ -5,7 +5,7 @@
 [← Docs hub](00-INDEX.md) · [Auth security](04-AUTH-AND-SECURITY.md) · [Data model](03-LOCAL-DATA-MODEL.md) · [Test plan](08-TEST-PLAN.md) · [Readiness](21-PHASE-1-READINESS.md)
 
 > [!IMPORTANT]
-> The owner approved **Android/iOS identifier `com.tnyx.tio`**, password **8–64**, optional username **3–16**, maximum **50 programs per account** and **30 routines per program** (no creation minimum; not name-length limits), sets per exercise **1–8**, and future **members-only custom exercises max 50**. CAPTCHA is deferred. Remaining discussed program/routine/session caps and OTP security targets below are selected as the baseline, **not proof of provider-enforced limits**. Do not implement paid membership or custom-exercise creation before a separate future phase approval.
+> The owner approved **Android/iOS identifier `com.tnyx.tio`**, password **8–64**, optional username **3–16**, maximum **50 programs per account** and **30 routines per program** (no creation minimum), **plus 3–25 Unicode graphemes per saved program/routine title**, sets per exercise **1–8**, and future **members-only custom exercises max 50**. CAPTCHA is deferred. Remaining discussed program/routine/session caps and OTP security targets below are selected as the baseline, **not proof of provider-enforced limits**. Do not implement paid membership or custom-exercise creation before a separate future phase approval.
 
 ## 01 · Approved behavior and trust boundary (ADR-017)
 
@@ -24,6 +24,8 @@
 | **Password** for signup/reset | **8 characters** | **64 characters** | Preserve exact input; no silent trimming, truncation or arbitrary symbol rules; validate on the actual Auth server and protect against known compromised passwords when supported |
 | **Username** (optional profile display handle, not sign-in ID) | **3 Unicode grapheme clusters** | **16 grapheme clusters** | Hindi/Devanagari permitted; normalize carefully and reject spoofing/control characters |
 | Email address | Valid format | 254 chars (**technical proposal**) | Provider-authoritative validation; not a selected product quota |
+| **Saved program title** | **3 grapheme clusters** | **25 grapheme clusters** | Unicode/Hindi-aware, validated at save; separate from program count |
+| **Saved routine/day title** | **3 grapheme clusters** | **25 grapheme clusters** | Unicode/Hindi-aware, validated at save; separate from routine count |
 | **Programs per account** | **No creation minimum; 0 allowed** | **50** | Count saved `workout_plans`, not completed history |
 | **Routines/days per program** | **No creation minimum; 0 allowed** | **30** | Count `plan_days`, including empty valid programs |
 | Exercises per routine/day | 0 when editing | 30 | Count `plan_exercises`; completion rules separate |
@@ -31,9 +33,9 @@
 | Exercises per completed session | 1 on finish | 40 | Count `session_exercises` |
 | **Custom exercises** | No mandatory minimum | **50 per eligible future member** | **Future members-only**; unavailable to create in MVP; curated catalog remains usable without membership |
 
-**Crucial owner correction:** The program and routine limits are about **how many can be created**, **not the character length of their names**. Do not enforce invented program/routine title min/max product limits; still apply basic safe text and storage/resource validation. Custom exercise creation is not in the free MVP, so no custom-name length product quota is decided now.
+**Latest clarification:** There are TWO separate controls: user may create **0–50 programs/account** and **0–30 routines/program** (zero minimum), while **each saved program/routine name is 3–25 user-perceived Unicode graphemes** including Hindi. Allow temporary empty editing drafts, reject invalid final saves with localized errors, never silently truncate. Custom exercises stay future paid-members-only, so their name-length product quota remains undecided.
 
-**Validation:** For username, count user-perceived Unicode graphemes, not JS UTF-16 units; passwords are not normalized/truncated and must match the actual Supabase policy. The user chose a password minimum of **8**; that does not make weak passwords safe, so use compromised-password and server anti-abuse protections where available. Client limits alone are not security gates. Domain/application validators and local DB transactions enforce applicable program/routine/sets limits; future paid custom-exercise creation requires an authoritative **server entitlement**. No historical workout sessions are silently deleted, capped by plan quotas or hidden because a later limit/payment policy changes. Support reviewed import/legacy over-limit recovery rather than auto-pruning.
+**Validation:** For username and saved program/routine names, count user-perceived Unicode graphemes, not JS UTF-16 units; passwords are not normalized/truncated and must match the actual Supabase policy. The user chose a password minimum of **8**; that does not make weak passwords safe, so use compromised-password and server anti-abuse protections where available. Client limits alone are not security gates. Domain/application validators and local DB transactions enforce applicable program/routine/sets limits; future paid custom-exercise creation requires an authoritative **server entitlement**. No historical workout sessions are silently deleted, capped by plan quotas or hidden because a later limit/payment policy changes. Support reviewed import/legacy over-limit recovery rather than auto-pruning.
 
 ## 03 · Owner-selected OTP targets (NOT configured or verified)
 
@@ -64,7 +66,7 @@
 
 **Owner has selected policy:** min/max across sensitive input/collections, verified email OTP signup with real anti-abuse defenses, no guest access, optional app-lock **deferred**, membership **after** working app and upfront modularity to limit future refactor.
 
-**Still pending:** provider ability to enforce approved OTP targets and password 8–64, production SMTP/hook settings, optional username creation/uniqueness, custom-exercise membership entitlement design, native device/abuse tests, original app icon and verification of `com.tnyx.tio` ownership/uniqueness in both ecosystems. **Product numbers are selected; no backend controls are yet running.** CAPTCHA remains deferred.
+**Still pending:** provider ability to enforce approved OTP targets and password 8–64, production SMTP/hook settings, optional username creation/uniqueness, custom-exercise membership entitlement design, native device/abuse tests, original app icon and verification of `com.tnyx.tio` ownership/uniqueness in both ecosystems. **Product numbers including saved program/routine name 3–25 are selected; no backend controls are yet running.** CAPTCHA remains deferred.
 
 **Exit tests after separately approved work:** `AUTH-11/12/13/14`, `LIMIT-01/02/03/04`, `SEC-06` in [test plan](08-TEST-PLAN.md). Also preserve existing offline, logout, account-mismatch, ciphertext and OS-backup negative tests. **Phase 1.1 shell** remains nonfunctional placeholders; Auth is Phase 1.2, encrypted workout store is Phase 1.3, and feature limits are checked with respective local workout features (1.4–1.6). Future membership/Sync implementation is outside Phase 1.
 

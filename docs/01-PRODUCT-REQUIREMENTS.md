@@ -29,7 +29,7 @@ A trustworthy Android/iOS workout diary that **requires an account** but stores 
 9. The owner accepts that previously verified offline local access can continue until online revalidation; offline mode cannot detect remote revocation in real time. Server operations require valid server-side authorization.
 10. The owner selected an OS-protected **per-bound-account SQLCipher key** and a distinct **portable user-held backup recovery secret** as design principles. Actual key lifecycle, cryptographic format, recovery UX and Android/iOS validation are separate security gates.
 
-**Owner-selected branding and visual baseline (latest ADR-016; design only):** app display name **Tnyx** with **Minimal neutral black/white/gray Light/Dark UI**; screenshot-derived **Aqua Teal `#00BFBF` is a restrained accent for selection/progress, not primary CTA fill**. Keep normal primary buttons black/white, standard Glass/Solid neutral and semantic error states only when meaningful. Settings Typography remains **Default system / Custom app** with Hindi/Devanagari fallback; language selection is future i18n. Exact neutral/link/Glass shades, Custom font/license, app identifiers, icon and native contrast tests remain pending. No app code/assets authorized.
+**Owner-selected baseline (ADR-016):** Tnyx uses **neutral Black/White/Gray by default, no forced Teal**. Primary actions, selected tabs and progress work without a colored accent. **Future** user-selectable named accent colors are possible via Settings, with Teal one candidate only; **no accent picker in current MVP**. Material Glass/Solid, Light/Dark and Hindi-capable typography remain independent. Screenshot UI/branding will not be copied. Actual native contrast and future presets untested.
 
 **Owner-selected UI presentation (ADR-015; design only):** **Glass is default** for the iOS-inspired translucent shared TopBar and bottom dock; **Solid is available only in Settings → Appearance**, independently of Light/Dark. The **initial four configured root tabs** are **Home / Workout / Library / You**. A reusable navigation registry must support an owner-approved future change in tab count/order, without hardcoding four or letting user screens mutate the tabs. **Bottom-bar layout is Standard for MVP**, with an optional **Pill variant deferred**; Glass/Solid is a separate surface setting. The translucent Standard bar remains visible while scrolling root screens; nested/Auth/full-screen routes hide it. Root compact TopBar is hidden initially and revealed **only after scrolling**; nested/back TopBar appears immediately. All fields/buttons/sheets use future **`src/shared/theme/tokens/`** and `src/shared/ui/`. **Screens are dumb views**; scroll/route coordination lives in the app shell and state/business/SDK logic outside screens. Accessibility/no-blur Solid fallback preserves stored preference. UI preferences never cause cloud uploads; native testing remains pending.
 
@@ -39,7 +39,7 @@ A trustworthy Android/iOS workout diary that **requires an account** but stores 
 
 **Future membership policy (ADR-014):** Supabase Sync will synchronize the **complete supported workout dataset** only for a paid Tnyx member who **separately enables Sync** in Settings. Membership purchase alone cannot trigger upload. Default Local Only and user-owned Google Drive/iCloud Personal Backup do **not** require Sync membership. Price, subscription lifecycle and implementation are not yet approved.
 
-**Owner-selected limits/OTP/membership (ADR-017):** password **8–64**, optional username **3–16** graphemes, **max 50 programs/account and 30 routines/program** with no creation minimum (these are count quotas, **not title length caps**), max 30 exercises/routine, **sets per exercise 1–8**, max 40 completed-session exercises. **Custom exercise creation is FUTURE paid-membership-only, max 50/member**; free MVP provides curated Library, plans/routines and local workouts **without a Create Custom Exercise action**. Signup OTP targets are 6 digits/10 min/60 s resend/5 sends per email-hour/5 wrong attempts/15 min cooldown, subject to provider/server enforcement. **CAPTCHA deferred**, as are app lock, membership/payments and premium Sync. See [canonical limits](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md); the code/backend have not been configured.
+**Owner-selected limits/OTP/membership (ADR-017):** password **8–64**, optional username **3–16** graphemes, **max 50 programs/account and 30 routines/program** with zero permitted creation count **plus separately saved program/routine name lengths of 3–25 Unicode grapheme clusters**, max 30 exercises/routine, **sets per exercise 1–8**, max 40 completed-session exercises. **Custom exercise creation is FUTURE paid-membership-only, max 50/member**; free MVP provides curated Library, plans/routines and local workouts **without a Create Custom Exercise action**. Signup OTP targets are 6 digits/10 min/60 s resend/5 sends per email-hour/5 wrong attempts/15 min cooldown, subject to provider/server enforcement. **CAPTCHA deferred**, as are app lock, membership/payments and premium Sync. See [canonical limits](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md); the code/backend have not been configured.
 
 **Selected application identifiers:** Android application ID and iOS bundle ID **`com.tnyx.tio`**. Keep visible app name **Tnyx** and existing repo/backup identifiers unchanged; ownership, store uniqueness, build signing and native registration require verification.
 
@@ -50,7 +50,7 @@ A trustworthy Android/iOS workout diary that **requires an account** but stores 
 - Expo SecureStore for small secrets/key material and a secure session storage adapter.
 - Google Drive/iCloud integrations are **planned**, not currently set up.
 
-**Exercise-library MVP scope refinement:** free app uses the **curated exercise catalog only**; do not expose functional custom exercise creation before the separately approved membership phase (later maximum 50 per eligible member). Program/routine creation and core workout logging remain free, with no membership gates.
+**Exercise-library MVP scope refinement:** free app uses the **curated exercise catalog only**; do not expose functional custom exercise creation before the separately approved membership phase (later maximum 50 per eligible member). Program/routine creation and core workout logging remain free, with no membership gates. **Saved program/routine titles are 3–25 Unicode graphemes; no auto-truncation**.
 
 ## MVP screens and flows
 | Screen | User goal | Offline availability |
@@ -58,7 +58,7 @@ A trustworthy Android/iOS workout diary that **requires an account** but stores 
 | Welcome / Signup / Login / Password reset | Authenticate an account | New authentication requires internet |
 | Startup / Session gate | Resume existing account securely | Previously initialized local account available offline |
 | Dashboard | Today's plan, recent logs, quick start | Yes |
-| Exercise library | Find/create an exercise | Yes for locally cached exercises |
+| Exercise library | Browse/search/select curated exercises; no custom creation in MVP | Yes for cached curated data |
 | Workout session | Start, pause, record sets, reps, weights, notes, finish | Yes |
 | Workout plans | Build/edit schedule and exercises | Yes |
 | History & workout details | Review previous sessions | Yes |
@@ -69,7 +69,7 @@ A trustworthy Android/iOS workout diary that **requires an account** but stores 
 | Supabase Sync (future membership) | Full supported workout-data Sync with paid entitlement and explicit user opt-in | Online; **not in MVP** |
 
 ## Workout entry behaviour
-- Let users create an exercise with a name, muscle group, equipment and optional notes.
+- Let users browse/search/select **curated exercises**. Custom exercise creation is a **future paid-member feature, max 50/member**, not an MVP screen or action.
 - Plan a workout day with ordered exercises and target sets/reps/rest.
 - Record workout session start/end, per-set weight, reps, duration or distance (where applicable), warm-up flag, completion and notes.
 - Calculate duration, exercise history, personal records and progress locally, including after device restart.

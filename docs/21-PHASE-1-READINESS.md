@@ -51,7 +51,7 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 ## 03 · Validation matrix
 
 - [ ] `AUTH-01–14` (including `AUTH-10`): signup **email OTP**, no-guest verification gate, brute-force/resend handling, reopening and previously verified offline access, wrong user, revoked session and explicit reset.
-- [x] Product numbers selected: password **8–64**, username **3–16**, programs max 50, routines/program max 30, planned exercise slots max 30, sets **1–8**, sessions max 40 and later members' custom exercises max 50. No program/routine creation minimum or title-length quota.
+- [x] Product numbers selected: password **8–64**, username **3–16**, programs max 50, routines/program max 30, planned exercise slots max 30, sets **1–8**, sessions max 40 and later members' custom exercises max 50. No minimum creation count; **saved program/routine title length 3–25 graphemes**.
 - [ ] Implement and test **LIMIT-01–05 P0** in appropriate approved slices, **LIMIT-06 P2** only in future membership; independently verify actual Auth/OTP provider rate limits and anti-abuse without CAPTCHA.
 - [ ] `SEC-06` for OTP/replay/abuse, unverified/anonymous/wrong-account bypass and sensitive logging, in addition to `SEC-01–05`.
 - [ ] `DATA-01/02/03/04/05/06/07`: persistence, crash recovery, deletion, offline upgrades, interrupted migrations and account isolation.
@@ -68,8 +68,8 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 
 - [ ] Phase 1 **P0 UX-01–05 and UX-08–12** documented in [test plan](08-TEST-PLAN.md), including **Standard translucent Glass bar** on configured roots (initial four), future variable-count architecture, root scroll-revealed/nested immediate TopBar, Settings-only Solid, four material/appearance combinations, central `src/shared/theme/tokens/` and dumb-screen boundaries; **Pill is future only**. Native accessibility evidence required after implementation; **UX-06 P1 Backup and UX-07 P2 Sync** remain later phase gates.
 - [x] Owner selected **four initial root tabs in a Standard bottom bar with default Glass material**, config-driven future tab counts/order and optional future Pill layout; root scroll-revealed TopBar, nested back TopBar, Settings-only Solid, Light/Dark and dumb token-driven screens (ADR-015; design policy only).
-- [x] Owner selected **Tnyx name, minimal neutral black/white/gray theme with only limited `#00BFBF` Teal accent, and Default/Custom Hindi-ready typography** (ADR-016; design direction only).
-- [ ] Verify proposed **neutral black/white/gray tokens, Glass tint/overlay and limited Teal `#00BFBF` accent contrast** on Light/Dark and Android/iOS, including selected tab labels and neutral primary CTAs; no decorative extra accent. Custom font family/license/weights, first locale release, initial Light/Dark, scroll thresholds and real-device Hindi/accessibility QA still pending. See [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md).
+- [x] Tnyx uses **Black/White/Gray with no forced Teal** by default; future named user-selectable accent colors are planned but **no MVP picker** (ADR-016).
+- [ ] Test neutral/Glass contrast, focus/selected/progress in Light/Dark and Android/iOS **without Teal**; future Accent Color presets and UX-13 P1 are not current MVP exit requirements. Custom font/license, Light/Dark default, scroll threshold and native accessibility remain pending.
 - [x] Owner selected **Android application ID + iOS bundle ID `com.tnyx.tio`**.
 - [ ] Verify store/platform uniqueness, signing/ownership, original icon and Custom font licensing; repository unchanged.
 - [ ] Scope exclusions for the initial **Phase 1.1 shell** are explicit: no auth connection, SQLCipher workout store, AI, backups, paid Sync, billing or release.

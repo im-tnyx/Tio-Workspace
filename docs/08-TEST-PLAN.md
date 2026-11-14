@@ -36,7 +36,7 @@
 | LIMIT-05 | P0 | Free MVP Library on empty/search/detail flows without membership | Curated exercises selectable; **no active custom-exercise create screen, payment gate, subscription or CAPTCHA**, local workouts unaffected |
 | LIMIT-06 | P2 | **Later paid custom exercise feature**, owner-approved entitlement, 49/50/51 records, expired/forged entitlement | Max 50 custom exercises per authorized member and strict server entitlement; curated library/core data never blocked, no retroactive deletion |
 | LIMIT-01 | P0 | Password 7/8/64/65 and optional Unicode/Hindi username 2/3/16/17 grapheme boundaries | Accept owner-selected 8–64 password and 3–16 username; no trimming, server/feature enforcement, no auth bypass |
-| LIMIT-02 | P0 | Create 0/50/51 programs per account, 0/30/31 routines per program, Hindi/Unicode titles | **Only creation-count maximums**; no program/routine minimum count or invented title-length product quota; transaction-safe denial of excess |
+| LIMIT-02 | P0 | Create 0/50/51 programs/account and 0/30/31 routines/program; test Hindi program/routine title lengths 2/3/25/26 graphemes | **Creation count** zero allowed with max 50/30; **saved name length** min 3 max 25; atomic validation, readable errors and no silent truncation |
 | LIMIT-03 | P0 | Create 0/30/31 exercise slots per routine and 0/1/8/9 sets per workout exercise; session 1/40/41 exercises | 1–8 sets per saved exercise, draft 0 allowed; max slot/session caps enforced transactionally; no truncation |
 | LIMIT-04 | P0 | Legacy workouts above later limits; navigate curated library without membership | Historic data remains readable when safe and never silently deleted; no Create Custom Exercise button or paywall in MVP |
 | DATA-01 | P0 | Complete workouts offline | Sets, reps, weights, timestamps persist in SQLite |
@@ -107,7 +107,9 @@
 
 | UX-11 | P0 | Settings Typography Default/Custom on Android/iOS, with Hindi/Devanagari and mixed English-Hindi workout labels, buttons, bottom navigation, sheets, text inputs, large accessibility text | Both modes use shared font tokens, reliable glyph/fallback coverage (matras/conjuncts), readable line wrapping and text input caret/selection; no clipping/missing glyph boxes; preference persists. Language switching is separate and is not implied by font choice; no font implementation/test exists yet |
 
-| UX-12 | P0 | **Minimal + Teal accent:** verify black/white/gray base, **neutral black (Light) / white (Dark) primary buttons**, limited `brand.accent = #00BFBF` only for selected tabs/progress/highlights, across Light/Dark × Glass/Solid and Android/iOS | No Teal full-page background or default Teal primary CTA; no decorative extra accents/gradients. Semantic destructive/error colors permitted. Selected tabs, Glass-over-content labels, links, Hindi text, disabled/focus states and neutral CTA text must meet contrast; never small white text on bright `#00BFBF` or copy reference branding; no per-screen color forks |
+| UX-12 | P0 | Neutral-default Light/Dark × Glass/Solid on iOS/Android: primary CTA, selected tabs, progress, links, focus, Hindi labels | **Black/White/Gray works without mandatory Teal or an Accent Color picker**; controls pass contrast, accessible icons and Glass-over-content tests with no color-only statuses |
+
+| UX-13 | P1 (future) | After separate approval, select named Accent Color preset, reset to Neutral, restart and use Light/Dark × Glass/Solid | Local preference persists, accessible foreground/disabled states per palette, no changes to workout/auth/cloud data; **picker is NOT MVP functionality** |
 
 These are **planned**, unexecuted acceptance criteria. The first workout MVP requires **P0 UX-01–05 and UX-08–12**; **P1 UX-06 belongs to Personal Backup (Phase 3)** and **P2 UX-07 to paid Supabase Sync (Phase 4)**. A screenshot reference is not test evidence or an asset license.
 

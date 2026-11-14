@@ -30,7 +30,7 @@
 - **App lock (PIN/biometrics) is deferred**, not an MVP prerequisite. Security does **not** depend on a PIN screen.
 - **Membership/payments deferred until core app completion**. Design stable domain/capability/entitlement interfaces only; do not ship purchases, paywall, remote workout storage or paid-feature gating in Phase 1. Future server entitlement alone cannot authorize uploading workouts; Sync still needs explicit consent.
 
-**Numeric proposals and linked acceptance:** [input/OTP decision pack](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md) and [test plan](08-TEST-PLAN.md). Exact number approval/provider feasibility are pending.
+**Numbers selected, backend unverified:** Password 8–64, optional username 3–16, saved program/routine titles **3–25 graphemes**, and OTP target rates are owner-selected in [the canonical spec](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md) and [tests](08-TEST-PLAN.md). **Only actual Supabase/provider configuration, production email, enforcement and native security testing remain pending**, not owner's numeric selection.
 
 ## Account isolation
 - Bind **one local account per app installation** to the exact verified Supabase `auth.users.id`, not mutable email. Do **not** provide add-account/switch-account UI or maintain multiple account DBs.
