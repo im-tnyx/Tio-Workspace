@@ -18,18 +18,18 @@
 - [x] Establish repository with README and separate planning documents.
 - [x] Define local-first contract, account persistence and no default workout upload.
 - [x] Prepare [structured Phase 0 review pack](17-PHASE-0-DECISION-PACK.md), [offline session flow](18-OFFLINE-SESSION-STATE-MACHINE.md), [backup recovery plan](19-BACKUP-RECOVERY-STRATEGY.md) and [MVP UX draft](20-MVP-UX-FLOWS.md) (**proposals only**).
-- [ ] Review open questions in `09-DECISIONS.md` and approve/revise high-risk recommendations.
-- [ ] Approve MVP screen list, backup privacy, encryption and account lifecycle.
+- [ ] Review remaining open decisions in `09-DECISIONS.md`; owner-selected email login, single-account lifecycle, offline cached policy, encryption/recovery principles and MVP scope are now recorded.
+- [x] Owner confirmed functional MVP scope and the single-account/offline/privacy principles (2026-11-14). **Native security validation, detailed recovery UX and visual sign-off are still pending**.
 - [ ] Agree on design style and decide platform/dev-build requirements.
 **Exit:** Product and technical plan accepted and [Phase 1 readiness gate](21-PHASE-1-READINESS.md) signed off; only then start app development.
 
 ## Phase 1 — Foundational offline MVP (NEXT, NOT STARTED)
 - [ ] Expo TypeScript project, routing, navigation, lint/test tooling.
 - [ ] Supabase Auth: signup/login/logout/forgot password, verified identity and persistent session.
-- [ ] Initial offline session gate and account-specific storage isolation.
+- [ ] Initial offline session gate and **single-account installation binding**; no add-account or switch-account flow.
 - [ ] SQLite schema/migrations, repository layer, SQLCipher/native build checks.
 - [ ] Exercise library, plans, start/stop workout, sets/reps/weights, history.
-- [ ] Local progress calculations, robust autosave, settings and data deletion UX.
+- [ ] Local progress calculations, robust autosave, settings, logout and **separate confirmed local erase/reset UX**.
 - [ ] Verify first login online -> normal restart -> dashboard, including offline.
 **Exit:** End-to-end workout logging works with network disabled after login.
 
@@ -65,7 +65,7 @@
 - User explicitly approves moving beyond documentation into implementation.
 
 ## Out of scope for initial development
-Payments, community/social, wearable integrations, full server-side workout archive, realtime collaboration, background upload guarantees and account-free guest mode.
+Multi-account / switch-account UI, payments, community/social, wearable integrations, full server-side workout archive, realtime collaboration, background upload guarantees and account-free guest mode.
 
 ## Traceability
 Every planned feature should map to: requirement -> UI screen -> data contract -> test case -> implementation milestone. Changes to privacy defaults require revising these documents first.

@@ -20,15 +20,15 @@
 - First account signup/login needs internet. Previously initialized devices can continue **local** workout work offline.
 - App restart **does not** automatically require sign-in. Reauthentication may be required when the session is revoked, logout occurs, refresh credentials cannot be recovered, or security policies mandate it.
 - Offline status must never be mistaken for positive proof that the remote account remains active; protect privileged server operations with fresh server-side authentication.
-- Protect cached local access with an explicit offline trust policy; optional PIN/biometrics are a product decision.
+- **Owner-approved offline policy:** cached locally verified bound identity may use local workouts offline despite delayed remote revocation detection; once online, protected server calls must revalidate. Optional PIN/biometrics can be evaluated later, not silently required on every restart.
 
 ## Account isolation
-- Bind each local account to the exact verified Supabase `auth.users.id`, not email (which can change).
-- Prefer an encrypted database per authenticated account and a distinct securely managed key per account.
-- On logout, remove session tokens, wipe active secrets from memory where feasible, close handles and route to Login. The user's local data **remains**, but must not be browseable as a signed-out or different user.
-- Re-login to the same identity may reopen that account's existing database. Login as another account must open a different store.
-- Offer an explicitly confirmed `Delete local workout data` action and document that it cannot be undone without a backup.
-- Decide and test account-deletion behaviour separately from ordinary logout.
+- Bind **one local account per app installation** to the exact verified Supabase `auth.users.id`, not mutable email. Do **not** provide add-account/switch-account UI or maintain multiple account DBs.
+- Persist the sole binding in protected pre-unlock installation metadata. Use its own OS-protected SQLCipher key and encrypted workout file; never select or decrypt a DB solely from an email or unverified token.
+- On logout, remove auth tokens, clear secrets from memory where feasible, close/lock DB and route to **same-account login**. **Retain** binding, key and encrypted history; logout cannot unlock another account.
+- On attempted login with a different user UUID, refuse access and preserve the original binding/data. Do not automatically rebind, wipe, migrate, create an alternate store or import another account's backup.
+- Provide a **separate, deliberate and confirmed erase-local-data/reset-installation** action with account identity verification where available, backup-loss warning and explicit choice to remove protected local binding/key/data. No implicit erase on auth failure or sign-out; wrong-key errors fail closed.
+- Supabase account deletion is a separate future online reauth/server operation; account deletion, local erase and personal cloud backup deletion are distinct operations with separately documented user consent.
 
 ## On-device encryption
 - Proposed: Expo SQLite with SQLCipher in a **development/production native build**, not Expo Go.
@@ -48,7 +48,7 @@ For the [local Drizzle proposal](03-LOCAL-DATA-MODEL.md), the database must be *
 4. Run the bundled Drizzle SQL migration against this database alone; gate dashboard and repository access until migration and integrity checks pass.
 5. On failure, preserve ciphertext/key; do not silently create a replacement DB, mark migration successful or open another user's store. Recover only via verified explicit retry/restore.
 
-SQLCipher native compatibility, migration atomicity and key lifecycle require authorized Android/iPhone validation; D04–D06 remain pending. This is a proposal, **not an implemented security guarantee**.
+SQLCipher native compatibility, migration atomicity and exact key lifecycle require authorized Android/iPhone validation; the **D04–D06 owner-approved policies are not tested implementations**. This is a proposal, **not an implemented security guarantee**.
 
 ## Mobile vs server-side keys
 | Credential | Location |
@@ -69,7 +69,7 @@ SQLCipher native compatibility, migration atomicity and key lifecycle require au
 - For future user-owned server tables: enable Row Level Security and explicit owner-scoped policies, including appropriate INSERT/UPDATE checks. Do not allow one user to query another user's rows.
 
 ## Security test cases
-Cold start offline; app kill during write; expired/revoked session; logout then user switch; stolen/modified backup; malicious imported file; auth token leakage; AI endpoint unauthorized call; excessive function requests; Android uninstall/reinstall; iOS Keychain reinstall semantics; recovery-key loss; database encryption verification.
+Cold start offline; app kill during write; expired/revoked session; logout then same-user re-login; blocked second-account login; confirmed reset/rebind; stolen/modified backup; malicious imported file; auth token leakage; AI endpoint unauthorized call; excessive function requests; Android uninstall/reinstall; iOS Keychain reinstall semantics; recovery-key loss; database encryption verification.
 
 ## Current sources (revalidate before implementing)
 - https://supabase.com/docs/guides/auth/quickstarts/react-native

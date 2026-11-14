@@ -26,19 +26,20 @@
 | AUTH-03 | P0 | Disable internet and reopen app | Already initialized user's local workouts accessible |
 | AUTH-04 | P0 | Fresh install with no network/no previous login | Login requires connection; no unauthorized local access |
 | AUTH-05 | P0 | Logout and restart | No account data accessible until authorized re-login |
-| AUTH-06 | P0 | Switch from user A to user B | B cannot read/decrypt A's data |
-| AUTH-07 | P0 | Return to user A | A's history preserved unless explicitly deleted |
-| AUTH-08 | P0 | Remote session invalid while device offline | Local/offline state clearly handled; protected server calls blocked until revalidation |
+| AUTH-06 | P0 | Attempt different user B login on installation bound to A (even after A logout) | B rejected; binding, key and A's ciphertext preserved; B never reads A's records |
+| AUTH-07 | P0 | Log back in as same bound user A after logout | A's history opens; neither auth logout nor wrong-account attempt erased it |
+| AUTH-08 | P0 | Remote session invalid while device offline | Previously verified account may access locally under accepted trust policy; online protected calls blocked until revalidation |
 | DATA-01 | P0 | Complete workouts offline | Sets, reps, weights, timestamps persist in SQLite |
 | DATA-02 | P0 | App killed mid workout | Last committed autosaved state recovers |
 | DATA-03 | P0 | Edit/delete and restart | Correct record changes; no phantom duplicates |
 | DATA-04 | P0 | Drizzle-generated SQLite schema upgrade on existing account | Bundled SQL applies offline after unlock, preserves complete existing workouts; journal advances exactly once |
 | DATA-05 | P0 | Interrupted migration, insufficient storage or faulty SQL | Fail-closed recovery UI; no silent DB reset/plaintext fallback, verified encrypted snapshot can restore all data |
-| DATA-06 | P0 | Switch accounts with different local schema versions | Each account's encrypted DB and migration journal remain isolated; no cross-account reads or keys |
+| DATA-06 | P0 | Attempt second account while local SQLCipher DB has an existing migration journal | New account blocked before opening/migrating; original bound DB and journal unchanged |
 | DATA-07 | P0 | Repeat startup and restore compatible older-schema backup | Migration idempotent on current version; older restore verified for user/integrity and migrated after unlock |
 | SEC-01 | P0 | Inspect mobile APK/IPA/config | No AI provider, Supabase service-role or backend secret key |
 | SEC-02 | P0 | SQLCipher-enabled native build | `cipher_version` detected; raw database unreadable without key |
 | SEC-03 | P0 | Wrong/missing key or native build without SQLCipher | Storage fails closed before ORM migration or workout UI; no plaintext replacement created |
+| AUTH-09 | P0 | Explicit erase/reset installation vs logout | Logout preserves binding/history; reset warns of permanent loss, requires confirmation, and only then permits fresh online account binding |
 | AI-01 | P1 | Call function without valid user token | Denied and no vendor API call |
 | AI-02 | P1 | Valid plan generation | Preview/edit response; saves only on user acceptance |
 | AI-03 | P1 | Offline/429/5xx AI request | Local logging unaffected; understandable error |
@@ -53,7 +54,7 @@
 | SYNC-03 | P2 | User A attempts to read user B's cloud rows | Denied by RLS/authorization |
 
 ## Test environments
-Physical Android and iPhone devices, current supported OS versions, actual Expo development/release builds, unstable network, background and device-kill scenarios, low storage, multiple users on one device, reinstallation and cross-device restores.
+Physical Android and iPhone devices, current supported OS versions, actual Expo development/release builds, unstable network, background and device-kill scenarios, low storage, attempted second account on a bound installation, deliberate erase/reset, reinstallation and cross-device restores.
 
 ## Release evidence
 Record test date, device/OS/app build, whether the scenario passed, failure logs without secrets and evidence of restore outcomes. No release should advertise secure encryption/backup until testing verifies it.

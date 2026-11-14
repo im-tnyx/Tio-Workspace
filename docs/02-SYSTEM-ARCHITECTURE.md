@@ -56,7 +56,7 @@ src/
     progress/           progress/history screens
     settings/           account/local-data privacy settings
   platform/
-    database/           SQLite connection/migrations/account rebind
+    database/           SQLite connection/migrations/single-account binding
     auth/               technical Supabase Auth client/adapter
     security/           key storage, encryption/isolation primitives
   shared/
@@ -71,19 +71,19 @@ Feature repository **interfaces live in `features/<name>/domain/`** and feature-
 ## Critical abstractions
 - `features/workouts/domain/WorkoutRepository` defines list/get/create/update/delete for sessions, sets and exercise history; `features/workouts/data/` implements it using `platform/database/`.
 - `features/plans/domain/PlanRepository` handles plans and assigned workout days; its adapter remains feature-owned.
-- A feature-level session coordinator uses the technical `platform/auth/` adapter; the Expo Router gate chooses Login or Dashboard. Cached identity remains subject to pending offline-session approval.
-- The proposed `platform/database/LocalDatabaseManager` opens/closes/rebinds the matching account's SQLite store and owns migrations; encrypted partitions and key lifecycle require separate owner approval and native testing.
+- A feature-level session coordinator uses the technical `platform/auth/` adapter; the Expo Router gate chooses Login or Dashboard. Offline cached access for the previously verified bound account is owner-accepted, subject to online revalidation for server calls.
+- The proposed `platform/database/LocalDatabaseManager` opens/closes the **single bound account's** SQLite store and owns migrations; no account-switch/rebind-to-another-user API. Binding/key lifecycle and native SQLCipher validation are separate implementation gates.
 - **ADR-010 owner-selected database tooling (not implemented):** `platform/database/` is the planned home of the native Expo SQLite + SQLCipher adapter and bundled Drizzle migration runner. Feature `data/` implementations may query through Drizzle behind domain repository interfaces; routes, screens, hooks and domain models must not import the ORM. The [local migration contract](03-LOCAL-DATA-MODEL.md) still requires native/security validation and separate Phase 1 authorization.
 - `BackupPort` exports/imports a **versioned, encrypted** snapshot with provider-specific adapters.
 - `SyncPort` is a future optional online synchronization boundary; its absence must not affect local operations.
 
 ## App startup sequence
 1. Load local installation state and protected session securely; show splash/loading gate, not a flash of another user's Dashboard.
-2. If no previously authenticated local account/session: show Welcome/Login (online required for signup).
+2. If this installation is unbound, show Welcome/Login (online signup required). If a bound account is signed out, show **same-account** login only; do not let another identity replace the binding.
 3. If an existing session and matching offline account binding are present: unlock that account's local store and show Dashboard, including offline.
-4. If online, refresh/revalidate session as appropriate in background; handle revocation/expired refresh credentials safely without mixing accounts.
+4. If online, refresh/revalidate session as appropriate; a confirmed different Supabase user UUID **must fail closed** and must not replace the persisted binding or decrypt existing workouts.
 5. If session is confirmed invalid, require authentication for server operations; handle local access according to the explicit security policy rather than pretending online validation happened offline.
-6. Logout clears auth credentials, closes local DB and returns to Login; local logs remain account-isolated until explicit erasure.
+6. Logout clears auth credentials, closes/locks the DB and returns to same-account Login. **Retain** encrypted history and installation binding until a distinct, explicitly confirmed erase/reset flow. Never erase data on failed or different-account login.
 
 ## Data direction
 - Exercise/workout edits: feature UI/hook -> repository interface (optional application use case for complex flows) -> feature SQL adapter -> account-bound platform/database transaction -> UI observes updated local state.
@@ -98,7 +98,7 @@ Use explicit states: `offline`, `authenticated-online`, `authentication-needs-re
 Current device stores workouts. Supabase Auth stores account identity/session data. Supabase Edge Functions may receive minimal AI-request fields and third-party model providers process those fields. Personal backups go to the user's chosen cloud account; an optional future app cloud database is a different destination.
 
 ## Engineering decisions to validate
-Expo SDK and native-build choice; encryption key lifecycle; database per user vs scoped rows; use of a sync-oriented change journal from day one; third-party backup integrations on both OSs; performance and battery impact of background operations.
+Expo SDK and native-build choice; native SQLCipher and single-binding/key lifecycle; optional sync-oriented change journal from day one; third-party backup integrations on both OSs; performance and battery impact of background operations.
 
 ---
 
