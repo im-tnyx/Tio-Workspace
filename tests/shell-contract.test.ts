@@ -121,6 +121,7 @@ test('app-wide button size and welcome bottom spacing are shared tokens', () => 
   assert.equal(authPreviewLayout.signInTitleMinHeight, 46);
   assert.equal(authPreviewLayout.signInTitleMinHeightCompact, 39);
   assert.equal(authPreviewLayout.footerNoticeMinHeight, 57);
+  assert.equal(authPreviewLayout.authMiddleMinHeight, 0);
   assert.equal(controlSizes.buttonRadius, radii.pill);
   assert.equal(controlSizes.buttonHitSlopVertical, 3);
   assert.equal(spacing.lg, 16);
