@@ -14,7 +14,7 @@
 | Topic | Existing owner-selected policy | Proposed decision for owner |
 |---|---|---|
 | Functional scope | Auth, Home, Exercise Library, Plans, Active Workout, History, Progress, Settings — ADR-011 | Keep the selected screens; no new MVP feature |
-| Account/privacy | **Supabase email/password + mandatory signup email OTP verification, server-enforced anti-spam, no guest**, single bound UUID and eligible verified offline users (ADR-011/017) | Exact OTP/strength/rate settings pending owner and provider QA; never bypass stored account key gate |
+| Account/privacy | **Owner-selected** online email/password + verified signup OTP, no guest and correct bound UUID; previously verified same-account offline workouts still work | Password/OTP **numeric targets already selected**, but production email, provider/server enforcement, rate-limit security and native tests are **not yet configured/verified** (ADR-017) |
 | Storage | Local encrypted SQLite default; Personal Backup or future paid Sync is separately chosen, never both active | Preserve unchanged |
 | App identity | Tnyx display name and **Android application ID / iOS bundle ID `com.tnyx.tio`** owner-selected | Store registration/uniqueness, original icon/logo and ownership unverified; repo remains `Tio-Workspace` |
 | UI shell / visual identity | **Owner-selected ADR-015:** initial four tabs Home/Workout/Library/You in **Standard full-width + Glass translucent bar**; reusable config allows future owner-approved tab count/order and future Pill layout; scroll-revealed root TopBar, nested immediate TopBar, Settings Solid/independent Light-Dark, dumb/token-driven screens | Palette, typography, Light/Dark startup, icon, scroll threshold, native QA and any future Pill/count feature are pending |
