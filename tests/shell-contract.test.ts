@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ROOT_TABS, tabGeometry, validateTabs } from '../src/app/navigation/tabRegistry.ts';
+import { ROOT_TABS, validateTabs } from '../src/bootstrap/shell/tabRegistry.ts';
+import { tabGeometry } from '../src/shared/navigation/tabTypes.ts';
 import { DEFAULT_PREFERENCES, decodePreferences, resolveMode } from '../src/shared/theme/preferences.ts';
 import { copy, formatNumber } from '../src/shared/i18n/en.ts';
-import { canOpenShellPreview } from '../src/app/navigation/shellPreviewAccess.ts';
+import { canOpenShellPreview } from '../src/bootstrap/shell/shellPreviewAccess.ts';
 
 test('initial root navigation has four stable, distinct routes', () => {
   assert.deepEqual(ROOT_TABS.map(item => item.routeName), ['home', 'workout', 'library', 'you']);

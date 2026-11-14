@@ -1,6 +1,5 @@
-import type { CopyKey } from '@/shared/i18n/en';
-export type TabDefinition = { key: string;
-  routeName: 'home' | 'workout' | 'library' | 'you'; labelKey: CopyKey; glyph: string };
+import type { TabViewItem } from '@/shared/navigation/tabTypes';
+export type TabDefinition = TabViewItem & { routeName: 'home' | 'workout' | 'library' | 'you' };
 export const ROOT_TABS: readonly TabDefinition[] = [
   { key: 'home', routeName: 'home', labelKey: 'home', glyph: '⌂' },
   { key: 'workout', routeName: 'workout', labelKey: 'workout', glyph: '▣' },
@@ -15,9 +14,4 @@ export function validateTabs(tabs: readonly TabDefinition[]): void {
       throw new Error('Root tabs require unique keys and routes');
     keys.add(tab.key); routes.add(tab.routeName);
   }
-}
-export function tabGeometry(count: number, width: number): { itemWidth: number; scrollable: boolean } {
-  if (!Number.isInteger(count) || count < 1) throw new Error('Invalid tab count');
-  const ideal = Math.max(0, width) / count;
-  return { itemWidth: Math.max(64, ideal), scrollable: ideal < 64 };
 }

@@ -1,7 +1,7 @@
 import { Tabs } from 'expo-router';
-import { PreviewGate } from '@/app/navigation/PreviewGate';
+import { PreviewGate } from '@/bootstrap/shell/PreviewGate';
 import { View } from 'react-native';
-import { ROOT_TABS, validateTabs } from '@/app/navigation/tabRegistry';
+import { ROOT_TABS, validateTabs } from '@/bootstrap/shell/tabRegistry';
 import { BottomTabBar } from '@/shared/ui/BottomTabBar';
 import { RootChromeProvider, RootTopBar } from '@/shared/ui/RootChrome';
 import { copy } from '@/shared/i18n/en';

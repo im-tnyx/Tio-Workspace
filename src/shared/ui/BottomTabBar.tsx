@@ -1,15 +1,15 @@
 import { ScrollView, Pressable, Text, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
-import type { TabDefinition } from '@/app/navigation/tabRegistry';
-import { tabGeometry } from '@/app/navigation/tabRegistry';
+import type { TabViewItem } from '@/shared/navigation/tabTypes';
+import { tabGeometry } from '@/shared/navigation/tabTypes';
 import { copy } from '@/shared/i18n/en';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
 import { spacing, typography } from '@/shared/theme/tokens';
 import { SurfaceMaterial } from './SurfaceMaterial';
 
 export function BottomTabBar({ tabs, selectedRoute, onSelect }: {
-  tabs: readonly TabDefinition[]; selectedRoute: string;
-  onSelect: (tab: TabDefinition) => void;
+  tabs: readonly TabViewItem[]; selectedRoute: string;
+  onSelect: (tab: TabViewItem) => void;
 }) {
   const insets = useSafeAreaInsets();
   const { width } = useWindowDimensions();
