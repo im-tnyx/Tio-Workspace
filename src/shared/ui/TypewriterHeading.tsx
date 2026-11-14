@@ -63,13 +63,12 @@ export function TypewriterHeading({ title, textStyle }: Props) {
 
   return <View accessible accessibilityRole="header" accessibilityLabel={title}
     style={{ width: '100%', alignItems: 'center', justifyContent: 'center' }}>
-    <View style={{ maxWidth: '100%', flexDirection: 'row', alignItems: 'center' }}>
-      {/* Full title and cursor width are reserved, so animation never reflows. */}
+    <View style={{ maxWidth: '100%', alignItems: 'flex-start' }}>
+      {/* Reserve ONLY the full title at screen center. The animated dot is an
+          absolute overlay and must not shift the finished TNYX to the left. */}
       <Text accessible={false} importantForAccessibility="no"
         allowFontScaling={false} numberOfLines={1}
         style={[wordStyle, { opacity: 0 }]}>{title}</Text>
-      <View style={{ width: BRAND_DOT_DIAMETER + BRAND_DOT_GAP,
-        height: BRAND_DOT_DIAMETER, opacity: 0 }} />
       <View pointerEvents="none" style={{
         position: 'absolute', left: 0, right: 0, top: 0, bottom: 0,
         flexDirection: 'row', alignItems: 'center',
