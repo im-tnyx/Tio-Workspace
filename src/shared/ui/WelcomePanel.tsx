@@ -25,9 +25,6 @@ export function WelcomePanel({
   // Welcome is a fixed, non-scrolling screen. Scale down its decorative
   // heading on short devices while keeping the action area reachable.
   const compactWelcome = actionPlacement === 'bottom' && height < 620;
-  // iOS doesn't expose its physical display corner radius here. Use the
-  // home-indicator inset to approximate its smoother, deeper lower corners.
-  const iosBottomCornerRadius = Math.max(36, Math.min(54, insets.bottom + 14));
   const headingStyle = {
     color: colors.text, fontSize: compactWelcome ? 40 : 54,
     lineHeight: compactWelcome ? 48 : 65,
@@ -76,23 +73,13 @@ export function WelcomePanel({
         // so buttons remain above gesture/3-button navigation controls.
         paddingBottom: insets.bottom + spacing.sm,
       }}>{bottomActions}</View> : <View style={{
-        // Only a 4pt outer gap. Keep the iOS safe area inside the rounded card.
-        paddingHorizontal: spacing.sm, paddingBottom: spacing.xs,
-      }}>
-        <View style={{
-          backgroundColor: colors.card,
-          // Match iOS's continuous screen-corner curve rather than a
-          // circular 32pt radius; keep the existing 8pt/4pt outer spacing.
-          borderCurve: 'continuous',
-          borderTopLeftRadius: 38, borderTopRightRadius: 38,
-          borderBottomLeftRadius: iosBottomCornerRadius,
-          borderBottomRightRadius: iosBottomCornerRadius,
-          borderWidth: 1, borderColor: colors.border,
-          overflow: 'hidden',
-          paddingTop: spacing.lg, paddingHorizontal: spacing.lg,
-          paddingBottom: insets.bottom + spacing.sm,
-        }}>{bottomActions}</View>
-      </View>}
+        // On iOS there is no card or surrounding surface: the button and
+        // text link sit directly on the Welcome background.
+        paddingHorizontal: spacing.lg,
+        // A 48pt login hit target already adds ~12pt below the 23pt text line.
+        // Do not add further bottom padding beyond the OS safe-area inset.
+        paddingBottom: insets.bottom,
+      }}>{bottomActions}</View>}
     </> : <ScrollView style={{ flex: 1 }}
       showsVerticalScrollIndicator={false}
       contentContainerStyle={{
