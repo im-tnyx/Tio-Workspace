@@ -20,6 +20,8 @@ on:
       - 'package.json'
       - 'package-lock.json'
       - 'tsconfig.json'
+      - 'eslint.config.cjs'
+      - '.github/workflows/phase1-shell.yml'
 
 permissions:
   contents: read

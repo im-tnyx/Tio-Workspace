@@ -1,6 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { StatusBar } from 'expo-status-bar';
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { AccessibilityInfo, Platform, useColorScheme } from 'react-native';
 import { decodePreferences, DEFAULT_PREFERENCES, resolveMode, UI_PREFERENCE_KEY } from './preferences';
@@ -20,6 +20,7 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
   const [prefs, setPrefs] = useState<ShellPreferences>(DEFAULT_PREFERENCES);
   const [loaded, setLoaded] = useState(false);
   const [reduceTransparency, setReduceTransparency] = useState(false);
+  const preferenceWriteQueue = useRef<Promise<void>>(Promise.resolve());
   const osMode = useColorScheme();
 
   useEffect(() => {
@@ -39,13 +40,20 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
     return () => sub.remove();
   }, []);
 
+  // Persist only hydrated, committed UI preferences. Queue writes in order so
+  // a rapidly selected older Theme/Material cannot overwrite the latest one.
+  // No account, identity or workout data is ever stored by this provider.
+  useEffect(() => {
+    if (!loaded) return;
+    const serialized = JSON.stringify(prefs);
+    preferenceWriteQueue.current = preferenceWriteQueue.current
+      .catch(() => {})
+      .then(() => AsyncStorage.setItem(UI_PREFERENCE_KEY, serialized))
+      .catch(() => {});
+  }, [loaded, prefs]);
+
   const update = useCallback((patch: Partial<ShellPreferences>) => {
-    setPrefs((previous) => {
-      const next = { ...previous, ...patch };
-      // UI-only preferences; never store credentials, exercise or workout data here.
-      void AsyncStorage.setItem(UI_PREFERENCE_KEY, JSON.stringify(next)).catch(() => {});
-      return next;
-    });
+    setPrefs((previous) => ({ ...previous, ...patch }));
   }, []);
   const setAppearance = useCallback((x: AppearanceChoice) => update({ appearance: x }), [update]);
   const setMaterial = useCallback((x: MaterialChoice) => update({ material: x }), [update]);
