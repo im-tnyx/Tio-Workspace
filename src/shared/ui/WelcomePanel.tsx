@@ -69,12 +69,14 @@ export function WelcomePanel({
         // so buttons remain above gesture/3-button navigation controls.
         paddingBottom: insets.bottom + spacing.sm,
       }}>{bottomActions}</View> : <View style={{
-        paddingHorizontal: spacing.sm, paddingBottom: insets.bottom + spacing.xs,
+        // Only a 4pt outer gap. Keep the iOS safe area inside the rounded card.
+        paddingHorizontal: spacing.sm, paddingBottom: spacing.xs,
       }}>
         <View style={{
           backgroundColor: colors.card, borderRadius: 32,
           borderWidth: 1, borderColor: colors.border,
-          padding: spacing.lg,
+          paddingTop: spacing.lg, paddingHorizontal: spacing.lg,
+          paddingBottom: insets.bottom + spacing.sm,
         }}>{bottomActions}</View>
       </View>}
     </ScrollView> : <ScrollView style={{ flex: 1 }}
