@@ -10,6 +10,7 @@ on:
       - 'package-lock.json'
       - 'tsconfig.json'
       - 'eslint.config.cjs'
+      - 'scripts/**'
       - '.github/workflows/phase1-shell.yml'
   push:
     branches: [main]
@@ -21,6 +22,7 @@ on:
       - 'package-lock.json'
       - 'tsconfig.json'
       - 'eslint.config.cjs'
+      - 'scripts/**'
       - '.github/workflows/phase1-shell.yml'
 
 permissions:
@@ -40,6 +42,10 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Verify Expo SDK package compatibility
         run: npm run expo:check
+      - name: Verify design token checker self-tests
+        run: npm run tokens:self-test
+      - name: Fail on newly hardcoded color and size tokens
+        run: npm run tokens:check
       - name: TypeScript
         run: npm run typecheck
       - name: ESLint
