@@ -15,32 +15,53 @@ type Props = {
   email: string;
   code: string;
   password: string;
+  recoveryEmail: string;
+  resetCode: string;
+  newPassword: string;
   onChangeEmail: (value: string) => void;
   onChangeCode: (value: string) => void;
   onChangePassword: (value: string) => void;
+  onChangeRecoveryEmail: (value: string) => void;
+  onChangeResetCode: (value: string) => void;
+  onChangeNewPassword: (value: string) => void;
   onSubmit: () => void;
 };
 
-// Each stage is a UI preview; no email/OTP is sent or verified.
+// Shared, single-field-per-stage preview. No real OTP or credentials are sent.
 export function AuthCredentialsScreen({
-  mode, step, email, code, password,
-  onChangeEmail, onChangeCode, onChangePassword, onSubmit,
+  mode, step, email, code, password, recoveryEmail, resetCode, newPassword,
+  onChangeEmail, onChangeCode, onChangePassword,
+  onChangeRecoveryEmail, onChangeResetCode, onChangeNewPassword, onSubmit,
 }: Props) {
   const { colors } = useAppearance();
-  // Screen height stays stable while Android resizes the window for a keyboard.
-  // Do not resize the heading when the input gains focus.
+  // Physical screen height is stable while Android resizes for the keyboard.
   const compact = Dimensions.get('screen').height < 700;
   const signingUp = mode === 'sign-up';
+  const recovery = step === 'reset-email' || step === 'reset-otp' || step === 'new-password';
+
   const title = step === 'email' ? copy('enterEmail')
-    : step === 'otp' ? copy('enterCode')
+    : step === 'reset-email' ? copy('confirmEmail')
+    : step === 'otp' || step === 'reset-otp' ? copy('enterCode')
+    : step === 'new-password' ? copy('createNewPassword')
     : copy(signingUp ? 'createPassword' : 'enterPassword');
-  const description = step === 'email' ? copy('emailStepIntro')
+  const description = step === 'email'
+    ? copy(signingUp ? 'emailStepIntro' : 'signInEmailIntro')
+    : step === 'reset-email' ? copy('confirmEmailIntro')
     : step === 'otp' ? copy('otpStepIntro')
-    : copy(signingUp ? 'signUpPasswordIntro' : 'signInPasswordIntro');
-  const notice = step === 'email' ? copy('emailPreviewNotice')
+    : step === 'reset-otp' ? copy('resetOtpIntro')
+    : step === 'new-password' ? copy('newPasswordIntro')
+    : signingUp ? copy('signUpPasswordIntro') : '';
+  const notice = step === 'email' ? copy(signingUp ? 'emailPreviewNotice' : 'signInEmailPreviewNotice')
+    : step === 'reset-email' ? copy('resetEmailPreviewNotice')
     : step === 'otp' ? copy('otpPreviewNotice')
+    : step === 'reset-otp' ? copy('resetOtpPreviewNotice')
+    : step === 'new-password' ? copy('newPasswordPreviewNotice')
     : copy(signingUp ? 'signUpPreviewNotice' : 'signInPreviewNotice');
-  const value = step === 'email' ? email : step === 'otp' ? code : password;
+  const value = step === 'email' ? email
+    : step === 'reset-email' ? recoveryEmail
+    : step === 'otp' ? code
+    : step === 'reset-otp' ? resetCode
+    : step === 'new-password' ? newPassword : password;
 
   return <View style={{ flex: 1, minHeight: 0, width: '100%', gap: compact ? spacing.md : spacing.xl }}>
     <View style={{ gap: spacing.sm }}>
@@ -48,37 +69,55 @@ export function AuthCredentialsScreen({
         color: colors.text, fontSize: compact ? 32 : 38,
         lineHeight: compact ? 39 : 46,
       }]}>{title}</Text>
-      <Text style={[typography.body, { color: colors.muted, opacity: 0.76 }]}>{description}</Text>
+      {description ? <Text style={[typography.body, { color: colors.muted, opacity: 0.76 }]}>
+        {description}
+      </Text> : null}
     </View>
-    <View>
-      {step === 'email' ? <TextField
-        key="email" autoFocus
+    <View style={{ gap: spacing.sm }}>
+      {step === 'email' || step === 'reset-email' ? <TextField
+        key={step} autoFocus
         label={copy('email')} variant="bare"
-        value={email} onChangeText={onChangeEmail}
-        placeholder={copy('emailPlaceholder')}
+        value={step === 'email' ? email : recoveryEmail}
+        onChangeText={step === 'email' ? onChangeEmail : onChangeRecoveryEmail}
+        placeholder={step === 'email' ? copy('emailPlaceholder') : copy('email')}
         keyboardType="email-address" autoCapitalize="none" autoCorrect={false}
         autoComplete="off" textContentType="none" returnKeyType="done"
-      /> : step === 'otp' ? <TextField
-        key="otp" autoFocus
+      /> : step === 'otp' || step === 'reset-otp' ? <TextField
+        key={step} autoFocus
         label={copy('verificationCode')} variant="bare"
-        value={code}
-        onChangeText={next => onChangeCode(next.replace(/\D/g, '').slice(0, 6))}
+        value={step === 'otp' ? code : resetCode}
+        onChangeText={next => {
+          const sixDigits = next.replace(/\D/g, '').slice(0, 6);
+          if (step === 'otp') onChangeCode(sixDigits);
+          else onChangeResetCode(sixDigits);
+        }}
         placeholder={copy('otpPlaceholder')}
         keyboardType="number-pad" maxLength={6}
         autoComplete="off" textContentType="none" returnKeyType="done"
-      /> : <TextField
-        key="password" autoFocus
-        label={copy('password')} variant="bare"
-        value={password} onChangeText={onChangePassword}
-        placeholder={copy('passwordPlaceholder')} secureTextEntry
-        autoCapitalize="none" autoCorrect={false}
-        autoComplete="off" textContentType="none" returnKeyType="done"
-      />}
+      /> : <>
+        {step === 'password' && !signingUp && !recovery ? <Text
+          accessibilityLabel={email}
+          numberOfLines={2}
+          style={{ color: colors.text, fontSize: compact ? 22 : 26, lineHeight: compact ? 28 : 34 }}>
+          {email}
+        </Text> : null}
+        <TextField
+          key={step} autoFocus
+          label={copy('password')} variant="bare"
+          value={step === 'new-password' ? newPassword : password}
+          onChangeText={step === 'new-password' ? onChangeNewPassword : onChangePassword}
+          placeholder={step === 'new-password' ? copy('newPasswordPlaceholder') : copy('passwordPlaceholder')}
+          secureTextEntry autoCapitalize="none" autoCorrect={false}
+          autoComplete="off" textContentType="none" returnKeyType="done"
+        />
+      </>}
     </View>
     <View style={{ marginTop: 'auto', gap: spacing.md, paddingTop: spacing.sm }}>
       <Button
-        label={step === 'password' ? copy(signingUp ? 'signUp' : 'signIn') : copy('continue')}
-        onPress={onSubmit} disabled={!canContinueAuthPreview(step, value)}
+        label={step === 'new-password' ? copy('resetPassword')
+          : step === 'password' ? copy(signingUp ? 'signUp' : 'signIn') : copy('continue')}
+        onPress={onSubmit}
+        disabled={!canContinueAuthPreview(step, value)}
       />
       <Text style={[typography.caption, { color: colors.muted, textAlign: 'center' }]}>
         {notice}
