@@ -84,6 +84,29 @@ test('auth UI preview progresses email to code to password without backend', () 
   assert.match(copy('emailPreviewNotice'), /No email or code will be sent/);
 });
 
+test('sign-in skips OTP; recovery previews confirm email, OTP, then new password', () => {
+  assert.equal(nextAuthPreviewStep('email', 'sign-in'), 'password');
+  assert.equal(previousAuthPreviewStep('password', 'sign-in'), 'email');
+  assert.equal(nextAuthPreviewStep('email', 'sign-up'), 'otp');
+  assert.equal(previousAuthPreviewStep('password', 'sign-up'), 'otp');
+  assert.equal(nextAuthPreviewStep('reset-email', 'sign-in'), 'reset-otp');
+  assert.equal(nextAuthPreviewStep('reset-otp', 'sign-in'), 'new-password');
+  assert.equal(previousAuthPreviewStep('new-password', 'sign-in'), 'reset-otp');
+  assert.equal(previousAuthPreviewStep('reset-otp', 'sign-in'), 'reset-email');
+  assert.equal(previousAuthPreviewStep('reset-email', 'sign-in'), 'password');
+  assert.equal(canContinueAuthPreview('reset-email', 'tom@example.com'), true);
+  assert.equal(canContinueAuthPreview('reset-email', 'not-an-email'), false);
+  assert.equal(canContinueAuthPreview('reset-otp', '123456'), true);
+  assert.equal(canContinueAuthPreview('reset-otp', '1234'), false);
+  assert.equal(canContinueAuthPreview('new-password', ''), false);
+  assert.equal(canContinueAuthPreview('new-password', 'demo-only'), true);
+  assert.equal(copy('forgotPassword'), 'Forgot password');
+  assert.equal(copy('confirmEmail'), 'Confirm your email address');
+  assert.match(copy('resetOtpPreviewNotice'), /No reset code was sent or verified/);
+  assert.match(copy('resetPasswordComingLater'), /No password has been changed/);
+  assert.match(copy('newPasswordPreviewNotice'), /Do not enter a real password/);
+});
+
 test('unverified users cannot reach the mock shell in release builds', () => {
   assert.equal(canOpenShellPreview(false), false);
   assert.equal(canOpenShellPreview(true), true);
