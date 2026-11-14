@@ -15,7 +15,7 @@ export function AuthPreviewPage({
 }: {
   onBack: () => void; children: ReactNode;
   headerActionLabel?: string; onHeaderAction?: () => void;
-  footerLabel: string; footerDisabled: boolean; footerNotice: string;
+  footerLabel: string; footerDisabled: boolean; footerNotice?: string;
   onFooterPress: () => void;
 }) {
   const insets = useSafeAreaInsets();
@@ -90,10 +90,12 @@ export function AuthPreviewPage({
             label={footerLabel} onPress={onFooterPress}
             disabledTone="soft" disabled={footerDisabled}
           />
-          <Text style={[typography.caption, {
+          {/* Preview copy is temporary. Once removed, the parent still retains
+              the exact same side/bottom gutter around the CTA. */}
+          {footerNotice ? <Text style={[typography.caption, {
             color: colors.muted, textAlign: 'center',
             minHeight: authPreviewLayout.footerNoticeMinHeight,
-          }]}>{footerNotice}</Text>
+          }]}>{footerNotice}</Text> : null}
         </View>
       </View>
     </KeyboardAvoidingView>
