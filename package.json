@@ -12,8 +12,10 @@
     "ios": "expo start --ios",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src tests --max-warnings=0",
+    "tokens:check": "node scripts/check-design-tokens.cjs",
+    "tokens:self-test": "node scripts/check-design-tokens.cjs --self-test",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
-    "verify": "npm run typecheck && npm run lint && npm test",
+    "verify": "npm run tokens:self-test && npm run tokens:check && npm run typecheck && npm run lint && npm test",
     "expo:check": "expo install --check",
     "mobile": "expo start --tunnel --go"
   },
