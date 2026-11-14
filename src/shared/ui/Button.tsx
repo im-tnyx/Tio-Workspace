@@ -1,6 +1,6 @@
 import { Pressable, Text } from 'react-native';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
-import { controlSizes, spacing, typography } from '@/shared/theme/tokens';
+import { authPreviewMuted, controlSizes, spacing, typography } from '@/shared/theme/tokens';
 type Props = {
   label: string;
   onPress: () => void;
@@ -16,10 +16,10 @@ export function Button({
   const primary = variant === 'primary';
   const softDisabled = disabled && disabledTone === 'soft';
   const backgroundColor = softDisabled
-    ? mode === 'dark' ? '#282828' : '#E8E8E8'
+    ? authPreviewMuted[mode].disabledBackground
     : primary ? colors.primary : colors.secondary;
   const foregroundColor = softDisabled
-    ? mode === 'dark' ? '#858585' : '#868686'
+    ? authPreviewMuted[mode].disabledText
     : primary ? colors.onPrimary : colors.onSecondary;
   return <Pressable onPress={onPress} accessibilityRole="button" accessibilityLabel={label}
     hitSlop={{ top: controlSizes.buttonHitSlopVertical, bottom: controlSizes.buttonHitSlopVertical }}
