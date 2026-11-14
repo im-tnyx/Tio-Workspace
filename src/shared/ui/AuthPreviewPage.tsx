@@ -1,13 +1,15 @@
+import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { KeyboardAvoidingView, Platform, Pressable, Text, View } from 'react-native';
+import { Dimensions, Keyboard, Platform, Pressable, Text, View } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
 import { authPreviewLayout, spacing, typography } from '@/shared/theme/tokens';
 import { Button } from './Button';
 import { copy } from '@/shared/i18n/en';
+import { keyboardOverlap } from './authKeyboardGeometry';
 
-// The header is OUTSIDE KeyboardAvoidingView and never changes its top inset.
-// Only the form below it resizes when the keyboard is visible. No ScrollView.
+// Fixed header and non-scrolling form. iOS CTA follows one native keyboard
+// frame event source rather than two competing keyboard avoidance mechanisms.
 export function AuthPreviewPage({
   onBack, children, headerActionLabel, onHeaderAction,
   footerLabel, footerDisabled, footerKeepAppearance = false, footerNotice, onFooterPress,
@@ -20,8 +22,21 @@ export function AuthPreviewPage({
 }) {
   const insets = useSafeAreaInsets();
   const { colors } = useAppearance();
-  // KeyboardAvoidingView owns iOS keyboard timing; avoid a second JS animation.
-  // A constant outer safe-area inset keeps its measured frame stable.
+  // One positioning owner: keyboard frame event supplies native animation
+  // timing and the precise bottom inset. No separate avoidance wrapper.
+  const [keyboardInset, setKeyboardInset] = useState(() =>
+    Platform.OS === 'ios' ? Keyboard.metrics()?.height ?? 0 : 0);
+  useEffect(() => {
+    if (Platform.OS !== 'ios') return;
+    const frame = Keyboard.addListener('keyboardWillChangeFrame', event => {
+      Keyboard.scheduleLayoutAnimation(event);
+      setKeyboardInset(keyboardOverlap(
+        Dimensions.get('screen').height, event.endCoordinates.screenY));
+    });
+    // Only a fallback if the native WillChangeFrame event was missed.
+    const hidden = Keyboard.addListener('keyboardDidHide', () => setKeyboardInset(0));
+    return () => { frame.remove(); hidden.remove(); };
+  }, []);
 
   return <View style={{ flex: 1, backgroundColor: colors.background }}>
     {/* Fixed back arrow: identical safe-area position before/after focus. */}
@@ -54,18 +69,15 @@ export function AuthPreviewPage({
         </Pressable> : null}
       </View>
     </View>
-    {/* iOS safe-area padding stays OUTSIDE KAV even when the keyboard opens. */}
-    <View style={{ flex: 1, paddingBottom: Platform.OS === 'ios' ? insets.bottom : 0 }}>
-      <KeyboardAvoidingView
-        style={{ flex: 1 }}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
-        <View style={{
-        flex: 1, minHeight: 0, paddingHorizontal: spacing.lg,
-        paddingTop: spacing.xl,
-        // iOS: one constant 16pt bottom gutter; KAV handles IME position.
-        // Android retains its prior safe-inset and system-resize behavior.
-        paddingBottom: Platform.OS === 'ios' ? spacing.lg : insets.bottom + spacing.lg,
-      }}>
+    <View style={{
+      flex: 1, minHeight: 0, paddingHorizontal: spacing.lg,
+      paddingTop: spacing.xl,
+      // Keyboard overlap already includes the home-indicator region.
+      // Preserve the same 16pt edge gutter on both sides and below the CTA.
+      paddingBottom: (Platform.OS === 'ios'
+        ? (keyboardInset > 0 ? keyboardInset : insets.bottom)
+        : insets.bottom) + spacing.lg,
+    }}>
         {/* Only this middle content updates between Email, OTP and Password. */}
         <View style={{ flex: 1, minHeight: authPreviewLayout.authMiddleMinHeight }}>
           {children}
@@ -83,8 +95,6 @@ export function AuthPreviewPage({
             disabledAppearance={footerKeepAppearance ? 'enabled' : 'muted'}
           />
         </View>
-        </View>
-      </KeyboardAvoidingView>
     </View>
   </View>;
 }

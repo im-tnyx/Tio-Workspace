@@ -65,3 +65,8 @@ Official Expo SDK 58, Expo Router and Expo Blur docs checked on 2026-11-14. Foll
 
 - Scope: add a show/hide eye toggle on the right side of password inputs in the Phase 1.1 preview. Implemented in the reusable `TextField`, so Sign in, Sign up and New password share it. Default hidden, accessible show/hide labels, 48pt touch area, no additional native dependency.
 - Boundaries: no other screen layout/navigation, no scrolling, no real credential handling or Supabase changes. Updated tokens, English strings, contract test and Phase 1.1 guide. Current-head CI and independent review must be observed before owner merge decision; physical iOS/Android QA remains pending.
+
+## Owner-confirmed keyboard footer did not rise (2026-11-15)
+
+- Corrected the post-Welcome iOS CTA after observing the earlier nested KAV structure failed on-device. Single owner: `keyboardWillChangeFrame` + native `scheduleLayoutAnimation` + pure screen geometry overlap; no KAV or second padding animation. Footer remains inside the non-scrolling auth page with fixed 16pt gutter. Android remains unchanged.
+- Code: `AuthPreviewPage.tsx`, `authKeyboardGeometry.ts`, shell tests, Phase 1.1 guide and task note. Password eye and mock-only auth behavior retained. Current CI and fresh native QA/re-review required; no merge approval.

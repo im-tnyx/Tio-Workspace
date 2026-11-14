@@ -189,3 +189,11 @@ Verify static architecture and mock-only behavior first; ensure no SDK/storage/A
 - In Phase 1.1 mock-only auth, any `TextField` marked `secureTextEntry` now shows a **right-side eye/eye-slash button** inside the same 60pt field row. It starts hidden, tapping shows the entered password, tapping again hides it. The same reusable behavior covers Sign in, Sign up and Forgot password / New password.
 - A 48pt minimum touch target, centrally defined neutral icon geometry and localized English `Show password`/`Hide password` screen-reader labels make the control operable in light/dark themes; icon is created from React Native primitives without a new dependency. Email and OTP fields never render the eye, and an uneditable password cannot toggle visibility.
 - Controlled input value and focus ref stay mounted; toggling does not submit, log, persist, transmit or verify passwords. No new route, scrolling, keyboard positioning, real Auth, Supabase, cloud or merge. Native iOS/Android visibility, focus and keyboard animation still require device QA.
+
+
+## Native keyboard-frame auth footer correction (2026-11-15; overrides earlier KAV assumptions)
+
+- The owner observed that the prior nested `KeyboardAvoidingView` caused Continue to remain at the bottom while the iOS keyboard opened. This is actual native feedback, not a CI simulation; the former prediction that KAV alone would synchronize was incorrect.
+- The fixed, non-scrolling post-Welcome auth screen now listens to **one** iOS `keyboardWillChangeFrame` event. It computes screen-height minus native keyboard `endCoordinates.screenY`, requests `Keyboard.scheduleLayoutAnimation(event)` using the native event timing, and applies that overlap to the footer's parent bottom inset. Thus keyboard-show, keyboard-hide and email/password keyboard-height changes have the same position source.
+- Bottom spacing is `keyboardOverlap + 16pt` while open, or `safeArea.bottom + 16pt` while closed. Side gutter stays 16pt. Warning stays above CTA with 8pt gap, identical text across preview steps. Android still uses system resizing. Header stays fixed, no scroll.
+- Added pure screen-geometry tests. The iPhone keyboard/CTA motion is **not device-verified** for this commit; review and physical Expo Go check are required. No auth backend, Expo dependency change, Supabase, storage, merge or deployment.

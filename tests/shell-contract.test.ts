@@ -7,6 +7,7 @@ import { DEFAULT_PREFERENCES, decodePreferences, resolveMode } from '../src/shar
 import { copy, formatNumber } from '../src/shared/i18n/en.ts';
 import { canOpenShellPreview } from '../src/bootstrap/shell/shellPreviewAccess.ts';
 import { canContinueAuthPreview, nextAuthPreviewStep, previousAuthPreviewStep } from '../src/features/onboarding/authPreviewSteps.ts';
+import { keyboardOverlap } from '../src/shared/ui/authKeyboardGeometry.ts';
 import { authPreviewLayout, authPreviewMuted, controlSizes, radii, spacing } from '../src/shared/theme/tokens/index.ts';
 import { BRAND_TYPING_INTERVAL_MS, BRAND_DOT_DIAMETER, BRAND_DOT_GAP, BRAND_DOT_FINAL_HOLD_MS, visibleTypingText } from '../src/shared/ui/typing.ts';
 
@@ -134,7 +135,7 @@ test('post-Welcome auth uses persistent parent header and CTA, middle-only step 
   const controller = readFileSync('src/features/onboarding/screens/AuthPreviewFlow.tsx', 'utf8');
   const welcome = readFileSync('src/features/onboarding/screens/WelcomeScreen.tsx', 'utf8');
 
-  assert.match(page, /<KeyboardAvoidingView/);
+  assert.doesNotMatch(page, /<KeyboardAvoidingView/);
   assert.match(page, /\{children\}/);
   assert.match(page, /<Button size="onboarding"/);
   assert.match(page, /label=\{footerLabel\}/);
@@ -143,12 +144,15 @@ test('post-Welcome auth uses persistent parent header and CTA, middle-only step 
   // Temporary warning comes BEFORE the CTA so the bottom edge is 16pt away.
   assert.ok(page.indexOf('{footerNotice ? <Text') < page.indexOf('<Button size="onboarding"'));
   assert.doesNotMatch(page, /<ScrollView/);
-  assert.doesNotMatch(page, /keyboardVisibleRef|scheduleLayoutAnimation|keyboardWillShow|keyboardWillHide/);
+  // One native frame event controls the bottom inset; no KAV or double update.
+  assert.match(page, /Keyboard\.addListener\('keyboardWillChangeFrame'/);
+  assert.match(page, /Keyboard\.scheduleLayoutAnimation\(event\)/);
+  assert.match(page, /event\.endCoordinates\.screenY/);
+  assert.match(page, /keyboardOverlap\(/);
+  assert.match(page, /keyboardInset > 0 \? keyboardInset : insets\.bottom/);
+  assert.match(page, /\) \+ spacing\.lg/);
   assert.match(page, /gap: spacing\.sm, paddingTop: spacing\.sm/);
-  assert.match(page, /paddingBottom: Platform\.OS === 'ios' \? insets\.bottom : 0/);
-  // The KAV is the only animation owner, with a constant iOS 16pt gutter.
   assert.match(page, /paddingHorizontal: spacing\.lg/);
-  assert.match(page, /paddingBottom: Platform\.OS === 'ios' \? spacing\.lg : insets\.bottom \+ spacing\.lg/);
   // Removing temporary preview copy later must not remove CTA edge padding.
   assert.match(page, /footerNotice\?: string/);
   assert.match(page, /footerNotice \? <Text/);
@@ -185,6 +189,16 @@ test('both Sign in and Sign up routes use the same persistent auth parent', () =
   assert.match(flow, /footerNotice = copy\('authPreviewSafetyNotice'\)/);
   assert.match(copy('authPreviewSafetyNotice'), /No email or code is sent/);
   assert.match(copy('authPreviewSafetyNotice'), /Do not enter a real password/);
+});
+
+test('keyboard frame geometry handles visible and hidden iPhone keyboards', () => {
+  assert.equal(keyboardOverlap(852, 540), 312);
+  assert.equal(keyboardOverlap(852, 852), 0);
+  assert.equal(keyboardOverlap(852, 880), 0);
+  assert.equal(keyboardOverlap(852, 0), 852);
+  assert.equal(keyboardOverlap(852, -100), 852);
+  assert.equal(keyboardOverlap(852, Number.NaN), 0);
+  assert.equal(keyboardOverlap(0, 100), 0);
 });
 
 test('Password fields have a right-side accessible eye toggle only for secure input', () => {
