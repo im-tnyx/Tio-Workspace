@@ -25,26 +25,29 @@
 | Accessibility | Text scaling, touch targets, screen reader labels | Color-only statuses |
 | Consistency | Shared spacing, typography and form states | Different patterns for the same task |
 
-## 02 · Owner-selected Aqua Teal / accessible token candidates
+## 02 · Owner-selected minimal neutral UI + limited Teal accent
 
 | Semantic token | Light | Dark | Use |
 |---|---|---|---|
-| `brand.primary` | `#00BFBF` | `#00BFBF` | Owner-selected screenshot-derived aqua-teal brand anchor; large primary surfaces/buttons |
-| `brand.onPrimary` | `#062629` | `#062629` | Dark readable label/icon on bright aqua-teal CTA or splash |
-| `brand.link` | `#006A6A` | `#57E2E2` | Proposed accessible on-surface links and text, not bright primary teal on white |
-| `brand.mint` | `#13B89A` | `#4DE0BC` | Workout-complete feedback |
-| `surface.app` | `#F7F8FC` | `#0E1016` | Background |
-| `surface.card` | `#FFFFFF` | `#181B25` | Elevated surfaces |
-| `text.primary` | `#151824` | `#F6F7FB` | Main text |
-| `text.secondary` | `#667085` | `#ADB5C5` | Hints/metadata |
-| `stroke.default` | `#E5E7EF` | `#2B3040` | Borders |
-| `status.danger` | `#C73853` | `#FF758D` | Destructive actions |
+| `surface.app` | `#FFFFFF` | `#0B0D10` | Minimal neutral app background (candidate exact shades) |
+| `surface.card` | `#F5F5F5` | `#1B1D20` | Calm raised UI and panels (candidate) |
+| `action.primary` | `#111111` | `#FFFFFF` | **Main buttons are neutral black / white**, not Teal |
+| `action.onPrimary` | `#FFFFFF` | `#111111` | Accessible labels on neutral primary buttons |
+| `text.primary` | `#111111` | `#F7F7F7` | Main content text |
+| `text.secondary` | `#646464` | `#AAAAAA` | Supporting labels/metadata (candidate) |
+| `stroke.default` | `#E5E5E5` | `#34363B` | Subtle separation (candidate) |
+| `brand.accent` | `#00BFBF` | `#00BFBF` | **Limited Aqua Teal accent**: selected tab state, progress, small highlights |
+| `brand.onAccent` | `#062629` | `#062629` | Readable dark text/icons only when a Teal-filled chip/segment is necessary |
+| `brand.link` | `#006A6A` | `#57E2E2` | Candidate accessible text-link treatment, not bright teal on white |
+| `status.danger` | `#C73853` | `#FF758D` | Meaningful error/destructive state only, never decorative |
 
-**Owner-selected updated ADR-016 (2026-11-14): replace the previous Violet direction with the aqua-teal color in the supplied screenshot.** The dominant image background was sampled as **RGB(0,191,191) / `#00BFBF`**, the exact approved brand reference/anchor. Distinct link text, contrast-safe foreground, Glass tints, gradient, pressed and dark-mode tokens remain **candidate derived values**, subject to native light/dark testing. The image's third-party wordmark/content is not licensed or reused. Existing `brand.mint` is an optional supporting/success token, not the competing primary. Do not apply the screenshot color to every screen background automatically.
+**Latest owner selection (ADR-016 update, 2026-11-14): Minimal + Teal accent**, replacing the prior teal-led primary CTA direction. The UI uses **neutral black/white/gray backgrounds, primary actions and typography**; the screenshot-sampled Aqua Teal **`#00BFBF` is an accent only** for selected tab indicators, progress and restrained highlights. Avoid competing decorative accent colors, unnecessary colored surfaces, decorative gradients and copied third-party branding. Error/destructive color remains an essential semantic exception. **These neutral hex values and link/Glass-derived variants are candidate tokens** pending accessibility/device QA; the minimal color-role decision is owner-selected.
 
-**Contrast design warning:** On `#00BFBF`, white text is approximately **2.28:1** contrast (insufficient for normal body/button labels). Proposed `#062629` foreground is approximately **6.99:1** against this teal, while `#006A6A` is approximately **6.42:1** against white. Choose separate, contrast-tested semantic foregrounds; do not hardcode white CTA text. Validate Glass-over-content states, dynamic gradients, translucent tab bar icons and text for WCAG contrast on Android/iOS. The sampled color is not proof the complete palette is accessible.
+**Contrast design warning:** `#00BFBF` + white small text yields only about **2.28:1**. Main CTAs use candidate **neutral `action.primary` / `action.onPrimary`** instead. For an occasional Teal-filled chip, candidate dark `#062629` gives readable contrast; on white, use a darker link token such as `#006A6A`. Verify all foregrounds, Glass overlays, selected/deselected tab labels, disabled/focus states and dynamic type on both devices. This palette is **not certified by documentation alone**.
 
 Tokens must be checked for accessible text contrast in real light/dark UI; these are proposals pending visual QA. No hard-coded color values inside feature screens once a token system exists.
+
+**UI treatment across themes:** Light = white/near-white base with dark primary text/actions; Dark = near-black/charcoal base with white primary text/actions. Glass surfaces use **neutral** blur/tint in both themes, not saturated Teal. Selected BottomTabBar icon/label may use Teal if its contrast passes; otherwise use neutral high-contrast ink plus a small Teal indicator. Solid surfaces stay opaque and neutral. Keep the default Standard tab layout and future Pill possibility independent from material/color.
 
 ## 02A · Owner-selected iOS-inspired shared shell (ADR-015)
 
@@ -72,7 +75,7 @@ Review proposed [MVP screens & interaction flows](docs/20-MVP-UX-FLOWS.md) befor
 
 ### Brand, typography and multilingual foundation (owner-selected ADR-016)
 
-**App display name: Tnyx.** The repository `Tio-Workspace` is unchanged. **Aqua Teal `#00BFBF` is the owner-selected image-derived primary brand anchor (superseding Violet)**; contrast-safe derived tokens and a possible separate Mint success accent remain in visual review.
+**App display name: Tnyx.** Repository `Tio-Workspace` stays unchanged. **Owner-selected Minimal + Teal accent** means neutral UI is dominant; screenshot Aqua Teal `#00BFBF` is **not the default button or page background**. Use it sparingly for selection/progress; no separate decorative Mint accent, only necessary semantic status colors. Exact neutrals/contrast need device QA.
 
 **Settings → Appearance → Typography** offers two independent, persistent local choices:
 - **Default:** device/system font stack, including OS language/script fallback.
@@ -128,7 +131,7 @@ Suggested hierarchy: **Overview → Decisions → Flows → Edge cases → Verif
 
 ## 06A · Proposed Phase 0 visual freeze for owner review
 
-**Owner-selected (ADR-015):** **initially four bottom-root screens Home, Workout, Library, You** through a **changeable navigation registry** (future number/order owner-controlled), a **Standard bar layout now**, and optional Pill layout reserved for later; all detailed screens hide the bottom bar. Shared scroll-revealed root TopBar (nested immediately visible), **config-driven Standard bottom bar with default Glass material** (Pill layout deferred), centralized theme tokens, dumb screens and independent Glass/Solid × Light/Dark preferences. **Selected (ADR-016):** Tnyx display name, image-sampled Aqua Teal brand anchor `#00BFBF` (replaces Violet), Default/Custom Hindi-ready typography. **Pending:** accessible derived Light/Dark/glass tokens and separate success accent, Custom font/license, initial Light/Dark, scroll threshold/motion, Android/iOS application IDs, icon, detailed visual hierarchy and real-device QA.
+**Owner-selected (ADR-015):** **initially four bottom-root screens Home, Workout, Library, You** through a **changeable navigation registry** (future number/order owner-controlled), a **Standard bar layout now**, and optional Pill layout reserved for later; all detailed screens hide the bottom bar. Shared scroll-revealed root TopBar (nested immediately visible), **config-driven Standard bottom bar with default Glass material** (Pill layout deferred), centralized theme tokens, dumb screens and independent Glass/Solid × Light/Dark preferences. **Selected (ADR-016):** Tnyx name, **Minimal neutral black/white/gray UI with limited `#00BFBF` Teal accent**, and Default/Custom Hindi-ready typography. **Pending:** exact contrast-tested neutral/link/Glass tokens, Custom font/license, initial Light/Dark, scroll reveal tuning, Android/iOS application IDs, icon and real-device QA.
 
 Use the [Phase 0 design and Phase 1 approval pack](docs/22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) for exact review choices, Restore/Skip versus future Sync automatic hydration copy, acceptance criteria and the owner sign-off template. Do not read this paragraph as sign-off, app code authorization or a delivered UI.
 

@@ -9,7 +9,7 @@
 
 ## 1. Decision summary
 
-**Recommended outcome:** adopt the owner-selected **Tnyx**, **Aqua Teal `#00BFBF` screenshot-derived brand anchor (replacing Violet)** and Hindi-capable Default/Custom typography alongside the proposed MVP visual baseline, settle the limited choices below, then independently approve a narrowly scoped Phase 1.1 shell. Defer secrets, Supabase setup, SQLCipher/Drizzle integration, actual workout storage, AI, Google Drive/iCloud and paid sync until their separately defined slices and gates.
+**Recommended outcome:** adopt the owner-selected **Tnyx, Minimal neutral black/white/gray UI with small Aqua Teal `#00BFBF` accent** and Hindi-capable Default/Custom typography alongside the proposed MVP visual baseline, settle the limited choices below, then independently approve a narrowly scoped Phase 1.1 shell. Defer secrets, Supabase setup, SQLCipher/Drizzle integration, actual workout storage, AI, Google Drive/iCloud and paid sync until their separately defined slices and gates.
 
 | Topic | Existing owner-selected policy | Proposed decision for owner |
 |---|---|---|
@@ -22,14 +22,14 @@
 | Local lock | **Not in MVP** (ADR-017) | Optional PIN/biometrics considered only in a separately approved future slice |
 | Phase 1 | No implementation authorized; Phase 1.1 shell has **no live Auth/OTP or paid membership** | Prefer **Phase 1.1-only written approval**; Phase 1.2 OTP and Phase 1.4–1.6 capped local data after separate gates; membership after core app |
 
-**Still-pending owner decisions:** Android/iOS app IDs, icon, **contrast-safe derived Teal foreground/Glass/light-dark tokens** (the source `#00BFBF` anchor is chosen), optional separate success accent, **Custom font family/license**, initial locale launch, **initial Light/Dark**, scroll threshold/animation, real-device visual QA, scoped Phase 1 authorization/exclusions and security exceptions. **Glass is the already-selected default material**; ADR-015 shell/token/presentation choices are recorded.
+**Still-pending owner decisions:** Android/iOS app IDs and icon, **exact neutral theme/Glass and Teal-accent contrast-tested token values** (the limited Teal `#00BFBF` cue is selected), **Custom font family/license**, locale rollout, **initial Light/Dark**, scroll tuning, real-device visual QA, scoped Phase 1 authorization/exclusions and security exceptions. No extra decorative accent is planned. **Glass is the already-selected default material**; ADR-015 shell/token/presentation choices are recorded.
 
 ## 2. Proposed MVP visual baseline (approval pending)
 
 ### 2.1 Look and feel
 
 - Product personality: **minimal, focused, strong, calm and trustworthy**. Optimize for legibility while resting between sets, not for gamification or health claims.
-- **Owner-selected Aqua Teal primary brand anchor is `#00BFBF`**, RGB(0,191,191), sampled from the uploaded image background, **replacing Violet**. `DESIGN.md` now records candidate `brand.onPrimary` dark ink and distinct accessible `brand.link` in Light/Dark; **white on bright teal is only ~2.28:1 contrast**, not appropriate for small CTA text. Future Glass tints, success accents and derived dark/light shades require native visual QA. Do not copy the reference image's wordmark/artwork.
+- **Owner-selected Minimal + Teal accent:** Main page surfaces are **neutral White/Light Gray in Light and Near Black/Charcoal in Dark**, with **neutral black/white main CTAs**. Teal `#00BFBF` from screenshot is **limited to selected navigation, progress and occasional highlights**, not page backgrounds or standard CTA fill. No extra decorative colors or gradients; danger/error colors remain meaningful. Proposed token details are in `DESIGN.md`; Teal + small white text is only ~2.28:1, so selected controls require accessible contrast. Native Light/Dark × Glass/Solid QA pending; no third-party image/brand asset copied.
 - **Typography owner-selected (ADR-016):** Settings Default device font / Custom app font, both Hindi/Devanagari-capable through script-aware fallback, independent of language selection. Exact Custom font/license and native Hindi glyph QA pending. Spacing `4/8/12/16/24/32`, 16px radii and 24px icons remain proposed design values.
 - **ADR-015 selected:** **Glass material is default**, with translucent iOS-inspired TopBar and **Standard full-width bottom navigation** now; **Pill is a future layout variant, not today's material or Settings control**. Solid material is selected only through Settings → Appearance, independently of Light/Dark (four combinations). The future app shell supplies root tabs from owner-controlled configuration (initial four, fewer/more later); root TopBar scroll-revealed and nested back TopBar immediate. Light/Dark startup, exact thresholds, contrast, blur fallback and native screenshots remain unvalidated.
 - Accessible controls: at least **44 × 44 pt iOS / 48 × 48 dp Android** targets as design goals, dynamic text scaling, screen-reader labels, clear focus order, reduced-motion support, and no color-only status.
@@ -81,7 +81,7 @@ A Personal Backup restore is not tied to the current/remembered upload mode, may
 |---|---|---|
 | D16 / D17 / ADR-017 | **Min/max limits required and verified signup OTP/no guest selected**, but numeric thresholds and provider configuration pending | Approve cap table/anti-abuse target, then verify iOS/Android/server behavior in respective phases; no authorization bypass |
 | D01 / ADR-016 | **Tnyx display name selected**; app IDs, original icon/logo pending | Trademark/assets and store release review remain separate; repo name unchanged |
-| Visual / typography | **Aqua Teal `#00BFBF` screenshot anchor selected in place of Violet** and Default/Custom Hindi-ready typography selected (updated ADR-016); Standard+Glass configurable navigation remains ADR-015. Derived shades, font and initial Light/Dark pending | Android/iOS screenshots and `UX-12` teal CTA/link contrast tests, Hindi input, variable tabs, scroll, blur/keyboard and accessible theme QA pending |
+| Visual / typography | **Minimal neutral black/white/gray + limited `#00BFBF` Teal accent** selected (updated ADR-016), with Default/Custom Hindi-ready typography; Standard+Glass configurable navigation stays ADR-015. Exact neutral/Glass tokens, custom font and initial Light/Dark pending | Android/iOS screenshots and `UX-12` neutral CTA + accessible Teal selected-state contrast, Hindi input, variable tabs, scroll, blur/keyboard QA pending |
 | D02–D06, D10, D13 | Already owner-selected via ADR-010/011; **do not reopen silently** | Native key lifecycle, encryption and migration tests must pass before local encrypted storage release |
 | D07 | Agree Personal Backup is **later** and manual export/import is the first feasibility target | Google Drive scopes, iCloud native path, crypto format, scheduler and fresh-install restore in Phase 3 |
 | D08 | Exclude AI from Phase 1 | Provider, privacy, output contract, quota and Edge Function design in Phase 2 |
@@ -96,7 +96,7 @@ No team or agent should mark a deferred high-risk test **passed** merely because
 
 ### 4.1 To approve **only Phase 1.1 — shell**
 
-- [ ] Owner confirms **numeric min/max/OTP thresholds** (see [limits pack](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md)), then remaining **derived teal contrast/Glass tokens** (source `#00BFBF` is selected), font/license, Light/Dark, app IDs/icon; **Tnyx name, Aqua Teal direction and font modes are selected (ADR-016)**; **Standard Glass initial tab bar, future config-driven tab count/Pill variant, scroll-reveal TopBar and dumb token-driven screens already selected** under ADR-015.
+- [ ] Owner confirms **numeric min/max/OTP thresholds** (see [limits pack](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md)), then remaining **neutral/Glass token contrast and Teal-accent usage** (minimal + Teal already selected), font/license, Light/Dark, app IDs/icon; **Tnyx name, minimal + limited Teal and font modes are selected (ADR-016)**; **Standard Glass initial tab bar, future config-driven tab count/Pill variant, scroll-reveal TopBar and dumb token-driven screens already selected** under ADR-015.
 - [ ] Owner states exact Phase 1.1 scope and excludes Auth credentials/project setup, encryption/storage implementation, real workouts, AI, backups, server sync, billing and releases.
 - [ ] Review Expo SDK and React Native compatibility on the actual implementation date; select a native development-build and iOS/Android test approach. No packages/config are installed in this PR.
 - [ ] Owner accepts that SQLCipher, Drizzle, secure storage and OS backup controls are **unverified** and must remain blocked until their later implementation gates.
@@ -123,7 +123,7 @@ Record this separately in [issue #2](https://github.com/im-tnyx/Tio-Workspace/is
 | Field | Owner must provide |
 |---|---|
 | Approver / date | Repository owner identity and ISO date |
-| Design decision | **ADR-016 Tnyx/Aqua Teal `#00BFBF`/Default-Custom Hindi-ready typography** (replaces Violet) and ADR-015 Standard+Glass/navigation selected; derived accessible color tokens, font, IDs/icon and Light/Dark pending |
+| Design decision | **ADR-016 Tnyx / minimal neutral UI / restrained `#00BFBF` Teal accent / Default-Custom Hindi-ready typography** and ADR-015 Standard+Glass navigation selected; exact neutral/Glass contrast, font, app IDs/icon and initial Light/Dark pending |
 | Platform identifiers | Android application ID / iOS bundle ID, provisional or final |
 | Phase authorization | “Approve **Phase 1.1 app shell only**” **or** a precisely enumerated alternate slice |
 | Explicit exclusions | Auth project/credentials, workout database, AI, personal backup, paid Sync, deployment unless independently approved |

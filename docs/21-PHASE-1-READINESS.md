@@ -20,7 +20,7 @@
 
 | Gate | What must be true | Current |
 |---|---|---|
-| Product | **Tnyx name, Aqua Teal `#00BFBF` screenshot anchor (replaces Violet), Default/Custom Hindi-ready typography** and MVP scope selected (ADR-016/011); app IDs/icon, derived shades/font and visual QA pending | ⬜ Detailed design/native QA pending |
+| Product | **Tnyx name, Minimal neutral dominant UI with limited Teal `#00BFBF` accent, Default/Custom Hindi-ready typography** and MVP scope selected (ADR-016/011); app IDs/icon, exact theme tokens/font and native QA pending | ⬜ Detailed design/native QA pending |
 | Session | **Email/password + mandatory signup email OTP, no guest, server anti-abuse controls** (ADR-017), plus previously verified offline access (ADR-011); test revocation and errors | ⬜ Provider/numeric settings & runtime evidence pending |
 | Data isolation | **One account/installation, no switching, logout retains data; separate reset** selected; native key/erase lifecycle and tests still required | ⬜ Technical validation pending |
 | Native build | SQLCipher build/validation strategy accepted (Expo Go limitations understood) | ⬜ Pending |
@@ -67,8 +67,8 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 
 - [ ] Phase 1 **P0 UX-01–05 and UX-08–12** documented in [test plan](08-TEST-PLAN.md), including **Standard translucent Glass bar** on configured roots (initial four), future variable-count architecture, root scroll-revealed/nested immediate TopBar, Settings-only Solid, four material/appearance combinations, central `src/shared/theme/tokens/` and dumb-screen boundaries; **Pill is future only**. Native accessibility evidence required after implementation; **UX-06 P1 Backup and UX-07 P2 Sync** remain later phase gates.
 - [x] Owner selected **four initial root tabs in a Standard bottom bar with default Glass material**, config-driven future tab counts/order and optional future Pill layout; root scroll-revealed TopBar, nested back TopBar, Settings-only Solid, Light/Dark and dumb token-driven screens (ADR-015; design policy only).
-- [x] Owner selected **Tnyx display name, image-sampled Aqua Teal `#00BFBF` as primary in place of Violet, and Default/Custom Hindi-capable typography** (ADR-016; design policy only).
-- [ ] Confirm contrast-safe **derived Aqua Teal/Glass/foreground tokens** (the `#00BFBF` image anchor is already selected), optional separate success accent, Custom font family/license/weights, first locale release, initial Light/Dark, scroll thresholds and real-device Hindi/accessibility QA. Do not place white small CTA text on `#00BFBF` without a contrast-safe change (see [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md)).
+- [x] Owner selected **Tnyx name, minimal neutral black/white/gray theme with only limited `#00BFBF` Teal accent, and Default/Custom Hindi-ready typography** (ADR-016; design direction only).
+- [ ] Verify proposed **neutral black/white/gray tokens, Glass tint/overlay and limited Teal `#00BFBF` accent contrast** on Light/Dark and Android/iOS, including selected tab labels and neutral primary CTAs; no decorative extra accent. Custom font family/license/weights, first locale release, initial Light/Dark, scroll thresholds and real-device Hindi/accessibility QA still pending. See [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md).
 - [ ] Owner documents **Tnyx** Android application ID, iOS bundle ID, logo/icon and Custom font licensing. Repo remains `Tio-Workspace`; no fake design sign-off.
 - [ ] Scope exclusions for the initial **Phase 1.1 shell** are explicit: no auth connection, SQLCipher workout store, AI, backups, paid Sync, billing or release.
 - [ ] Later native security and portability gates remain pending until real Android/iOS builds produce evidence.
