@@ -26,7 +26,7 @@
 - Bind **one local account per app installation** to the exact verified Supabase `auth.users.id`, not mutable email. Do **not** provide add-account/switch-account UI or maintain multiple account DBs.
 - Persist the sole binding in protected pre-unlock installation metadata. Use its own OS-protected SQLCipher key and encrypted workout file; never select or decrypt a DB solely from an email or unverified token.
 - On logout, remove auth tokens, clear secrets from memory where feasible, close/lock DB and route to **same-account login**. **Retain** binding, key and encrypted history; logout cannot unlock another account.
-- On attempted login with a different user UUID, refuse access and preserve the original binding/data. Do not automatically rebind, wipe, migrate, create an alternate store or import another account's backup.
+- On attempted login with a different user UUID, refuse access, discard any unintended second-account auth session/token, and preserve the original binding/data. Do not automatically rebind, wipe, migrate, create an alternate store or import another account's backup.
 - Provide a **separate, deliberate and confirmed erase-local-data/reset-installation** action with account identity verification where available, backup-loss warning and explicit choice to remove protected local binding/key/data. No implicit erase on auth failure or sign-out; wrong-key errors fail closed.
 - Supabase account deletion is a separate future online reauth/server operation; account deletion, local erase and personal cloud backup deletion are distinct operations with separately documented user consent.
 

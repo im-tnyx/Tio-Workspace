@@ -88,8 +88,10 @@ flowchart TD
 - [ ] Resolve **D01, D07–D09, D11–D12** remaining scope/provider/UX/privacy details and native validation before relevant phases.
 - [x] Confirm **no account switching**, same-account re-login after logout, and separate confirmed erase/reset; server account deletion details remain a separate future UX.
 - [x] Accept offline local access despite unverifiable remote revocation until reconnection; online functions still require server authorization.
-- [x] Approve portable user-held recovery **principle**; [ ] finalize secure backup UX/cryptography and test fresh-device restore **before** promising recovery.
-- [x] Approve [MVP functional screens/flows](20-MVP-UX-FLOWS.md) for Home, Plans, Exercise Library, Workouts, History, Progress, Settings and Auth; [ ] finalize branding, visual hierarchy and detailed destructive/reset copy.
+- [x] Approve portable user-held recovery **principle**.
+- [ ] Finalize secure backup UX/cryptography and test fresh-device restore **before** promising recovery.
+- [x] Approve [MVP functional screens/flows](20-MVP-UX-FLOWS.md) for Home, Plans, Exercise Library, Workouts, History, Progress, Settings and Auth.
+- [ ] Finalize branding, visual hierarchy and detailed destructive/reset copy.
 - [ ] Validate on-device build feasibility for SQLCipher and iCloud before freezing plans.
 - [ ] Authorize Phase 1 **in a separate written approval**, never by merging a docs PR.
 

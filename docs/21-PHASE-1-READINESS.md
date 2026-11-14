@@ -24,7 +24,7 @@
 | Privacy | Workouts stay local; cloud upload disabled by default | ✅ Requirement recorded, **not tested** |
 | Secrets | AI provider secrets server-side; publishable keys understood | ✅ Requirement recorded, **not tested** |
 | Backup | **User-held independent recovery secret principle selected**; provider/crypto design and restore proofs deferred to later phase | ✅ Principle recorded; future tests pending |
-| Tests | Platform and acceptance test plan agreed | ⬜ Pending |
+| Tests | Owner-selected MVP and single-account acceptance scenarios defined; native/device execution and exact release thresholds still required | ⬜ Runtime evidence pending |
 | Owner authorization | Explicit written approval for Phase 1 implementation | ⬜ Pending |
 
 ## 02 · Proposed Phase 1 slices **after** approval

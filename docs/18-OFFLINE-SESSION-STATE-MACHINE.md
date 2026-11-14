@@ -23,7 +23,7 @@ The app must never offer first-ever offline registration, an add-account/switch-
 ```mermaid
 stateDiagram-v2
     [*] --> Boot
-    Boot --> SignedOut: No valid local account binding
+    Boot --> SignedOut: No active session or unbound installation
     Boot --> OnlineSession: Verified stored session + network
     Boot --> OfflineSession: Previously verified account + no network
     Boot --> ReauthRequired: No recoverable credentials/key
@@ -73,7 +73,7 @@ stateDiagram-v2
 | Logout | Clear/revoke applicable auth credentials, close DB and clear in-memory keys | **Retained, locked** | Unchanged; show explicit distinction |
 | Attempt different account login | **Reject** different Supabase UUID while installation is bound | Keep existing encrypted DB/key and binding untouched; no switch UI | No transfer |
 | Explicit erase/reset installation | Clear bound identity only after separate destructive confirmation and loss warning | Delete local ciphertext/key only by the approved explicit workflow; next online setup may bind a fresh identity | Does not automatically delete personal backups or server account |
-| Delete local data | Requires clear confirmation and policy for offline account proof | Erase only selected account's local records/keys | Does not silently remove backup/cloud copies |
+| Delete workout records only (optional future separate control) | Requires confirmation | Erase workout records **without** releasing the installation binding or reusing its key for another user | Does not silently remove backup/cloud copies |
 | Delete account (future flow) | Requires recent online reauth and server-side confirmation | Explicit data-deletion choice and recovery warning | Must separately handle third-party backup and any future sync copies |
 
 Never use a plain email string to select the database or allow one account to reference another user's encryption key.

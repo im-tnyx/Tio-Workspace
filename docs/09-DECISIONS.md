@@ -43,7 +43,7 @@
 | PROP-007 | iCloud native backup integration or file export/import fallback | Expo/iOS feasibility and entitlements |
 | PROP-008 | **Tooling selected by ADR-010**: Drizzle ORM + Drizzle Kit for local schema/queries and bundled versioned SQLite migrations; **implementation not authorized** | Validate Expo/Drizzle compatibility, account-scoped journal, SQLCipher unlock-first sequence, failure recovery and Android/iPhone offline upgrades. See [local data model](03-LOCAL-DATA-MODEL.md). |
 
-## Open product decisions (not blocking documentation)
+## Remaining product choices and settled MVP policies
 1. Final branding and app package identifiers.
 2. **Decided for MVP:** Supabase email/password; Google/Apple login remains optional later.
 3. Optional future PIN/biometrics and recovery/lockout UX; **not required** for every MVP app open.
