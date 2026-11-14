@@ -75,12 +75,34 @@ export function AuthPreviewFlow({ mode, onExit }: {
     setStep(nextAuthPreviewStep(step, mode));
   };
 
+  // Parent controls update their labels/state without remounting. Only
+  // AuthCredentialsScreen renders stage-specific heading and inputs.
+  const currentValue = step === 'email' ? email
+    : step === 'reset-email' ? recoveryEmail
+    : step === 'otp' ? code
+    : step === 'reset-otp' ? resetCode
+    : step === 'new-password' ? newPassword : password;
+  const footerLabel = step === 'new-password' ? copy('resetPassword')
+    : step === 'password' ? copy(mode === 'sign-up' ? 'signUp' : 'signIn')
+    : copy('continue');
+  const footerNotice = step === 'email'
+    ? copy(mode === 'sign-up' ? 'emailPreviewNotice' : 'signInEmailPreviewNotice')
+    : step === 'reset-email' ? copy('resetEmailPreviewNotice')
+    : step === 'otp' ? copy('otpPreviewNotice')
+    : step === 'reset-otp' ? copy('resetOtpPreviewNotice')
+    : step === 'new-password' ? copy('newPasswordPreviewNotice')
+    : copy(mode === 'sign-up' ? 'signUpPreviewNotice' : 'signInPreviewNotice');
+
   return <AuthPreviewPage
     onBack={onBack}
     headerActionLabel={mode === 'sign-in' && step === 'password'
       ? copy('forgotPassword') : undefined}
     onHeaderAction={mode === 'sign-in' && step === 'password'
-      ? onForgotPassword : undefined}>
+      ? onForgotPassword : undefined}
+    footerLabel={footerLabel}
+    footerNotice={footerNotice}
+    footerDisabled={!canContinueAuthPreview(step, currentValue)}
+    onFooterPress={onContinue}>
     <AuthCredentialsScreen
       mode={mode} step={step}
       email={email} code={code} password={password}
@@ -89,7 +111,6 @@ export function AuthPreviewFlow({ mode, onExit }: {
       onChangeRecoveryEmail={setRecoveryEmail}
       onChangeResetCode={setResetCode}
       onChangeNewPassword={setNewPassword}
-      onSubmit={onContinue}
     />
   </AuthPreviewPage>;
 }
