@@ -12,7 +12,7 @@
 
 ---
 
-**Status as of 2026-11-13:** Intentions below are derived from the product brief; **no deployment or implementation is approved yet**.
+**Status as of 2026-11-14:** Initial intentions derive from the product brief; ADR-009 and ADR-010 record owner-selected architecture/tooling only. **No deployment or Phase 1 implementation is approved yet**.
 
 ## Agreed product intentions
 | ID | Decision | Reason / consequence |
