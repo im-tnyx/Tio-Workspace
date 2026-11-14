@@ -182,3 +182,10 @@ Verify static architecture and mock-only behavior first; ensure no SDK/storage/A
 - The earlier JS `keyboardWillShow`/`keyboardWillHide` state, safe-area padding toggle and `Keyboard.scheduleLayoutAnimation` duplicated the keyboard avoidance animation. Removed these; native `KeyboardAvoidingView` is the only iOS keyboard layout owner. The fixed iOS home-indicator safe inset is now on an **outer wrapper** so the KAV measures its effective area; the inner CTA bottom gutter remains 16pt, equal to both side gutters. Android retains its existing resize/safe-area calculation.
 - On Sign in, the retained Email input now explicitly regains focus when returning from Password; `autoFocus` on an already-mounted input was insufficient. Preview-only, no real auth/email/OTP/password storage, and no scrolling or Welcome redesign.
 - Static CI must be observed on the new commit; iPhone Expo Go video/device QA is needed to assess whether native keyboard motion is visually synchronized. Small-phone extreme font scaling remains an unverified accessibility constraint with non-scrollable screens.
+
+
+## Password eye visibility toggle (2026-11-15)
+
+- In Phase 1.1 mock-only auth, any `TextField` marked `secureTextEntry` now shows a **right-side eye/eye-slash button** inside the same 60pt field row. It starts hidden, tapping shows the entered password, tapping again hides it. The same reusable behavior covers Sign in, Sign up and Forgot password / New password.
+- A 48pt minimum touch target, centrally defined neutral icon geometry and localized English `Show password`/`Hide password` screen-reader labels make the control operable in light/dark themes; icon is created from React Native primitives without a new dependency. Email and OTP fields never render the eye, and an uneditable password cannot toggle visibility.
+- Controlled input value and focus ref stay mounted; toggling does not submit, log, persist, transmit or verify passwords. No new route, scrolling, keyboard positioning, real Auth, Supabase, cloud or merge. Native iOS/Android visibility, focus and keyboard animation still require device QA.

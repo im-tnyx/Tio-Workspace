@@ -60,3 +60,8 @@ Official Expo SDK 58, Expo Router and Expo Blur docs checked on 2026-11-14. Foll
 - Owner observed a large notice-to-CTA gap and keyboard/CTA motion mismatch after the initial screenshot fix. The source had an unneeded 57pt notice min-height and two concurrent keyboard animation/padding owners.
 - Scoped work: natural-height stable safety copy above CTA with 8pt gap, fixed 16pt button gutter outside iOS native keyboard avoidance, explicit retained Email ref focus restore on Password→Email, contract tests and doc correction. No auth backend, Supabase, SQLite, scrolling or merge.
 - Evidence: GitHub current branch commit/CI to be verified; physical iOS/Android movement and high-text accessibility remain unverified until observed on devices; ask Codex for independent re-review.
+
+## Owner-requested password visibility (2026-11-15)
+
+- Scope: add a show/hide eye toggle on the right side of password inputs in the Phase 1.1 preview. Implemented in the reusable `TextField`, so Sign in, Sign up and New password share it. Default hidden, accessible show/hide labels, 48pt touch area, no additional native dependency.
+- Boundaries: no other screen layout/navigation, no scrolling, no real credential handling or Supabase changes. Updated tokens, English strings, contract test and Phase 1.1 guide. Current-head CI and independent review must be observed before owner merge decision; physical iOS/Android QA remains pending.

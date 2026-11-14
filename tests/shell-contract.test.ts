@@ -187,6 +187,21 @@ test('both Sign in and Sign up routes use the same persistent auth parent', () =
   assert.match(copy('authPreviewSafetyNotice'), /Do not enter a real password/);
 });
 
+test('Password fields have a right-side accessible eye toggle only for secure input', () => {
+  const field = readFileSync('src/shared/ui/TextField.tsx', 'utf8');
+  const screen = readFileSync('src/features/onboarding/screens/AuthCredentialsScreen.tsx', 'utf8');
+  assert.match(field, /secureTextEntry=\{secureTextEntry && !passwordVisible\}/);
+  assert.match(field, /secureTextEntry \? <Pressable/);
+  assert.match(field, /onPress=\{\(\) => setPasswordVisible\(current => !current\)\}/);
+  assert.match(field, /accessibilityLabel=\{passwordVisible \? copy\('hidePassword'\) : copy\('showPassword'\)\}/);
+  assert.match(field, /ref=\{inputRef\}/);
+  assert.match(field, /passwordEye\.touchTarget/);
+  assert.match(screen, /placeholder=\{copy\('passwordPlaceholder'\)\} secureTextEntry/);
+  assert.match(screen, /secureTextEntry autoCapitalize="none"/);
+  assert.equal(copy('showPassword'), 'Show password');
+  assert.equal(copy('hidePassword'), 'Hide password');
+});
+
 test('Sign-in Password to Email restores focus on the mounted Email field', () => {
   const screen = readFileSync('src/features/onboarding/screens/AuthCredentialsScreen.tsx', 'utf8');
   const field = readFileSync('src/shared/ui/TextField.tsx', 'utf8');

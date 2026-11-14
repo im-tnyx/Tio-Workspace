@@ -25,6 +25,18 @@ export const controlSizes = {
   buttonHitSlopVertical: 3,
 } as const;
 
+// Accessible password visibility control; also used on the borderless auth field.
+// Keep icon geometry here rather than introducing raw sizes in reusable UI.
+export const passwordEye = {
+  touchTarget: 48,
+  outlineWidth: 23,
+  outlineHeight: 14,
+  outlineStroke: 2,
+  pupilSize: 7,
+  slashLength: 27,
+  slashThickness: 2,
+} as const;
+
 // Sign-in titles fit on one line and share the same fixed line slot.
 // Avoid blank two-line title space pushing Email far below the heading.
 export const authPreviewLayout = {
