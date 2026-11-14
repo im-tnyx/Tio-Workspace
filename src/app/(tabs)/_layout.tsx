@@ -1,4 +1,5 @@
 import { Tabs } from 'expo-router';
+import { PreviewGate } from '@/app/navigation/PreviewGate';
 import { View } from 'react-native';
 import { ROOT_TABS, validateTabs } from '@/app/navigation/tabRegistry';
 import { BottomTabBar } from '@/shared/ui/BottomTabBar';
@@ -7,15 +8,15 @@ import { copy } from '@/shared/i18n/en';
 
 validateTabs(ROOT_TABS);
 export default function TabsLayout() {
-  return <RootChromeProvider><View style={{ flex: 1 }}>
+  return <PreviewGate><RootChromeProvider><View style={{ flex: 1 }}>
     <Tabs screenOptions={{ headerShown: false, tabBarHideOnKeyboard: true }}
       tabBar={({ state, navigation }) => <BottomTabBar
-        tabs={ROOT_TABS} selectedRoute={state.routes[state.index]?.name ?? 'index'}
+        tabs={ROOT_TABS} selectedRoute={state.routes[state.index]?.name ?? 'home'}
         onSelect={tab => navigation.navigate(tab.routeName)}
       />}>
       {ROOT_TABS.map(tab => <Tabs.Screen key={tab.key}
         name={tab.routeName} options={{ title: copy(tab.labelKey) }} />)}
     </Tabs>
     <RootTopBar />
-  </View></RootChromeProvider>;
+  </View></RootChromeProvider></PreviewGate>;
 }

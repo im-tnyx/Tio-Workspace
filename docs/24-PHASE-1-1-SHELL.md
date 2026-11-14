@@ -32,3 +32,10 @@ Run on physical Android/iPhone before accepting visual, blur, keyboard, safe-are
 ## Required review
 
 Verify static architecture and mock-only behavior first; ensure no SDK/storage/Auth imports, no network uploads and no secret files. Then independent reviewer evaluates the actual PR HEAD. CI results are reported only when observed, not inferred. Merge and Phase 1.2 Auth work need **separate owner approvals**.
+
+## Phase 1.1 onboarding entry (owner refinement, 2026-11-14)
+
+- The first app screen is exactly **TNYX** in uppercase and **one GET STARTED button**, on minimal neutral light/dark background. No login fields, secondary text, feature tabs, logo asset or promotional elements on Welcome.
+- **GET STARTED → Sign in / Sign up choice screen**. Choices open explicitly nonfunctional placeholders in Phase 1.1: no Supabase account, OTP, stored session or fake successful entry.
+- Real signup/signin flows remain **Phase 1.2 only** and will replace placeholders after separate authorization. Production builds cannot deep-link into preview Home/Workout/Library/You before verified authentication; development-only mock shell navigation is for UI review, with no personal or workout data.
+- Onboarding and auth screen copy uses centralized English catalog, system font, System/Light/Dark neutral appearance. No backend, guest mode or workout access is introduced.

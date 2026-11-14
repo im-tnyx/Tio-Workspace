@@ -1,5 +1,8 @@
 // MVP copy lives centrally. Future language resources can replace this catalog.
 export const en = {
+  brandTitle: 'TNYX', getStarted: 'GET STARTED',
+  signIn: 'Sign in', signUp: 'Sign up',
+  authComingLater: 'Authentication is not available in this preview. No account can be created or accessed.',
   app: 'Tnyx', home: 'Home', workout: 'Workout', library: 'Library', you: 'You',
   welcome: 'Make every rep count.',
   intro: 'A focused space for training. This preview does not save workouts.',

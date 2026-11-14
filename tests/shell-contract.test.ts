@@ -3,9 +3,10 @@ import test from 'node:test';
 import { ROOT_TABS, tabGeometry, validateTabs } from '../src/app/navigation/tabRegistry.ts';
 import { DEFAULT_PREFERENCES, decodePreferences, resolveMode } from '../src/shared/theme/preferences.ts';
 import { copy, formatNumber } from '../src/shared/i18n/en.ts';
+import { canOpenShellPreview } from '../src/app/navigation/shellPreviewAccess.ts';
 
 test('initial root navigation has four stable, distinct routes', () => {
-  assert.deepEqual(ROOT_TABS.map(item => item.routeName), ['index', 'workout', 'library', 'you']);
+  assert.deepEqual(ROOT_TABS.map(item => item.routeName), ['home', 'workout', 'library', 'you']);
   assert.doesNotThrow(() => validateTabs(ROOT_TABS));
   assert.throws(() => validateTabs([]));
   assert.throws(() => validateTabs([ROOT_TABS[0], ROOT_TABS[0]]));
@@ -41,4 +42,16 @@ test('English-only catalog exposes root titles without a language picker', () =>
   }
   assert.equal(copy('app'), 'Tnyx');
   assert.equal(formatNumber(1234, 'en'), '1,234');
+});
+
+test('Welcome entry and auth choice labels are centrally defined', () => {
+  assert.equal(copy('brandTitle'), 'TNYX');
+  assert.equal(copy('getStarted'), 'GET STARTED');
+  assert.equal(copy('signIn'), 'Sign in');
+  assert.equal(copy('signUp'), 'Sign up');
+});
+
+test('unverified users cannot reach the mock shell in release builds', () => {
+  assert.equal(canOpenShellPreview(false), false);
+  assert.equal(canOpenShellPreview(true), true);
 });

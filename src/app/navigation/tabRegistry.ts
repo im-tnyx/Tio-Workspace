@@ -1,8 +1,8 @@
 import type { CopyKey } from '@/shared/i18n/en';
 export type TabDefinition = { key: string;
-  routeName: 'index' | 'workout' | 'library' | 'you'; labelKey: CopyKey; glyph: string };
+  routeName: 'home' | 'workout' | 'library' | 'you'; labelKey: CopyKey; glyph: string };
 export const ROOT_TABS: readonly TabDefinition[] = [
-  { key: 'home', routeName: 'index', labelKey: 'home', glyph: '⌂' },
+  { key: 'home', routeName: 'home', labelKey: 'home', glyph: '⌂' },
   { key: 'workout', routeName: 'workout', labelKey: 'workout', glyph: '▣' },
   { key: 'library', routeName: 'library', labelKey: 'library', glyph: '▤' },
   { key: 'you', routeName: 'you', labelKey: 'you', glyph: '○' },
