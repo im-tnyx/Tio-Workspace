@@ -25,6 +25,9 @@ export function WelcomePanel({
   // Welcome is a fixed, non-scrolling screen. Scale down its decorative
   // heading on short devices while keeping the action area reachable.
   const compactWelcome = actionPlacement === 'bottom' && height < 620;
+  // iOS doesn't expose its physical display corner radius here. Use the
+  // home-indicator inset to approximate its smoother, deeper lower corners.
+  const iosBottomCornerRadius = Math.max(36, Math.min(54, insets.bottom + 14));
   const headingStyle = {
     color: colors.text, fontSize: compactWelcome ? 40 : 54,
     lineHeight: compactWelcome ? 48 : 65,
@@ -77,8 +80,15 @@ export function WelcomePanel({
         paddingHorizontal: spacing.sm, paddingBottom: spacing.xs,
       }}>
         <View style={{
-          backgroundColor: colors.card, borderRadius: 32,
+          backgroundColor: colors.card,
+          // Match iOS's continuous screen-corner curve rather than a
+          // circular 32pt radius; keep the existing 8pt/4pt outer spacing.
+          borderCurve: 'continuous',
+          borderTopLeftRadius: 38, borderTopRightRadius: 38,
+          borderBottomLeftRadius: iosBottomCornerRadius,
+          borderBottomRightRadius: iosBottomCornerRadius,
           borderWidth: 1, borderColor: colors.border,
+          overflow: 'hidden',
           paddingTop: spacing.lg, paddingHorizontal: spacing.lg,
           paddingBottom: insets.bottom + spacing.sm,
         }}>{bottomActions}</View>
