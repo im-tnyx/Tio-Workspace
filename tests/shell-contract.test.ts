@@ -6,7 +6,7 @@ import { DEFAULT_PREFERENCES, decodePreferences, resolveMode } from '../src/shar
 import { copy, formatNumber } from '../src/shared/i18n/en.ts';
 import { canOpenShellPreview } from '../src/bootstrap/shell/shellPreviewAccess.ts';
 import { controlSizes, radii, spacing } from '../src/shared/theme/tokens/index.ts';
-import { BRAND_TYPING_INTERVAL_MS, visibleTypingText } from '../src/shared/ui/typing.ts';
+import { BRAND_TYPING_INTERVAL_MS, BRAND_DOT_DIAMETER, BRAND_DOT_GAP, BRAND_DOT_FINAL_HOLD_MS, visibleTypingText } from '../src/shared/ui/typing.ts';
 
 test('initial root navigation has four stable, distinct routes', () => {
   assert.deepEqual(ROOT_TABS.map(item => item.routeName), ['home', 'workout', 'library', 'you']);
@@ -72,6 +72,9 @@ test('app-wide button size and welcome bottom spacing are shared tokens', () => 
 
 test('brand typewriter reveals TNYX once and clamps beyond final text', () => {
   assert.equal(BRAND_TYPING_INTERVAL_MS, 165);
+  assert.equal(BRAND_DOT_DIAMETER, 20);
+  assert.equal(BRAND_DOT_GAP, 7);
+  assert.equal(BRAND_DOT_FINAL_HOLD_MS, 240);
   assert.equal(visibleTypingText('TNYX', 0), '');
   assert.equal(visibleTypingText('TNYX', 1), 'T');
   assert.equal(visibleTypingText('TNYX', 3), 'TNY');
