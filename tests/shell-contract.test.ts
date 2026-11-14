@@ -135,14 +135,14 @@ test('post-Welcome auth uses persistent parent header and CTA, middle-only step 
   const welcome = readFileSync('src/features/onboarding/screens/WelcomeScreen.tsx', 'utf8');
 
   assert.match(page, /<KeyboardAvoidingView/);
-  assert.match(page, /\\{children\\}/);
+  assert.match(page, /\{children\}/);
   assert.match(page, /<Button size="onboarding"/);
-  assert.match(page, /label=\\{footerLabel\\}/);
-  assert.match(page, /\\{footerNotice\\}/);
+  assert.match(page, /label=\{footerLabel\}/);
+  assert.match(page, /\{footerNotice\}/);
   assert.match(page, /footerNoticeMinHeight/);
-  assert.doesNotMatch(middle, /<Button(?:\\s|>)/);
-  assert.doesNotMatch(middle, /\\{footerNotice\\}/);
-  assert.match(controller, /footerDisabled=\\{!canContinueAuthPreview/);
+  assert.doesNotMatch(middle, /<Button(?:\s|>)/);
+  assert.doesNotMatch(middle, /\{footerNotice\}/);
+  assert.match(controller, /footerDisabled=\{!canContinueAuthPreview/);
   assert.match(welcome, /actionPlacement="bottom"/);
 });
 
