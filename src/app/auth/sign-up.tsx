@@ -11,7 +11,7 @@ export default function SignUpRoute() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
 
-  return <AuthPreviewPage title={copy('signUp')} onBack={() => {
+  return <AuthPreviewPage onBack={() => {
     if (router.canGoBack()) router.back();
     else router.replace('/');
   }}>
