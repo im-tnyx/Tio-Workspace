@@ -70,3 +70,5 @@ Official Expo SDK 58, Expo Router and Expo Blur docs checked on 2026-11-14. Foll
 
 - Corrected the post-Welcome iOS CTA after observing the earlier nested KAV structure failed on-device. Single owner: `keyboardWillChangeFrame` + native `scheduleLayoutAnimation` + pure screen geometry overlap; no KAV or second padding animation. Footer remains inside the non-scrolling auth page with fixed 16pt gutter. Android remains unchanged.
 - Code: `AuthPreviewPage.tsx`, `authKeyboardGeometry.ts`, shell tests, Phase 1.1 guide and task note. Password eye and mock-only auth behavior retained. Current CI and fresh native QA/re-review required; no merge approval.
+
+- CI token-guard follow-up: replace inline numeric keyboard test inside `paddingBottom` expression with `Math.max(keyboardInset, insets.bottom)`, preserving native keyboard clearance while keeping the project's token guard satisfied. Recheck full CI at updated HEAD; original commit failed the token guard before TypeScript/tests ran.

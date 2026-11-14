@@ -75,7 +75,7 @@ export function AuthPreviewPage({
       // Keyboard overlap already includes the home-indicator region.
       // Preserve the same 16pt edge gutter on both sides and below the CTA.
       paddingBottom: (Platform.OS === 'ios'
-        ? (keyboardInset > 0 ? keyboardInset : insets.bottom)
+        ? Math.max(keyboardInset, insets.bottom)
         : insets.bottom) + spacing.lg,
     }}>
         {/* Only this middle content updates between Email, OTP and Password. */}

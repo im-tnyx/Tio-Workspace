@@ -149,7 +149,7 @@ test('post-Welcome auth uses persistent parent header and CTA, middle-only step 
   assert.match(page, /Keyboard\.scheduleLayoutAnimation\(event\)/);
   assert.match(page, /event\.endCoordinates\.screenY/);
   assert.match(page, /keyboardOverlap\(/);
-  assert.match(page, /keyboardInset > 0 \? keyboardInset : insets\.bottom/);
+  assert.match(page, /Math\.max\(keyboardInset, insets\.bottom\)/);
   assert.match(page, /\) \+ spacing\.lg/);
   assert.match(page, /gap: spacing\.sm, paddingTop: spacing\.sm/);
   assert.match(page, /paddingHorizontal: spacing\.lg/);
