@@ -2,9 +2,7 @@ import { Dimensions, Text, View } from 'react-native';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
 import { copy } from '@/shared/i18n/en';
 import { authPreviewLayout, spacing, typography } from '@/shared/theme/tokens';
-import { Button } from '@/shared/ui/Button';
 import { TextField } from '@/shared/ui/TextField';
-import { canContinueAuthPreview } from '../authPreviewSteps';
 import type { AuthPreviewStep } from '../authPreviewSteps';
 
 export type AuthFormMode = 'sign-up' | 'sign-in';
@@ -24,14 +22,13 @@ type Props = {
   onChangeRecoveryEmail: (value: string) => void;
   onChangeResetCode: (value: string) => void;
   onChangeNewPassword: (value: string) => void;
-  onSubmit: () => void;
 };
 
 // Shared, single-field-per-stage preview. No real OTP or credentials are sent.
 export function AuthCredentialsScreen({
   mode, step, email, code, password, recoveryEmail, resetCode, newPassword,
   onChangeEmail, onChangeCode, onChangePassword,
-  onChangeRecoveryEmail, onChangeResetCode, onChangeNewPassword, onSubmit,
+  onChangeRecoveryEmail, onChangeResetCode, onChangeNewPassword,
 }: Props) {
   const { colors } = useAppearance();
   // Physical screen height is stable while Android resizes for the keyboard.
@@ -51,18 +48,6 @@ export function AuthCredentialsScreen({
     : step === 'reset-otp' ? copy('resetOtpIntro')
     : step === 'new-password' ? copy('newPasswordIntro')
     : signingUp ? copy('signUpPasswordIntro') : '';
-  const notice = step === 'email' ? copy(signingUp ? 'emailPreviewNotice' : 'signInEmailPreviewNotice')
-    : step === 'reset-email' ? copy('resetEmailPreviewNotice')
-    : step === 'otp' ? copy('otpPreviewNotice')
-    : step === 'reset-otp' ? copy('resetOtpPreviewNotice')
-    : step === 'new-password' ? copy('newPasswordPreviewNotice')
-    : copy(signingUp ? 'signUpPreviewNotice' : 'signInPreviewNotice');
-  const value = step === 'email' ? email
-    : step === 'reset-email' ? recoveryEmail
-    : step === 'otp' ? code
-    : step === 'reset-otp' ? resetCode
-    : step === 'new-password' ? newPassword : password;
-
   return <View style={{ flex: 1, minHeight: 0, width: '100%',
     gap: primarySignIn ? spacing.lg : compact ? spacing.md : spacing.xl }}>
     <View style={{ gap: spacing.sm }}>
@@ -135,20 +120,6 @@ export function AuthCredentialsScreen({
           autoComplete="off" textContentType="none" returnKeyType="done"
         />
       </>}
-    </View>
-    <View style={{ marginTop: 'auto', gap: spacing.md, paddingTop: spacing.sm }}>
-      {/* Keep the preview notice BELOW the button. It also restores
-          comfortable separation between the CTA and keyboard. */}
-      <Button size="onboarding"
-        label={step === 'new-password' ? copy('resetPassword')
-          : step === 'password' ? copy(signingUp ? 'signUp' : 'signIn') : copy('continue')}
-        onPress={onSubmit}
-        disabledTone="soft"
-        disabled={!canContinueAuthPreview(step, value)}
-      />
-      <Text style={[typography.caption, { color: colors.muted, textAlign: 'center' }]}>
-        {notice}
-      </Text>
     </View>
   </View>;
 }
