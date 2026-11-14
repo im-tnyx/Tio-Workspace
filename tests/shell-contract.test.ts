@@ -141,6 +141,13 @@ test('post-Welcome auth uses persistent parent header and CTA, middle-only step 
   assert.match(page, /label=\{footerLabel\}/);
   assert.match(page, /\{footerNotice\}/);
   assert.match(page, /footerNoticeMinHeight/);
+  // 16pt side and bottom gutter uses the same semantic spacing token.
+  // The hidden-keyboard inset is extra system-safe-area clearance.
+  assert.match(page, /paddingHorizontal: spacing\.lg/);
+  assert.match(page, /paddingBottom: keyboardVisible \? spacing\.lg : insets\.bottom \+ spacing\.lg/);
+  // Removing temporary preview copy later must not remove CTA edge padding.
+  assert.match(page, /footerNotice\?: string/);
+  assert.match(page, /footerNotice \? <Text/);
   assert.doesNotMatch(middle, /<Button(?:\s|>)/);
   assert.doesNotMatch(middle, /\{footerNotice\}/);
   assert.match(controller, /footerDisabled=\{!canContinueAuthPreview/);
