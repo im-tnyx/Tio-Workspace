@@ -39,7 +39,6 @@ export function AuthCredentialsScreen({
   const signingUp = mode === 'sign-up';
   const primarySignIn = !signingUp && (step === 'email' || step === 'password');
 
-
   const title = step === 'email' ? copy(signingUp ? 'enterEmail' : 'signInEnterEmail')
     : step === 'reset-email' ? copy('confirmEmail')
     : step === 'otp' || step === 'reset-otp' ? copy('enterCode')
@@ -86,7 +85,6 @@ export function AuthCredentialsScreen({
         <TextField
           key="sign-in-email"
           autoFocus={step === 'email'}
-          editable={step === 'email'}
           label={copy('email')} variant="bare"
           value={email} onChangeText={onChangeEmail}
           placeholder={copy('emailPlaceholder')}
