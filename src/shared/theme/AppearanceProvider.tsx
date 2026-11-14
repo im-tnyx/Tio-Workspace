@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { StatusBar } from 'expo-status-bar';
+import { NavigationBar } from 'expo-navigation-bar';
 import * as SystemUI from 'expo-system-ui';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -76,6 +77,9 @@ export function AppearanceProvider({ children }: { children: ReactNode }) {
   if (!loaded) return null;
   return <Context.Provider value={value}>
     <StatusBar style={mode === 'dark' ? 'light' : 'dark'} />
+    {/* Three-button navigation icons follow the app theme in native builds.
+        The native enforceContrast=false setting requires a rebuilt APK. */}
+    {Platform.OS === 'android' ? <NavigationBar style={mode === 'dark' ? 'dark' : 'light'} /> : null}
     {children}
   </Context.Provider>;
 }
