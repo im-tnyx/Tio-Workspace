@@ -24,7 +24,7 @@ export function WelcomePanel({ title, actions, actionPlacement = 'center' }: Pro
 
   return <View style={{
     flex: 1, backgroundColor: colors.background,
-    paddingHorizontal: spacing.xl,
+    paddingHorizontal: spacing.lg,
   }}>
     {actionPlacement === 'bottom' ? <>
       <View style={{

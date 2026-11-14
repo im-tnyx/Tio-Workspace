@@ -6,9 +6,13 @@ export type ColorTokens = {
 };
 export const spacing = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 } as const;
 export const radii = { sm: 10, md: 16, lg: 22, pill: 999 } as const;
-// Shared touch target for every app Button variant. A minimum lets large
-// accessibility fonts grow the control instead of clipping text.
-export const controlSizes = { buttonMinHeight: 56 } as const;
+// Global button geometry. Keep visible size compact; enlarge the tappable
+// area invisibly on Android (>= 48dp) and let large text expand the height.
+export const controlSizes = {
+  buttonMinHeight: 46,
+  buttonRadius: 0,
+  buttonHitSlopVertical: 2,
+} as const;
 export const typography = {
   title: { fontSize: 34, lineHeight: 41, fontWeight: '700' as const },
   heading: { fontSize: 20, lineHeight: 27, fontWeight: '600' as const },
