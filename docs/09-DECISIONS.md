@@ -26,20 +26,21 @@
 | ADR-007 | Personal cloud backup is optional; future online DB sync separately opt-in | User control |
 | ADR-008 | Plan and document everything before implementation | User's explicit development order |
 | ADR-009 | **Feature-first Modular Monolith v2.1**: `src/app/` routes/providers, `src/features/*` business-owned modules, `src/platform/*` technical adapters, non-business `src/shared/*`, optional `src/bootstrap/`; feature `domain/` interfaces and `data/` implementations with optional complex use cases | **Chosen by owner on 2026-11-13** as the final source-layout architecture. No package-per-feature; see [canonical boundaries](10-REPOSITORY-STRUCTURE.md). Does **not** approve Phase 1 coding or pending security choices. |
+| ADR-010 | **Owner-selected local database technology stack:** Expo SQLite as on-device database, Drizzle ORM + Drizzle Kit for typed SQLite access and versioned generated migrations, and native SQLCipher for database-at-rest encryption | **Owner confirmed on 2026-11-14** after [PR #7](https://github.com/im-tnyx/Tio-Workspace/pull/7). This approves **technology selection only**, subject to native Android/iPhone compatibility, key lifecycle, migration/recovery security review and actual testing. It does **not** approve D03–D07 policies, app initialization, package installation, migration execution, or Phase 1. See [database contract](03-LOCAL-DATA-MODEL.md). |
 
-**ADR-009 approval boundary:** Owner acceptance applies to **source organization and dependency rules only**. Expo initialization, Auth provider details, encrypted database/key policy, backups, AI, sync, CI and all implementation require their own decisions and explicit Phase 1 authorization. Documentation approval/merge is not a deployment or build approval.
+**Decision boundaries:** ADR-009 approves source organization and dependency rules; ADR-010 approves the **local database technology choices**, not their security implementation or demonstrated compatibility. Auth/session details, per-account key custody, native SQLCipher verification, migration/rollback behaviour, backups, AI, sync, CI and **all Phase 1 implementation** remain subject to separate approval/evidence. A merged documentation PR is not a deployment or build approval.
 
-## Engineering proposals — validate during implementation
+## Engineering proposals and feasibility checks — not blanket implementation approval
 | ID | Proposal | Validation needed |
 |---|---|---|
 | PROP-001 | Supabase Auth for accounts, Expo SecureStore-backed secure session adapter | Refresh, offline and logout tests |
-| PROP-002 | Expo SQLite with SQLCipher in native builds | Build feasibility, key management, performance |
+| PROP-002 | **Tooling selected by ADR-010**: Expo SQLite + native SQLCipher; security design remains open | Prove cipher availability, key lifecycle, account isolation and performance on Android/iOS |
 | PROP-003 | Separate per-account encrypted SQLite databases | User switching, cleanup and restore |
 | PROP-004 | Repository interfaces from the beginning | Future sync integration without rewriting UI |
 | PROP-005 | Versioned encrypted backup format and user-held recovery method | Real cross-device recovery tests |
 | PROP-006 | Google Drive appDataFolder | OAuth scope, user consent and restore UX |
 | PROP-007 | iCloud native backup integration or file export/import fallback | Expo/iOS feasibility and entitlements |
-| PROP-008 | **Drizzle ORM + Drizzle Kit proposal** for local Expo SQLite schema/queries and bundled versioned migration SQL; **not owner-approved** | Validate Expo/Drizzle compatibility, account-scoped journal, SQLCipher unlock-first sequence, failure recovery and Android/iPhone offline upgrades. See [local data model](03-LOCAL-DATA-MODEL.md). |
+| PROP-008 | **Tooling selected by ADR-010**: Drizzle ORM + Drizzle Kit for local schema/queries and bundled versioned SQLite migrations; **implementation not authorized** | Validate Expo/Drizzle compatibility, account-scoped journal, SQLCipher unlock-first sequence, failure recovery and Android/iPhone offline upgrades. See [local data model](03-LOCAL-DATA-MODEL.md). |
 
 ## Open product decisions (not blocking documentation)
 1. Final branding and app package identifiers.
@@ -55,7 +56,7 @@
 
 ## Phase 0 decision-review package (recommendations pending)
 
-The [Phase 0 Decision Review Pack](17-PHASE-0-DECISION-PACK.md) tracks D01–D13 with explicit **pending** status and alternatives, informed by the [offline session state machine](18-OFFLINE-SESSION-STATE-MACHINE.md), [encrypted backup recovery](19-BACKUP-RECOVERY-STRATEGY.md), [MVP UX flows](20-MVP-UX-FLOWS.md) and [Phase 1 readiness checklist](21-PHASE-1-READINESS.md). These are **proposals only**, not new accepted ADRs; owner decisions remain tracked in [GitHub issue #2](https://github.com/im-tnyx/Tio-Workspace/issues/2).
+The [Phase 0 Decision Review Pack](17-PHASE-0-DECISION-PACK.md) tracks **D13 as owner-selected tooling**, while D01–D12 and native/security verification remain pending, informed by the [offline session state machine](18-OFFLINE-SESSION-STATE-MACHINE.md), [encrypted backup recovery](19-BACKUP-RECOVERY-STRATEGY.md), [MVP UX flows](20-MVP-UX-FLOWS.md) and [Phase 1 readiness checklist](21-PHASE-1-READINESS.md). Other recommendations remain **proposals only**; ADR-010 records the newly selected stack, while the remaining owner decisions are tracked in [GitHub issue #2](https://github.com/im-tnyx/Tio-Workspace/issues/2).
 
 Important: Offline access to already-verified local data cannot guarantee real-time enforcement of a remote session revocation while the device has no network. This trade-off must receive explicit owner review. Local database encryption keys and portable backup recovery secrets must also be considered separately.
 
