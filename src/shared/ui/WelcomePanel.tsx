@@ -34,7 +34,7 @@ export function WelcomePanel({
     ? <TypewriterHeading title={title} textStyle={headingStyle} />
     : <Text accessibilityRole="header" style={headingStyle}>{title}</Text>;
   const buttons = actions.map(action => <Button
-    key={action.label} label={action.label}
+    key={action.label} label={action.label} size="onboarding"
     onPress={action.onPress} variant={action.variant} />);
   const bottomActions = <View style={{ gap: spacing.sm }}>
     {buttons}
