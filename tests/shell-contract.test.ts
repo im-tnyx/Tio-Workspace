@@ -6,7 +6,7 @@ import { DEFAULT_PREFERENCES, decodePreferences, resolveMode } from '../src/shar
 import { copy, formatNumber } from '../src/shared/i18n/en.ts';
 import { canOpenShellPreview } from '../src/bootstrap/shell/shellPreviewAccess.ts';
 import { canContinueAuthPreview, nextAuthPreviewStep, previousAuthPreviewStep } from '../src/features/onboarding/authPreviewSteps.ts';
-import { controlSizes, radii, spacing } from '../src/shared/theme/tokens/index.ts';
+import { authPreviewMuted, controlSizes, radii, spacing } from '../src/shared/theme/tokens/index.ts';
 import { BRAND_TYPING_INTERVAL_MS, BRAND_DOT_DIAMETER, BRAND_DOT_GAP, BRAND_DOT_FINAL_HOLD_MS, visibleTypingText } from '../src/shared/ui/typing.ts';
 
 test('initial root navigation has four stable, distinct routes', () => {
@@ -119,6 +119,15 @@ test('app-wide button size and welcome bottom spacing are shared tokens', () => 
   assert.equal(spacing.lg, 16);
   assert.equal(spacing.xl, 24);
   assert.equal(radii.md, 16); // Other surfaces remain rounded.
+});
+
+test('auth-only disabled button and bare placeholder use soft shades', () => {
+  assert.deepEqual(authPreviewMuted.dark, {
+    disabledBackground: '#282828', disabledText: '#858585', placeholder: '#707070',
+  });
+  assert.deepEqual(authPreviewMuted.light, {
+    disabledBackground: '#E8E8E8', disabledText: '#868686', placeholder: '#929292',
+  });
 });
 
 test('brand typewriter reveals TNYX once and clamps beyond final text', () => {
