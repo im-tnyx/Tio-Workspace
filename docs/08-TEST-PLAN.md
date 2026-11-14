@@ -32,9 +32,13 @@
 | DATA-01 | P0 | Complete workouts offline | Sets, reps, weights, timestamps persist in SQLite |
 | DATA-02 | P0 | App killed mid workout | Last committed autosaved state recovers |
 | DATA-03 | P0 | Edit/delete and restart | Correct record changes; no phantom duplicates |
-| DATA-04 | P0 | Database schema upgrade | User history maintained; migration verifies |
+| DATA-04 | P0 | Drizzle-generated SQLite schema upgrade on existing account | Bundled SQL applies offline after unlock, preserves complete existing workouts; journal advances exactly once |
+| DATA-05 | P0 | Interrupted migration, insufficient storage or faulty SQL | Fail-closed recovery UI; no silent DB reset/plaintext fallback, verified encrypted snapshot can restore all data |
+| DATA-06 | P0 | Switch accounts with different local schema versions | Each account's encrypted DB and migration journal remain isolated; no cross-account reads or keys |
+| DATA-07 | P0 | Repeat startup and restore compatible older-schema backup | Migration idempotent on current version; older restore verified for user/integrity and migrated after unlock |
 | SEC-01 | P0 | Inspect mobile APK/IPA/config | No AI provider, Supabase service-role or backend secret key |
 | SEC-02 | P0 | SQLCipher-enabled native build | `cipher_version` detected; raw database unreadable without key |
+| SEC-03 | P0 | Wrong/missing key or native build without SQLCipher | Storage fails closed before ORM migration or workout UI; no plaintext replacement created |
 | AI-01 | P1 | Call function without valid user token | Denied and no vendor API call |
 | AI-02 | P1 | Valid plan generation | Preview/edit response; saves only on user acceptance |
 | AI-03 | P1 | Offline/429/5xx AI request | Local logging unaffected; understandable error |

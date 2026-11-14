@@ -20,6 +20,7 @@
 | Session | Persistent online login + offline account-policy edge cases approved | ⬜ Pending |
 | Data isolation | Account-specific SQLite/key lifecycle and logout/erase semantics approved | ⬜ Pending |
 | Native build | SQLCipher build/validation strategy accepted (Expo Go limitations understood) | ⬜ Pending |
+| Migrations | D13 Drizzle proposal, compatible versions/bundling, account-specific journal and fail-closed recovery approved | ⬜ Pending |
 | Privacy | Workouts stay local; cloud upload disabled by default | ✅ Requirement recorded, **not tested** |
 | Secrets | AI provider secrets server-side; publishable keys understood | ✅ Requirement recorded, **not tested** |
 | Backup | Later-phase recovery principles agreed, no false restore promises | ⬜ Pending |
@@ -32,7 +33,7 @@
 |---|---|---|
 | 1.1 | Expo TypeScript app shell, routing/theme, basic CI | Physical device starts shell, test command documented |
 | 1.2 | Auth sign-up/sign-in/forgot password; secure persistence adapter | Correct persistent login and offline session flows |
-| 1.3 | Encrypted account-local SQLite + migration manager | `PRAGMA cipher_version` verified in native build; account-switch tests |
+| 1.3 | Encrypted account-local SQLite + Drizzle migration manager **if D13 approved** | `PRAGMA cipher_version` verified in native build; offline migration, failure-recovery and account-switch tests |
 | 1.4 | Exercise library and plan editor | Local creation/edit/restart works without network |
 | 1.5 | Workout sets/session logging | Atomic autosave and crash/restart recovery |
 | 1.6 | History/progress, logout, local erase UX | Correct account isolation, privacy and offline tests |
@@ -43,8 +44,8 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 ## 03 · Validation matrix
 
 - [ ] `AUTH-01/02/03/04/05/06/07/08`: account setup, reopen, offline access, switch user and revoked session flows.
-- [ ] `DATA-01/02/03/04`: local persistence, crash recovery, deletion and migrations.
-- [ ] `SEC-01/02`: no production secrets in mobile binary and verified SQLCipher.
+- [ ] `DATA-01/02/03/04/05/06/07`: persistence, crash recovery, deletion, offline upgrades, interrupted migrations and account isolation.
+- [ ] `SEC-01/02/03`: no production secrets in mobile binary; verified SQLCipher and fail-closed key/cipher failure.
 - [ ] Real Android + iPhone developer/release build tests recorded.
 - [ ] Measured navigation, local query and autosave performance with representative workouts.
 - [ ] Clear backup-loss warning for people who use local-only mode.
