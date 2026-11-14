@@ -25,12 +25,11 @@ export const controlSizes = {
   buttonHitSlopVertical: 3,
 } as const;
 
-// Sign-in keeps the same heading space on Email and Password stages.
-// Reserve room for two lines so revealing the password field does not
-// move the existing email input when the heading text changes.
+// Sign-in titles fit on one line and share the same fixed line slot.
+// Avoid blank two-line title space pushing Email far below the heading.
 export const authPreviewLayout = {
-  signInTitleMinHeight: 92,
-  signInTitleMinHeightCompact: 78,
+  signInTitleMinHeight: 46,
+  signInTitleMinHeightCompact: 39,
 } as const;
 export const typography = {
   title: { fontSize: 34, lineHeight: 41, fontWeight: '700' as const },
