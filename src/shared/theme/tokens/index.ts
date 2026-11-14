@@ -20,6 +20,7 @@ export const authPreviewMuted: Record<ColorMode, {
 // area invisibly on Android (>= 48dp) and let large text expand the height.
 export const controlSizes = {
   buttonMinHeight: 42,
+  onboardingButtonMinHeight: 46,
   buttonRadius: radii.pill,
   buttonHitSlopVertical: 3,
 } as const;
