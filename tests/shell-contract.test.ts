@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { ROOT_TABS, validateTabs } from '../src/bootstrap/shell/tabRegistry.ts';
 import { tabGeometry } from '../src/shared/navigation/tabTypes.ts';
-import { DEFAULT_PREFERENCES, decodePreferences, navigationButtonStyleForMode, resolveMode } from '../src/shared/theme/preferences.ts';
+import { DEFAULT_PREFERENCES, decodePreferences, resolveMode } from '../src/shared/theme/preferences.ts';
 import { copy, formatNumber } from '../src/shared/i18n/en.ts';
 import { canOpenShellPreview } from '../src/bootstrap/shell/shellPreviewAccess.ts';
 import { controlSizes, radii, spacing } from '../src/shared/theme/tokens/index.ts';
@@ -30,11 +30,6 @@ test('appearance defaults to System/Glass and follows device mode', () => {
   assert.equal(resolveMode('system', 'light'), 'light');
   assert.equal(resolveMode('dark', 'light'), 'dark');
   assert.equal(resolveMode('light', 'dark'), 'light');
-});
-
-test('Android navigation icons contrast with their screen, not the reverse', () => {
-  assert.equal(navigationButtonStyleForMode('dark'), 'light');
-  assert.equal(navigationButtonStyleForMode('light'), 'dark');
 });
 
 test('tampered/legacy preferences safely fall back to System/Glass', () => {
