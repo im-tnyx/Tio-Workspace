@@ -36,7 +36,7 @@ export function useRootChrome(): Chrome {
 export function RootTopBar() {
   const { title, visible } = useRootChrome();
   const insets = useSafeAreaInsets();
-  const opacity = useRef(new Animated.Value(0)).current;
+  const [opacity] = useState(() => new Animated.Value(0));
   useEffect(() => {
     Animated.timing(opacity, { toValue: visible ? 1 : 0,
       duration: chromeMotion.durationMs, useNativeDriver: true }).start();
