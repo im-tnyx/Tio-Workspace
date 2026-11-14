@@ -54,6 +54,11 @@ test('Welcome entry and auth choice labels are centrally defined', () => {
   assert.equal(copy('logIn'), 'Log in');
   assert.equal(copy('signIn'), 'Sign in');
   assert.equal(copy('signUp'), 'Sign up');
+  assert.equal(copy('createAccount'), 'Create account');
+  assert.equal(copy('email'), 'Email');
+  assert.equal(copy('password'), 'Password');
+  assert.match(copy('signUpPreviewNotice'), /not available yet/);
+  assert.match(copy('signUpPreviewNotice'), /real password/);
 });
 
 test('unverified users cannot reach the mock shell in release builds', () => {
