@@ -79,7 +79,7 @@ export function AuthPreviewPage({
         paddingBottom: keyboardVisible ? spacing.sm : insets.bottom + spacing.sm,
       }}>
         {/* Only this middle content updates between Email, OTP and Password. */}
-        <View style={{ flex: 1, minHeight: 0 }}>
+        <View style={{ flex: 1, minHeight: authPreviewLayout.authMiddleMinHeight }}>
           {children}
         </View>
         {/* A single persistent footer: neither Button nor its containing View
