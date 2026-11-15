@@ -11,7 +11,7 @@
 
 ## Context and owner-requested UX
 
-Phase 1.1 is a nonfunctional Expo mock shell. The current preview shows `Email → OTP → Password` for signup, while [ADR-017](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md) specifies `Email + Password → OTP` as the authoritative Auth contract. The owner now prefers the screen order shown below, including a **separate Name screen immediately after Mobile**. **DOB and Sex are required, not optional; Mobile alone is optional** among signup/profile fields. All local fitness fields listed here are required for this proposed onboarding.
+Phase 1.1 is a nonfunctional Expo mock shell. The current preview shows `Email → OTP → Password` for signup, while [ADR-017](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md) specifies `Email + Password → OTP` as the authoritative Auth contract. The owner has fixed the signup sequence and now wants **Mobile as an optional field inside Account Setup alongside required Username**, not a standalone Mobile screen. **Name remains a dedicated screen immediately after Account Setup. DOB and Sex are required; Mobile alone is optional** among signup/profile fields. All local fitness fields listed here are required for this proposed onboarding.
 
 ### Proposed first-time screen order
 
@@ -22,21 +22,25 @@ Phase 1.1 is a nonfunctional Expo mock shell. The current preview shows `Email �
 | 3 | Email | Valid email address | Yes | Supabase Auth |
 | 4 | Email OTP | Verify emailed code server-side | Yes | Supabase Auth |
 | 5 | Password | Set password (8–64 selected limit) | Yes | Supabase Auth |
-| 6 | Username | Unique handle (current selected length 3–16 graphemes) | Yes **(new proposal)** | Private cloud profile |
-| 7 | Mobile | Optional phone number; **Skip** available | **No — only optional field** | Private cloud profile, if supplied |
-| 8 | Name | Dedicated full-name screen, **after Mobile** | Yes | Private cloud profile |
-| 9 | DOB | Date of birth, not a permanently stored age integer | Yes | Private cloud profile |
-| 10 | Sex | Required sex/reference input; precise wording and permitted options still need privacy review | Yes | Private cloud profile |
-| 11 | Units | Metric / Imperial display preference | Yes | Local |
-| 12 | Height | Height, stored canonically in centimeters | Yes | Local encrypted SQLite |
-| 13 | Current Weight | Starting weight, canonical kilograms and dated measurement | Yes | Local encrypted SQLite |
-| 14 | Activity Level | Selected activity category | Yes | Local encrypted SQLite |
-| 15 | Goal | Lose / Maintain / Gain | Yes | Local encrypted SQLite |
-| 16 | App Entry | Complete gates and open Home | — | Local |
+| 6 | Account Setup | **Username required** (3–16 graphemes) + **Mobile optional** on the same screen; mobile can be left blank | Username: Yes; Mobile: **No (only optional field)** | Private cloud profile |
+| 7 | Name | **Separate full-name screen directly after Account Setup** | Yes | Private cloud profile |
+| 8 | DOB | Date of birth, not a permanently stored age integer | Yes | Private cloud profile |
+| 9 | Sex | Required sex/reference input; precise wording and permitted options still need privacy review | Yes | Private cloud profile |
+| 10 | Units | Metric / Imperial display preference | Yes | Local |
+| 11 | Height | Height, stored canonically in centimeters | Yes | Local encrypted SQLite |
+| 12 | Current Weight | Starting weight, canonical kilograms and dated measurement | Yes | Local encrypted SQLite |
+| 13 | Activity Level | Selected activity category | Yes | Local encrypted SQLite |
+| 14 | Goal | Lose / Maintain / Gain | Yes | Local encrypted SQLite |
+| 15 | App Entry | Complete gates and open Home | — | Local |
 
 Welcome includes Get Started; do not add a redundant separate Get Started page. Sign-in is a separate returning-user path. Final user-facing strings remain English-only for the current MVP per ADR-018.
 
 **Fixed owner decision — do not change the screen order:** **Email → OTP → Password** must remain the first-time signup UI sequence. Technical feasibility is still a required implementation gate: validate Supabase email OTP account verification, production template/configuration, protected session establishment and authenticated password setup/update **in that exact order**. If a secure supported mechanism is unavailable, block implementation and escalate the provider/architecture issue; **do not reorder to Email → Password → OTP** or fake OTP verification. New workouts never unlock before real server-side email verification and password/session setup.
+
+
+### Uploaded Flutter reference — architecture hint only
+
+The provided `account_setup_providers.dart` contains `completeAccountSetup({String? mobile})` delegated to a Supabase-backed account-setup repository, showing that an **optional mobile parameter can be persisted during Account Setup**. It also exposes separate `hasTrustedEmailIdentity` and `hasTrustedPhoneIdentity` states; merely collecting mobile **does not make it verified**, and this Tio proposal does not require phone OTP. This adapter contains **no actual Account Setup UI**, so it does not establish how mobile or username were drawn on screen. The provided `account_setup.dart` only re-exports modules, while `pre_auth_app_mode_route.dart` handles a separate pre-auth App Mode preference; do not import its Flutter/Riverpod structure, add an App Mode step, or assume its navigation for Tio's **Expo/React Native** app. No uploaded source is copied into this repository.
 
 ## Cloud boundary: minimum account identity
 
@@ -64,7 +68,7 @@ Welcome includes Get Started; do not add a redundant separate Get Started page. 
 |---|---|
 | Invalid/expired OTP, server 429 or network outage at first signup | No verified local account binding or workout unlock; real provider error/cooldown; no fabricated success |
 | Username already taken / invalid input | No duplicate handle; user can correct and retry without losing verified session |
-| Mobile skipped | Profile remains valid with `mobile_number = NULL`; no phone OTP |
+| Mobile blank inside Account Setup | Required Username still validated and saved; profile can continue with `mobile_number = NULL`; no separate phone step or phone OTP |
 | Name/DOB/Sex absent | Block final cloud-profile completion with accessible field error; **do not mark them optional** |
 | Missing Units/Height/Weight/Activity/Goal | Resume missing local step; Home available only after required first-time setup succeeds |
 | App killed during cloud profile save or local step | Safe idempotent resume after appropriate account/session verification; no duplicate measurement |
@@ -84,7 +88,7 @@ Welcome includes Get Started; do not add a redundant separate Get Started page. 
 
 | ID | Acceptance evidence required |
 |---|---|
-| ONB-01 | Signup stages appear in the requested order; Name follows optional Mobile; only Mobile has Skip |
+| ONB-01 | Email → OTP → Password fixed; **Account Setup contains required Username and optional Mobile** on one screen; **Name is the next dedicated screen**; only the mobile field can be left blank |
 | ONB-02 | DOB and Sex are required, no false defaults; invalid/empty inputs never mark cloud profile complete |
 | ONB-03 | Server OTP verified before user binding or local workout unlock; proposed OTP→password provider path validated |
 | ONB-04 | Username unique/normalized under approved policy; concurrent reservation and rename tests |
