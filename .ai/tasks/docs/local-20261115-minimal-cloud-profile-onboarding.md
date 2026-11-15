@@ -24,7 +24,7 @@
 
 ## Approved scope / non-goals
 
-- **In scope:** propose [ADR-019](../../../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) with Email → OTP → Password → Username → Mobile (optional) → **Name** → DOB (required) → Sex (required) → Units → Height → Current Weight → Activity Level → Goal; record cloud/local boundaries, risk questions, RLS and acceptance criteria.
+- **In scope:** propose [ADR-019](../../../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) with Email → OTP → Password → **Account Setup [Username + Mobile (optional)]** → **Name (separate next screen)** → DOB (required) → Sex (required) → Units → Height → Current Weight → Activity Level → Goal; record cloud/local boundaries, risk questions, RLS and acceptance criteria.
 - **In scope:** link from docs index and decision register as **proposed**, keep this single task pointer updated. Record Email → OTP → Password as fixed owner choice, and document technical feasibility/reconciliation without suggesting a different screen order.
 - **Out of scope:** any code, mock-screen revision, Auth/provider configuration, SQL migrations, live Supabase table, local SQLite implementation, secret creation, deployment or merge.
 - **Authority:** Owner's "start" authorizes preparing these docs for review; **it does not authorize runtime Phase 1.2+ or acceptance of unresolved security/privacy decisions**.
@@ -38,11 +38,11 @@
 
 ## Durable decisions and open gates
 
-**Owner-required inputs:** Email/OTP/Password, Username, Name, DOB and Sex; **Mobile is the only optional onboarding input**, with Skip. Units/Height/Current Weight/Activity Level/Goal required locally. Separate Name screen occurs directly after Mobile.
+**Owner-required inputs:** Email/OTP/Password, Username, Name, DOB and Sex; **Mobile is the only optional onboarding input**, with Skip. Units/Height/Current Weight/Activity Level/Goal required locally. Mobile is an optional field **within Account Setup** alongside required Username; **no standalone Mobile screen**. Separate Name screen occurs immediately after Account Setup.
 
 **Proposed storage:** Cloud `auth.users` for email/account/password credentials, plus private `public.profiles` for username/full_name/DOB/calculation_sex/nullable mobile. Local encrypted DB for units, height, measured weight, activity, goal, workouts and resume metadata.
 
-**Fixed UI:** Email → OTP → Password **must remain exactly in this order**. **Unresolved technical gates:** provider-supported password setup following verified OTP (do not reorder UI), ADR-017 legacy wording, previously optional username, required sensitive field privacy/age policy, backend RLS/uniqueness, deletion and native encryption validation. No plan counts or existing single-bound-account guarantees changed.
+**Fixed UI:** Email → OTP → Password **must remain exactly in this order**. Owner provided Flutter account-setup adapter reference: `completeAccountSetup({String? mobile})` supports optional mobile without proving actual UI; Flutter implementation is not copied into Expo. **Unresolved technical gates:** provider-supported password setup following verified OTP (do not reorder UI), ADR-017 legacy wording, previously optional username, required sensitive field privacy/age policy, backend RLS/uniqueness, deletion and native encryption validation. No plan counts or existing single-bound-account guarantees changed.
 
 ## Progress / changed files
 
