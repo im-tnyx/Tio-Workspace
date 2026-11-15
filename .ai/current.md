@@ -4,15 +4,15 @@
 
 | Field | Value |
 |---|---|
-| Status | **Docs-only onboarding ADR proposal — review pending; Phase 1.1 merged** |
-| Active Task | [Minimal cloud profile + local onboarding proposal](tasks/docs/local-20261115-minimal-cloud-profile-onboarding.md) |
-| Active Scope / Owner | Documentation agent — no real Auth/DB implementation authority |
-| Branch | `docs/phase1-2-minimal-profile-onboarding-20261115` |
-| Inspected `main` | `d3b6ceec7f31b5084b86685f90f0adabe5bcadd0` (2026-11-15) |
-| Completed PRs | [#11 Phase 1.1 Expo mock shell](https://github.com/im-tnyx/Tio-Workspace/pull/11) and [#12 post-merge docs](https://github.com/im-tnyx/Tio-Workspace/pull/12) **both merged** |
+| Status | **Post-PR #13 documentation handoff; no active implementation task** |
+| Active Task | **None** — completed docs task [archived](archive/2026/local-20261115-minimal-cloud-profile-onboarding.md) |
+| Active Scope / Owner | **None assigned**; no Auth/DB implementation authority |
+| Branch | `main` (merged PR #13); post-merge reconciliation changes are review-only |
+| Verified merged `main` | `237a88fe5c6c30ae940a920ec71659cc947aeaf3` (2026-11-15; PR #13 squash merge) |
+| Completed PRs | [#11 Expo mock shell](https://github.com/im-tnyx/Tio-Workspace/pull/11), [#12 prior post-merge docs](https://github.com/im-tnyx/Tio-Workspace/pull/12), [#13 proposed ADR-019 docs](https://github.com/im-tnyx/Tio-Workspace/pull/13) — **all merged** |
 | Proposal | [ADR-019 minimal cloud profile and local onboarding](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) |
 | Implementation authority | **None granted** for Phase 1.2+, Supabase tables, real OTP/Auth, encrypted SQLite, Sync or deployment |
-| Review status | `REVIEW_PENDING`; merge approval **not granted** |
+| PR #13 final review | `im-tio` **APPROVED** exact head `944efa7799d6f8d803e1a16506ee0ff5ec7d3f81`; 1/1 P3 thread resolved; owner-approved squash merge verified |
 
 ## Exact owner-requested signup and onboarding
 
@@ -24,12 +24,12 @@ Owner requested eventual cleanup of abandoned Supabase account creations. [Propo
 
 ## Additional proposed cloud account metadata — not deployed
 
-Owner additionally requested **Platform, OS version, App build, Avatar, Plan** on Supabase. ADR-019 proposes nullable latest-known iOS/Android + OS version + app version/build in an account-private snapshot, **`profiles.avatar_url`** pointing to an account-owned image in a private Storage bucket, uploaded from Profile Settings or imported from **future** separately approved Google signup after user approval; on user photo change, update the URL after upload succeeds, then delete the old bucket object. **Email signup has no required photo:** if `avatar_url=NULL`, render a local initials avatar from the required Name (e.g. **Tnyx Tio → TT**); Profile Settings can upload/change/remove any time and removal restores initials without storing/uploading a default image. It also proposes a server-controlled `FREE` plan status. No new required signup step, no forced network/heartbeat, and no workouts uploaded. Plan entitlement, RLS, avatar privacy, retention and implementation need separate authorization. Existing `im-tio` P3 whitespace thread was resolved; a newer commit changes review scope again, so re-review is necessary.
+Owner additionally requested **Platform, OS version, App build, Avatar, Plan** on Supabase. ADR-019 proposes nullable latest-known iOS/Android + OS version + app version/build in an account-private snapshot, **`profiles.avatar_url`** pointing to an account-owned image in a private Storage bucket, uploaded from Profile Settings or imported from **future** separately approved Google signup after user approval; on user photo change, update the URL after upload succeeds, then delete the old bucket object. **Email signup has no required photo:** if `avatar_url=NULL`, render a local initials avatar from the required Name (e.g. **Tnyx Tio → TT**); Profile Settings can upload/change/remove any time and removal restores initials without storing/uploading a default image. It also proposes a server-controlled `FREE` plan status. No new required signup step, no forced network/heartbeat, and no workouts uploaded. Plan entitlement, RLS, avatar privacy, retention and implementation need separate authorization. The PR #13 P3 thread was resolved, `im-tio` formally approved exact HEAD and the owner authorized the squash merge. This **does not** approve cloud schema, Avatar Storage, inactive-account deletion or Google OAuth.
 
 ## Next safe action
 
-Continue review of the open documentation-only [PR #13](https://github.com/im-tnyx/Tio-Workspace/pull/13) with reviewer `im-tio` requested. Validate source-of-truth consistency and explicit privacy/security decisions; **separate owner merge approval** remains necessary. If the actual Supabase OTP-before-password mechanism cannot be implemented securely, flag the technical blocker without reordering the UI.
+**PR #13 is merged**, and its documentation-only task is [archived](archive/2026/local-20261115-minimal-cloud-profile-onboarding.md). The next **owner decision**, not an authorized coding assignment, is to review [proposed ADR-019](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) and [Phase 1 readiness](../docs/21-PHASE-1-READINESS.md): select one bounded implementation slice only after resolving OTP-before-password Supabase feasibility, DOB/sex privacy/age, private profile and avatar RLS/storage, server-owned plan/device metadata, local encryption/recovery and account-retention safety. **Keep the fixed Email → OTP → Password UI order**; do not simulate unsupported verification or approve schema/cleanup by inference.
 
-After any separately approved docs merge, reconcile and archive this task. **No live Auth/session/SQLite/Supabase implementation or deployment is authorized by this handoff.**
+This post-merge context reconciliation is **a separate docs-only review PR** and needs its own reviewer gate and owner merge authorization. No live Auth/session/SQLite/Supabase implementation or deployment is authorized.
 
-[Task](tasks/docs/local-20261115-minimal-cloud-profile-onboarding.md) · [AGENTS](../AGENTS.md) · [Post-merge playbook](../docs/12-POST-MERGE-PLAYBOOK.md)
+[Archived task](archive/2026/local-20261115-minimal-cloud-profile-onboarding.md) · [AGENTS](../AGENTS.md) · [Post-merge playbook](../docs/12-POST-MERGE-PLAYBOOK.md)
