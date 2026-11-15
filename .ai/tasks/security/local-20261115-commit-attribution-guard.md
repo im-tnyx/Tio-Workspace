@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Ready for independent review — latest merge-reconciliation head to revalidate; App-owned required-check activation NOT done |
+| Status | Codex P2 fixes prepared for CI — PR #17 review gate pending; App-owned required-check activation NOT done |
 | Objective | Prevent agents from writing AI co-author and equivalent self-credit metadata, while retaining human attribution and `.ai/` multi-agent records |
 | Implementation owner | ChatGPT connected GitHub session, bounded repo governance slice; repository owner retains approval/merge authority |
 | Previous agent | None for this slice; completed preview PR #15 is a separate archived task |
@@ -50,7 +50,7 @@
 - [x] Reconciled independently merged PR #15 post-merge archive on `main` (SHA `095c3edb4a7b1969598bc01162d66496febbf0c2`); preserved the **main** archive and preview follow-up facts rather than replacing with stale PR #17 copy.
 - [x] Prepare scoped scanner/workflows/policy/task changes on feature branch (verify live PR head).
 - [x] Validated fixtures/CI and patch on first published code head `6b3f1c4237fa154f48ee2d659bf9d1f7011b2caa` (CI must be rechecked after task-evidence commit).
-- [ ] Independent review **requested** from `im-tio` on [PR #17](https://github.com/im-tnyx/Tio-Workspace/pull/17); final assessed head and verdict pending.
+- [x] `im-tio` reviewed `7e28127d992f6dc374df0426f3578cc1b1d4563c`: COMMENTED, no new actionable code defect; P3 PR description evidence needed refresh (review link in PR).\n- [ ] Codex [review #5911817400](https://github.com/im-tnyx/Tio-Workspace/pull/17#pullrequestreview-5911817400) on same SHA identified **three open P2 threads**: Claude 3.7 Sonnet names, nonterminal co-author credits, AI author/committer metadata. This commit adds focused regression fixes; verify current-head CI and get independent re-review before resolving threads or merging.
 - [ ] Owner authorizes merge of this exact PR.
 - [ ] Owner reports existing `Tio Attribution Guard` App + Workspace trusted environment Client ID/private-key secret setup completed (2026-11-15); confirm **actual** App installation and credential function with a trusted-run test after PR merge. Owner/admin still must configure strict App-source-pinned required check and perform clean/bad/stale PR tests. GitHub connector does not expose encrypted environment values.
 
@@ -68,7 +68,7 @@
 
 - Review requested from: `im-tio` on [PR #17](https://github.com/im-tnyx/Tio-Workspace/pull/17), confirmed in live GitHub requested reviewers; response pending.
 - Reviewer identity / link / reviewed SHA: `im-tio` request confirmed; review submission and assessed SHA **not yet obtained**.
-- Review status: `REVIEW_PENDING`; verdict: `INCONCLUSIVE` until actual check/review evidence.
+- Review status: `CHANGES_NEEDED` for three P2 Codex inline threads on reviewed head `7e28127d`; a fix is proposed, re-review/current-head CI still required. im-tio COMMENTED (not APPROVED).
 - Required CI vs supplemental: check current repo rules, not guessed status.
 - Merge approval: **not granted**.
 

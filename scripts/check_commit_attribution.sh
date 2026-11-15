@@ -113,7 +113,8 @@ is_ai_name() {
     fi
   done
   # Detect versioned model names without blocking humans named Claude Dupont.
-  if [[ "$name_lc" =~ ^claude[[:space:]]+(code|opus|sonnet|haiku)([[:space:]].*)?$ ]]; then
+  if [[ "$name_lc" =~ ^claude[[:space:]]+(code|opus|sonnet|haiku)([[:space:]].*)?$ ]] ||
+     [[ "$name_lc" =~ ^claude[[:space:]]+[[:digit:]]+(\.[[:digit:]]+)?[[:space:]]+(opus|sonnet|haiku)([[:space:]].*)?$ ]]; then
     return 0
   fi
   # GPT-4o / GPT-5.6 / GPT-6 are model identities even when their trailer
@@ -148,6 +149,24 @@ has_ai_words() {
   [[ "$v" =~ (^|[^[:alnum:]_])(anthropic|claude|openai|chatgpt|codex|copilot|gemini|grok|deepseek|cursor([[:space:]-]+agent)?|devin[[:space:]-]*ai|ai([[:space:]-]+agent)?|gpt[-[:digit:]]+[[:alnum:].-]*|llm)($|[^[:alnum:]_]) ]]
 }
 
+# Identical, precise attribution classification for human-readable credits
+# and actual Git author/committer metadata. A vendor employment domain alone
+# is not an AI identity; a known bot mailbox at that domain is.
+is_prohibited_identity() {
+  local person_name="$1" email="$2" domain=""
+  if [ -n "$person_name" ] && is_ai_name "$(to_lower "$person_name")"; then
+    return 0
+  fi
+  if [[ "$email" == *"@"* ]]; then
+    domain="${email##*@}"
+    if is_ai_domain "$(to_lower "$domain")" &&
+       is_known_ai_bot_mailbox "$(to_lower "$email")"; then
+      return 0
+    fi
+  fi
+  return 1
+}
+
 commit_list="$(git rev-list --reverse "${base_sha}..${head_sha}")"
 
 found_violation=0
@@ -157,6 +176,26 @@ if [ -n "$commit_list" ]; then
     [ -z "$sha" ] && continue
 
     message="$(git show -s --format=%B "$sha")"
+
+    # Inspect the actual author AND committer. GitHub preserves identities
+    # separately from commit bodies; message-only scanning is bypassable.
+    if ! identity_lines="$(git show -s --format='%an%n%ae%n%cn%n%ce' "$sha")"; then
+      echo "check_commit_attribution: error: cannot inspect commit identities for ${sha}." >&2
+      exit 2
+    fi
+    mapfile -t identity_parts <<<"$identity_lines"
+    if [ "${#identity_parts[@]}" -ne 4 ]; then
+      echo "check_commit_attribution: error: unexpected commit identity format for ${sha}." >&2
+      exit 2
+    fi
+    if is_prohibited_identity "${identity_parts[0]}" "${identity_parts[1]}"; then
+      found_violation=1
+      echo "PROHIBITED AI AUTHOR: commit $(git rev-parse --short "$sha") -- ${identity_parts[0]} <${identity_parts[1]}>"
+    fi
+    if is_prohibited_identity "${identity_parts[2]}" "${identity_parts[3]}"; then
+      found_violation=1
+      echo "PROHIBITED AI COMMITTER: commit $(git rev-parse --short "$sha") -- ${identity_parts[2]} <${identity_parts[3]}>"
+    fi
 
     # Trailer parsing must fail CLOSED: a genuine `git interpret-trailers`
     # failure is a technical error (exit 2), never silently treated as "no
@@ -210,12 +249,9 @@ if [ -n "$commit_list" ]; then
 
       violation=0
       reason=""
-      if [ -n "$name" ] && is_ai_name "$(to_lower "$name")"; then
+      if is_prohibited_identity "$name" "$email"; then
         violation=1
-        reason="known AI display identity (${name})"
-      elif [ -n "$domain" ] && is_ai_domain "$(to_lower "$domain")" && is_known_ai_bot_mailbox "$(to_lower "$email")"; then
-        violation=1
-        reason="known automation mailbox at AI provider (${email})"
+        reason="prohibited AI identity or known AI automation mailbox"
       fi
 
       # Only use broad tool-name matching for unstructured, email-free values.
@@ -237,6 +273,38 @@ if [ -n "$commit_list" ]; then
     # Match explicit attribution rather than ordinary AI-related prose.
     while IFS= read -r raw_line; do
       lc_line="$(to_lower "$raw_line")"
+
+      # Git interpret-trailers only parses a terminal trailer block. Scan
+      # credit-shaped lines throughout the message, including the middle of
+      # explanatory prose, without treating ordinary prose as attribution.
+      if [[ "$lc_line" =~ ^[[:space:]]*(co-authored-by|signed-off-by|authored-by|contributed-by|assisted-by|generated-by|generated-with|ai-assisted|ai-generated|ai-co-authored-by|ai-contributed-by|model-assisted)[[:space:]]*:[[:space:]]*(.*)$ ]]; then
+        full_key="${BASH_REMATCH[1]}"
+        full_value="${BASH_REMATCH[2]}"
+        case "$full_key" in
+          ai-assisted|ai-generated|ai-co-authored-by|ai-contributed-by|model-assisted)
+            found_violation=1
+            echo "PROHIBITED AI ATTRIBUTION: commit $(git rev-parse --short "$sha") -- $raw_line"
+            continue ;;
+        esac
+
+        full_name="$full_value"
+        full_email=""
+        if [[ "$full_value" == *"<"*">"* ]]; then
+          full_email="${full_value##*<}"
+          full_email="${full_email%%>*}"
+          full_name="${full_value%%<*}"
+          full_name="$(printf '%s' "$full_name" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        fi
+
+        if is_prohibited_identity "$full_name" "$full_email" ||
+           { [ -z "$full_email" ] &&
+             [[ "$full_key" == assisted-by || "$full_key" == generated-by || "$full_key" == generated-with ]] &&
+             has_ai_words "$full_value"; }; then
+          found_violation=1
+          echo "PROHIBITED AI ATTRIBUTION: commit $(git rev-parse --short "$sha") -- $raw_line"
+        fi
+        continue
+      fi
 
       # A bare AI-assisted credit is explicit even without a delimiter.
       # Also retain the short, previously rejected "AI-assisted development"
@@ -265,9 +333,7 @@ if [ -n "$commit_list" ]; then
         credit_name="$(printf '%s' "${BASH_REMATCH[1]}" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
         credit_email="${BASH_REMATCH[2]}"
         credit_domain="${credit_email##*@}"
-        if is_ai_name "$credit_name" || {
-          is_ai_domain "$credit_domain" && is_known_ai_bot_mailbox "$credit_email"
-        }; then
+        if is_prohibited_identity "$credit_name" "$credit_email"; then
           credit_is_ai=1
         fi
       elif has_ai_words "$credit_text"; then

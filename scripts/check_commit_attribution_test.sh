@@ -78,6 +78,26 @@ run_case() {
   report "$expect" "$expected_rc" "$rc" "$desc" "$output"
 }
 
+# Test Git metadata independently of the commit message. Never change the
+# persistent test repository's configured human identity.
+run_identity_case() {
+  local expect="$1" desc="$2" message="$3"
+  local author_name="$4" author_email="$5" committer_name="$6" committer_email="$7"
+  local expected_rc
+  expected_rc="$(expected_rc_for "$expect")"
+
+  (cd "$repo" && git reset -q --hard "$base_sha")
+  (cd "$repo" &&
+    GIT_AUTHOR_NAME="$author_name" GIT_AUTHOR_EMAIL="$author_email" \
+    GIT_COMMITTER_NAME="$committer_name" GIT_COMMITTER_EMAIL="$committer_email" \
+    git commit --allow-empty -q -m "$message")
+
+  local head_sha output rc=0
+  head_sha="$(cd "$repo" && git rev-parse HEAD)"
+  output="$(cd "$repo" && bash "$checker" "$base_sha" "$head_sha" 2>&1)" || rc=$?
+  report "$expect" "$expected_rc" "$rc" "$desc" "$output"
+}
+
 # Scan all commits, not only the clean final HEAD.
 run_multi_commit_case() {
   local expect="$1" desc="$2" first_message="$3" second_message="$4"
@@ -362,6 +382,45 @@ run_case fail "standalone AI-assisted development remains prohibited" \
 run_case fail "markdown linked generated with Claude Code still prohibited" \
   "$(printf 'feat: x\n\n🤖 Generated with [Claude Code](https://claude.ai/code)')"
 
+
+
+# Codex review #5911817400: version-before-family model names must be AI.
+run_case fail "Claude 3.7 Sonnet co-author generic email" \
+  "$(printf 'feat: x\n\nCo-Authored-By: Claude 3.7 Sonnet <assistant@example.com>')"
+run_case fail "Claude 4 Opus signed-off-by generic email" \
+  "$(printf 'feat: x\n\nSigned-off-by: Claude 4 Opus <assistant@example.com>')"
+run_case fail "Claude 3.5 Haiku co-author plain name" \
+  "$(printf 'feat: x\n\nCo-Authored-By: Claude 3.5 Haiku')"
+run_case pass "human Claude 3.7 Johnson not a model family" \
+  "$(printf 'feat: x\n\nCo-Authored-By: Claude 3.7 Johnson <human@example.com>')"
+
+# Credits outside the final trailer block must be inspected too.
+run_case fail "AI co-author followed by ordinary explanatory paragraph" \
+  "$(printf 'feat: x\n\nCo-Authored-By: Claude Code <assistant@example.com>\n\nThis subsequent paragraph explains the change.')"
+run_case fail "AI co-author followed by same-paragraph prose" \
+  "$(printf 'feat: x\n\nCo-Authored-By: GPT-6 <assistant@example.com>\nThe change is reviewed.')"
+run_case fail "AI signed-off-by in message middle" \
+  "$(printf 'feat: x\n\nSigned-off-by: Claude 3.7 Sonnet <assistant@example.com>\n\nFurther explanation.')"
+run_case fail "AI-assisted structured line in message middle" \
+  "$(printf 'feat: x\n\nAI-assisted: true\n\nAdditional context.')"
+run_case pass "human co-author in message middle" \
+  "$(printf 'feat: x\n\nCo-Authored-By: Claude Dupont <claude.dupont@example.com>\n\nFurther explanation.')"
+run_case pass "provider-employed human co-author in message middle" \
+  "$(printf 'feat: x\n\nCo-Authored-By: Jane Developer <jane@openai.com>\n\nFurther explanation.')"
+
+# Git commit author and committer must not be misrepresented as AI systems.
+run_identity_case fail "AI author on ordinary human commit body" \
+  "feat: clean message" "Claude Code" "assistant@example.com" "Jane Developer" "jane@example.com"
+run_identity_case fail "AI committer on ordinary human commit body" \
+  "feat: clean message" "Jane Developer" "jane@example.com" "Claude 3.7 Sonnet" "assistant@example.com"
+run_identity_case fail "AI bot-mailbox author on provider domain" \
+  "feat: clean message" "Human-Sounding Name" "assistant@anthropic.com" "Jane Developer" "jane@example.com"
+run_identity_case fail "model-name author with generic mail" \
+  "feat: clean message" "GPT-6" "person@example.com" "Jane Developer" "jane@example.com"
+run_identity_case pass "human author employed by provider" \
+  "feat: clean message" "Jane Developer" "jane@openai.com" "John Smith" "john@example.com"
+run_identity_case pass "human committer with Claude first name" \
+  "feat: clean message" "Jane Developer" "jane@example.com" "Claude Dupont" "claude.dupont@anthropic.com"
 
 # Trusted main / PR-head freshness regression cases.
 # Use a disposable bare origin: never touch any real repository or main.
