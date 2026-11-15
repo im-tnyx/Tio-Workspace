@@ -205,7 +205,8 @@ test('post-Welcome auth uses persistent parent header and CTA, middle-only step 
   // the old screenY/physical-screen inference must never compete with it.
   assert.match(page, /return Platform\.OS === 'android'/);
   assert.match(page, /<KeyboardAvoidingView behavior="padding"/);
-  assert.match(page, /keyboardVerticalOffset=\{-insets\.top\}/);
+  // Full-root KAV must use default zero offset; negative inset hid the CTA.
+  assert.doesNotMatch(page, /keyboardVerticalOffset=/);
   assert.doesNotMatch(page, /Dimensions\.get\('screen'\)|androidKeyboardClearance/);
   // The fixed footer never double-adds keyboard height if the native route
   // already ended at the keyboard's upper edge.
@@ -229,7 +230,8 @@ test('Android SDK 58 edge-to-edge uses native KAV and no competing JS keyboard l
   // guesses. Android alone now follows Expo's documented native padding API.
   assert.match(page, /return Platform\.OS === 'android'/);
   assert.match(page, /<KeyboardAvoidingView behavior="padding"/);
-  assert.match(page, /keyboardVerticalOffset=\{-insets\.top\}/);
+  // Full-root KAV must use default zero offset; negative inset hid the CTA.
+  assert.doesNotMatch(page, /keyboardVerticalOffset=/);
   assert.match(page, /: keyboardVisible \? 0 : insets\.bottom/);
   assert.match(page, /bottom: keyboardClearance \+ spacing\.lg/);
   assert.match(page, /const root = <View ref=\{rootRef\} onLayout=\{onRootLayout\}/);

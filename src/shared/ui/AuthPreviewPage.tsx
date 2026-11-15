@@ -179,13 +179,14 @@ export function AuthPreviewPage({
     </View>
   </View>;
 
-  // Expo SDK 58 edge-to-edge: Android native KAV is the only keyboard
-  // positioning owner. The root itself already includes the status bar inset;
-  // compensate that offset so the button does not float above Gboard.
-  // iOS intentionally keeps its separate, already verified non-KAV layout.
+  // Android KAV wraps the full auth route, not a child below a native
+  // navigation header. Its correct vertical offset is the RN default 0.
+  // A negative safe-area offset lifted less and caused the whole Continue
+  // button to disappear beneath Gboard in owner-confirmed device screenshots.
+  // The footer handles the bottom system inset ONLY when keyboard is hidden.
+  // iOS retains its separate, already-working frame-based layout.
   return Platform.OS === 'android'
     ? <KeyboardAvoidingView behavior="padding"
-        keyboardVerticalOffset={-insets.top}
         style={{ flex: 1 }}>{root}</KeyboardAvoidingView>
     : root;
 }

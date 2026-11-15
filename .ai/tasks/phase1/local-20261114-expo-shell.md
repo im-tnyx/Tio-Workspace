@@ -121,3 +121,7 @@ Official Expo SDK 58, Expo Router and Expo Blur docs checked on 2026-11-14. Foll
 ## Android native-KAV footer too high; remove duplicate safe-area offset (2026-11-15)
 
 - Owner supplied latest Android screenshot with footer/CTA fully visible above Gboard but an oversized gap. Retained successful edge-to-edge Android KAV and changed Android-only footer extra safe inset to zero while keyboard visible; on hide continue honoring bottom safe area. Set KAV `keyboardVerticalOffset={-insets.top}` to compensate status/top offset already included by native route layout, using measured safe area rather than a magic dp constant. iOS keyboard formula and non-scrolling auth layout unchanged. Static regression tests and docs updated. Physical Android 16dp gap and movement still require owner validation; do not merge, deploy, add Auth backend or claim native pass.
+
+## Android keyboard root KAV offset reversion (2026-11-15)
+
+- Owner's two Android screenshots (hidden vs visible Gboard) at HEAD 49d329 show Continue still clipping after adding `keyboardVerticalOffset={-insets.top}`. Native React Native KeyboardAvoidingView docs define default offset=0 for full-screen root. Removed the negative vertical offset while keeping the keyboard-visible footer safe-area omission and 16dp design gutter, preserving the working Android KAV and iOS independent frame system. Contracts and docs updated. Requires fresh exact-HEAD CI, Android device visual test, im-tio review; do not merge or claim success until observed.
