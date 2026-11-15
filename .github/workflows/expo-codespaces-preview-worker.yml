@@ -25,16 +25,23 @@ jobs:
       github.event.workflow_run.conclusion == 'success' &&
       github.event.workflow_run.head_repository.full_name == 'im-tnyx/Tio-Workspace' &&
       github.event.workflow_run.head_branch == 'tnyx/expo-preview' &&
-      github.event.workflow_run.actor.login == 'im-tnyx'
+      github.event.workflow_run.actor.login == 'im-tnyx' &&
+      github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    environment: expo-codespaces-trusted
     env:
       GH_TOKEN: ${{ secrets.CODESPACES_TOKEN }}
+      ACCEPTED_SHA: ${{ github.event.workflow_run.head_sha }}
     steps:
       - name: Require Codespaces API token
         run: |
           if [[ -z "$GH_TOKEN" ]]; then
-            echo "::error::Add the CODESPACES_TOKEN Actions secret before enabling automatic Codespace wake and sync."
+            echo "::error::Add CODESPACES_TOKEN to the expo-codespaces-trusted environment before enabling automatic wake and sync."
+            exit 1
+          fi
+          if [[ ! "$ACCEPTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::The accepted push SHA is invalid."
             exit 1
           fi
 
@@ -85,4 +92,4 @@ jobs:
           CODESPACE_NAME: ${{ steps.select.outputs.name }}
         run: >-
           gh codespace ssh --codespace "$CODESPACE_NAME" --
-          bash -lc 'cd /workspaces/Tio-Workspace && bash scripts/sync-codespace-expo-preview.sh'
+          bash -lc "cd /workspaces/Tio-Workspace && bash scripts/sync-codespace-expo-preview.sh $ACCEPTED_SHA"

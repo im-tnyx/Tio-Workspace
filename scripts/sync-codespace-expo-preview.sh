@@ -5,6 +5,12 @@ readonly expected_branch="tnyx/expo-preview"
 readonly expected_remote="https://github.com/im-tnyx/Tio-Workspace"
 readonly script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly project_root="$(cd -- "${script_directory}/.." && pwd)"
+readonly accepted_sha="${1:-}"
+
+if [[ ! "$accepted_sha" =~ ^[0-9a-f]{40}$ ]]; then
+  printf 'Refusing sync: expected the accepted push SHA as a 40-character lowercase hex argument.\n' >&2
+  exit 1
+fi
 
 cd "$project_root"
 
@@ -29,9 +35,13 @@ if [[ -n "$(git status --porcelain=v1 --untracked-files=normal)" ]]; then
 fi
 
 before_sha="$(git rev-parse HEAD)"
-printf 'Fetching %s into this Codespace.\n' "$expected_branch"
-git fetch --no-tags origin "refs/heads/${expected_branch}:refs/remotes/origin/${expected_branch}"
-target_sha="$(git rev-parse "refs/remotes/origin/${expected_branch}")"
+printf 'Fetching accepted push %s into this Codespace.\n' "$accepted_sha"
+git fetch --no-tags origin "$accepted_sha"
+target_sha="$(git rev-parse FETCH_HEAD^{commit})"
+if [[ "$target_sha" != "$accepted_sha" ]]; then
+  printf 'Refusing sync: fetched commit differs from the accepted push SHA.\n' >&2
+  exit 1
+fi
 
 if [[ "$before_sha" != "$target_sha" ]]; then
   git merge --ff-only "$target_sha"
