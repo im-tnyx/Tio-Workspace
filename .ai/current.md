@@ -4,19 +4,24 @@
 
 | Field | Value |
 |---|---|
-| Status | **Idle — Phase 1.1 merged; no active implementation task** |
-| Active Task | **none** (post-merge documentation reconciliation is tracked by its own review PR) |
-| Active Scope / Implementation Owner | **none assigned** |
-| Last completed task | [Phase 1.1 Expo shell — archived record](archive/2026/local-20261114-expo-shell.md) |
-| Merged PR | [#11 — Phase 1.1 Expo UI shell](https://github.com/im-tnyx/Tio-Workspace/pull/11), 2026-11-15 |
-| Verified `main` at handoff | `326f7af888ae78d5a551d8607386740912f4be75` (PR #11 squash merge; re-verify before action) |
-| Authorization | Phase 1.1 was separately owner-approved and owner-authorized to merge; **no approval for Phase 1.2/Auth, databases, Supabase schema, AI, backup/sync or deployment** |
-| Remaining QA | Compact iOS, enlarged-font interaction, keyboard/focus recovery, OTP/password/recovery transitions and screen-reader behavior before real Auth |
+| Status | **Docs-only onboarding ADR proposal — review pending; Phase 1.1 merged** |
+| Active Task | [Minimal cloud profile + local onboarding proposal](tasks/docs/local-20261115-minimal-cloud-profile-onboarding.md) |
+| Active Scope / Owner | Documentation agent — no real Auth/DB implementation authority |
+| Branch | `docs/phase1-2-minimal-profile-onboarding-20261115` |
+| Inspected `main` | `d3b6ceec7f31b5084b86685f90f0adabe5bcadd0` (2026-11-15) |
+| Completed PRs | [#11 Phase 1.1 Expo mock shell](https://github.com/im-tnyx/Tio-Workspace/pull/11) and [#12 post-merge docs](https://github.com/im-tnyx/Tio-Workspace/pull/12) **both merged** |
+| Proposal | [ADR-019 minimal cloud profile and local onboarding](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) |
+| Implementation authority | **None granted** for Phase 1.2+, Supabase tables, real OTP/Auth, encrypted SQLite, Sync or deployment |
+| Review status | `REVIEW_PENDING`; merge approval **not granted** |
+
+## Exact owner-requested signup and onboarding
+
+**Email → OTP → Password** is the fixed UI order, not subject to redesign. Continue Username → Mobile (**optional/Skip**) → **Name** → DOB (**required**) → Sex (**required**) → Units → Height → Current Weight → Activity Level → Goal → Home. **Only Mobile is optional.** Name must be its own screen immediately following Mobile. Plan encrypted device-local fitness storage and private minimum cloud identity; existing workout sync/backup rules are unchanged.
 
 ## Next safe action
 
-Review the documentation-only post-merge reconciliation PR and obtain separate owner merge approval. After that, **propose** a bounded minimal private Supabase profile + local-first onboarding ADR for owner review. The conversation's preferred cloud fields are not a schema migration, and the current Auth-only documented boundary must not be silently changed.
+Open the documentation-only ADR-019 proposal PR for independent/owner review. Validate source-of-truth consistency and explicit privacy/security decisions; **separate owner merge approval** remains necessary. If the actual Supabase OTP-before-password mechanism cannot be implemented securely, flag the technical blocker without reordering the UI.
 
-No real Auth/session/SQLite/Supabase implementation or deployment is authorized by this handoff.
+After any separately approved docs merge, reconcile and archive this task. **No live Auth/session/SQLite/Supabase implementation or deployment is authorized by this handoff.**
 
-[Archived task](archive/2026/local-20261114-expo-shell.md) · [Post-merge playbook](../docs/12-POST-MERGE-PLAYBOOK.md) · [AGENTS](../AGENTS.md)
+[Task](tasks/docs/local-20261115-minimal-cloud-profile-onboarding.md) · [AGENTS](../AGENTS.md) · [Post-merge playbook](../docs/12-POST-MERGE-PLAYBOOK.md)
