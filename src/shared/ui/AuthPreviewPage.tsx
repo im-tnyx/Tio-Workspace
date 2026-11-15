@@ -1,13 +1,13 @@
 import { createContext, useCallback, useContext, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Dimensions, Keyboard, Platform, Text, View, useWindowDimensions } from 'react-native';
+import { Keyboard, KeyboardAvoidingView, Platform, Text, View, useWindowDimensions } from 'react-native';
 import type { KeyboardEvent, LayoutChangeEvent, ViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
 import { authPreviewLayout, spacing, typography } from '@/shared/theme/tokens';
 import { Button } from './Button';
 import { TopBar } from './TopBar';
-import { androidKeyboardClearance, keyboardOverlap } from './authKeyboardGeometry';
+import { keyboardOverlap } from './authKeyboardGeometry';
 import { authAvailableHeight, needsKeyboardDismiss } from './authViewport';
 import { copy } from '@/shared/i18n/en';
 
@@ -32,19 +32,15 @@ export function AuthPreviewPage({
   const { colors } = useAppearance();
   const { fontScale } = useWindowDimensions();
   const [keyboardVisible, setKeyboardVisible] = useState(() => Keyboard.isVisible());
-  // A single measured keyboard-top position owns footer clearance on BOTH
-  // platforms. Expo edge-to-edge Android may not shrink its route for IME.
+  // iOS retains its measured keyboard-frame positioning. Android uses a
+  // platform KeyboardAvoidingView (padding): Expo edge-to-edge windows do
+  // not resize automatically and JS screen/window geometry was unreliable.
   const rootRef = useRef<ViewInstance>(null);
   const [rootBottomY, setRootBottomY] = useState<number | null>(null);
   const [rootHeight, setRootHeight] = useState<number | null>(null);
-  // Capture the largest route height seen before/after keyboard resize.
-  // A native adjustResize route is already shorter; do not lift it twice.
-  const [unobstructedRootHeight, setUnobstructedRootHeight] =
-    useState<number | null>(null);
   const [headerHeight, setHeaderHeight] = useState<number | null>(null);
   const [footerHeight, setFooterHeight] = useState<number | null>(null);
   const [keyboardTopY, setKeyboardTopY] = useState<number | null>(null);
-  const [androidKeyboardHeight, setAndroidKeyboardHeight] = useState(0);
 
   const measureRootBottom = useCallback(() => {
     rootRef.current?.measureInWindow((_x, y, _width, height) => {
@@ -57,8 +53,6 @@ export function AuthPreviewPage({
   const onRootLayout = useCallback((event: LayoutChangeEvent) => {
     const height = event.nativeEvent.layout.height;
     setRootHeight(previous => previous === height ? previous : height);
-    setUnobstructedRootHeight(previous =>
-      previous === null ? height : Math.max(previous, height));
     measureRootBottom();
   }, [measureRootBottom]);
 
@@ -77,21 +71,16 @@ export function AuthPreviewPage({
       measureRootBottom();
     };
 
-    // Android's initial keyboard event may fire on native mount. Subscribe
-    // before the auto-focused children are rendered, never in a passive effect.
+    // Keep Android visibility for the emergency Hide keyboard action.
+    // Only iOS updates JS keyboard frame geometry; Android's KAV owns its
+    // entire keyboard-to-footer movement, avoiding competing position offsets.
     const didShow = Keyboard.addListener('keyboardDidShow', event => {
       setKeyboardVisible(true);
-      // Android screenY and measureInWindow can have different system-bar
-      // origins. Keep the native reported keyboard HEIGHT as well, so a
-      // missing status-bar offset cannot leave the CTA behind Gboard.
-      if (Platform.OS === 'android')
-        setAndroidKeyboardHeight(event.endCoordinates.height);
-      updateKeyboardFrame(event.endCoordinates.screenY);
+      if (Platform.OS === 'ios') updateKeyboardFrame(event.endCoordinates.screenY);
     });
     const didHide = Keyboard.addListener('keyboardDidHide', () => {
       setKeyboardVisible(false);
-      if (Platform.OS === 'android') setAndroidKeyboardHeight(0);
-      updateKeyboardFrame(null);
+      if (Platform.OS === 'ios') updateKeyboardFrame(null);
     });
     // Only iOS supports pre-animation keyboard frame notifications.
     const willShow = Platform.OS === 'ios'
@@ -111,13 +100,11 @@ export function AuthPreviewPage({
     const readyFrame = requestAnimationFrame(() => {
       measureRootBottom();
       setKeyboardVisible(Keyboard.isVisible());
-      // Reconcile an already-open keyboard on BOTH platforms, not just iOS.
-      // This also recovers a missed Android DidShow event on navigation return.
-      const currentMetrics = Keyboard.metrics();
-      if (currentMetrics) {
-        if (Platform.OS === 'android')
-          setAndroidKeyboardHeight(currentMetrics.height);
-        updateKeyboardFrame(currentMetrics.screenY);
+      // Only iOS uses measured frame positioning. Android's KAV manages
+      // keyboard padding, and Keyboard.isVisible() drives its escape action.
+      if (Platform.OS === 'ios') {
+        const currentMetrics = Keyboard.metrics();
+        if (currentMetrics) updateKeyboardFrame(currentMetrics.screenY);
       }
       setKeyboardListenersReady(true);
     });
@@ -128,22 +115,14 @@ export function AuthPreviewPage({
     };
   }, [measureRootBottom]);
 
-  // iOS uses the already-tested same-window measurement. On Android,
-  // measureInWindow may omit the top system bar while keyboard.screenY uses
-  // physical screen coordinates. Use the larger of the old overlap and the
-  // independent keyboard-height estimate, subtracting any observed native
-  // route resize. The footer clears the ENTIRE IME including Gboard toolbar.
-  const keyboardClearance = keyboardTopY === null || rootBottomY === null
-    ? insets.bottom : Platform.OS === 'android'
-      ? Math.max(keyboardOverlap(rootBottomY, keyboardTopY),
-        androidKeyboardClearance({
-          screenHeight: Dimensions.get('screen').height,
-          keyboardTopY, keyboardHeight: androidKeyboardHeight,
-          rootRestHeight: unobstructedRootHeight,
-          rootCurrentHeight: rootHeight,
-          bottomInset: insets.bottom,
-        }))
-      : keyboardOverlap(rootBottomY, keyboardTopY);
+  // Android KAV reduces the root's actual layout height by IME padding;
+  // do NOT add a second keyboard height or screenY offset. Safe-area bottom
+  // remains separate so the footer clears the navigation-bar region at rest.
+  // iOS's proven root-bottom vs native keyboard-top position is untouched.
+  const keyboardClearance = Platform.OS === 'ios'
+    && keyboardTopY !== null && rootBottomY !== null
+    ? keyboardOverlap(rootBottomY, keyboardTopY)
+    : insets.bottom;
   const rawAvailableHeight = authAvailableHeight(
     rootHeight, headerHeight, footerHeight, keyboardClearance,
     spacing.lg, spacing.sm);
@@ -159,7 +138,7 @@ export function AuthPreviewPage({
   const showKeyboardEscape = needsKeyboardDismiss(
     availableHeight, fontScale, keyboardVisible);
 
-  return <View ref={rootRef} onLayout={onRootLayout}
+  const root = <View ref={rootRef} onLayout={onRootLayout}
     style={{ flex: 1, backgroundColor: colors.background }}>
     {/* Shared TopBar owns the exact same 54pt, plain icon-only auth header.
         Keyboard inset calculation and CTA placement remain untouched. */}
@@ -200,4 +179,12 @@ export function AuthPreviewPage({
       />
     </View>
   </View>;
+
+  // Expo SDK 58 Android edge-to-edge: behavior MUST be set to 'padding'.
+  // Wrapping the whole auth root (not just the footer) preserves its single
+  // absolute CTA, while the native keyboard inset shrinks the usable root.
+  // iOS intentionally keeps the existing non-KAV layout.
+  return Platform.OS === 'android'
+    ? <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>{root}</KeyboardAvoidingView>
+    : root;
 }

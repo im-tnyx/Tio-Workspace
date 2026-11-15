@@ -7,7 +7,7 @@ import { DEFAULT_PREFERENCES, decodePreferences, resolveMode } from '../src/shar
 import { copy, formatNumber } from '../src/shared/i18n/en.ts';
 import { canOpenShellPreview } from '../src/bootstrap/shell/shellPreviewAccess.ts';
 import { canContinueAuthPreview, nextAuthPreviewStep, previousAuthPreviewStep } from '../src/features/onboarding/authPreviewSteps.ts';
-import { androidKeyboardClearance, keyboardOverlap } from '../src/shared/ui/authKeyboardGeometry.ts';
+import { keyboardOverlap } from '../src/shared/ui/authKeyboardGeometry.ts';
 import { authAvailableHeight, authDensity, needsKeyboardDismiss } from '../src/shared/ui/authViewport.ts';
 import { authPreviewLayout, authPreviewMuted, controlSizes, radii, spacing, topBarSizes } from '../src/shared/theme/tokens/index.ts';
 import { BRAND_TYPING_INTERVAL_MS, BRAND_DOT_DIAMETER, BRAND_DOT_GAP, BRAND_DOT_FINAL_HOLD_MS, visibleTypingText } from '../src/shared/ui/typing.ts';
@@ -165,7 +165,7 @@ test('all implemented navigation headers share token-driven TopBar variants', ()
   assert.match(topBar, /width: icon\.size, height: icon\.size/);
   assert.match(topBar, /<SurfaceMaterial/);
   assert.match(auth, /keyboardOverlap\(rootBottomY, keyboardTopY\)/);
-  assert.doesNotMatch(auth, /<ScrollView|KeyboardAvoidingView/);
+  assert.doesNotMatch(auth, /<ScrollView/);
   // Welcome and optional auth choice intentionally remain headerless.
   const welcome = readFileSync('src/features/onboarding/screens/WelcomeScreen.tsx', 'utf8');
   const choice = readFileSync('src/features/onboarding/screens/AuthChoiceScreen.tsx', 'utf8');
@@ -179,7 +179,7 @@ test('post-Welcome auth uses persistent parent header and CTA, middle-only step 
   const controller = readFileSync('src/features/onboarding/screens/AuthPreviewFlow.tsx', 'utf8');
   const welcome = readFileSync('src/features/onboarding/screens/WelcomeScreen.tsx', 'utf8');
 
-  assert.doesNotMatch(page, /<KeyboardAvoidingView/);
+  assert.match(page, /<KeyboardAvoidingView behavior="padding"/);
   assert.match(page, /keyboardListenersReady \? children : null/);
   assert.match(page, /<Button size="onboarding"/);
   assert.match(page, /label=\{footerLabel\}/);
@@ -201,10 +201,11 @@ test('post-Welcome auth uses persistent parent header and CTA, middle-only step 
   assert.match(page, /keyboardOverlap\(rootBottomY, keyboardTopY\)/);
   assert.match(page, /ref=\{rootRef\} onLayout=\{onRootLayout\}/);
   assert.match(page, /measureInWindow\(/);
-  // Android alone may use physical screen height to correct the native
-  // window-vs-screen keyboard coordinate origin; iOS retains root overlap.
-  assert.match(page, /screenHeight: Dimensions\.get\('screen'\)\.height/);
-  assert.match(page, /androidKeyboardClearance\(\{/);
+  // Android now lets native KAV padding own the keyboard movement;
+  // the old screenY/physical-screen inference must never compete with it.
+  assert.match(page, /return Platform\.OS === 'android'/);
+  assert.match(page, /<KeyboardAvoidingView behavior="padding" style=\{\{ flex: 1 \}\}>\{root\}/);
+  assert.doesNotMatch(page, /Dimensions\.get\('screen'\)|androidKeyboardClearance/);
   // The fixed footer never double-adds keyboard height if the native route
   // already ended at the keyboard's upper edge.
   assert.match(page, /position: 'absolute', left: spacing\.lg, right: spacing\.lg/);
@@ -220,58 +221,22 @@ test('post-Welcome auth uses persistent parent header and CTA, middle-only step 
   assert.match(welcome, /actionPlacement="bottom"/);
 });
 
-test('Android edge-to-edge keyboard position lifts the auth footer without double offset', () => {
+test('Android SDK 58 edge-to-edge uses native KAV and no competing JS keyboard lift', () => {
   const page = readFileSync('src/shared/ui/AuthPreviewPage.tsx', 'utf8');
-
-  // A full-height edge-to-edge Android route extends UNDER the IME.
-  assert.equal(keyboardOverlap(850, 555), 295);
-  // The same route might instead have been resized by Android's window.
-  assert.equal(keyboardOverlap(555, 555), 0);
-  assert.equal(keyboardOverlap(690, 555), 135);
-  // On Android DidShow now updates the actual footer position, not merely
-  // the Hide keyboard visibility flag.
-  assert.match(page, /const didShow = Keyboard\.addListener\('keyboardDidShow', event => \{\s*setKeyboardVisible\(true\);[\s\S]*?updateKeyboardFrame\(event\.endCoordinates\.screenY\);/);
-  assert.match(page, /const didHide = Keyboard\.addListener\('keyboardDidHide', \(\) => \{\s*setKeyboardVisible\(false\);[\s\S]*?updateKeyboardFrame\(null\);/);
-  assert.match(page, /const currentMetrics = Keyboard\.metrics\(\);\s*if \(currentMetrics\) \{[\s\S]*?updateKeyboardFrame\(currentMetrics\.screenY\);/);
-  assert.match(page, /bottom: keyboardClearance \+ spacing\.lg/);
-  assert.doesNotMatch(page, /if \(Platform\.OS === 'ios'\) updateKeyboardFrame/);
-});
-
-test('Android screenshot: keyboard CTA clearance uses native height and compensates window-origin mismatch', () => {
-  const code = readFileSync('src/shared/ui/AuthPreviewPage.tsx', 'utf8');
-  // Native window-origin mismatch: direct root-bottom vs screenY overlap
-  // is too small. Keyboard depth corrects it without a magic 40dp margin.
-  assert.equal(keyboardOverlap(794, 555), 239);
-  assert.equal(androidKeyboardClearance({
-    screenHeight: 850, keyboardTopY: 555, keyboardHeight: 271,
-    rootRestHeight: 760, rootCurrentHeight: 760, bottomInset: 25,
-  }), 270);
-  // If Android already shrinks root by the full usable keyboard depth,
-  // do not apply that inset a second time.
-  assert.equal(androidKeyboardClearance({
-    screenHeight: 850, keyboardTopY: 555, keyboardHeight: 271,
-    rootRestHeight: 760, rootCurrentHeight: 490, bottomInset: 25,
-  }), 0);
-  // Partial resize, Gboard height change, hidden and invalid metrics.
-  assert.equal(androidKeyboardClearance({
-    screenHeight: 850, keyboardTopY: 555, keyboardHeight: 271,
-    rootRestHeight: 760, rootCurrentHeight: 700, bottomInset: 25,
-  }), 210);
-  assert.equal(androidKeyboardClearance({
-    screenHeight: 850, keyboardTopY: 850, keyboardHeight: 0,
-    rootRestHeight: 760, rootCurrentHeight: 760, bottomInset: 25,
-  }), 0);
-  assert.equal(androidKeyboardClearance({
-    screenHeight: 0, keyboardTopY: Number.NaN, keyboardHeight: 0,
-    rootRestHeight: null, rootCurrentHeight: null, bottomInset: 25,
-  }), 0);
-  assert.match(code, /setAndroidKeyboardHeight\(event\.endCoordinates\.height\)/);
-  assert.match(code, /setAndroidKeyboardHeight\(currentMetrics\.height\)/);
-  assert.match(code, /unobstructedRootHeight/);
-  assert.match(code, /androidKeyboardClearance\(\{/);
-  assert.match(code, /Math\.max\(keyboardOverlap\(rootBottomY, keyboardTopY\)/);
-  assert.match(code, /bottom: keyboardClearance \+ spacing\.lg/);
-  assert.doesNotMatch(code, /<ScrollView|KeyboardAvoidingView/);
+  const geometry = readFileSync('src/shared/ui/authKeyboardGeometry.ts', 'utf8');
+  // The screenshot-confirmed problem persisted through custom screen-height
+  // guesses. Android alone now follows Expo's documented native padding API.
+  assert.match(page, /return Platform\.OS === 'android'/);
+  assert.match(page, /<KeyboardAvoidingView behavior="padding" style=\{\{ flex: 1 \}\}>\{root\}<\/KeyboardAvoidingView>/);
+  assert.match(page, /const root = <View ref=\{rootRef\} onLayout=\{onRootLayout\}/);
+  assert.match(page, /const keyboardClearance = Platform\.OS === 'ios'/);
+  assert.match(page, /: insets\.bottom;/);
+  assert.doesNotMatch(page, /androidKeyboardClearance|androidKeyboardHeight|unobstructedRootHeight|Dimensions\.get/);
+  assert.doesNotMatch(geometry, /androidKeyboardClearance/);
+  assert.match(page, /if \(Platform\.OS === 'ios'\) updateKeyboardFrame/);
+  assert.match(page, /keyboardListenersReady \? children : null/);
+  assert.match(page, /position: 'absolute', left: spacing\.lg, right: spacing\.lg/);
+  assert.doesNotMatch(page, /<ScrollView/);
 });
 
 test('Android registers keyboard visibility listeners before initial autoFocus', () => {
