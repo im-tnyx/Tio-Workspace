@@ -4,14 +4,14 @@
 
 | Field | Value |
 |---|---|
-| Status | **Commit attribution governance PR in progress; no main enforcement activated** |
-| Active Task | [Commit attribution guard](tasks/security/local-20261115-commit-attribution-guard.md) |
-| Active Scope / Owner | GitHub governance and `.ai/` attribution records only; owner controls activation, secrets, rulesets and merge |
-| Branch | `tnyx/security/commit-attribution-guard-20261115` (proposed PR; live HEAD must be checked) |
-| Base / verified `main` | `5b8f03579f3c68b6f773ebde0323b1f6ee95263d` (PR #15 verified merged 2026-11-15; snapshot, not permanent HEAD) |
-| Completed PRs | [#11](https://github.com/im-tnyx/Tio-Workspace/pull/11), [#12](https://github.com/im-tnyx/Tio-Workspace/pull/12), [#13](https://github.com/im-tnyx/Tio-Workspace/pull/13), [#14](https://github.com/im-tnyx/Tio-Workspace/pull/14), [#15 manual PR preview](https://github.com/im-tnyx/Tio-Workspace/pull/15) — merged; no EAS publish/build implied |
+| Status | **Commit attribution governance PR #17 in review; enforcement NOT active** |
+| Active Task | [Commit attribution guard task](tasks/security/local-20261115-commit-attribution-guard.md) — PR #17 in progress |
+| Active Scope / Owner | Multi-agent commit attribution governance only; owner retains merge and GitHub App/settings authority |
+| Branch | `tnyx/security/commit-attribution-guard-20261115` (open Draft PR #17; no main changes authorized by this task) |
+| Base / verified `main` | `095c3edb4a7b1969598bc01162d66496febbf0c2` (merged PR #15 post-merge archive reconciliation; verify live HEAD before future work) |
+| Completed PRs | [#11 Expo mock shell](https://github.com/im-tnyx/Tio-Workspace/pull/11), [#12 prior post-merge docs](https://github.com/im-tnyx/Tio-Workspace/pull/12), [#13 proposed ADR-019 docs](https://github.com/im-tnyx/Tio-Workspace/pull/13), [#14 context reconciliation](https://github.com/im-tnyx/Tio-Workspace/pull/14), [#15 manual Expo preview workflow](https://github.com/im-tnyx/Tio-Workspace/pull/15) — **all merged** |
 | Proposal | [ADR-019 minimal cloud profile and local onboarding](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) |
-| Implementation authority | Owner approved bounded multi-agent attribution guard setup; **no** GitHub App provisioning, secrets, ruleset changes, final merge, Auth/DB/sync or production publish approved |
+| Implementation authority | Owner approved PR #17 governance setup and existing `Tio Attribution Guard` App reuse; owner reports installation/environment setup done, **not independently verified by workflow**. No merge, required ruleset, Auth/DB/sync or production changes authorized |
 | PR #13 final review | `im-tio` **APPROVED** exact head `944efa7799d6f8d803e1a16506ee0ff5ec7d3f81`; 1/1 P3 thread resolved; owner-approved squash merge verified |
 
 ## Exact owner-requested signup and onboarding
@@ -28,6 +28,10 @@ Owner additionally requested **Platform, OS version, App build, Avatar, Plan** o
 
 ## Next safe action
 
-Review the [commit attribution guard task](tasks/security/local-20261115-commit-attribution-guard.md) and governance PR. Require tested, base-controlled scanner and at least one recorded independent review; obtain separate owner approval for merge. **Do not claim merge prevention is active** until the private-repo GitHub plan permits branch rules, an owner-controlled Checks App is provisioned, an App-source-pinned strict required check is active, and clean/bad/stale PR cases are live-tested. No application or Supabase implementation follows from this approval.
+**Current governance scope:** Review [PR #17](https://github.com/im-tnyx/Tio-Workspace/pull/17) at its current SHA. Its 72 attribution fixtures and Expo shell validation passed on the earlier code head; after branch reconciliation verify checks again. `im-tio` independent review and separate owner merge authorization are pending. The owner reports existing `Tio Attribution Guard` installation, Workspace trusted environment variable and secret configured, but **the App-owned runner cannot be proved operational until the trusted workflow is on `main` and a disposable PR creates a correctly sourced Check Run**. `main` currently has no branch protection; no non-bypassable enforcement claim. Do not touch production or app data.
 
-The prior [manual PR preview task](archive/2026/local-20261115-manual-pr-expo-preview.md) is archived after verified merge of PR #15. No EAS build, OTA publication or device installation is claimed by this reconciliation. The next product decision remains proposed ADR-019 / Phase 1 readiness.
+**Separate preview follow-up:** The manual GitHub Expo PR Preview workflow is available on `main`. `EXPO_TOKEN` is configured in GitHub's `eas-preview` environment; never put its value in this file or source. No build or update has been dispatched. For the first compatible install, use `build_preview` with `android` on an eligible owner-authored open PR targeting `main`, then install that binary once. The merged PR #15 itself is closed and cannot be selected. Later JS-only PRs may use `publish_update`; PRs touching native-affecting files are blocked from OTA and need a new preview build first. iOS signing credentials are not configured. Production publishing remains out of scope.
+
+After this task, the next product decision remains review of [proposed ADR-019](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) and [Phase 1 readiness](../docs/21-PHASE-1-READINESS.md). No Auth/session/SQLite/Supabase implementation is authorized.
+
+[Archived tasks](archive/2026/) · [AGENTS](../AGENTS.md) · [Post-merge playbook](../docs/12-POST-MERGE-PLAYBOOK.md)

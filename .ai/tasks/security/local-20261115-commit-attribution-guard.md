@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Ready for independent review — PR #17 prior code/evidence heads CI passed; App/required-check activation NOT done |
+| Status | Ready for independent review — latest merge-reconciliation head to revalidate; App-owned required-check activation NOT done |
 | Objective | Prevent agents from writing AI co-author and equivalent self-credit metadata, while retaining human attribution and `.ai/` multi-agent records |
 | Implementation owner | ChatGPT connected GitHub session, bounded repo governance slice; repository owner retains approval/merge authority |
 | Previous agent | None for this slice; completed preview PR #15 is a separate archived task |
@@ -47,11 +47,12 @@
 ## Progress
 
 - [x] Read-only comparison and exact GitHub state reconciliation.
+- [x] Reconciled independently merged PR #15 post-merge archive on `main` (SHA `095c3edb4a7b1969598bc01162d66496febbf0c2`); preserved the **main** archive and preview follow-up facts rather than replacing with stale PR #17 copy.
 - [x] Prepare scoped scanner/workflows/policy/task changes on feature branch (verify live PR head).
 - [x] Validated fixtures/CI and patch on first published code head `6b3f1c4237fa154f48ee2d659bf9d1f7011b2caa` (CI must be rechecked after task-evidence commit).
 - [ ] Independent review **requested** from `im-tio` on [PR #17](https://github.com/im-tnyx/Tio-Workspace/pull/17); final assessed head and verdict pending.
 - [ ] Owner authorizes merge of this exact PR.
-- [ ] Owner/admin extends the **existing Tio Attribution Guard** App's installation selection to Tio-Workspace; configures repo-specific trusted environment credentials, strict App-source-pinned required check; performs clean/bad/stale PR tests.
+- [ ] Owner reports existing `Tio Attribution Guard` App + Workspace trusted environment Client ID/private-key secret setup completed (2026-11-15); confirm **actual** App installation and credential function with a trusted-run test after PR merge. Owner/admin still must configure strict App-source-pinned required check and perform clean/bad/stale PR tests. GitHub connector does not expose encrypted environment values.
 
 ## Changed files
 
