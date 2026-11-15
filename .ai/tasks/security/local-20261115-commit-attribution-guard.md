@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | P2 Markdown-emphasis fix verified on code HEAD `c00a0b2` (131 attribution + 14 guard integrity, Phase 1.1 green); PR #17 precedes PR #18 for pointer handoff; independent re-review, App bootstrap and owner merge gate still BLOCKED |
+| Status | P2 Markdown-link structured-credit fix verified on code HEAD `af2101a` (142 attribution + 14 integrity fixtures, Phase 1.1 green); PR #17 precedes PR #18; independent re-review, 9 threads, App bootstrap and owner merge gate BLOCKED |
 | Objective | Prevent agents from writing AI co-author and equivalent self-credit metadata, while retaining human attribution and `.ai/` multi-agent records |
 | Implementation owner | ChatGPT connected GitHub session, bounded repo governance slice; repository owner retains approval/merge authority |
 | Previous agent | None for this slice; completed preview PR #15 is a separate archived task |
@@ -98,3 +98,11 @@
 **Post-merge synchronization/archive needed:** Yes, only after verified merge and the separate activated-protection evidence.
 
 [Task guide](../README.md) · [Agent contract](../../../AGENTS.md) · [Guard documentation](../../../docs/26-COMMIT-ATTRIBUTION-GUARD.md)
+
+## 2026-11-16 linked-credit P2 review and merge-gate handoff
+
+- Independent `im-tio` [CHANGES_REQUESTED review #5912781554](https://github.com/im-tnyx/Tio-Workspace/pull/17#pullrequestreview-5912781554) found the residual structured-credit bypass on previous head `420763450957513f89d178dc8249eb336c22ded2`: `Co-Authored-By: [Claude Code](https://claude.ai/code) <assistant@example.com>` with a generic email was not rejected. Earlier emphasis fix and #18 handoff had otherwise been reviewed.
+- Scanner `scripts/check_commit_attribution.sh` now iteratively unwraps balanced whole-identity Markdown emphasis and Markdown link labels before exact name matching, without treating the URL as AI evidence. `scripts/check_commit_attribution_test.sh` adds **11** terminal/nonterminal, nested emphasis/link, GPT model, identity-metadata and legitimate human regression fixtures. No change to product code, trusted runner or ruleset.
+- Verified **code/test head `af2101a80050b6b5907b3afa5f80f696e6af2c0a`**: [attribution fixture run 43759310306](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43759310306) passed **142 attribution + 14 guard-integrity cases, 0 failed**, and [Phase 1.1 shell run 43759310313](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43759310313) passed. Remote-only GitHub connection: no local `git diff --check`, Git Bash, device or EAS execution. Final evidence-only task commit requires its own exact-head CI check.
+- Merge gate **BLOCKED**: the latest prior independent review remains `CHANGES_REQUESTED`, **9 inline threads unresolved** (8 historical, 1 new), no independent `APPROVED` review, no App-produced required `Commit attribution guard` Check Run and no separately required `Attribution guard runner` Check Run. Ruleset `Main Protection` #27218050 is active with strict required checks and the guard source pinned to App 5032971, but this alone does not activate enforcement.
+- Await independent re-review and reviewer disposition of 9 threads, separate owner/admin authorization for narrowly scoped bootstrap, real App-owned clean/violation/stale validation and restoration of final source-pinned requirement. **No settings/main changes, merge, auto-merge, PR #18 branch modifications or owner `go merge` approval** have been made.
