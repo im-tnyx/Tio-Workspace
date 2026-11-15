@@ -11,13 +11,13 @@
 | Document field | Value |
 |---|---|
 | **Document status** | Active operational guide — **not** a product/architecture approval |
-| **Last verified** | 2026-11-13 — against repository documents and AI context structure |
+| **Last verified** | 2026-11-15 — against merged Phase 1.1 source and PR #11 |
 | **Owner** | Repository maintainers / AI governance (role, not an assigned person) |
 | **Truth boundary** | Entry point for AI session orientation and task continuity; `AGENTS.md`, canonical specs/ADRs, real source/config and live GitHub state retain their own authority |
-| **Project stage** | **Phase 0 · Documentation only** — no runnable mobile app or deployed backend |
+| **Project stage** | **Phase 1.1 mock Expo shell merged** in PR #11; no real authentication, workout database, production backend or app release |
 
 > [!IMPORTANT]
-> This folder helps AI assistants and contributors **resume authorized work** without reading everything. It is not an alternative product specification, user-workout data store, approval ledger or implementation permission. The layout is inspired by [Tio Ledger's context system](https://github.com/im-tnyx/Tio-Ledger/tree/main/.ai), adapted to **Tio Workspace's React Native / Expo plan**. Never carry over Ledger-specific Kotlin or finance rules.
+> This folder helps AI assistants and contributors **resume authorized work** without reading everything. It is not an alternative product specification, user-workout data store, approval ledger or implementation permission. The layout is inspired by [Tio Ledger's context system](https://github.com/im-tnyx/Tio-Ledger/tree/main/.ai), adapted to **Tio Workspace's React Native / Expo shell and local-first product plan**. Never carry over Ledger-specific Kotlin or finance rules.
 
 ## 🚀 Start here — minimal loading
 
@@ -40,7 +40,7 @@ Read in this exact order:
 | Plan module or database boundaries | [Architecture summary](core/architecture.md) | [Architecture spec](../docs/02-SYSTEM-ARCHITECTURE.md) |
 | Review auth, local data, backup or AI privacy | [Security rules](core/security-rules.md) | [Auth/security](../docs/04-AUTH-AND-SECURITY.md) and [threat model](../docs/14-THREAT-MODEL.md) |
 | Design an app screen or documentation | [UI rules](core/ui-rules.md) | [Design system](../DESIGN.md), [MVP UX](../docs/20-MVP-UX-FLOWS.md) |
-| Plan coding work (**after approval**) | [Coding rules](core/coding-rules.md) | [Readiness gate](../docs/21-PHASE-1-READINESS.md) |
+| Review existing shell or plan new coding (**after scope approval**) | [Coding rules](core/coding-rules.md) | [Readiness gate](../docs/21-PHASE-1-READINESS.md) |
 | Open or review a PR | [Workflow rules](core/workflow-rules.md) | [PR process](../docs/11-PR-REVIEW-WORKFLOW.md) |
 | Hand off a bounded task | [Task guide](tasks/README.md) and [template](tasks/TEMPLATE.md) | [Post-merge playbook](../docs/12-POST-MERGE-PLAYBOOK.md) |
 | View completed context | [Archive policy](archive/README.md) | Live Git history; do not preload archives |
@@ -49,7 +49,7 @@ Read in this exact order:
 
 **Planned product:** an iOS and Android workout logger using React Native, Expo and local-first SQLite, with required Supabase Auth for initial identity. Already-initialized users should be able to work offline. Local workout records remain on-device by default. AI plan generation, encrypted personal Google Drive/iCloud backup and separately opt-in cloud sync are later, separately gated work.
 
-**Actually implemented as of this verification:** project governance, product/design/architecture documents and this `.ai/` context layer. No app shell, runtime database, working auth integration, AI deployment, production backup or tested synchronization.
+**Actually implemented as of 2026-11-15:** governance and product/architecture docs, this `.ai/` context layer, plus the **merged Phase 1.1 Expo/TypeScript mock shell** ([PR #11](https://github.com/im-tnyx/Tio-Workspace/pull/11)): Welcome and in-memory Auth/OTP previews, development-gated shell routes, four root tabs, appearance tokens, static shell tests and CI. **Not implemented:** real Supabase Auth/OTP/profile integration, persisted authenticated sessions, SQLite/SQLCipher workout storage, AI deployment, production backup/sync or a released app. Further implementation requires its own owner approval.
 
 Read the [roadmap](../docs/06-ROADMAP.md), [Phase 0 decision pack](../docs/17-PHASE-0-DECISION-PACK.md) and [Phase 1 readiness checklist](../docs/21-PHASE-1-READINESS.md) before interpreting a future plan as approved work.
 
@@ -71,10 +71,12 @@ Read the [roadmap](../docs/06-ROADMAP.md), [Phase 0 decision pack](../docs/17-PH
 │   ├── README.md               # Bounded-task lifecycle
 │   └── TEMPLATE.md             # Handoff template, not an active task
 └── archive/
-    └── README.md               # Completed-task retention policy
+    ├── README.md               # Completed-task retention policy
+    └── 2026/
+        └── local-20261114-expo-shell.md  # Merged Phase 1.1 task
 ```
 
-Create `tasks/<scope>/` or `archive/<year>/` only when an actual approved task or completed record exists. Do not copy other repositories' histories.
+Create additional `tasks/<scope>/` or `archive/<year>/` only when an actual approved task or completed record exists. The existing Phase 1.1 task archive is historical evidence, not an active assignment. Do not copy other repositories' histories.
 
 ## 🏷 Status language — prevent false progress
 

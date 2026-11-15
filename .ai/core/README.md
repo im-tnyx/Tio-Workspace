@@ -7,7 +7,7 @@ These are short, deliberately overlapping **summaries**, not canonical specifica
 | Context file | When to load | Canonical reference |
 |---|---|---|
 | [Architecture](architecture.md) | Repo boundaries or persistence | [System architecture](../../docs/02-SYSTEM-ARCHITECTURE.md) |
-| [Coding rules](coding-rules.md) | Future approved implementation | [Repository structure](../../docs/10-REPOSITORY-STRUCTURE.md) |
+| [Coding rules](coding-rules.md) | Existing mock shell or separately approved implementation | [Repository structure](../../docs/10-REPOSITORY-STRUCTURE.md) |
 | [Product rules](product-rules.md) | User flows or scope decisions | [Product requirements](../../docs/01-PRODUCT-REQUIREMENTS.md) |
 | [Security rules](security-rules.md) | Auth, secrets, backup, AI requests | [Auth & security](../../docs/04-AUTH-AND-SECURITY.md) |
 | [UI rules](ui-rules.md) | Screens or Markdown presentation | [Design system](../../DESIGN.md) |

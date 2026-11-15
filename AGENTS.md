@@ -110,10 +110,10 @@ Before nontrivial work: **discover available tools and installed skills**; match
 
 **Security nuance:** Owner accepted offline cached access for a previously verified, locally bound account, including unavoidable delay in checking remote revocation; it is **not** proof that a remote session has not been revoked. An online AI/cloud request must be freshly authorized server-side. Reinstallation or phone loss without a usable backup can mean permanent loss of local-only data.
 
-## 7. Module ownership and visual safety (future implementation)
+## 7. Module ownership and visual safety (merged mock shell + future data features)
 
 
-**Architecture v2.1 is the owner's final source-organization choice, not implementation authorization.** Follow the [complete tree and import matrix](docs/10-REPOSITORY-STRUCTURE.md): `src/app/` routes/layouts and root providers only; `src/features/<name>/` owns business modules; `src/platform/` owns shared technical services; `src/shared/` holds genuinely reusable non-business UI/theme/utils; `src/bootstrap/` is optional wiring. These are **future paths**, not current runtime files.
+**Architecture v2.1 is the owner's final source-organization choice, not implementation authorization.** Follow the [complete tree and import matrix](docs/10-REPOSITORY-STRUCTURE.md): `src/app/` routes/layouts and root providers only; `src/features/<name>/` owns business modules; `src/platform/` owns shared technical services; `src/shared/` holds genuinely reusable non-business UI/theme/utils; `src/bootstrap/` is optional wiring. **Existing Phase 1.1 paths:** `src/app/`, `src/features/`, `src/shared/` and `src/bootstrap/` (mock-only routing/UI). **Future/not implemented:** `src/platform/` Auth, encrypted database, account binding and key services. Do not interpret the merged UI shell as approval for these modules.
 
 - **Feature ownership:** each feature `domain/` owns pure models, domain rules and repository interfaces; its `data/` owns SQL repository implementations. `platform/database/` owns SQLite connection, migrations and the **single-account installation binding/lock lifecycle**, not workout-specific queries. It must not expose a multi-account switch flow.
 - **Thin UI:** feature screens/components/hooks and Expo Router files must never import `expo-sqlite`, Supabase SDK or SecureStore directly. UI consumes injected feature-facing interfaces or application services.
