@@ -144,7 +144,10 @@ test('all implemented navigation headers share token-driven TopBar variants', ()
   assert.match(nested, /<TopBar variant="nested" title=\{title\}/);
   assert.match(auth, /<TopBar variant="auth" onBack=\{onBack\}/);
   assert.match(auth, /safeAreaTop=\{insets\.top\}/);
-  assert.match(auth, /actionLabel=\{headerActionLabel\} onAction=\{onHeaderAction\}/);
+  // The normal auth action remains available unless a very short keyboard-open
+  // viewport needs the accessible Hide keyboard escape.
+  assert.match(auth, /actionLabel=\{showKeyboardEscape \? copy\('hideKeyboard'\) : headerActionLabel\}/);
+  assert.match(auth, /onAction=\{showKeyboardEscape \? Keyboard\.dismiss : onHeaderAction\}/);
   assert.match(topBar, /props\.variant === 'auth'/);
   assert.match(topBar, /minHeight: topBarSizes\.minHeight/);
   assert.match(topBar, /minHeight: props\.safeAreaTop \+ spacing\.sm \+ topBarSizes\.minHeight/);
