@@ -56,7 +56,7 @@
 | 22 | [Phase 0 design & Phase 1 owner approval](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) | Proposed visual freeze, deferred risks and explicit sign-off template |
 | 23 | [Input limits, OTP & deferred membership](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md) | Proposed numeric caps, approved verified-signup and membership deferment policy |
 | 24 | [Phase 1.1 shell implementation guide](24-PHASE-1-1-SHELL.md) | Merged mock shell, PR-head CI/review evidence, remaining native QA and out-of-scope features |
-| 25 | [Proposed minimal cloud profile + local onboarding (ADR-019)](25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) | Fixed Email → OTP → Password; Account Setup has required Username + optional Mobile, then required Name/DOB/Sex, local fitness, a real progress → Done → Continue screen, plus proposed private Avatar, server-owned Free Plan, latest Platform/OS/App build snapshot and 7/30-day signup/12-month free-account cleanup **review gates** — pending owner review |
+| 25 | [Proposed minimal cloud profile + local onboarding (ADR-019)](25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) | Fixed Email → OTP → Password; Account Setup has required Username + optional Mobile, then required Name/DOB/Sex, local fitness, a real progress → Done → Continue screen, plus proposed private **`avatar_url` / Storage photo lifecycle**, later Google signup import, server-owned Free Plan and latest Platform/OS/App build snapshot and 7/30-day signup/12-month free-account cleanup **review gates** — pending owner review |
 
 ## 🔁 How documents stay reliable
 
