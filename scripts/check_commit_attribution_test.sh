@@ -517,6 +517,31 @@ run_case pass "Human Claude Dupont bold freeform credit" \
 run_case pass "Human with underscore inside name is not normalized away" \
   "$(printf 'feat: x\n\nCo-Authored-By: Claude_Dupont <human@example.com>')"
 
+# P2 review on HEAD 4207634: linked AI identities in structured credits
+# must be classified by their visible label, not their URL or generic email.
+run_case fail "terminal linked AI co-author with generic email" \
+  "$(printf 'feat: x\n\nCo-Authored-By: [Claude Code](https://claude.ai/code) <assistant@example.com>')"
+run_case fail "nonterminal linked AI co-author with generic email" \
+  "$(printf 'feat: x\n\nCo-Authored-By: [Claude Code](https://claude.ai/code) <assistant@example.com>\n\nMore prose.')"
+run_case fail "linked AI signed-off-by with generic email" \
+  "$(printf 'feat: x\n\nSigned-off-by: [GPT-6](https://example.com/model) <signer@example.com>')"
+run_case fail "linked AI co-author with bold label and generic email" \
+  "$(printf 'feat: x\n\nCo-Authored-By: [**Claude Code**](https://claude.ai/code) <assistant@example.com>')"
+run_case fail "bold linked AI co-author with generic email" \
+  "$(printf 'feat: x\n\nCo-Authored-By: **[Claude Code](https://claude.ai/code)** <assistant@example.com>')"
+run_case fail "nested link emphasis in middle structured credit" \
+  "$(printf 'feat: x\n\nCo-Authored-By: **[__Claude Code__](https://claude.ai/code)** <assistant@example.com>\n\nMore prose.')"
+run_case fail "linked AI co-author with URL parentheses" \
+  "$(printf 'feat: x\n\nCo-Authored-By: [Claude Code](https://example.com/model(v2)) <assistant@example.com>')"
+run_case pass "linked human Claude Dupont co-author generic email" \
+  "$(printf 'feat: x\n\nCo-Authored-By: [Claude Dupont](https://claude.ai/code) <claude@example.com>')"
+run_case pass "linked human Gemini Patel middle credit" \
+  "$(printf 'feat: x\n\nCo-Authored-By: **[Gemini Patel](https://example.com)** <gemini@example.com>\n\nMore prose.')"
+run_case pass "linked Anthropic employee human signed-off-by" \
+  "$(printf 'feat: x\n\nSigned-off-by: [Claude Dupont](https://example.com) <claude.dupont@anthropic.com>')"
+run_identity_case fail "linked AI Git author generic email" \
+  "feat: clean" "[Claude Code](https://claude.ai/code)" "assistant@example.com" "Jane Developer" "jane@example.com"
+
 # Trusted main / PR-head freshness regression cases.
 # Use a disposable bare origin: never touch any real repository or main.
 freshness_checker="$script_dir/check_attribution_base_freshness.sh"
