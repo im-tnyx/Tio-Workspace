@@ -81,6 +81,32 @@ The provided `account_setup_providers.dart` contains `completeAccountSetup({Stri
 - Existing verified same-bound user reopens **directly to Home** if onboarding is complete, including eligible offline reopening. Incomplete onboarding resumes its actual unfinished stage. Only first-time verification and unsaved cloud profile writes need network; do not block previously initialized local workout logging just because a cloud profile refresh fails.
 - Sign-out locks the existing bound local data and keeps it for same-account relogin. A different Supabase UUID cannot gain access; separate confirmed erase/reset remains necessary. Reinstall or lost device without backup may lose workouts even if the cloud identity/profile can be retrieved.
 
+## Proposed abandoned-signup account retention and cleanup policy
+
+**Policy status: proposed owner-review baseline, not running.** The objective is to remove genuinely abandoned **Supabase Auth accounts**, not merely delete blank profile rows, while preserving any account that may own device-local workouts. Cloud Auth storage usage alone does not justify deletion of an active/activated account. All durations and hard-delete behavior require explicit approval before deployment.
+
+| Lifecycle state | Proposed deadline | May server auto-delete? |
+|---|---|---|
+| **Pending email verification**: an Auth user row exists, but server-confirmed email ownership has never been established | **7 days** from Auth-account creation, with no new verified activity | **Yes, eligible** only with hard server-side preflight proving no verification, protected activation, profile or local binding eligibility; if provider never created an Auth user, there is no row to remove |
+| **Verified but abandoned setup**: email verified, but password stage or required cloud Username/Name/DOB/Sex profile remains incomplete; never activated/eligible for local account binding | **30 days** of inactivity (and at least 30 days from creation); send a **7-day advance warning** to the already verified email when possible | **Conditional**: only if server-authoritative lifecycle evidence proves this UUID has **never** been activated, bound, or permitted to write a local encrypted database; otherwise **do not delete** |
+| **Cloud profile complete / activation granted**: valid required profile and server-acknowledged protection marker written **before** first account-bound local database access | **No automatic expiry**, even if the device-local Units/Height/Weight/Activity/Goal onboarding remains unfinished | **Never** via abandoned-signup cleanup |
+| **Fully onboarded / established / returning user** | **No inactivity-based deletion** | **Never**; account deletion is a separate explicit user-controlled operation |
+
+### Authoritative lifecycle and safety conditions
+
+- Proposal for minimal **server-owned, non-public registration lifecycle state** keyed by immutable `auth.users.id`: creation time, verified-email timestamp, password-created marker if needed by the exact OTP-first provider flow, required cloud-profile completion, **activation-protected-at**, last trusted server-side resume/action time, warning sent time and any pending-cleanup status. This could be a tightly protected private lifecycle table or trusted server-owned account metadata; **choose the smallest reliable schema during approval**, not editable `user_metadata`. Timestamps must use server time. Do not use a mobile-only `onboarding_progress` row as proof for irreversible server deletion.
+- **Critical invariant:** Before the app may bind a Supabase UUID to an installation, open an encrypted local workout database, or permit offline access, the backend must durably mark that UUID as **protected/activated**. If this cannot be guaranteed due to offline/network ordering or a partial failure, **fail closed on automatic deletion**, not on the user's already-authorized local workouts. Once protected, never auto-delete for unfinished local onboarding.
+- An Auth row missing `public.profiles` is **not enough evidence** of abandonment; local startup, offline login and reinstall may not contact Supabase. Never infer abandon from `last_sign_in_at`, lack of profile fields, app uninstall, lack of a heartbeat, expired JWT, lack of recent server calls, or 30 days offline by themselves.
+- If the verified incomplete user's 7-day warning is delivered at roughly **day 23 of unchanged inactivity**, resuming onboarding or completing the required cloud profile cancels cleanup; reset the inactivity deadline based on **trusted server-observed activity**. Warnings must avoid revealing sensitive DOB/Sex or other personal data and should not go to unverified addresses merely because a user typed them.
+- The daily server job must **first run in audit-only/dry-run mode** and then, if separately enabled, select a small batch, prove all eligibility predicates, block pending candidates from concurrent activation, re-check the exact UUID and completion/activation marker immediately before deletion, and **skip on ambiguity, errors, network/timeouts or races**. Maintain minimal non-PII deletion counts and error/audit outcomes, restrict retries and rate limit the job. No client-selected email, username or other mutable identifier may authorize deletion.
+- Implement destructive cleanup **only on a trusted server** (for example, Supabase Cron invoking a properly authenticated Edge Function using a protected server-side credential). Use the official `auth.admin.deleteUser(user_id)` administrative API after review; never expose the Supabase secret/service-role key in Expo, arbitrary client RPCs or public Edge Function endpoints. Handle cascade to `profiles` and lifecycle records with reviewed foreign keys and deletion tests. Never directly delete rows from Supabase-managed `auth.users` by client SQL.
+- For eventual hard delete, review owned Storage objects and other foreign keys first; Supabase may reject deletion while objects are owned. **Soft delete is not equivalent to reclaiming abandoned Auth rows**. JWTs previously issued may remain usable until expiry, so new protected server operations must check authorization and deletion/session state as appropriate. Do not promise immediate worldwide token invalidation.
+- A deleted abandoned signup must start a **fresh verified registration** if the same email returns later. Do not falsely promise restoration of old UUID, protected installation binding or device-local data. If any evidence of earlier binding/local data exists, the cleanup candidate is ineligible and must be reviewed rather than deleted.
+
+**Required owner decisions before enabling:** whether 7/30 days and 7-day warning are acceptable, where the minimal server-authoritative protection marker lives, how first local account binding is made race-safe, how to represent an OTP-verified-but-password-incomplete identity without creating guest workout access, email/warning deliverability, hard-delete/recovery wording and the server-only job's security controls. The owner has requested a cleanup policy but has **not** approved live deletion or infrastructure changes.
+
+**Official implementation references (recheck before deployment):** [Supabase Admin deleteUser](https://supabase.com/docs/reference/javascript/auth-admin-deleteuser) · [Managing user data / deletion caveats](https://supabase.com/docs/guides/auth/managing-user-data) · [Scheduling Edge Functions](https://supabase.com/docs/guides/functions/schedule-functions) · [Supabase Cron](https://supabase.com/docs/guides/cron).
+
 ## Signup and resume failure states
 
 | Case | Required behavior |
@@ -103,6 +129,7 @@ The provided `account_setup_providers.dart` contains `completeAccountSetup({Stri
 3. Finalize global username uniqueness, case/Unicode confusables, 3–16 grapheme validation, safe error messaging and update rules; existing ADR-017 calls username optional and must be revised if accepted.
 4. Define `full_name`, phone normalization (when present), local metric ranges/categories, edit/resume/recovery rules and deletion/retention behavior.
 5. Approve migration, ownership RLS, negative authorization tests, platform secure-session adapter and native encrypted database lifecycle **as separate implementation slices**.
+6. Review the proposed **7-day unverified / 30-day verified-but-never-activated cleanup** thresholds, 7-day advance warning, server-authoritative activation guard and server-only dry-run/deletion mechanism. No live job is authorized.
 
 ## Review/acceptance plan (not executed)
 
@@ -120,6 +147,11 @@ The provided `account_setup_providers.dart` contains `completeAccountSetup({Stri
 | ONB-10 | iOS/Android keyboard, large text, screen reader, date/sex choice UX and meaningful errors after live implementation |
 | ONB-11 | After Goal, a centered progress ring shows a **centered real % when measurable** and “Personalizing your experience…”. At verified 100% it replaces % with centered done/checkmark and “You're all set!”; bottom Continue appears **only after** real required saves succeed, then opens Home |
 | ONB-12 | Final screen excludes testimonial cards, stars, ratings, promotional counts, carousels and copied branding; supports reduced motion, dynamic text, interruption/retry, accessible progress %, **indeterminate fallback when unmeasurable**, and no fake timed progress |
+| ONB-13 | Unverified Auth candidate after proposed 7-day deadline: dry-run lists only truly unverified, never-activated candidates; new verification/activation cancels deletion; privileged hard delete clears expected dependent rows with no client keys |
+| ONB-14 | Verified cloud-profile-incomplete candidate: 30 days inactivity + 7-day verified-email warning, trusted last activity/activation marker and race-safe server preflight; resumed progress prevents deletion |
+| ONB-15 | Cloud-profile-complete, protected/bound and offline-incomplete-local-setup users remain exempt forever from abandoned-signup cleanup even without a remote heartbeat; delete ambiguous cases **never** |
+| ONB-16 | Idempotent daily job, dry-run/kill switch, logs without PII, failure/retry, same-email re-registration after safe deletion, and expired-JWT/session/Storage-FK handling are verified before enabling |
+
 
 Review evidence must distinguish **docs review** from runtime/server/native tests. Before Phase 1.2+ implementation, also satisfy [AUTH-01–14 and SEC-06](08-TEST-PLAN.md). No tests above have passed simply because they are written.
 
