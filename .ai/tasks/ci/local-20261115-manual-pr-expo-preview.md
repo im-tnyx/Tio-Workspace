@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Ready for Review |
+| Status | Review complete for code head; merge authorization pending |
 | Objective | From GitHub Actions, manually select an open PR number and publish its verified code to the EAS `pr-preview` branch or create an installable preview build, using cloud runners only |
 | Implementation owner | Codex agent; owner-approved bounded preview deployment slice |
 | Previous agent | None |
@@ -72,14 +72,14 @@
 - Expo dashboard credential readiness was checked read-only: Android signing credential exists for `com.tnyx.tio`; iOS signing is not configured. Android `build_preview` can use the EAS-managed credential. iOS/all builds remain unavailable until their signing credentials are configured. No build was started during this check.
 - `.gitignore` patterns cover Expo local state, generated APK/AAB/IPA files, and common local signing credential formats; tracked source and EAS project config remain included.
 - The lockfile includes the SDK-matched `expo-updates` dependency so the repository's existing `npm ci` check remains reproducible.
-- GitHub `Phase 1.1 shell checks` passed on head `e9f6608b5cbfaabb61757674df07c1cac600c826`. On head `c43b4c010881c04bd24dd80be5a997e3a0c91059`, run [43729401576](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43729401576) failed at `tokens:check`: the deleted source branch was no longer fetched even with `fetch-depth: 0`. The exact baseline SHA remained fetchable; both workflows now fetch it explicitly. GitHub validation of this fix is pending.
+- GitHub `Phase 1.1 shell checks` passed on code head `429402858d932f35802fdd825c0696e3087cc269`: [run 43730420533](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43730420533). Earlier run [43729401576](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43729401576) exposed that `fetch-depth: 0` did not fetch the deleted source branch's baseline; direct baseline-SHA fetch plus non-persisted checkout credentials fixed it.
 
 ## PR review evidence and findings
 
 - Codex GitHub review [#5911333001](https://github.com/im-tnyx/Tio-Workspace/pull/15#pullrequestreview-5911333001) reviewed head `d90bbc39fcf2b14e0c5412f386da0c004a31777a` and found the token baseline unavailable. `fetch-depth: 0` was added in commit `3e0e611ae11a186bc0328cd3a51f82a121b726d8`, but later exact-head CI proved that alone was insufficient because the baseline's original feature branch had been deleted. Both CI workflows now fetch the immutable baseline SHA directly using step-scoped `GITHUB_TOKEN`; the baseline commit itself remains unchanged.
-- Codex GitHub review [#5911380555](https://github.com/im-tnyx/Tio-Workspace/pull/15#pullrequestreview-5911380555) reviewed head `e9f6608b5cbfaabb61757674df07c1cac600c826` and requested a documented/verified signing-credential prerequisite. Android credentials have now been verified in the Expo dashboard and the missing iOS setup is explicitly documented; exact-head re-review remains pending.
-- Review status: `REVIEW_PENDING` until the latest GitHub PR diff has a recorded reviewer assessment.
-- Formal GitHub approval and merge authorization: not requested or granted.
+- Codex GitHub review [#5911380555](https://github.com/im-tnyx/Tio-Workspace/pull/15#pullrequestreview-5911380555) reviewed head `e9f6608b5cbfaabb61757674df07c1cac600c826` and requested a documented/verified signing-credential prerequisite. Android credentials have now been verified in the Expo dashboard and the missing iOS setup is explicitly documented.
+- Follow-up Codex review [comment](https://github.com/im-tnyx/Tio-Workspace/pull/15#issuecomment-6896955015) reviewed code head `429402858d932f35802fdd825c0696e3087cc269` and reported no major issues. Both inline findings were answered and resolved on that head. Review verdict: `PASS` for the code diff; this is a Codex review comment, not formal GitHub `APPROVED`.
+- Formal GitHub approval and action-specific merge authorization are not recorded.
 
 ## Handoff
 
