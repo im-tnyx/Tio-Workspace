@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **Preview-only setup; owner token and Codespace have not been configured or verified** |
+| Status | **Auto-wake blocked by current GitHub access controls; owner token and Codespace have not been configured or verified** |
 | Dedicated branch | `tnyx/expo-preview` |
 | Push signal | [Secret-less preview push signal](../.github/workflows/expo-preview-push-signal.yml) |
 | Trusted worker | [Default-branch Codespaces worker](../.github/workflows/expo-codespaces-preview-worker.yml) |
@@ -10,11 +10,15 @@
 
 This setup keeps the Expo development server in a GitHub Codespace. A push to `tnyx/expo-preview` emits a secret-less signal. A trusted worker from the default branch accepts only the repository owner's push, then wakes its one matching Codespace, fast-forwards a clean worktree to that accepted push SHA, and leaves Metro serving the updated JavaScript/assets. The signal workflow has no secrets and only read permissions. The first Codespace creation remains manual. No workflow runs for pull request open, review, merge, or pushes to other branches.
 
-## One-time GitHub setup
+## Current security gate
+
+As checked on 2026-11-15, this private repository has a second account (`im-tio`) with push access, while GitHub's `main` branch protection and rulesets APIs both return `403` with an upgrade-to-Pro-or-public message. Existing repository environments have no deployment branch policy. Therefore the `main`-restricted secret boundary below is **not currently verified or available**. Do not add `CODESPACES_TOKEN` as a repository secret or to an unrestricted environment. Auto-wake remains **BLOCKED** until the owner establishes and verifies an enforceable `main` restriction and explicitly accepts the remaining risk from anyone who can edit workflows on `main`. Keep the repository private unless the owner separately decides otherwise.
+
+## One-time GitHub setup after the security gate is satisfied
 
 1. Merge the reviewed setup PR. Confirm `tnyx/expo-preview` still exists; if repository auto-delete removed the merged head branch, recreate that branch from `main` in GitHub before creating the Codespace.
 2. Create a fine-grained personal access token for the owner account, restricted to `im-tnyx/Tio-Workspace`, with **Codespaces: read** and **Codespaces lifecycle admin: write**. These permissions list the matching Codespace and start it; the token is not the Expo/EAS token.
-3. In **Settings → Environments**, create `expo-codespaces-trusted`. Set **Deployment branches and tags → Selected branches and tags** to the exact `main` branch. Add `CODESPACES_TOKEN` as an **environment secret** there; do not add it as a repository secret. Paste the token value into GitHub's secret form only. Do not put the value in chat, source, or a Codespace command. The worker job references this environment, so a workflow on the preview branch cannot access its secret. [GitHub environment rules](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments) require a supported plan for private repositories; if these settings are unavailable, leave auto-wake disabled until the environment can be protected.
+3. In **Settings → Environments**, create `expo-codespaces-trusted`. Set **Deployment branches and tags → Selected branches and tags** to the exact `main` branch and verify the rule is active. Add `CODESPACES_TOKEN` as an **environment secret** there; do not add it as a repository secret. Paste the token value into GitHub's secret form only. Do not put the value in chat, source, or a Codespace command. The worker job references this environment, so a workflow on the preview branch cannot access its secret. Another workflow committed to an allowed `main` can request the same environment; `main` write access must therefore be trusted and controlled. [GitHub environment rules](https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments) require a supported plan for private repositories.
 4. From the repository's **Code → Codespaces** menu, manually create one Codespace on `tnyx/expo-preview`. The dev container installs the locked npm dependencies and starts Expo after creation and on later resumes.
 5. In a Codespace terminal, run `npx expo login` once and sign into the same Expo account already used by Expo Go. The [Expo Go account requirement](https://docs.expo.dev/troubleshooting/expo-go-sign-in-required/) says the CLI and Expo Go must use the same account on a physical iPhone. Open **TNYX** from Expo Go's Projects list; QR scanning is not needed for that account flow. Normal stop/start keeps this Codespace setup; replacing or rebuilding the container may require login again.
 
@@ -26,7 +30,7 @@ The Codespace setup runs `npm ci` and then installs the Expo-documented `@expo/n
 - Metro watches the updated files; when Expo Go is connected, Fast Refresh should show compatible JavaScript/assets changes. If the Codespace was stopped, reopen TNYX in Expo Go after it wakes if the prior connection does not reconnect.
 - A changed `package.json` or `package-lock.json` stops Metro before `npm ci`, then starts it again after a successful install. A hash of both dependency manifests is recorded outside the repository, so a failed install is retried on the next push. Changes to native modules or native app configuration still need a compatible preview build; Expo Go cannot hot-load new native code.
 - The sync fails closed if the Codespace is on another branch/repository, has uncommitted or untracked work, cannot fast-forward, or if zero/multiple matching Codespaces exist. Resolve that condition in the Codespace, then push a new commit to retry.
-- Only successful push signals for `tnyx/expo-preview` by `im-tnyx` reach the trusted wake/sync worker. GitHub loads the privileged [`workflow_run` worker](https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#workflow_run) from the default branch; its token is scoped to the `main`-restricted `expo-codespaces-trusted` environment. No branch artifact is downloaded into the runner. Keep `main` and workflow changes under owner review because a workflow committed to an allowed branch could request that environment.
+- Only successful push signals for `tnyx/expo-preview` by `im-tnyx` reach the trusted wake/sync worker. GitHub loads the privileged [`workflow_run` worker](https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#workflow_run) from the default branch; after the security gate is satisfied, its token must come from the `main`-restricted `expo-codespaces-trusted` environment. No branch artifact is downloaded into the runner. Keep `main` and workflow changes under owner review because a workflow committed to an allowed branch could request that environment.
 
 ## Cost and limits
 

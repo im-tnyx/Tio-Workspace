@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | In Progress |
+| Status | BLOCKED — protected secret boundary unavailable in the current private-repo configuration |
 | Objective | Let the owner manually create one Codespace on `tnyx/expo-preview`, then have owner pushes wake/sync it so Expo Go can load the latest compatible mock-shell UI without a local machine |
 | Implementation owner | Codex local workspace session; repository owner keeps GitHub secret/Codespace and merge authority |
 | Previous agent | None |
@@ -59,7 +59,8 @@
 - [x] Re-review of the final staged diff returned `PASS` against base `095c3edb4a7b1969598bc01162d66496febbf0c2`.
 - [x] Published [PR #18](https://github.com/im-tnyx/Tio-Workspace/pull/18) at initial head `d8cea24ede6b82a29b937cdeabe2b282251780b0`.
 - [x] Codex [review #5912003077](https://github.com/im-tnyx/Tio-Workspace/pull/18#pullrequestreview-5912003077) recorded two blocking security findings; remediation is in progress.
-- [ ] Push remediation, verify its exact remote head/checks, and request re-review.
+- [x] Pushed remediation as `e762fe58f646c595bc323b74089bed0600ec58ff`; independent AI re-review accepted the SHA pin but kept the token-scope finding open.
+- [ ] Establish and verify enforceable `main` access controls before any Codespaces token is stored.
 - [ ] Owner configures the secret and manually creates one Codespace after merge.
 
 ## Changed files
@@ -75,8 +76,8 @@
 
 - Review requested from: `/root/codespaces_preview_review` (independent AI-assisted local review).
 - Reviewer identity / URL / assessed scope: local independent AI-assisted review passed final staged diff against base `095c3edb4a7b1969598bc01162d66496febbf0c2`. GitHub Codex [review #5912003077](https://github.com/im-tnyx/Tio-Workspace/pull/18#pullrequestreview-5912003077) inspected published head `d8cea24ede6b82a29b937cdeabe2b282251780b0`.
-- Review status: `CHANGES_REQUESTED` in task terms for two actionable Codex findings; GitHub recorded `COMMENTED`, not formal `APPROVED` or `REQUEST_CHANGES`.
-- Verdict: P2 repository-level token scope and P1 mutable branch-tip sync; fixes must be reviewed at the new pushed head.
+- Review status: `CHANGES_REQUESTED` in task terms; GitHub Codex recorded `COMMENTED`, not formal `APPROVED` or `REQUEST_CHANGES`.
+- Verdict: P1 mutable branch-tip sync fixed at `e762fe5`; P2 secret scope remains blocked by unprotected `main` and another account's write access. Independent AI re-review assessed the exact pushed head.
 - Merge approval: not granted.
 
 ## Validation evidence
@@ -87,14 +88,15 @@
 - `bash -n scripts/sync-codespace-expo-preview.sh` unavailable: host Bash launch returned `E_ACCESSDENIED`.
 - App startup, Codespaces API start/SSH, Expo CLI login and phone connection remain unverified until owner performs the documented one-time setup.
 - Not run: Expo Go physical-device connection, live Codespace lifecycle, GitHub Actions wake/SSH, and Expo account login; no Codespace or token was created/configured by this task.
-- Security boundary: token value remains owner-managed in the `main`-restricted GitHub Actions environment secret; no credential is present in source.
+- Security boundary: no Codespaces token has been configured; no credential is present in source. The planned environment secret must remain unset until the `main` security gate is resolved.
 - Independent review findings: `scripts/sync-codespace-expo-preview.sh` initially ran `npm ci` before stopping Metro and fingerprinted only `package-lock.json`; both issues were fixed by stopping first and recording hashes of both dependency manifests after a successful install. Final staged diff re-review returned `PASS`; exact published head still needs review.
-- GitHub Codex found that a repository secret was readable by other repository workflows and that fetching the mutable preview branch could execute a later unaccepted push. The remediation scopes the token to `expo-codespaces-trusted` with an exact `main` deployment branch rule and fetches only the SHA from the qualifying push. New-head verification and review remain pending.
+- GitHub Codex found that a repository secret was readable by other repository workflows and that fetching the mutable preview branch could execute a later unaccepted push. The remediation references `expo-codespaces-trusted` and fetches only the SHA from the qualifying push. Independent re-review of `e762fe5` found the SHA issue fixed but token access only partly mitigated: any workflow on allowed `main` could request the environment.
+- Live GitHub read on 2026-11-15: collaborators include `im-tio` with push and `im-tnyx` with admin; `main` branch protection and repository rulesets both returned HTTP 403 with “Upgrade to GitHub Pro or make this repository public”; current `attribution-guard-trusted` and `eas-preview` environments reported no deployment branch policy. Owner has not approved a plan upgrade, visibility change, collaborator change, or token-risk acceptance. Auto-wake is therefore BLOCKED.
 
 ## Handoff
 
 **Next owner:** Repository owner and independent PR reviewer.
 
-**Next authorized action:** Push and re-review the security remediation at the exact PR head. After a separately authorized merge, the owner configures the `main`-restricted environment and its token, manually creates one Codespace on the preview branch, and signs Expo CLI into the existing Expo Go account.
+**Next authorized action:** Resolve the `main`/environment security gate with an owner decision, then re-review the exact PR head. Do not store `CODESPACES_TOKEN` in this repository's current unrestricted environment or repository secrets. Merge still requires separate owner authorization.
 
 **Post-merge synchronization/archive needed:** Yes, only after owner-authorized merge and verified file/branch state.
