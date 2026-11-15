@@ -14,6 +14,12 @@
 
 **Status as of 2026-11-14:** Initial intentions derive from the product brief. **ADR-009–015 record owner-selected architecture, local tooling, single-account/MVP behavior, personal-backup UX, exclusive cloud-mode policy and future optional paid Sync business scope**. None approves cloud integration or billing implementation. **No deployment or Phase 1 implementation is approved yet**.
 
+## Proposed ADR-019 — pending owner review (2026-11-15)
+
+The owner has selected a **fixed signup UI sequence: Email → OTP → Password** (do not reorder), then Username → Mobile (**only optional field**) → **Name (separate screen immediately after Mobile)** → DOB (**required**) → Sex (**required**) → Units → Height → Current Weight → Activity Level → Goal. A **private minimal Supabase profile** is proposed for username, name, DOB, sex and optional mobile; workouts and fitness inputs remain device-local. The existing Auth-only cloud boundary would change **only after separate schema/privacy approval**.
+
+See the [proposed ADR-019](25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md). It is **not** a deployed or accepted migration; existing ADR-017 presently calls username optional and describes Email + Password → OTP. Those legacy descriptions are flagged for reconciliation against the newer owner-selected flow and actual provider feasibility; do not change the fixed UI order. RLS, DOB/sex privacy, age policy, deletion, OTP anti-abuse and native encryption remain separate security/implementation gates. No real Auth/DB implementation authorization results from this proposal.
+
 ## Agreed product intentions
 | ID | Decision | Reason / consequence |
 |---|---|---|
