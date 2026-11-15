@@ -24,7 +24,7 @@
 
 ## Approved scope / non-goals
 
-- **In scope:** propose [ADR-019](../../../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) with Email → OTP → Password → **Account Setup [Username + Mobile (optional)]** → **Name (separate next screen)** → DOB (required) → Sex (required) → Units → Height → Current Weight → Activity Level → Goal; record cloud/local boundaries, risk questions, RLS and acceptance criteria.
+- **In scope:** propose [ADR-019](../../../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) with Email → OTP → Password → **Account Setup [Username + Mobile (optional)]** → **Name (separate next screen)** → DOB (required) → Sex (required) → Units → Height → Current Weight → Activity Level → Goal → **Final Setup progress → Done checkmark → Continue → Home**; record cloud/local boundaries, risk questions, RLS and acceptance criteria.
 - **In scope:** link from docs index and decision register as **proposed**, keep this single task pointer updated. Record Email → OTP → Password as fixed owner choice, and document technical feasibility/reconciliation without suggesting a different screen order.
 - **Out of scope:** any code, mock-screen revision, Auth/provider configuration, SQL migrations, live Supabase table, local SQLite implementation, secret creation, deployment or merge.
 - **Authority:** Owner's "start" authorizes preparing these docs for review; **it does not authorize runtime Phase 1.2+ or acceptance of unresolved security/privacy decisions**.
@@ -39,6 +39,8 @@
 ## Durable decisions and open gates
 
 **Owner-required inputs:** Email/OTP/Password, Username, Name, DOB and Sex; **Mobile is the only optional onboarding input**, with Skip. Units/Height/Current Weight/Activity Level/Goal required locally. Mobile is an optional field **within Account Setup** alongside required Username; **no standalone Mobile screen**. Separate Name screen occurs immediately after Account Setup.
+
+**Finalization UX (owner screenshot references):** Centered circular progress with “Personalizing your experience…”, then genuine completion shows a centered checkmark + “You're all set!” and only then a bottom Continue CTA. **Exclude** cards, ratings, stars and carousel. Completion is based on real durable setup saves, not a timer; failures retry safely and returning users skip this first-run step. Acceptance tests ONB-11/12 are in proposed ADR-019.
 
 **Proposed storage:** Cloud `auth.users` for email/account/password credentials, plus private `public.profiles` for username/full_name/DOB/calculation_sex/nullable mobile. Local encrypted DB for units, height, measured weight, activity, goal, workouts and resume metadata.
 
