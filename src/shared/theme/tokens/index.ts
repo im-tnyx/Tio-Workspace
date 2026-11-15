@@ -56,6 +56,10 @@ export const authPreviewLayout = {
   signInTitleMinHeight: 46,
   signInTitleMinHeightCompact: 39,
   authMiddleMinHeight: 0,
+  // Measured space left between header and keyboard-anchored footer.
+  // Preserve the standard form until these responsive budget thresholds.
+  compactAvailableHeight: 196,
+  tightAvailableHeight: 112,
 } as const;
 export const typography = {
   title: { fontSize: 34, lineHeight: 41, fontWeight: '700' as const },

@@ -1,13 +1,19 @@
-import { useCallback, useLayoutEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Keyboard, Platform, Text, View } from 'react-native';
-import type { KeyboardEvent, ViewInstance } from 'react-native';
+import type { KeyboardEvent, LayoutChangeEvent, ViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
-import { spacing, typography } from '@/shared/theme/tokens';
+import { authPreviewLayout, spacing, typography } from '@/shared/theme/tokens';
 import { Button } from './Button';
 import { TopBar } from './TopBar';
 import { keyboardOverlap } from './authKeyboardGeometry';
+import { authAvailableHeight } from './authViewport';
+
+const AuthAvailableHeightContext = createContext<number | null>(null);
+export function useAuthAvailableHeight(): number | null {
+  return useContext(AuthAvailableHeightContext);
+}
 
 // Shared fixed, non-scrolling auth page. Its persistent CTA is positioned from
 // the actual root-view bottom in window coordinates, not physical screen height.
@@ -25,6 +31,9 @@ export function AuthPreviewPage({
   const { colors } = useAppearance();
   const rootRef = useRef<ViewInstance>(null);
   const [rootBottomY, setRootBottomY] = useState<number | null>(null);
+  const [rootHeight, setRootHeight] = useState<number | null>(null);
+  const [headerHeight, setHeaderHeight] = useState<number | null>(null);
+  const [footerHeight, setFooterHeight] = useState<number | null>(null);
   const [keyboardTopY, setKeyboardTopY] = useState<number | null>(null);
 
   const measureRootBottom = useCallback(() => {
@@ -34,6 +43,12 @@ export function AuthPreviewPage({
       setRootBottomY(previous => previous === bottom ? previous : bottom);
     });
   }, []);
+
+  const onRootLayout = useCallback((event: LayoutChangeEvent) => {
+    const height = event.nativeEvent.layout.height;
+    setRootHeight(previous => previous === height ? previous : height);
+    measureRootBottom();
+  }, [measureRootBottom]);
 
   // Register listeners before mounting auto-focused TextInputs: otherwise
   // initial keyboardWillShow may be missed on iOS.
@@ -85,25 +100,44 @@ export function AuthPreviewPage({
   // already shrunk to the keyboard edge, overlap is zero (no double-lifting).
   const keyboardClearance = keyboardTopY === null || rootBottomY === null
     ? insets.bottom : keyboardOverlap(rootBottomY, keyboardTopY);
+  const rawAvailableHeight = authAvailableHeight(
+    rootHeight, headerHeight, footerHeight, keyboardClearance,
+    spacing.lg, spacing.sm);
+  const compactForm = rawAvailableHeight !== null
+    && rawAvailableHeight < authPreviewLayout.compactAvailableHeight;
+  const formTopPadding = compactForm ? spacing.sm : spacing.xl;
+  const availableHeight = authAvailableHeight(
+    rootHeight, headerHeight, footerHeight, keyboardClearance,
+    spacing.lg, formTopPadding);
 
-  return <View ref={rootRef} onLayout={measureRootBottom}
+  return <View ref={rootRef} onLayout={onRootLayout}
     style={{ flex: 1, backgroundColor: colors.background }}>
     {/* Shared TopBar owns the exact same 54pt, plain icon-only auth header.
         Keyboard inset calculation and CTA placement remain untouched. */}
-    <TopBar variant="auth" onBack={onBack} safeAreaTop={insets.top}
-      actionLabel={headerActionLabel} onAction={onHeaderAction} />
+    <View onLayout={event => {
+      const height = event.nativeEvent.layout.height;
+      setHeaderHeight(previous => previous === height ? previous : height);
+    }}>
+      <TopBar variant="auth" onBack={onBack} safeAreaTop={insets.top}
+        actionLabel={headerActionLabel} onAction={onHeaderAction} />
+    </View>
 
     {/* Only the stage-specific content updates. No scroll is introduced. */}
     <View style={{
       flex: 1, minHeight: 0, paddingHorizontal: spacing.lg,
-      paddingTop: spacing.xl,
+      paddingTop: formTopPadding,
     }}>
-      {keyboardListenersReady ? children : null}
+      <AuthAvailableHeightContext.Provider value={availableHeight}>
+        {keyboardListenersReady ? children : null}
+      </AuthAvailableHeightContext.Provider>
     </View>
 
     {/* Shared footer for Sign in, Sign up and password recovery. It stays
         anchored to the visible route rather than the physical device screen. */}
-    <View style={{
+    <View onLayout={event => {
+      const height = event.nativeEvent.layout.height;
+      setFooterHeight(previous => previous === height ? previous : height);
+    }} style={{
       position: 'absolute', left: spacing.lg, right: spacing.lg,
       bottom: keyboardClearance + spacing.lg, gap: spacing.sm,
     }}>

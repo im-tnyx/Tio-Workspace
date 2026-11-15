@@ -8,6 +8,7 @@ import { copy, formatNumber } from '../src/shared/i18n/en.ts';
 import { canOpenShellPreview } from '../src/bootstrap/shell/shellPreviewAccess.ts';
 import { canContinueAuthPreview, nextAuthPreviewStep, previousAuthPreviewStep } from '../src/features/onboarding/authPreviewSteps.ts';
 import { keyboardOverlap } from '../src/shared/ui/authKeyboardGeometry.ts';
+import { authAvailableHeight, authDensity } from '../src/shared/ui/authViewport.ts';
 import { authPreviewLayout, authPreviewMuted, controlSizes, radii, spacing, topBarSizes } from '../src/shared/theme/tokens/index.ts';
 import { BRAND_TYPING_INTERVAL_MS, BRAND_DOT_DIAMETER, BRAND_DOT_GAP, BRAND_DOT_FINAL_HOLD_MS, visibleTypingText } from '../src/shared/ui/typing.ts';
 
@@ -190,7 +191,7 @@ test('post-Welcome auth uses persistent parent header and CTA, middle-only step 
   assert.match(page, /const currentMetrics = Keyboard\.metrics\(\)/);
   assert.match(page, /Keyboard\.scheduleLayoutAnimation\(event\)/);
   assert.match(page, /keyboardOverlap\(rootBottomY, keyboardTopY\)/);
-  assert.match(page, /ref=\{rootRef\} onLayout=\{measureRootBottom\}/);
+  assert.match(page, /ref=\{rootRef\} onLayout=\{onRootLayout\}/);
   assert.match(page, /measureInWindow\(/);
   assert.doesNotMatch(page, /Dimensions\.get\('screen'\)\.height/);
   // The fixed footer never double-adds keyboard height if the native route
@@ -206,6 +207,39 @@ test('post-Welcome auth uses persistent parent header and CTA, middle-only step 
   assert.doesNotMatch(middle, /\{footerNotice\}/);
   assert.match(controller, /footerDisabled=\{!canContinueAuthPreview/);
   assert.match(welcome, /actionPlacement="bottom"/);
+});
+
+test('auth form adapts to measured keyboard space without scrolling or clipping the CTA', () => {
+  const page = readFileSync('src/shared/ui/AuthPreviewPage.tsx', 'utf8');
+  const form = readFileSync('src/features/onboarding/screens/AuthCredentialsScreen.tsx', 'utf8');
+  const helper = readFileSync('src/shared/ui/authViewport.ts', 'utf8');
+
+  // Full-height viewport: normal title/description/input.
+  assert.equal(authAvailableHeight(844, 114, 94, 0, 16, 24), 596);
+  assert.equal(authDensity(596, 1), 'regular');
+  // Small native keyboard-open viewport: keep CTA's measured height reserved.
+  assert.equal(authAvailableHeight(568, 108, 94, 265, 16, 8), 77);
+  assert.equal(authDensity(77, 1), 'tight');
+  assert.equal(authDensity(160, 1), 'compact');
+  assert.equal(authDensity(220, 1), 'regular');
+  // Accessibility text scaling triggers compaction sooner.
+  assert.equal(authDensity(215, 1.4), 'compact');
+  assert.equal(authDensity(135, 1.4), 'tight');
+  assert.equal(authDensity(null, 2), 'regular');
+  assert.equal(authAvailableHeight(null, 100, 90, 250, 16, 8), null);
+  assert.equal(authAvailableHeight(180, 130, 90, 250, 16, 8), 0);
+  assert.match(helper, /Math\.max\(0, rootHeight - headerHeight - footerHeight/);
+
+  assert.match(page, /setHeaderHeight/);
+  assert.match(page, /setFooterHeight/);
+  assert.match(page, /AuthAvailableHeightContext\.Provider value=\{availableHeight\}/);
+  assert.match(page, /paddingTop: formTopPadding/);
+  assert.match(form, /const density = authDensity\(availableHeight, fontScale\)/);
+  assert.match(form, /!tight \? <View/);
+  assert.match(form, /tight && step === 'password' \? \{ display: 'none' \}/);
+  assert.match(form, /inputRef=\{signInEmailInput\}/);
+  assert.doesNotMatch(page, /<ScrollView/);
+  assert.doesNotMatch(form, /<ScrollView/);
 });
 
 test('both Sign in and Sign up routes use the same persistent auth parent', () => {
