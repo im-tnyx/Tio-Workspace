@@ -31,7 +31,7 @@ Phase 1.1 is a nonfunctional Expo mock shell. The current preview shows `Email �
 | 12 | Current Weight | Starting weight, canonical kilograms and dated measurement | Yes | Local encrypted SQLite |
 | 13 | Activity Level | Selected activity category | Yes | Local encrypted SQLite |
 | 14 | Goal | Lose / Maintain / Gain | Yes | Local encrypted SQLite |
-| 15 | Final Setup | Centered progress circle while finishing real setup; transition to a centered checkmark and **“You're all set!”** only after verified save; then reveal bottom **Continue** | — | Device-local completion gate |
+| 15 | Final Setup | Centered progress circle **with a centered % value when measurable** while finishing real setup; replace percentage with a centered checkmark and **“You're all set!”** only after verified save; then reveal bottom **Continue** | — | Device-local completion gate |
 | 16 | App Entry | **Continue** opens Home for the same verified and locally bound account | — | Local |
 
 Welcome includes Get Started; do not add a redundant separate Get Started page. Sign-in is a separate returning-user path. Final user-facing strings remain English-only for the current MVP per ADR-018.
@@ -42,13 +42,13 @@ The owner supplied two screenshots as **interaction/composition references only*
 
 | State | Center content | Bottom action | Entry condition |
 |---|---|---|---|
-| **Finalizing** | Centered circular progress indicator with **“Personalizing your experience…”** beneath it | **Continue hidden** | After the user submits Goal; finish the already authorized, required profile/local saves and onboarding completion verification |
-| **Done** | The circle reaches completion and changes to a prominent centered **checkmark / done** symbol with **“You're all set!”** beneath it | Reveal bottom safe-area **Continue** button | Only when all required verified cloud-profile, correct account binding, local fitness data and onboarding-complete marker are durably saved |
+| **Finalizing** | Centered circular progress ring **with the real numeric percentage (e.g. 25%, 50%, 75%) inside the ring when measurable**, and **“Personalizing your experience…”** beneath it | **Continue hidden** | After the user submits Goal; finish the already authorized, required profile/local saves and onboarding completion verification |
+| **Done** | The ring reaches **100% only after actual completion** and replaces the center percentage with a prominent **checkmark / done** symbol; **“You're all set!”** appears beneath it | Reveal bottom safe-area **Continue** button | Only when all required verified cloud-profile, correct account binding, local fitness data and onboarding-complete marker are durably saved |
 | **Failure / interruption** | Honest error and recovery state; retain existing inputs | **Retry**, not Continue | Save, local DB unlock, identity, or completion check fails; never display success for a timer or fake progress |
 
 - Present **both states on the same final onboarding screen**, not as separate navigation routes. The progress circle and text remain near the visual center; Continue appears only after success in the safe-area bottom action region. Keep screen uncluttered.
-- Progress must reflect real work: use an **indeterminate** circle if no trustworthy numeric progress exists. If numeric progress is shown, derive it from completed steps; no arbitrary percentages, fake progress or fixed waiting animation. When saves finish immediately, show Done directly or transition immediately; do not delay Home for marketing.
-- The indicator **may animate** from progress to checkmark with accessible reduced-motion fallback. Expose “Setting up” / “Setup complete” to assistive technology; the success state and button must be reachable with large fonts and screen readers on Android/iOS.
+- **Percentage belongs inside the circular ring, centered and readable**. Derive it from a defined set of actual completed setup/save/verification steps (completed checkpoints ÷ total checkpoints × 100, consistently rounded), not elapsed time. Keep it monotonic across the same finalization attempt and reserve **100% for verified durable completion**. If no trustworthy numeric progress is available, show an **indeterminate ring without a fake percentage**. No arbitrary percentages, timer-driven progress, or fixed waiting animation. When saves finish immediately, show Done directly or transition immediately; do not delay Home for marketing.
+- The indicator **may animate** from a center percentage to the checkmark with accessible reduced-motion fallback. Expose a meaningful progress value to assistive technology when known (for example, “Setup 50 percent complete”), and “Setup complete” when done; the success state and button must remain reachable with large fonts and screen readers on Android/iOS.
 - **Continue remains hidden/disabled until genuine completion.** Do not mark onboarding done until after confirmed durable local writes; preserve a safe idempotent resume if the app closes during finalization. Failure should allow retry without duplicated body-weight measurements or wiped profile data.
 - Returning verified users with completed onboarding **bypass** this first-run completion screen, including approved offline reopening. It must not require an artificial cloud call, any ratings/testimonials, cloud workout upload or a generated AI plan.
 
@@ -118,8 +118,8 @@ The provided `account_setup_providers.dart` contains `completeAccountSetup({Stri
 | ONB-08 | Fresh install/reinstall, lost-key, broken connection, partial profile, invalid DOB and optional blank phone |
 | ONB-09 | Cloud profile can be edited/deleted consistently with separate local-workout erase and account deletion contracts |
 | ONB-10 | iOS/Android keyboard, large text, screen reader, date/sex choice UX and meaningful errors after live implementation |
-| ONB-11 | After Goal, one centered progress circle and “Personalizing your experience…” transitions to centered done/checkmark and “You're all set!”; bottom Continue appears **only after** real required saves succeed, then opens Home |
-| ONB-12 | Final screen excludes testimonial cards, stars, ratings, promotional counts, carousels and copied branding; supports reduced motion, dynamic text, interruption/retry and no fake timed progress |
+| ONB-11 | After Goal, a centered progress ring shows a **centered real % when measurable** and “Personalizing your experience…”. At verified 100% it replaces % with centered done/checkmark and “You're all set!”; bottom Continue appears **only after** real required saves succeed, then opens Home |
+| ONB-12 | Final screen excludes testimonial cards, stars, ratings, promotional counts, carousels and copied branding; supports reduced motion, dynamic text, interruption/retry, accessible progress %, **indeterminate fallback when unmeasurable**, and no fake timed progress |
 
 Review evidence must distinguish **docs review** from runtime/server/native tests. Before Phase 1.2+ implementation, also satisfy [AUTH-01–14 and SEC-06](08-TEST-PLAN.md). No tests above have passed simply because they are written.
 
