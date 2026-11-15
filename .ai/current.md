@@ -4,8 +4,8 @@
 
 | Field | Value |
 |---|---|
-| Status | **Expo Go Codespaces auto-wake blocked by current GitHub access controls; no Codespace or token verified** |
-| Active Task | [Codespaces preview task](tasks/devex/local-20261115-expo-go-codespaces-preview.md) — [PR #18](https://github.com/im-tnyx/Tio-Workspace/pull/18) open; security gate pending |
+| Status | **Expo Go Codespaces preview PR in review; GitHub controls configured, token/Codespace/device pending** |
+| Active Task | [Codespaces preview task](tasks/devex/local-20261115-expo-go-codespaces-preview.md) — [PR #18](https://github.com/im-tnyx/Tio-Workspace/pull/18) open; exact-head re-review pending |
 | Active Scope / Owner | Dedicated `tnyx/expo-preview` branch, dev container, push-triggered wake/sync, and setup docs only |
 | Branch | `tnyx/expo-preview` |
 | Base / inspected `main` | `095c3edb4a7b1969598bc01162d66496febbf0c2` at task start; verify live state before review/merge |
@@ -28,7 +28,7 @@ Owner additionally requested **Platform, OS version, App build, Avatar, Plan** o
 
 ## Next safe action
 
-PR #18 has the accepted-SHA sync fix, but its secret boundary remains blocked: live GitHub inspection on 2026-11-15 found `im-tio` has push access and `main` protection/rulesets return `403` with an upgrade-to-Pro-or-public message. Existing environments have no branch restriction. Do not add `CODESPACES_TOKEN` until an enforceable `main` restriction and trusted workflow-write policy are verified. No token or Codespace was created here. After an authorized merge and the security gate, the owner can create the Codespace once and run `npx expo login` there using the same account as Expo Go; verify phone connectivity before claiming live preview.
+PR #18 has the accepted-SHA sync fix. With explicit owner approval, the repository is now public; the `main` approval/last-push/admin protection and exact-`main` policy on `expo-codespaces-trusted` are live-verified. The environment has no `CODESPACES_TOKEN`, and no Codespace was created. Review the latest PR head and resolve its security thread before a separately authorized merge. Then the owner adds the environment secret, creates one Codespace, runs `npx expo login` there with the Expo Go account, and verifies the phone connection.
 
 **Concurrent PR note:** PR #17 remains open and also changes this file to point at its commit-attribution task. This Codespaces task supersedes that pointer for the active conversation; the PR #17 owner must reconcile `.ai/current.md` before merging either PR. This task has not modified PR #17's branch.
 
