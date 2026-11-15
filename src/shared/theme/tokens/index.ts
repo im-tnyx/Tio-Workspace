@@ -13,8 +13,18 @@ export const radii = { sm: 10, md: 16, lg: 22, pill: 999 } as const;
 export const topBarSizes = {
   minHeight: 54,
   backTouchTarget: 48,
-  authBackIconFontSize: 32,
-  authBackIconLineHeight: 38,
+  // Visible arrow built from RN vector-like strokes rather than a font glyph.
+  // Android system fonts render the Unicode left-arrow at inconsistent sizes.
+  authBackIcon: {
+    size: 32,
+    stroke: 2.5,
+    shaftWidth: 26,
+    shaftX: 5,
+    shaftY: 15,
+    headSize: 16,
+    headX: 8,
+    headY: 8,
+  },
   authActionFontSize: 16,
   authActionFontWeight: '600' as const,
   authPressedOpacity: 0.65,

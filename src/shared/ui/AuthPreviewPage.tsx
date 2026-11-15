@@ -32,8 +32,8 @@ export function AuthPreviewPage({
   const { colors } = useAppearance();
   const { fontScale } = useWindowDimensions();
   const [keyboardVisible, setKeyboardVisible] = useState(() => Keyboard.isVisible());
-  // Visibility is owned by the early keyboard listener setup below.
-  // Android adjustResize supplies geometry; only iOS uses frame events.
+  // A single measured keyboard-top position owns footer clearance on BOTH
+  // platforms. Expo edge-to-edge Android may not shrink its route for IME.
   const rootRef = useRef<ViewInstance>(null);
   const [rootBottomY, setRootBottomY] = useState<number | null>(null);
   const [rootHeight, setRootHeight] = useState<number | null>(null);
@@ -60,10 +60,12 @@ export function AuthPreviewPage({
   const lastKeyboardTopY = useRef<number | null>(null);
 
   useLayoutEffect(() => {
-    const updateIosFrame = (screenY: number | null, event?: KeyboardEvent) => {
+    const updateKeyboardFrame = (screenY: number | null, event?: KeyboardEvent) => {
       if (lastKeyboardTopY.current === screenY) return;
       lastKeyboardTopY.current = screenY;
-      if (event) Keyboard.scheduleLayoutAnimation(event);
+      // Pre-animation layout synchronization is provided by iOS Will events.
+      // Android's only available events are DidShow/DidHide.
+      if (Platform.OS === 'ios' && event) Keyboard.scheduleLayoutAnimation(event);
       setKeyboardTopY(screenY);
       measureRootBottom();
     };
@@ -72,34 +74,36 @@ export function AuthPreviewPage({
     // before the auto-focused children are rendered, never in a passive effect.
     const didShow = Keyboard.addListener('keyboardDidShow', event => {
       setKeyboardVisible(true);
-      if (Platform.OS === 'ios') updateIosFrame(event.endCoordinates.screenY);
+      // Android edge-to-edge can keep the entire root underneath the IME.
+      // Move the absolute footer above it using the measured native frame.
+      updateKeyboardFrame(event.endCoordinates.screenY);
     });
     const didHide = Keyboard.addListener('keyboardDidHide', () => {
       setKeyboardVisible(false);
-      if (Platform.OS === 'ios') updateIosFrame(null);
+      updateKeyboardFrame(null);
     });
     // Only iOS supports pre-animation keyboard frame notifications.
     const willShow = Platform.OS === 'ios'
       ? Keyboard.addListener('keyboardWillShow', event => {
-        updateIosFrame(event.endCoordinates.screenY, event);
+        updateKeyboardFrame(event.endCoordinates.screenY, event);
       }) : null;
     const willChange = Platform.OS === 'ios'
       ? Keyboard.addListener('keyboardWillChangeFrame', event => {
-        updateIosFrame(event.endCoordinates.screenY, event);
+        updateKeyboardFrame(event.endCoordinates.screenY, event);
       }) : null;
     const willHide = Platform.OS === 'ios'
       ? Keyboard.addListener('keyboardWillHide', event => {
-        updateIosFrame(null, event);
+        updateKeyboardFrame(null, event);
       }) : null;
 
     // Reconcile a pre-existing keyboard, then permit initial TextInput mount.
     const readyFrame = requestAnimationFrame(() => {
       measureRootBottom();
       setKeyboardVisible(Keyboard.isVisible());
-      if (Platform.OS === 'ios') {
-        const currentMetrics = Keyboard.metrics();
-        if (currentMetrics) updateIosFrame(currentMetrics.screenY);
-      }
+      // Reconcile an already-open keyboard on BOTH platforms, not just iOS.
+      // This also recovers a missed Android DidShow event on navigation return.
+      const currentMetrics = Keyboard.metrics();
+      if (currentMetrics) updateKeyboardFrame(currentMetrics.screenY);
       setKeyboardListenersReady(true);
     });
     return () => {
@@ -109,9 +113,10 @@ export function AuthPreviewPage({
     };
   }, [measureRootBottom]);
 
-  // An iOS keyboard can resize the native-stack route before JS is notified.
-  // Compare keyboard screenY with the route's ACTUAL bottom. If the route has
-  // already shrunk to the keyboard edge, overlap is zero (no double-lifting).
+  // Compare the native keyboard top with this route's measured bottom on
+  // BOTH platforms. Android edge-to-edge needs a positive offset when the
+  // window stays full height; if native resize already occurred, overlap is
+  // zero and the footer is not lifted twice.
   const keyboardClearance = keyboardTopY === null || rootBottomY === null
     ? insets.bottom : keyboardOverlap(rootBottomY, keyboardTopY);
   const rawAvailableHeight = authAvailableHeight(

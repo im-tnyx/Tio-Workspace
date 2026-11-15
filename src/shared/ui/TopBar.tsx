@@ -13,6 +13,29 @@ type TopBarProps = {
   | { variant: 'auth'; title?: never; onBack: () => void; safeAreaTop: number }
 );
 
+// Stable-width 32dp/pt arrow composed of platform-independent RN strokes.
+// Keep the 48dp/pt button touch target and spoken Back label in TopBar.
+function BackArrowIcon({ color }: { color: string }) {
+  const icon = topBarSizes.authBackIcon;
+  return <View pointerEvents="none" accessible={false} style={{
+    width: icon.size, height: icon.size,
+  }}>
+    <View style={{
+      position: 'absolute',
+      left: icon.shaftX, top: icon.shaftY,
+      width: icon.shaftWidth, height: icon.stroke,
+      backgroundColor: color, borderRadius: radii.pill,
+    }} />
+    <View style={{
+      position: 'absolute',
+      left: icon.headX, top: icon.headY,
+      width: icon.headSize, height: icon.headSize,
+      borderLeftWidth: icon.stroke, borderTopWidth: icon.stroke,
+      borderColor: color, transform: [{ rotate: '-45deg' }],
+    }} />
+  </View>;
+}
+
 // One shared header with three visual contexts. The auth variant deliberately
 // remains plain, borderless and title-free; its large title belongs to the form.
 export function TopBar(props: TopBarProps) {
@@ -37,11 +60,7 @@ export function TopBar(props: TopBarProps) {
             alignSelf: 'flex-start', justifyContent: 'center',
             opacity: pressed ? topBarSizes.authPressedOpacity : 1,
           })}>
-          <Text accessibilityElementsHidden style={{
-            color: colors.text,
-            fontSize: topBarSizes.authBackIconFontSize,
-            lineHeight: topBarSizes.authBackIconLineHeight,
-          }}>{'←'}</Text>
+          <BackArrowIcon color={colors.text} />
         </Pressable>
         {props.actionLabel && props.onAction ? <Pressable
           onPress={props.onAction} accessibilityRole="button"

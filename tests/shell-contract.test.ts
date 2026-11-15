@@ -156,8 +156,13 @@ test('all implemented navigation headers share token-driven TopBar variants', ()
   assert.match(topBar, /actionLabel\?: string/);
   assert.doesNotMatch(topBar, /minHeight:\s*54\b/);
   assert.doesNotMatch(auth, /minHeight:\s*(?:insets\.top\s*\+\s*)?54\b/);
-  // Preserve the plain icon-only auth header; no native/default or Glass card.
-  assert.match(topBar, /\{'←'\}/);
+  // Preserve plain icon-only auth header, but remove platform-dependent glyph.
+  assert.match(topBar, /<BackArrowIcon color=\{colors\.text\} \/>/);
+  assert.match(topBar, /function BackArrowIcon\(/);
+  assert.doesNotMatch(topBar, /\{'←'\}/);
+  assert.equal(topBarSizes.authBackIcon.size, 32);
+  assert.equal(topBarSizes.authBackIcon.stroke, 2.5);
+  assert.match(topBar, /width: icon\.size, height: icon\.size/);
   assert.match(topBar, /<SurfaceMaterial/);
   assert.match(auth, /keyboardOverlap\(rootBottomY, keyboardTopY\)/);
   assert.doesNotMatch(auth, /<ScrollView|KeyboardAvoidingView/);
@@ -210,6 +215,23 @@ test('post-Welcome auth uses persistent parent header and CTA, middle-only step 
   assert.doesNotMatch(middle, /\{footerNotice\}/);
   assert.match(controller, /footerDisabled=\{!canContinueAuthPreview/);
   assert.match(welcome, /actionPlacement="bottom"/);
+});
+
+test('Android edge-to-edge keyboard position lifts the auth footer without double offset', () => {
+  const page = readFileSync('src/shared/ui/AuthPreviewPage.tsx', 'utf8');
+
+  // A full-height edge-to-edge Android route extends UNDER the IME.
+  assert.equal(keyboardOverlap(850, 555), 295);
+  // The same route might instead have been resized by Android's window.
+  assert.equal(keyboardOverlap(555, 555), 0);
+  assert.equal(keyboardOverlap(690, 555), 135);
+  // On Android DidShow now updates the actual footer position, not merely
+  // the Hide keyboard visibility flag.
+  assert.match(page, /const didShow = Keyboard\.addListener\('keyboardDidShow', event => \{\s*setKeyboardVisible\(true\);[\s\S]*?updateKeyboardFrame\(event\.endCoordinates\.screenY\);/);
+  assert.match(page, /const didHide = Keyboard\.addListener\('keyboardDidHide', \(\) => \{\s*setKeyboardVisible\(false\);\s*updateKeyboardFrame\(null\);/);
+  assert.match(page, /const currentMetrics = Keyboard\.metrics\(\);\s*if \(currentMetrics\) updateKeyboardFrame\(currentMetrics\.screenY\);/);
+  assert.match(page, /bottom: keyboardClearance \+ spacing\.lg/);
+  assert.doesNotMatch(page, /if \(Platform\.OS === 'ios'\) updateKeyboardFrame/);
 });
 
 test('Android registers keyboard visibility listeners before initial autoFocus', () => {
