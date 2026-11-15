@@ -42,7 +42,7 @@
 
 - Manual workflow input is the PR number; GitHub does not provide a dynamic open-PR dropdown for `workflow_dispatch`.
 - Only open PRs from this repository targeting `main` may run. The workflow checks and checks out the exact PR head SHA.
-- Only the repository owner `im-tnyx` may dispatch it, and it accepts only owner-authored PRs; the job uses the `eas-preview` GitHub Environment secret scope.
+- The first job step stops execution unless `github.actor` is `im-tnyx`; this runtime guard does not establish owner-only `workflow_dispatch` permission. The workflow also accepts only open owner-authored PRs and uses the `eas-preview` GitHub Environment secret scope. Repository-level dispatch permissions were not independently verified.
 - Checkout fetches full history and explicitly fetches the immutable design-token baseline SHA because its original feature branch was deleted; the baseline itself is not changed.
 - Updates go to EAS branch/channel `pr-preview`. This workflow has no production publish option.
 - `EXPO_TOKEN` is read from the `eas-preview` GitHub Environment secret. It is never stored in source.
@@ -79,7 +79,7 @@
 - `git diff --check` and `git show --check` — passed on the implementation changes before merge.
 - `npm run verify` — passed locally after fetching the immutable baseline SHA; 22 contract tests passed. Native builds and EAS build/update were not run.
 - OTA-compatibility fix: both workflow YAML files and `app.json` parse successfully; `git diff --check` passed; `npm run verify` passed (token self-test, baseline token guard, TypeScript, ESLint, and 22 tests). GitHub checks passed on code head `50f153a2b228ee1fb069784097d2fbbeb8ee6cde`: [run 43732234787](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43732234787).
-- Manual GitHub workflow has not run; it is not available from `main` until merge. The `eas-preview` environment and `EXPO_TOKEN` secret name are confirmed in GitHub UI; secret value was not inspected. The repository UI did not expose required-reviewer protection, so workflow dispatch and PR author are restricted to `im-tnyx`.
+- The manual GitHub workflow was not run during this task. It became available on `main` after PR #15 merged; no EAS build or OTA update was run. The `eas-preview` environment and `EXPO_TOKEN` secret name are confirmed in GitHub UI; secret value was not inspected. The repository UI did not expose required-reviewer protection. The runtime actor guard and owner-authored PR check are documented above; repository-level dispatch permissions were not independently verified.
 - Expo dashboard credential readiness was checked read-only: Android signing credential exists for `com.tnyx.tio`; iOS signing is not configured. Android `build_preview` can use the EAS-managed credential. iOS/all builds remain unavailable until their signing credentials are configured. No build was started during this check.
 - `.gitignore` patterns cover Expo local state, generated APK/AAB/IPA files, and common local signing credential formats; tracked source and EAS project config remain included.
 - The lockfile includes the SDK-matched `expo-updates` dependency so the repository's existing `npm ci` check remains reproducible.
