@@ -7,7 +7,7 @@
 - AI assistance does not grant Git authorship or co-authorship. Record **Implementation owner**, **Previous agent**, **Last commit agent**, handoff and observed SHAs only in `.ai/tasks/`, not in Git `Co-Authored-By` or AI self-credit messages.
 - Do not add AI/model/vendor `Co-Authored-By`, AI `Signed-off-by`, `Assisted-by`, `Generated with/by`, `AI-assisted`, or equivalent attribution in commit bodies, squash messages, PR text or release notes. Legitimate human authors, co-authors and compliance sign-offs remain valid.
 - Do not impersonate a human author or rewrite already published `main` history. Agents cannot approve their own exceptions, disable the checker, remove a required check, or bypass branch rules.
-- The scanner detects known explicit AI identities, bot mailboxes, and credit footers, with false-positive fixtures for real humans. It cannot reliably classify every invented or ambiguous identity; human review remains necessary.
+- The scanner detects known explicit AI identities, precise provider/model-plus-role bot names, bot mailboxes, and credit footers including trailing punctuation, with false-positive fixtures for real humans. It cannot reliably classify every invented or ambiguous identity; human review remains necessary.
 
 ## Files and behavior
 

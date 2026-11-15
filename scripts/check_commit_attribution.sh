@@ -106,15 +106,23 @@ is_ai_domain() {
 }
 
 is_ai_name() {
-  local name_lc="$1" n
+  local name_lc="$1" n role_base
   for n in "${ai_names[@]}"; do
     if [ "$name_lc" = "$n" ]; then
       return 0
     fi
   done
-  # Explicit AI provider/model plus automation role, not employer affiliation.
-  if [[ "$name_lc" =~ ^(github[[:space:]]+copilot|copilot|chatgpt|openai[[:space:]]+codex|codex|google[[:space:]]+gemini|gemini|grok|deepseek|cursor|claude[[:space:]]+code)[[:space:]]+(bot|assistant|agent|model|automation)$ ]]; then
-    return 0
+  # Any exact known AI model/provider display identity with an explicit
+  # automation role is a bot credit even on a generic mail domain. Match the
+  # WHOLE base against the curated list, not broad vendor-name substrings:
+  # Anthropic Bot / OpenAI Assistant fail; Claude Dupont still passes.
+  if [[ "$name_lc" =~ ^(.+)[[:space:]]+(bot|assistant|agent|model|automation)$ ]]; then
+    role_base="${BASH_REMATCH[1]}"
+    for n in "${ai_names[@]}"; do
+      if [ "$role_base" = "$n" ]; then
+        return 0
+      fi
+    done
   fi
   # Detect versioned model names without blocking humans named Claude Dupont.
   if [[ "$name_lc" =~ ^claude[[:space:]]+(code|opus|sonnet|haiku)([[:space:]].*)?$ ]] ||
@@ -153,11 +161,17 @@ has_ai_words() {
   [[ "$v" =~ (^|[^[:alnum:]_])(anthropic|claude|openai|chatgpt|codex|copilot|gemini|grok|deepseek|cursor([[:space:]-]+agent)?|devin[[:space:]-]*ai|ai([[:space:]-]+agent)?|gpt[-[:digit:]]+[[:alnum:].-]*|llm)($|[^[:alnum:]_]) ]]
 }
 
+# Ignore harmless edge punctuation in credit identities, not inside model
+# version numbers. A human called Claude Dupont. is still a human.
+normalize_credit_name() {
+  printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:].!?;,]*$//'
+}
 # Identical, precise attribution classification for human-readable credits
 # and actual Git author/committer metadata. A vendor employment domain alone
 # is not an AI identity; a known bot mailbox at that domain is.
 is_prohibited_identity() {
   local person_name="$1" email="$2" domain=""
+  person_name="$(normalize_credit_name "$person_name")"
   if [ -n "$person_name" ] && is_ai_name "$(to_lower "$person_name")"; then
     return 0
   fi
@@ -174,7 +188,7 @@ is_prohibited_identity() {
 # Explicit model identities, NOT real first-name matches, for email-free credit.
 is_explicit_ai_credit_value() {
   local value_lc markdown_regex
-  value_lc="$(to_lower "$1")"
+  value_lc="$(to_lower "$(normalize_credit_name "$1")")"
   if is_ai_name "$value_lc"; then return 0; fi
   if [[ "$value_lc" =~ ^(ai|llm|artificial[[:space:]]+intelligence)([[:space:]]+(assistant|agent|bot|model|system|tool|tooling))?$ ]]; then return 0; fi
   markdown_regex='^\[([^][]+)\]\([^)]+\)$'
