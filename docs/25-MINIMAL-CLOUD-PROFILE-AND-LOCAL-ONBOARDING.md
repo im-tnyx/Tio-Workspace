@@ -1,7 +1,9 @@
 # 🧾 Proposed ADR-019 — Minimal cloud profile and local fitness onboarding
 
-**Status:** Proposal for owner review — requested field/screen order recorded on 2026-11-15; **not an accepted migration or implementation authorization**  
-**Scope:** Phase 1.2+ Auth/profile specification and later local onboarding contract  
+**Status:** Proposal for owner review — requested field/screen order recorded on 2026-11-15; **not an accepted migration or implementation authorization**
+
+**Scope:** Phase 1.2+ Auth/profile specification and later local onboarding contract
+
 **Project:** Tio Workspace / Supabase Tio-Tnyx (`bsfwzvgynwriswapxpsp`)
 
 [← Docs hub](00-INDEX.md) · [Decision register](09-DECISIONS.md) · [Auth & security](04-AUTH-AND-SECURITY.md) · [Local data model](03-LOCAL-DATA-MODEL.md) · [Readiness gate](21-PHASE-1-READINESS.md)
