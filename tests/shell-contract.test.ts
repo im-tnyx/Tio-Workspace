@@ -303,7 +303,7 @@ test('auth form adapts to measured keyboard space without scrolling or clipping 
   // The floating absolute footer cannot paint over the active input with
   // maximum Dynamic Type; reserve its height without adding normal scrolling.
   assert.match(page, /paddingBottom: keyboardVisible && footerHeight !== null/);
-  assert.match(page, /footerHeight \+ keyboardClearance \+ spacing\.lg : 0/);
+  assert.match(page, /footerHeight \+ keyboardClearance \+ spacing\.lg : undefined/);
   assert.match(page, /overflow: keyboardVisible \? 'hidden' : 'visible'/);
   // The abbreviated warning is sticky until keyboard hide (avoids the
   // collapse-expand feedback loop), but is fully spoken by screen readers.

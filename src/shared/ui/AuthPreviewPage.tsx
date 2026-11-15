@@ -170,7 +170,7 @@ export function AuthPreviewPage({
       flex: 1, minHeight: 0, paddingHorizontal: spacing.lg,
       paddingTop: formTopPadding,
       paddingBottom: keyboardVisible && footerHeight !== null
-        ? footerHeight + keyboardClearance + spacing.lg : 0,
+        ? footerHeight + keyboardClearance + spacing.lg : undefined,
       overflow: keyboardVisible ? 'hidden' : 'visible',
     }}>
       <AuthAvailableHeightContext.Provider value={availableHeight}>
