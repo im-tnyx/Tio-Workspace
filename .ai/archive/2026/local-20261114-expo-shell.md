@@ -2,11 +2,11 @@
 
 | Field | Value |
 |---|---|
-| Status | In Progress — PR review required |
+| Status | **Complete — PR #11 merged 2026-11-15; remaining native QA tracked separately** |
 | Objective | A reviewable, limited Expo/TypeScript skeleton with neutral appearance, root/nested navigation, reusable presentational components, dummy screens and CI |
 | Implementation owner | Authorized Phase 1.1 implementation session, connected GitHub `im-tnyx` |
 | Previous agent | None for this slice |
-| Last commit agent | Current implementation owner; resolve commit SHA from live branch before handoff |
+| Last reviewed head / merge | `e3fa54a9dc6339ba70ddc4f825646d2fbcd09246` / `326f7af888ae78d5a551d8607386740912f4be75` |
 | Tracking / approval | Explicit owner-written 2026-11-14 chat permission; Phase 0 docs merged PR #10; readiness issue #2 |
 | Branch | `feat/phase1-1-expo-shell-20261114` |
 | Base SHA | `49438b50e3078b89fad3a9f086b9b93d8c635690` |
@@ -37,19 +37,24 @@ Official Expo SDK 58, Expo Router and Expo Blur docs checked on 2026-11-14. Foll
 
 ## Validation & review status
 
-- **Static/local test evidence:** record actual commands or explicitly mark unrun in PR. The local execution environment cannot fetch npm registry packages; npm lockfile generated and committed via GitHub Actions; `npm ci` is used for deterministic install, but no reproducible native release build is claimed.
-- **Review requested:** independent Codex review on actual PR HEAD after implementation.
-- **Merge authorization:** not granted. No deployment.
+- **Verified exact PR-head CI:** GitHub Actions [run 43693426933](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43693426933) succeeded on `e3fa54a9dc6339ba70ddc4f825646d2fbcd09246`: locked install, Expo compatibility, design tokens, TypeScript, ESLint and Node shell tests.
+- **Recorded independent review:** `im-tio` GitHub `APPROVED` on 2026-11-15 08:31:35 UTC; all 15/15 review threads resolved before merge. Codex comments were feedback, not substitute formal approval.
+- **Owner-authorized merge:** PR #11 squash merged on 2026-11-15 08:34:49 UTC to `main` at `326f7af888ae78d5a551d8607386740912f4be75`. No deployment or release.
+- **Evidence limit:** no independently observed new post-merge CI for squash SHA; owner Android visual QA is not a complete native iOS/Android interaction pass.
 
 ## Handoff
 
-**Next owner:** repository owner for PR review and separate merge approval.
-**Next authorized action:** validate/review this bounded shell PR only; no additional feature slice without separate owner approval.
-**Post-merge sync/archive:** yes, only after owner-authorized merge.
+**Next owner:** repository owner for the separate post-merge documentation PR and future scoped approvals.
+**Next authorized action:** review post-merge documentation; separately decide the proposed minimal-profile/onboarding ADR. No Phase 1.2 implementation approval is inferred.
+**Post-merge sync/archive:** verified merged state recorded here; moved to `.ai/archive/2026/` through a dedicated documentation PR.
 
-[Task template](../TEMPLATE.md) · [Readiness](../../../docs/21-PHASE-1-READINESS.md)
+[Task template](../../tasks/TEMPLATE.md) · [Readiness](../../../docs/21-PHASE-1-READINESS.md)
 
-## Owner screenshot correction / agent handoff (2026-11-15)
+## Historical in-PR progress notes (2026-11-15)
+
+> Notes below preserve earlier PR states and TODOs as they existed at their dates. For final merge/CI/review evidence use the completed status and archival checkpoint above/below.
+
+### Owner screenshot correction / agent handoff (2026-11-15)
 
 - Owner authorized bounded Phase 1.1 UI fixes to the auth footer, Email to Password motion and review-related Android system Back; no scrolling and no other phase.
 - Agent: ChatGPT GitHub connector implementation session on PR #11. Modified AuthPreviewPage, AuthPreviewFlow, static tests, Phase 1.1 guide and this record in a single Git commit; use live branch SHA as ground truth.
@@ -137,3 +142,12 @@ Official Expo SDK 58, Expo Router and Expo Blur docs checked on 2026-11-14. Foll
 ## Android regular-width IME auto-closes regression report and isolation (2026-11-15)
 
 - Owner reports larger Android keyboard opens then closes after max-font compact safety-notice patch, while small 320×568 max-font screenshot looks correct. React app has no automatic `Keyboard.dismiss` call: only explicit press/flow callbacks use it. Scope remediation: tokenize extreme compact maximum viewport width (340dp); only capture full footer baseline and show compact warning/input-space clipping below that threshold. Regular-width Android's keyboard-open render/measurement path is unchanged from earlier working commit. Unit contracts cover width and IME cases. Source-level, not yet native-confirmed; verify exact-head CI, both affected devices, im-tio review. No merge/Supabase/native configuration changes.
+
+## Post-merge archival checkpoint (2026-11-15)
+
+- **PR/merge:** [#11](https://github.com/im-tnyx/Tio-Workspace/pull/11) merged to `main` as `326f7af888ae78d5a551d8607386740912f4be75`; old shell task is complete, not active.
+- **Review/threads:** formal independent `APPROVED` by `im-tio` at 08:31:35 UTC; 15/15 review threads resolved; distinct owner 'go merge' was recorded before merge.
+- **Static evidence:** successful [exact PR-head GitHub Actions run](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43693426933); no post-merge native build or independently repeated workflow on squash SHA claimed.
+- **Carry-forward risk:** mock-auth UX only; owner Android small-phone/QWERTY visual acceptance does **not** prove compact iOS, screen readers, maximal accessibility interactions, keyboard/focus, enabled CTA or OTP/password/recovery transitions.
+- **Release boundary:** real Supabase Auth, OTP, local SQLite/SQLCipher, remote profiles, AI, cloud backup/sync, EAS deployment and app-store release were **not part** of Phase 1.1.
+- **Tracking:** post-merge docs are reconciled in a separate PR. Future Phase 1.2 Auth and private-profile/onboarding architecture require explicit additional scope/privacy decisions.

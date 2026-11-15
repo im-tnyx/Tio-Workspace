@@ -3,14 +3,14 @@
 # 📚 Tnyx App · Tio Workspace Documentation
 **One map for the product vision, technical boundaries and engineering workflow.**
 
-![Documentation](https://img.shields.io/badge/STAGE-PLANNING-6D5EF8?style=flat-square)
+![Documentation](https://img.shields.io/badge/STAGE-PHASE%201.1%20MOCK%20SHELL%20MERGED-6D5EF8?style=flat-square)
 
 [🏠 Home](../README.md) · [🎨 Design](../DESIGN.md) · [🤖 Agent rules](../AGENTS.md) · [🧠 AI Context](../.ai/README.md) · [🤝 Contribute](../CONTRIBUTING.md)
 
 </div>
 
 > [!IMPORTANT]
-> Everything here is a **design proposal** unless explicitly marked otherwise. No executable mobile app or production infrastructure has been created.
+> Approved decisions and proposals are labeled separately. **Phase 1.1 Expo mock UI shell exists** on `main` after [PR #11](https://github.com/im-tnyx/Tio-Workspace/pull/11) merged on 2026-11-15; it is not a functional Auth/workout app or published product, and does not imply any production infrastructure.
 
 ## 🧭 Choose your path
 
@@ -55,7 +55,7 @@
 | 21 | [Phase 1 readiness](21-PHASE-1-READINESS.md) | Documented go/no-go for future implementation |
 | 22 | [Phase 0 design & Phase 1 owner approval](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) | Proposed visual freeze, deferred risks and explicit sign-off template |
 | 23 | [Input limits, OTP & deferred membership](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md) | Proposed numeric caps, approved verified-signup and membership deferment policy |
-| 24 | [Phase 1.1 shell implementation guide](24-PHASE-1-1-SHELL.md) | Approved shell-only scope, out-of-scope boundaries, validation plan and review status |
+| 24 | [Phase 1.1 shell implementation guide](24-PHASE-1-1-SHELL.md) | Merged mock shell, PR-head CI/review evidence, remaining native QA and out-of-scope features |
 
 ## 🔁 How documents stay reliable
 

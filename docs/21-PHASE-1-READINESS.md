@@ -3,14 +3,14 @@
 # 🚦 Phase 1 · Implementation Readiness Gate
 **A written approval checklist for starting Expo development later.**
 
-![Gate](https://img.shields.io/badge/PHASE%201-NOT%20AUTHORIZED-334155?style=flat-square)
+![Gate](https://img.shields.io/badge/PHASE%201.1-MOCK%20SHELL%20MERGED-334155?style=flat-square)
 
 [← Docs hub](00-INDEX.md) · [🧭 Decision pack](17-PHASE-0-DECISION-PACK.md) · [🗺 Roadmap](06-ROADMAP.md)
 
 </div>
 
 > [!IMPORTANT]
-> **This is a readiness checklist, not an implementation task.** Completing/merging this document does not authorize writing application code, generating secrets or deploying Supabase.
+> **This is a readiness checklist, not an implementation task.** Phase 1.1 mock shell was separately owner-authorized and merged via [PR #11](https://github.com/im-tnyx/Tio-Workspace/pull/11) on 2026-11-15. This document does **not** authorize Phase 1.2 Auth, local storage, Supabase schema, secrets or deployment.
 
 **Owner-facing approval draft:** use the [Phase 0 design and Phase 1 sign-off pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) for the owner-selected initially four-tab **config-driven Standard layout**, future Pill option and Glass/Solid × Light/Dark shared shell (ADR-015), exact remaining decisions and narrower **Phase 1.1 shell-only** scope. No owner has approved that scope by merely requesting this document; the matrix below remains pending where marked.
 
@@ -30,7 +30,7 @@
 | OS-managed backup privacy | Android legacy/12+ cloud/device-transfer and iOS native exclusions, plus stale-key fail-closed recovery | ⬜ Native validation pending (`SEC-04/05`) |
 | Backup | **ADR-012 optional backup OFF by default** and cleared-data empty/restore UX selected; portable secret required. Providers, encryption implementation, auto timing and restore proofs deferred to later phase | ✅ UX policy recorded; future tests pending |
 | Tests | Password 8–64, optional username 3–16, program/routine names 3–25 graphemes and count max 50/30, sets 1–8 and deferred member-only custom exercises max 50 selected; OTP targets approved, **provider/server feasibility unverified** | ⬜ Runtime evidence pending |
-| Owner authorization | Explicit written approval for Phase 1 implementation | ⬜ Pending |
+| Owner authorization | Explicit approval for each bounded Phase 1 slice | ✅ Phase 1.1 approved and merged; ⬜ Phase 1.2+ pending |
 
 **ADR-017 refined scope:** Phase 1.1 is shell placeholders only; Phase 1.2 separately implements verified email OTP with selected server-enforced targets and **no CAPTCHA**. Phase 1.4–1.6 implement **count-based program/routine/exercise/sets caps** with free curated Library, **no functional Create Custom Exercise UI or membership gate**. Later approved membership enables max 50 custom exercises/member and separately gated paid Sync; app lock, billing and paywall are deferred. All native/provider tests pending.
 
@@ -40,7 +40,7 @@
 
 | Slice | Deliverable | Exit evidence |
 |---|---|---|
-| 1.1 | Expo TypeScript app shell, routing/theme, basic CI | Physical device starts shell, test command documented |
+| 1.1 | **Mock Expo TypeScript shell merged in PR #11** (no real Auth/data) | PR-head CI passed; full native accessibility/interaction QA and release verification still pending |
 | 1.2 | Auth sign-up/sign-in/forgot password; secure persistence adapter | Correct persistent login and offline session flows |
 | 1.3 | Single-bound-account encrypted SQLite + **owner-selected Drizzle migration tooling** (after Phase 1 authorization) | `PRAGMA cipher_version` native verification, offline migration, failure recovery and blocked-second-account tests |
 | 1.4 | Exercise library and plan editor | Local creation/edit/restart works without network |
@@ -90,7 +90,7 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 
 **Owner future-business choice (ADR-014/017):** **Membership/paywall is postponed until after the core workout MVP is complete**. Full supported workout-data Supabase Sync is a later **opt-in paid membership** feature, not in Phase 1. Membership does not by itself authorize workout uploads; local logging and optional Personal Backup remain available without paid Sync. Billing/entitlement/security/retention remain pending.
 
-**Current Phase 1 authorization:** None recorded in this document. **Phase 0 owner decisions:** ADR-010 selected the database stack; ADR-011 selected email/password, single-account/no-switch policy, offline access risk, retained logout data and MVP functional scope; ADR-012 selected future optional personal backup and manual restore UX; ADR-013 selected exclusive cloud modes and future auto-hydration for previously enabled authorized Sync; ADR-014 selected optional paid membership **plus independent consent** for future full-workout server Sync (2026-11-14). These approve policy only, **not** code, billing, native key/erase, migration, backend or deployment.
+**Current Phase 1 authorization:** Phase 1.1 shell was separately authorized and merged in [PR #11](https://github.com/im-tnyx/Tio-Workspace/pull/11). **All further implementation slices remain unauthorized** pending distinct owner approval. **Phase 0 owner decisions:** ADR-010 selected the database stack; ADR-011 selected email/password, single-account/no-switch policy, offline access risk, retained logout data and MVP functional scope; ADR-012 selected future optional personal backup and manual restore UX; ADR-013 selected exclusive cloud modes and future auto-hydration for previously enabled authorized Sync; ADR-014 selected optional paid membership **plus independent consent** for future full-workout server Sync (2026-11-14). These approve policy only, **not** code, billing, native key/erase, migration, backend or deployment.
 
 ## 05 · Go/no-go
 

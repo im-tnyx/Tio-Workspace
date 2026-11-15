@@ -8,23 +8,23 @@
 </div>
 
 > [!NOTE]
-> **Document status:** Planning / proposed specification. Product implementation has not started.
+> **Status (2026-11-15):** Phase 1.1 mock UI shell merged via [PR #11](https://github.com/im-tnyx/Tio-Workspace/pull/11); real Auth, local workout data and feature implementation have not started.
 
 ---
 
-**Current phase:** Planning. No estimate, release date or deployed feature is committed.
+**Current phase:** Phase 1.1 mock Expo UI shell merged. Product/phase decisions continue; no real authentication, persistent workout storage, deployment or release exists.
 
-## Phase 0 — Planning and decisions (CURRENT)
+## Phase 0 — Planning and decisions (OPEN FOLLOW-UPS)
 - [x] Establish repository with README and separate planning documents.
 - [x] Define local-first contract, account persistence and no default workout upload.
 - [x] Prepare [structured Phase 0 review pack](17-PHASE-0-DECISION-PACK.md), [offline session flow](18-OFFLINE-SESSION-STATE-MACHINE.md), [backup recovery plan](19-BACKUP-RECOVERY-STRATEGY.md) and [MVP UX draft](20-MVP-UX-FLOWS.md) (**proposals only**).
 - [ ] Review remaining open decisions in `09-DECISIONS.md`; owner-selected email login, single-account lifecycle, offline cached policy, encryption/recovery principles and MVP scope are now recorded.
 - [x] Owner confirmed functional MVP scope and the single-account/offline/privacy principles (2026-11-14). **Native security validation, detailed recovery UX and visual sign-off are still pending**.
 - [ ] Agree on design style and decide platform/dev-build requirements.
-**Exit:** Product and technical plan accepted and [Phase 1 readiness gate](21-PHASE-1-READINESS.md) signed off; only then start app development.
+**Exit:** Each further implementation slice needs owner-approved scope and its applicable [Phase 1 readiness/security gates](21-PHASE-1-READINESS.md). Phase 1.1 mock-shell approval did not authorize later slices.
 
-## Phase 1 — Foundational offline MVP (NEXT, NOT STARTED)
-- [ ] Expo TypeScript project, routing, navigation, lint/test tooling.
+## Phase 1 — Foundational offline MVP (1.1 MOCK SHELL MERGED; OTHERS NOT STARTED)
+- [x] **Phase 1.1** Expo TypeScript mock-shell, routing, navigation and lint/test tooling — [merged PR #11](https://github.com/im-tnyx/Tio-Workspace/pull/11); native QA remains incomplete.
 - [ ] Supabase Auth: signup/login/logout/forgot password, verified identity and persistent session.
 - [ ] Initial offline session gate and **single-account installation binding**; no add-account or switch-account flow.
 - [ ] SQLite schema/migrations, repository layer, SQLCipher/native build checks.

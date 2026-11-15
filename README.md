@@ -9,14 +9,14 @@ Your account stays signed in. Your workout history stays on your device.
 
 <br />
 
-![Project stage](https://img.shields.io/badge/PROJECT-PLANNING%20ONLY-6D5EF8?style=for-the-badge)
+![Project stage](https://img.shields.io/badge/PROJECT-PHASE%201.1%20MOCK%20SHELL%20MERGED-6D5EF8?style=for-the-badge)
 ![Architecture](https://img.shields.io/badge/ARCHITECTURE-LOCAL--FIRST-13B89A?style=for-the-badge)
 ![Platforms](https://img.shields.io/badge/PLATFORMS-iOS%20%2B%20Android-334155?style=for-the-badge)
 
 **Owner-selected app display name:** **Tnyx** (2026-11-14). The existing repository is still `im-tnyx/Tio-Workspace`; GitHub paths and versioned backup format names are not renamed. Android application ID and iOS bundle ID are owner-selected as `com.tnyx.tio` (registration/ownership unverified); logo/icon remains pending.
 
-![React Native](https://img.shields.io/badge/React_Native-Planned-20232A?style=flat-square&logo=react&logoColor=61DAFB)
-![Expo](https://img.shields.io/badge/Expo-Planned-111827?style=flat-square&logo=expo&logoColor=white)
+![React Native](https://img.shields.io/badge/React_Native-UI_Shell_Merged-20232A?style=flat-square&logo=react&logoColor=61DAFB)
+![Expo](https://img.shields.io/badge/Expo-UI_Shell_Merged-111827?style=flat-square&logo=expo&logoColor=white)
 ![SQLite](https://img.shields.io/badge/SQLite-Local_Data-003B57?style=flat-square&logo=sqlite&logoColor=white)
 ![Supabase](https://img.shields.io/badge/Supabase-Auth_%26_Edge_Functions-3ECF8E?style=flat-square&logo=supabase&logoColor=white)
 
@@ -27,7 +27,7 @@ Your account stays signed in. Your workout history stays on your device.
 ---
 
 > [!IMPORTANT]
-> **Documentation-first project.** This repository currently specifies a product; it does **not** yet contain a working Expo app, configured Supabase project, cloud backup, AI integration or published release. Badges describe the **planned** stack, not implemented capabilities.
+> **Current state (2026-11-15):** The Expo/React Native **Phase 1.1 mock UI shell** is committed and merged via [PR #11](https://github.com/im-tnyx/Tio-Workspace/pull/11). Welcome/Auth preview, four-tab shell and static checks exist, but **there is no functional Signup/Login/OTP, persisted authenticated session, encrypted workout database, backup/sync, AI endpoint, published mobile release or deployed app backend**. A Supabase project may exist separately; it is not an app Auth/profile integration. Badges distinguish merged UI scaffolding from planned features.
 
 ## ✨ The idea
 
@@ -89,9 +89,9 @@ Choose the level you need. All specifications are **proposals** until reviewed a
 | [🧪 Acceptance tests](docs/08-TEST-PLAN.md) | [🧠 AI/API contracts](docs/07-API-CONTRACTS.md) | [📝 Decisions / ADRs](docs/09-DECISIONS.md) |
 | [🧱 Repository structure](docs/10-REPOSITORY-STRUCTURE.md) | [🧯 Threat model](docs/14-THREAT-MODEL.md) | [✍️ Documentation standards](docs/13-DOCUMENTATION-STANDARDS.md) |
 
-## 🧭 Before implementation: owner review
+## 🧭 Before the next functional implementation slice: owner review
 
-Start with the **[Phase 0 Decision Review Pack](docs/17-PHASE-0-DECISION-PACK.md)**. It links the [offline session state machine](docs/18-OFFLINE-SESSION-STATE-MACHINE.md), [backup recovery strategy](docs/19-BACKUP-RECOVERY-STRATEGY.md), [MVP screen flows](docs/20-MVP-UX-FLOWS.md) and [Phase 1 readiness gate](docs/21-PHASE-1-READINESS.md). Some technology and single-account/MVP policy decisions are now **owner-approved**, while native security verification and other Phase 0 questions remain open. The documents do not authorize app code.
+Start with the **[Phase 0 Decision Review Pack](docs/17-PHASE-0-DECISION-PACK.md)**. It links the [offline session state machine](docs/18-OFFLINE-SESSION-STATE-MACHINE.md), [backup recovery strategy](docs/19-BACKUP-RECOVERY-STRATEGY.md), [MVP screen flows](docs/20-MVP-UX-FLOWS.md) and [Phase 1 readiness gate](docs/21-PHASE-1-READINESS.md). Some technology and single-account/MVP policy decisions are now **owner-approved**, while native security verification and other Phase 0 questions remain open. These documents do not authorize additional functional app code beyond the separately approved and merged Phase 1.1 mock shell.
 
 ## 🤖 Agent-ready context
 
@@ -102,27 +102,31 @@ Tio Workspace uses a compact [§.ai/§ context system](.ai/README.md), adapted f
 | Capability | Scope | State |
 | :--- | :--- | :--- |
 | Product requirements, architecture, documents | Phase 0 | 🟢 **Documented — review pending** |
-| Signup, persistent login, local workouts | Phase 1 | ⚪ **Not started** |
+| Expo UI shell, mock Auth and static CI | Phase 1.1 | 🟢 **Merged PR #11 — no real Auth/data** |
+| Signup, OTP, persistent login | Phase 1.2 | ⚪ **Not started; not authorized** |
+| Encrypted local workouts and progress | Phase 1.3–1.6 | ⚪ **Not started; not authorized** |
 | AI workout plan generation via Edge Function | Phase 2 | ⚪ **Not started** |
 | Encrypted personal cloud backup + restore | Phase 3 | ⚪ **Not started** |
 | Optional Supabase cloud sync | Phase 4 | ⚪ **Future only** |
 
 > **Design principle:** Offline-first is an application constraint, not merely a caching option. Screens read and write local data first. Cloud components must be added only behind explicit boundaries and consent.
 
-## 🗂 Planned application architecture
+## 🗂 Current shell architecture
 
 ```text
 Tio-Workspace/
-├─ README.md                # Visual project landing page
-├─ DESIGN.md                # UI + documentation visual language
-├─ AGENTS.md                # Agent/contributor guardrails
-├─ CONTRIBUTING.md          # Branch → PR → review → merge
-├─ SECURITY.md              # Secure disclosure and secret handling
-├─ docs/                    # Product, system, roadmap, process specs
-└─ .github/                 # PR and issue templates
+├─ src/app/                 # Expo Router mock routes and root/tab layouts
+├─ src/features/            # Mock feature screens (no workout CRUD)
+├─ src/shared/              # Reusable UI, i18n and appearance tokens
+├─ src/bootstrap/           # Development-only preview gate and tab registry
+├─ tests/                   # Pure shell contract tests
+├─ scripts/                 # Design-token checks
+├─ .github/workflows/       # PR/push static shell CI
+├─ docs/                    # Product/phase/security specifications
+├─ .ai/                     # Agent context and archived task records
+└─ AGENTS.md                # Owner authorization and safety contract
 
-# Later, only after approval:
-# src/ · assets/ · supabase/ · tests/
+# Real Auth, secure workout DB, AI, backup and sync are later approved slices.
 ```
 
 ## 🔄 The way we work
@@ -155,8 +159,8 @@ Want to propose a change? Use the [issue templates](.github/ISSUE_TEMPLATE/) and
 
 <div align="center">
 
-<sub>Built from a privacy-first idea. Designed before implementation.</sub>
+<sub>Privacy-first design · Phase 1.1 mock UI shell merged · no released app.</sub>
 
-**Tnyx App · Tio Workspace repo · Documentation phase · 14 November 2026**
+**Tnyx App · Tio Workspace repo · Phase 1.1 mock shell · 15 November 2026**
 
 </div>

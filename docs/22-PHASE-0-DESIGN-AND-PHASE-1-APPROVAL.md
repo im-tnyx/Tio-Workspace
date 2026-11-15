@@ -1,11 +1,11 @@
 # 🎨 Phase 0 final design review & Phase 1 owner approval pack
 
-**Status:** Proposed for owner review · **2026-11-14** · **No Phase 1 implementation approval recorded**
+**Historical status (2026-11-14):** Proposed for owner review; no Phase 1 approval was recorded **at that time**. Subsequently, Phase 1.1 mock shell was separately authorized and merged in [PR #11](https://github.com/im-tnyx/Tio-Workspace/pull/11) (2026-11-15); Phase 1.2+ remain unapproved.
 
 [← Docs hub](00-INDEX.md) · [Design system](../DESIGN.md) · [MVP flows](20-MVP-UX-FLOWS.md) · [Phase 1 readiness](21-PHASE-1-READINESS.md) · [Issue #2](https://github.com/im-tnyx/Tio-Workspace/issues/2)
 
 > [!IMPORTANT]
-> This is a **sign-off-ready recommendation**, not an owner decision, validated mockup, working UI, permission to create app code or a completed security audit. Only a later, separate written approval by the repository owner may authorize a named Phase 1 slice. Merging this document is **not** that authorization.
+> This page preserves the historical Phase 0 sign-off proposal. A separate written owner instruction subsequently authorized **only** the Phase 1.1 mock shell, not real Auth/data, cloud schema, or deployment. Merging this page itself does not authorize any new implementation slice.
 
 ## 1. Decision summary
 

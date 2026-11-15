@@ -1,6 +1,17 @@
 # Phase 1.1 — Expo UI shell (implementation PR)
 
-**Status:** Approved **for separate implementation PR review only**; not merged, tested on devices, deployed or approved for Auth/data. See [task record](../.ai/tasks/phase1/local-20261114-expo-shell.md), [ADR-015–018](09-DECISIONS.md), [Design](../DESIGN.md).
+**Status (2026-11-15):** **Phase 1.1 mock Expo shell merged**, [PR #11](https://github.com/im-tnyx/Tio-Workspace/pull/11) → `main` commit `326f7af888ae78d5a551d8607386740912f4be75`. No real Auth/OTP, SQLite, deployed backend or release. See [archived task](../.ai/archive/2026/local-20261114-expo-shell.md), [ADR-015–018](09-DECISIONS.md), [Design](../DESIGN.md).
+
+> [!NOTE]
+> This document contains dated pre-merge PR iteration notes below. Past statements such as “PR open”, “not merged” or “CI pending” describe **their historical checkpoints**, not today's canonical project status. Final outcome is below.
+
+## Verified Phase 1.1 merge checkpoint
+
+- PR #11 was owner-authorized to squash merge on **2026-11-15**, after independent `im-tio` GitHub `APPROVED` (08:31:35 UTC) and **15/15 resolved review threads**.
+- [Exact PR-head CI run 43693426933](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43693426933) succeeded on `e3fa54a9dc6339ba70ddc4f825646d2fbcd09246` (locked install, Expo compatibility, design-token guard/self-test, TypeScript, lint and Node shell contracts).
+- `main` was confirmed at squash merge `326f7af888ae78d5a551d8607386740912f4be75`. No independently verified post-merge rerun on the squash SHA, EAS/native release build, published app or server deployment.
+- Owner-reported Android visual QA accepted the matched narrow Email/QWERTY mock screen and a larger Android keyboard regression was reported resolved. Compact iOS, maximal accessibility interaction, Hide keyboard activation/reopen, enabled CTA, OTP/password/recovery transitions and screen-reader output remain **unverified**, and are required before real Auth is accepted.
+- Phase 1.2 real Supabase Auth / persistent sessions / local database / proposed remote private-profile changes require **separate written owner authorization**, plus relevant provider/native security gates.
 
 ## What is scaffolded
 
@@ -31,7 +42,7 @@ Run on physical Android/iPhone before accepting visual, blur, keyboard, safe-are
 
 ## Required review
 
-Verify static architecture and mock-only behavior first; ensure no SDK/storage/Auth imports, no network uploads and no secret files. Then independent reviewer evaluates the actual PR HEAD. CI results are reported only when observed, not inferred. Merge and Phase 1.2 Auth work need **separate owner approvals**.
+Verify static architecture and mock-only behavior first; ensure no SDK/storage/Auth imports, no network uploads and no secret files. Then independent reviewer evaluates the actual PR HEAD. CI results are reported only when observed, not inferred. PR #11 **was merged after distinct owner merge authorization**. Phase 1.2 real Auth and every other new implementation slice still need **separate owner approval**.
 
 ## Phase 1.1 onboarding entry (owner refinement, 2026-11-14)
 

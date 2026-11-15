@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Applies to | All human and AI contributors operating in `im-tnyx/Tio-Workspace` |
-| Project stage | **Phase 0 — DOCUMENTATION ONLY**; no working Expo app or deployed Supabase project |
+| Project stage | **Phase 1.1 Expo mock shell merged** via PR #11 (2026-11-15); no real Auth, workout database, deployment or release; later slices require separate owner approval |
 | Maintainer authority | Repository owner makes scope, privacy, security, implementation and merge decisions |
 | Canonical references | [Docs hub](docs/00-INDEX.md), [decision register](docs/09-DECISIONS.md), [architecture](docs/02-SYSTEM-ARCHITECTURE.md) |
 | Continuity pointer | [`.ai/current.md`](.ai/current.md); never assume this is current without checking GitHub |
@@ -59,13 +59,13 @@ flowchart TD
 
 ## 4. Phase and owner-approval gates
 
-**Allowed now (Phase 0):** scoped Markdown docs, design proposals, ADR preparation, requirements/test planning, repository governance, `.ai/` context maintenance and issue/PR templates.
+**Allowed as scoped documentation/governance work:** Markdown docs, design proposals, ADR preparation, requirements/test planning, repository governance, `.ai/` context maintenance and issue/PR templates. Phase 1.1 mock shell was separately authorized, reviewed and merged; that approval does not extend to later slices.
 
-**Not authorized yet:** Expo scaffolding, dependency installation, app source/UI creation, database migrations, Supabase project/schema changes, Edge Function deployment, native entitlements/OAuth configuration, AI provider integration, real cloud backups/sync, paid infrastructure or release operations.
+**Not authorized without a new, bounded owner approval:** additional app features/UI changes beyond merged Phase 1.1, real Auth/OTP, workout database/SQLCipher migrations, Supabase schema changes, Edge Functions, native entitlements/OAuth configuration, AI providers, real cloud backups/sync, paid infrastructure or release operations.
 
-- Before **Phase 1**, require a **separate written owner approval** identifying the approved work and resolved high-risk decisions in [Phase 0 review](docs/17-PHASE-0-DECISION-PACK.md) and [readiness gate](docs/21-PHASE-1-READINESS.md).
+- Before **each additional Phase 1 slice**, require a **separate written owner approval** identifying the approved work and resolved high-risk decisions in [Phase 0 review](docs/17-PHASE-0-DECISION-PACK.md) and [readiness gate](docs/21-PHASE-1-READINESS.md).
 - Any **new independently scoped feature**, product-visible UI behavior, auth/session semantics, privacy setting, account deletion, encryption key custody, cloud transfer, database shape, paid integration or deployment requires an explicit owner decision.
-- **Routine subtasks inside a previously approved, bounded task** do not need repeated permission when they respect the existing scope. This does **not** override the Phase 0 code prohibition.
+- **Routine subtasks inside a previously approved, bounded task** do not need repeated permission when they respect the existing scope. This does **not** authorize another implementation slice or modify its approval gate.
 - Creating/updating a reviewable branch and PR for authorized documentation work is allowed. **Merging needs its own unmistakable owner authorization** for that PR; PR creation alone never authorizes merge.
 - Treat “approve”, “merge”, “start implementation” and “deploy” as separate permissions. Never infer any one from another.
 
@@ -77,7 +77,7 @@ Before nontrivial work: **discover available tools and installed skills**; match
 |---|---|---|
 | Repository/PRs/issues | Connected GitHub tooling; inspect branch, changed files, reviews and checks | Don't invent Git/CI state or merge without approval |
 | Documentation/architecture | Repository standards, Markdown/link/diagram checks; documentation tools when artifact requested | Cross-link canonical specs; avoid duplicate sources of truth |
-| Expo/React Native (future) | Check actual package versions and Expo/React Native official docs; matching specialized skill if available | No scaffolding until Phase 1 approval; both platforms reviewed |
+| Expo/React Native (Phase 1.1 shell exists; future slices gated) | Check actual package versions and Expo/React Native official docs; matching specialized skill if available | No new app implementation without slice-specific owner approval; both platforms reviewed |
 | Supabase Auth / Edge Functions (future) | **Use the Supabase skill when available**, consult current Supabase docs/changelog and connected project tools | Client has only publishable key; secrets and privileged calls server-side |
 | Supabase Postgres/RLS (future sync only) | Supabase + Postgres best-practice skill when available; migration/RLS review | No default workout upload; owner-scoped RLS and negative tests |
 | Local SQLite / SQLCipher (future) | Verify Expo SQLite native-build feasibility, encryption and OS secure-key lifecycle using current docs | Never promise encryption before native verification |
@@ -119,7 +119,7 @@ Before nontrivial work: **discover available tools and installed skills**; match
 - **Thin UI:** feature screens/components/hooks and Expo Router files must never import `expo-sqlite`, Supabase SDK or SecureStore directly. UI consumes injected feature-facing interfaces or application services.
 - **Cross-feature boundaries:** never deep-import `features/other-feature/*` internals. Interact through explicit public `index.ts` exports or separately approved shared contracts. `platform/` and `shared/` may not import feature internals.
 - **Pragmatic layering:** add optional feature `application/` use cases for significant multi-repository orchestration, transactions, workout start/finish or recovery. Complex domain rules must not live inside React hooks. No mandatory empty layers, npm package per feature or premature monorepo.
-- **No code yet:** TypeScript and ESLint import-boundary enforcement start only once Phase 1 tooling is separately approved. Domain has no React Native/Expo/SQL/Supabase dependencies.
+- **Phase 1.1 mock code exists:** TypeScript, ESLint, routes and preview components are merged; no real Auth/data modules are authorized yet. Domain must remain free of React Native/Expo/SQL/Supabase dependencies when later implemented.
 - **Preserve privacy:** local workout writes are authoritative and cannot be blocked by remote availability. Encryption, Auth/session policy, backup/sync, schemas and AI integrations remain separately gated. No speculative services or backend.
 
 - **Non-visual refactors may not redesign UI.** Preserve observed layout, spacing, text sizes, theme values, interactions and navigation unless the task explicitly approves a visual change.
