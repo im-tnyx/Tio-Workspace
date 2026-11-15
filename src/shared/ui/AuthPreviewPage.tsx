@@ -1,7 +1,7 @@
-import { useLayoutEffect, useRef, useState } from 'react';
+import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Dimensions, Keyboard, Platform, Pressable, Text, View } from 'react-native';
-import type { KeyboardEvent, KeyboardMetrics } from 'react-native';
+import { Keyboard, Platform, Pressable, Text, View } from 'react-native';
+import type { KeyboardEvent, ViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
 import { spacing, typography } from '@/shared/theme/tokens';
@@ -9,8 +9,8 @@ import { Button } from './Button';
 import { copy } from '@/shared/i18n/en';
 import { keyboardOverlap } from './authKeyboardGeometry';
 
-// The header is fixed and the auth screen never scrolls. The footer is anchored
-// independently of the changing form, and follows native keyboard-frame events.
+// Shared fixed, non-scrolling auth page. Its persistent CTA is positioned from
+// the actual root-view bottom in window coordinates, not physical screen height.
 export function AuthPreviewPage({
   onBack, children, headerActionLabel, onHeaderAction,
   footerLabel, footerDisabled, footerKeepAppearance = false, footerNotice, onFooterPress,
@@ -23,49 +23,54 @@ export function AuthPreviewPage({
 }) {
   const insets = useSafeAreaInsets();
   const { colors } = useAppearance();
-  const [keyboardInset, setKeyboardInset] = useState(0);
-  // iOS TextInput autoFocus runs on native mount, before a passive effect can
-  // subscribe to the initial keyboard event. Mount inputs only AFTER listeners.
+  const rootRef = useRef<ViewInstance>(null);
+  const [rootBottomY, setRootBottomY] = useState<number | null>(null);
+  const [keyboardTopY, setKeyboardTopY] = useState<number | null>(null);
+
+  const measureRootBottom = useCallback(() => {
+    rootRef.current?.measureInWindow((_x, y, _width, height) => {
+      if (height <= 0) return;
+      const bottom = y + height;
+      setRootBottomY(previous => previous === bottom ? previous : bottom);
+    });
+  }, []);
+
+  // Register listeners before mounting auto-focused TextInputs: otherwise
+  // initial keyboardWillShow may be missed on iOS.
   const [keyboardListenersReady, setKeyboardListenersReady] =
     useState(Platform.OS !== 'ios');
-  const lastKeyboardInset = useRef(0);
+  const lastKeyboardTopY = useRef<number | null>(null);
 
   useLayoutEffect(() => {
     if (Platform.OS !== 'ios') return;
-    const insetFromFrame = (frame: KeyboardMetrics) => {
-      const overlap = keyboardOverlap(
-        Dimensions.get('screen').height, frame.screenY);
-      return overlap > 0 ? Math.max(overlap, frame.height) : 0;
-    };
-    const update = (inset: number, event?: KeyboardEvent) => {
-      if (lastKeyboardInset.current === inset) return;
-      lastKeyboardInset.current = inset;
+    const update = (screenY: number | null, event?: KeyboardEvent) => {
+      if (lastKeyboardTopY.current === screenY) return;
+      lastKeyboardTopY.current = screenY;
       if (event) Keyboard.scheduleLayoutAnimation(event);
-      setKeyboardInset(inset);
+      setKeyboardTopY(screenY);
+      measureRootBottom();
     };
 
-    // Will notifications animate the footer together with the system keyboard.
-    // The DidShow callback is a recovery path if a Will event is not delivered.
     const willShow = Keyboard.addListener('keyboardWillShow', event => {
-      update(insetFromFrame(event.endCoordinates), event);
+      update(event.endCoordinates.screenY, event);
     });
     const willChange = Keyboard.addListener('keyboardWillChangeFrame', event => {
-      update(insetFromFrame(event.endCoordinates), event);
+      update(event.endCoordinates.screenY, event);
     });
     const didShow = Keyboard.addListener('keyboardDidShow', event => {
-      update(insetFromFrame(event.endCoordinates));
+      update(event.endCoordinates.screenY);
     });
     const willHide = Keyboard.addListener('keyboardWillHide', event => {
-      update(0, event);
+      update(null, event);
     });
-    const didHide = Keyboard.addListener('keyboardDidHide', () => update(0));
+    const didHide = Keyboard.addListener('keyboardDidHide', () => update(null));
 
-    // Reconcile current metrics and permit initial autofocus only after the
-    // subscriptions are in place. Async frame avoids a synchronous state
-    // update inside the layout effect and handles strict React lint rules.
+    // Defer autofocus until listeners are installed. Reconcile keyboards that
+    // were already visible on return to this route.
     const readyFrame = requestAnimationFrame(() => {
+      measureRootBottom();
       const currentMetrics = Keyboard.metrics();
-      if (currentMetrics) update(insetFromFrame(currentMetrics));
+      if (currentMetrics) update(currentMetrics.screenY);
       setKeyboardListenersReady(true);
     });
     return () => {
@@ -73,24 +78,33 @@ export function AuthPreviewPage({
       willShow.remove(); willChange.remove(); didShow.remove();
       willHide.remove(); didHide.remove();
     };
-  }, []);
+  }, [measureRootBottom]);
 
-  return <View style={{ flex: 1, backgroundColor: colors.background }}>
+  // An iOS keyboard can resize the native-stack route before JS is notified.
+  // Compare keyboard screenY with the route's ACTUAL bottom. If the route has
+  // already shrunk to the keyboard edge, overlap is zero (no double-lifting).
+  const keyboardClearance = keyboardTopY === null || rootBottomY === null
+    ? insets.bottom : keyboardOverlap(rootBottomY, keyboardTopY);
+
+  return <View ref={rootRef} onLayout={measureRootBottom}
+    style={{ flex: 1, backgroundColor: colors.background }}>
     <View style={{
       paddingTop: insets.top + spacing.sm,
       paddingHorizontal: spacing.lg,
       minHeight: insets.top + spacing.sm + 54,
       justifyContent: 'flex-end',
     }}>
-      <View style={{ minHeight: 54, flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+      <View style={{ minHeight: 54, flexDirection: 'row',
+        alignItems: 'center', justifyContent: 'space-between' }}>
         <Pressable onPress={onBack} accessibilityRole="button"
           accessibilityLabel={copy('back')}
           style={({ pressed }) => ({
             minWidth: 48, minHeight: 48, alignSelf: 'flex-start',
             justifyContent: 'center', opacity: pressed ? 0.65 : 1,
           })}>
-          <Text accessibilityElementsHidden
-            style={{ color: colors.text, fontSize: 32, lineHeight: 38 }}>{'←'}</Text>
+          <Text accessibilityElementsHidden style={{
+            color: colors.text, fontSize: 32, lineHeight: 38,
+          }}>{'←'}</Text>
         </Pressable>
         {headerActionLabel && onHeaderAction ? <Pressable
           onPress={onHeaderAction} accessibilityRole="button"
@@ -99,15 +113,13 @@ export function AuthPreviewPage({
             minHeight: 48, justifyContent: 'center',
             opacity: pressed ? 0.65 : 1,
           })}>
-          <Text style={{ color: colors.text, fontSize: 16, fontWeight: '600' }}>
-            {headerActionLabel}
-          </Text>
+          <Text style={{ color: colors.text, fontSize: 16,
+            fontWeight: '600' }}>{headerActionLabel}</Text>
         </Pressable> : null}
       </View>
     </View>
 
-    {/* Form content can change stages without unmounting the persistent footer.
-        No ScrollView; input autoFocus cannot race the listener subscription. */}
+    {/* Only the stage-specific content updates. No scroll is introduced. */}
     <View style={{
       flex: 1, minHeight: 0, paddingHorizontal: spacing.lg,
       paddingTop: spacing.xl,
@@ -115,19 +127,16 @@ export function AuthPreviewPage({
       {keyboardListenersReady ? children : null}
     </View>
 
-    {/* Absolute footer is always anchored above the keyboard regardless of
-        the size of Email/OTP/Password middle content. Same 16pt side/bottom
-        gutters and 8pt temporary warning-to-button gap. */}
+    {/* Shared footer for Sign in, Sign up and password recovery. It stays
+        anchored to the visible route rather than the physical device screen. */}
     <View style={{
       position: 'absolute', left: spacing.lg, right: spacing.lg,
-      bottom: Math.max(keyboardInset, insets.bottom) + spacing.lg,
-      gap: spacing.sm,
+      bottom: keyboardClearance + spacing.lg, gap: spacing.sm,
     }}>
       {footerNotice ? <Text style={[typography.caption, {
         color: colors.muted, textAlign: 'center',
       }]}>{footerNotice}</Text> : null}
-      <Button size="onboarding"
-        label={footerLabel} onPress={onFooterPress}
+      <Button size="onboarding" label={footerLabel} onPress={onFooterPress}
         disabledTone="soft" disabled={footerDisabled}
         disabledAppearance={footerKeepAppearance ? 'enabled' : 'muted'}
       />

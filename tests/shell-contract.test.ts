@@ -154,10 +154,14 @@ test('post-Welcome auth uses persistent parent header and CTA, middle-only step 
     page.indexOf('setKeyboardListenersReady(true)'));
   assert.match(page, /const currentMetrics = Keyboard\.metrics\(\)/);
   assert.match(page, /Keyboard\.scheduleLayoutAnimation\(event\)/);
-  assert.match(page, /keyboardOverlap\(/);
-  // The fixed 16pt footer stays independently anchored above the IME.
+  assert.match(page, /keyboardOverlap\(rootBottomY, keyboardTopY\)/);
+  assert.match(page, /ref=\{rootRef\} onLayout=\{measureRootBottom\}/);
+  assert.match(page, /measureInWindow\(/);
+  assert.doesNotMatch(page, /Dimensions\.get\('screen'\)\.height/);
+  // The fixed footer never double-adds keyboard height if the native route
+  // already ended at the keyboard's upper edge.
   assert.match(page, /position: 'absolute', left: spacing\.lg, right: spacing\.lg/);
-  assert.match(page, /bottom: Math\.max\(keyboardInset, insets\.bottom\) \+ spacing\.lg/);
+  assert.match(page, /bottom: keyboardClearance \+ spacing\.lg/);
   assert.match(page, /gap: spacing\.sm/);
   assert.match(page, /paddingHorizontal: spacing\.lg/);
   // Removing temporary preview copy later must not remove CTA edge padding.
@@ -200,6 +204,10 @@ test('both Sign in and Sign up routes use the same persistent auth parent', () =
 
 test('keyboard frame geometry handles visible and hidden iPhone keyboards', () => {
   assert.equal(keyboardOverlap(852, 540), 312);
+  // Native stack may shrink the route to the keyboard top BEFORE the event.
+  assert.equal(keyboardOverlap(540, 540), 0);
+  // An intermediate native resize must subtract only its actual overlap.
+  assert.equal(keyboardOverlap(680, 540), 140);
   assert.equal(keyboardOverlap(852, 852), 0);
   assert.equal(keyboardOverlap(852, 880), 0);
   assert.equal(keyboardOverlap(852, 0), 852);
