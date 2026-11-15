@@ -7,7 +7,7 @@
 | Implementation owner | Documentation agent (this bounded docs-only task; not an Auth implementation owner) |
 | Previous agent | None assigned for this task |
 | Last commit agent | Documentation agent; exact PR-head SHA to be confirmed after push |
-| Tracking / approval | Owner instruction on 2026-11-15: "start" after read-only audit; **documentation only**, not production database/Auth approval |
+| Tracking / approval | Owner docs-task instruction on 2026-11-15; [PR #13](https://github.com/im-tnyx/Tio-Workspace/pull/13); **documentation only**, not production database/Auth approval |
 | Branch | `docs/phase1-2-minimal-profile-onboarding-20261115` |
 | Base SHA / inspected HEAD | `d3b6ceec7f31b5084b86685f90f0adabe5bcadd0` on `main` |
 | Platform and file scope | Docs, ADR proposal, documentation hub and single task pointer only; both iOS/Android Auth and local fitness acceptance planned |
@@ -19,7 +19,8 @@
 - [x] [Current pointer](../../current.md) reconciled against live GitHub: PR #12 already merged; old next-action paragraph stale
 - [x] [Core architecture](../../core/architecture.md), [security](../../core/security-rules.md) and [canonical docs](../../../docs/00-INDEX.md) reviewed
 - [x] Live `main` HEAD and zero open PRs verified before creating the branch
-- [ ] Independent PR review and explicit owner **merge approval** pending
+- [x] GitHub review **requested** from `im-tio` on [PR #13](https://github.com/im-tnyx/Tio-Workspace/pull/13)
+- [ ] Independent PR review **completed**, and explicit owner **merge approval**, both pending
 
 ## Approved scope / non-goals
 
@@ -47,15 +48,16 @@
 
 - [x] Verified latest GitHub `main`, PR #11 and merged documentation PR #12
 - [x] Produced bounded proposal without changing runtime or Supabase
-- [ ] Independent review and owner decision needed
+- [x] Created [PR #13](https://github.com/im-tnyx/Tio-Workspace/pull/13), with a docs-only 5-file diff; requested review from `im-tio`
+- [ ] Independent review result and owner decision needed
 
 Expected docs-only paths: `docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md`, `docs/00-INDEX.md`, `docs/09-DECISIONS.md` (proposal pointer only), `.ai/current.md`, this task.
 
 ## PR review evidence and findings
 
-- Review requested from: **Pending** owner/independent reviewer request after PR creation.
-- Reviewer identity and URL: Pending.
-- Inspected SHA: PR head to verify after creation.
+- Review requested from: **`im-tio`** via GitHub [PR #13 reviewer request](https://github.com/im-tnyx/Tio-Workspace/pull/13); request accepted by GitHub, review not yet submitted.
+- Reviewer identity and URL: `im-tio`, [PR #13](https://github.com/im-tnyx/Tio-Workspace/pull/13).
+- Inspected SHA: initial PR head `dfbb161437c2a625e3ad80fe815a850313bab0af`; any later SHA needs separate verification/review.
 - Review status: `REVIEW_PENDING`.
 - Review result: `INCONCLUSIVE` pending separate review.
 - Review type: Not yet performed.
@@ -65,7 +67,7 @@ Expected docs-only paths: `docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md
 ## Validation evidence
 
 - Pre-change: GitHub repo/branch files and documentation constraints read; connected Supabase previously showed zero `public` tables/migrations.
-- Planned review checks: changed-files scope, relative Markdown links, proposed-vs-accepted labeling, no secret/sensitive user values, Mermaid/Markdown readability.
+- Documentation checks completed against PR head before this handoff update: exactly 5 Markdown-only files in GitHub compare, specified screen/field rules, index/decision/pointer and zero broken relative links in the changed Markdown files (checked against the repository tree). Reviewer gate remains pending.
 - Not run: local `git diff --check`, `npm run verify`, OTP/server/RLS tests and native tests; no worktree or runtime implementation.
 
 ## Handoff
