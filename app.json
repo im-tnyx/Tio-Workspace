@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "Tnyx",
+    "slug": "tnyx",
+    "scheme": "tnyx",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "platforms": [
+      "ios",
+      "android"
+    ],
+    "ios": {
+      "bundleIdentifier": "com.tnyx.tio",
+      "supportsTablet": false
+    },
+    "android": {
+      "package": "com.tnyx.tio"
+    },
+    "plugins": [
+      "expo-router"
+    ],
+    "experiments": {
+      "typedRoutes": true
+    }
+  }
+}

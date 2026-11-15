@@ -1,0 +1,41 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Pull Latest TNYX",
+      "type": "process",
+      "command": "bash",
+      "args": [
+        "${workspaceFolder}/.vscode/pull-tnyx.sh"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "focus": true,
+        "panel": "dedicated",
+        "clear": true,
+        "showReuseMessage": false
+      }
+    },
+    {
+      "label": "Start TNYX (Expo Go)",
+      "type": "shell",
+      "command": "npm run mobile",
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "isBackground": true,
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "focus": true,
+        "panel": "dedicated",
+        "clear": false,
+        "showReuseMessage": false
+      }
+    }
+  ]
+}

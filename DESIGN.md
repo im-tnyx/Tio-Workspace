@@ -70,6 +70,7 @@ The uploaded iOS app screenshot is **visual reference only**, showing a transluc
 - **Cards:** 16px radius proposed; clear grouping; avoid decorative shadows that reduce legibility.
 - **MVP typography:** device OS/system fonts and **English-only** copy, with shared type roles and dynamic scaling. Future Language and Custom Font settings, Hindi translations and custom binaries are **deferred**, not part of the MVP.
 - **Touch targets:** aim for at least 44 × 44 pt on iOS and 48 × 48 dp on Android, with larger workout controls.
+- **Global button geometry (owner-updated 2026-11-14):** shared `controlSizes.buttonMinHeight = 42` (iOS points / Android dp), full-pill `controlSizes.buttonRadius = radii.pill (999)` and vertical `hitSlop = 3` per side for a nominal 48dp Android tap region (where parent bounds allow; verify on devices). Dynamic text may increase the button's visible height. **Welcome `GET STARTED` CTA** uses **matching 16pt/dp left, right and bottom design padding** via `spacing.lg = 16`; the bottom also adds `safeAreaInsets.bottom` to protect the home indicator. CTA fills available phone width without the previous 400pt cap; `TNYX` remains centered in the main region. Cards and other surfaces retain their independent radii; the BottomTabBar has independent sizing.
 - **Icons:** consistent 24px outline icon family; always pair unfamiliar icons with labels.
 - **Accessibility:** dynamic font sizes, voice labels, focus order, reduced-motion support, dark mode, and color-blind-friendly status cues.
 
@@ -152,3 +153,6 @@ When implementation is approved: create real Figma/source assets, app icon, spla
 **Decision gate:** Visual direction is proposed and must be approved before application UI implementation.
 
 [← README](README.md) · [Go to architecture →](docs/02-SYSTEM-ARCHITECTURE.md)
+
+
+**Welcome motion refinement (owner selection, 2026-11-14):** Initial `TNYX` heading types once, 165ms/character, with a temporary caret; preserve full-size layout and a constant screen-reader label. Respect Reduce Motion by showing the complete heading instantly. The sole `GET STARTED` action lives **inside a neutral bordered Card** at the screen bottom, with the existing equal 16pt/dp outer side/bottom spacing (+ device bottom safe area). Button geometry remains 42pt/dp minimum and full pill. The separate Sign in/Sign up choice is static. This is a branded UI animation, not AI/text generation or Auth implementation.

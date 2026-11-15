@@ -1,0 +1,56 @@
+name: Phase 1.1 shell checks
+
+on:
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'app.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'eslint.config.cjs'
+      - 'scripts/**'
+      - '.github/workflows/phase1-shell.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'app.json'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - 'eslint.config.cjs'
+      - 'scripts/**'
+      - '.github/workflows/phase1-shell.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # Design guard compares with immutable historical baseline
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+      - name: Verify Expo SDK package compatibility
+        run: npm run expo:check
+      - name: Verify design token checker self-tests
+        run: npm run tokens:self-test
+      - name: Fail on newly hardcoded color and size tokens
+        run: npm run tokens:check
+      - name: TypeScript
+        run: npm run typecheck
+      - name: ESLint
+        run: npm run lint
+      - name: Pure shell contract tests
+        run: npm test
