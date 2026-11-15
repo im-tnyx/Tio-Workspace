@@ -133,3 +133,7 @@ Official Expo SDK 58, Expo Router and Expo Blur docs checked on 2026-11-14. Foll
 - Implementation stabilization: initial max-font patch had React ESLint set-state-in-effect violation. Removed derived-effect state entirely; store the full notice footer onLayout height as a stable baseline and calculate abbreviated-warning mode from that independent measurement. Keep `formContentBudget` conservatively tight and the Hide keyboard escape visible. No new feature scope; latest CI and native emulator recheck pending.
 
 - Final scoped guard: protect field/footer separation only in `smallKeyboardNotice` mode rather than on all keyboard-open routes, leaving normal iOS/Android unaffected. Exact-head CI and emulator recheck pending.
+
+## Android regular-width IME auto-closes regression report and isolation (2026-11-15)
+
+- Owner reports larger Android keyboard opens then closes after max-font compact safety-notice patch, while small 320×568 max-font screenshot looks correct. React app has no automatic `Keyboard.dismiss` call: only explicit press/flow callbacks use it. Scope remediation: tokenize extreme compact maximum viewport width (340dp); only capture full footer baseline and show compact warning/input-space clipping below that threshold. Regular-width Android's keyboard-open render/measurement path is unchanged from earlier working commit. Unit contracts cover width and IME cases. Source-level, not yet native-confirmed; verify exact-head CI, both affected devices, im-tio review. No merge/Supabase/native configuration changes.

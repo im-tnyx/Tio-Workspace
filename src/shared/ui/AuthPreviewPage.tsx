@@ -8,7 +8,7 @@ import { authPreviewLayout, spacing, typography } from '@/shared/theme/tokens';
 import { Button } from './Button';
 import { TopBar } from './TopBar';
 import { keyboardOverlap } from './authKeyboardGeometry';
-import { authAvailableHeight, needsKeyboardDismiss } from './authViewport';
+import { authAvailableHeight, needsCompactKeyboardNotice, needsKeyboardDismiss } from './authViewport';
 import { copy } from '@/shared/i18n/en';
 
 const AuthAvailableHeightContext = createContext<number | null>(null);
@@ -30,7 +30,7 @@ export function AuthPreviewPage({
 }) {
   const insets = useSafeAreaInsets();
   const { colors } = useAppearance();
-  const { fontScale } = useWindowDimensions();
+  const { width, fontScale } = useWindowDimensions();
   const [keyboardVisible, setKeyboardVisible] = useState(() => Keyboard.isVisible());
   // iOS retains its measured keyboard-frame positioning. Android uses a
   // platform KeyboardAvoidingView (padding): Expo edge-to-edge windows do
@@ -141,8 +141,11 @@ export function AuthPreviewPage({
   const fullNoticeAvailableHeight = authAvailableHeight(
     rootHeight, headerHeight, fullFooterHeight, keyboardClearance,
     spacing.lg, formTopPadding);
-  const smallKeyboardNotice = needsKeyboardDismiss(
-    fullNoticeAvailableHeight, fontScale, keyboardVisible);
+  // The extra measurement, abbreviation and clipping are exclusive to
+  // genuinely narrow viewports. Wider Android devices keep the exact
+  // pre-hardening keyboard layout, avoiding unnecessary focus-time reflows.
+  const smallKeyboardNotice = needsCompactKeyboardNotice(
+    fullNoticeAvailableHeight, fontScale, keyboardVisible, width);
   const showKeyboardEscape = smallKeyboardNotice || needsKeyboardDismiss(
     availableHeight, fontScale, keyboardVisible);
   // Do not re-expand headings when abbreviated copy frees footer space.
@@ -182,7 +185,7 @@ export function AuthPreviewPage({
     <View onLayout={event => {
       const height = event.nativeEvent.layout.height;
       setFooterHeight(previous => previous === height ? previous : height);
-      if (!smallKeyboardNotice)
+      if (width <= authPreviewLayout.extremeCompactMaxWidth && !smallKeyboardNotice)
         setFullFooterHeight(previous => previous === height ? previous : height);
     }} style={{
       position: 'absolute', left: spacing.lg, right: spacing.lg,

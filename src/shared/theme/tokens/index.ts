@@ -73,6 +73,9 @@ export const authPreviewLayout = {
   // Same existing bare TextInput minimum. Emergency accessibility gate
   // estimates additional font growth without shrinking the input itself.
   activeInputMinHeight: 60,
+  // Only genuinely narrow viewports opt into the extreme font/IME squeeze
+  // workaround. Regular-width Android auth must not remeasure its full footer.
+  extremeCompactMaxWidth: 340,
 } as const;
 export const typography = {
   title: { fontSize: 34, lineHeight: 41, fontWeight: '700' as const },

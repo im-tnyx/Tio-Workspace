@@ -43,3 +43,15 @@ export function needsKeyboardDismiss(
   const scale = Math.max(1, Number.isFinite(fontScale) ? fontScale : 1);
   return availableHeight < authPreviewLayout.activeInputMinHeight * scale;
 }
+
+// The abbreviated visual safety warning is a last-resort narrow-screen mode.
+// Crucially, wide Android layouts must not enter this measurement-driven mode
+// when the IME opens: doing so can cause unnecessary TextInput focus reflows.
+export function needsCompactKeyboardNotice(
+  availableHeight: number | null, fontScale: number,
+  keyboardVisible: boolean, viewportWidth: number,
+): boolean {
+  return Number.isFinite(viewportWidth) && viewportWidth > 0
+    && viewportWidth <= authPreviewLayout.extremeCompactMaxWidth
+    && needsKeyboardDismiss(availableHeight, fontScale, keyboardVisible);
+}

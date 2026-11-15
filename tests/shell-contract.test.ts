@@ -8,7 +8,7 @@ import { copy, formatNumber } from '../src/shared/i18n/en.ts';
 import { canOpenShellPreview } from '../src/bootstrap/shell/shellPreviewAccess.ts';
 import { canContinueAuthPreview, nextAuthPreviewStep, previousAuthPreviewStep } from '../src/features/onboarding/authPreviewSteps.ts';
 import { keyboardOverlap } from '../src/shared/ui/authKeyboardGeometry.ts';
-import { authAvailableHeight, authDensity, needsKeyboardDismiss } from '../src/shared/ui/authViewport.ts';
+import { authAvailableHeight, authDensity, needsCompactKeyboardNotice, needsKeyboardDismiss } from '../src/shared/ui/authViewport.ts';
 import { authPreviewLayout, authPreviewMuted, controlSizes, radii, spacing, topBarSizes } from '../src/shared/theme/tokens/index.ts';
 import { BRAND_TYPING_INTERVAL_MS, BRAND_DOT_DIAMETER, BRAND_DOT_GAP, BRAND_DOT_FINAL_HOLD_MS, visibleTypingText } from '../src/shared/ui/typing.ts';
 
@@ -289,6 +289,16 @@ test('auth form adapts to measured keyboard space without scrolling or clipping 
   assert.equal(needsKeyboardDismiss(0, 1, false), false);
   assert.equal(needsKeyboardDismiss(null, 2, true), false);
   assert.equal(needsKeyboardDismiss(80, Number.NaN, true), false);
+  // 320dp large-font layout retains a compact notice and focused-input
+  // protection. Regular 360/393/412dp phones never enter this new mode.
+  assert.equal(authPreviewLayout.extremeCompactMaxWidth, 340);
+  assert.equal(needsCompactKeyboardNotice(45, 1.6, true, 320), true);
+  assert.equal(needsCompactKeyboardNotice(45, 1.6, true, 340), true);
+  assert.equal(needsCompactKeyboardNotice(45, 1.6, true, 360), false);
+  assert.equal(needsCompactKeyboardNotice(45, 1.6, true, 393), false);
+  assert.equal(needsCompactKeyboardNotice(45, 1.6, false, 320), false);
+  assert.equal(needsCompactKeyboardNotice(200, 1.6, true, 320), false);
+  assert.equal(needsCompactKeyboardNotice(45, 1.6, true, Number.NaN), false);
   assert.equal(authAvailableHeight(null, 100, 90, 250, 16, 8), null);
   assert.equal(authAvailableHeight(180, 130, 90, 250, 16, 8), 0);
   assert.match(helper, /Math\.max\(0, rootHeight - headerHeight - footerHeight/);
@@ -311,7 +321,9 @@ test('auth form adapts to measured keyboard space without scrolling or clipping 
   assert.match(page, /if \(!smallKeyboardNotice\)/);
   assert.match(page, /setFullFooterHeight\(previous => previous === height \? previous : height\)/);
   assert.match(page, /fullNoticeAvailableHeight = authAvailableHeight\(/);
-  assert.match(page, /smallKeyboardNotice = needsKeyboardDismiss\(/);
+  assert.match(page, /smallKeyboardNotice = needsCompactKeyboardNotice\(/);
+  assert.match(page, /const \{ width, fontScale \} = useWindowDimensions\(\)/);
+  assert.match(page, /if \(width <= authPreviewLayout\.extremeCompactMaxWidth && !smallKeyboardNotice\)/);
   assert.match(page, /formContentBudget = smallKeyboardNotice/);
   assert.doesNotMatch(page, /setCompactKeyboardNotice|useEffect\(/);
   assert.match(page, /accessibilityLabel=\{footerNotice\}/);
