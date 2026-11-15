@@ -34,6 +34,7 @@
 - Manual workflow input is the PR number; GitHub does not provide a dynamic open-PR dropdown for `workflow_dispatch`.
 - Only open PRs from this repository targeting `main` may run. The workflow checks and checks out the exact PR head SHA.
 - Only the repository owner `im-tnyx` may dispatch it, and it accepts only owner-authored PRs; the job uses the `eas-preview` GitHub Environment secret scope.
+- Checkout fetches full Git history because `npm run verify` checks against the immutable historical design-token baseline.
 - Updates go to EAS branch/channel `pr-preview`. This workflow has no production publish option.
 - `EXPO_TOKEN` is read from the `eas-preview` GitHub Environment secret. It is never stored in source.
 - A compatible preview build must be installed once for QR-free OTA updates. Native/API changes require another build; iOS internal distribution may require device registration.
