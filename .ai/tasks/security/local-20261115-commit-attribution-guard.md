@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Ready for independent review — PR #17 CI passing on first code head; App/required-check activation NOT done |
+| Status | Ready for independent review — PR #17 prior code/evidence heads CI passed; App/required-check activation NOT done |
 | Objective | Prevent agents from writing AI co-author and equivalent self-credit metadata, while retaining human attribution and `.ai/` multi-agent records |
 | Implementation owner | ChatGPT connected GitHub session, bounded repo governance slice; repository owner retains approval/merge authority |
 | Previous agent | None for this slice; completed preview PR #15 is a separate archived task |
@@ -40,7 +40,7 @@
 
 - The `.ai/` task file is the official record of AI agent role/ownership/handoff; Git commit trailers belong to human provenance, not AI self-credit.
 - Preserve legitimate human names and sign-offs. Use Ledger's precise, tested detector; prohibit AI attribution by default.
-- Runner must use trusted `main` code only, never execute the PR head, and publish a required check from a dedicated GitHub App only after admin activation.
+- Runner must use trusted `main` code only, never execute the PR head, and publish a required check from the **existing `Tio Attribution Guard` GitHub App** only after admin activation. Owner (2026-11-15) explicitly confirmed that the existing App may be reused for Workspace; no separate App registration is needed. Verify that its installation includes Tio-Workspace, without broadening to all repositories; provision Workspace environment Client ID and private-key secret securely from that App's owner-controlled credentials. **No App installation, credential or repository-setting update has been performed by this PR.**
 - A PR fixture job is not non-bypassable enforcement. A post-merge audit cannot undo a bad squash message.
 - Keep status **not enforced** pending App-source-pinned strict branch protection and live clean/bad/stale PR validation.
 
@@ -51,7 +51,7 @@
 - [x] Validated fixtures/CI and patch on first published code head `6b3f1c4237fa154f48ee2d659bf9d1f7011b2caa` (CI must be rechecked after task-evidence commit).
 - [ ] Independent review **requested** from `im-tio` on [PR #17](https://github.com/im-tnyx/Tio-Workspace/pull/17); final assessed head and verdict pending.
 - [ ] Owner authorizes merge of this exact PR.
-- [ ] Owner/admin configures GitHub App, trusted environment, strict required check and performs negative/positive/stale PR tests.
+- [ ] Owner/admin extends the **existing Tio Attribution Guard** App's installation selection to Tio-Workspace; configures repo-specific trusted environment credentials, strict App-source-pinned required check; performs clean/bad/stale PR tests.
 
 ## Changed files
 
