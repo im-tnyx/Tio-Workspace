@@ -25,6 +25,7 @@
 
 - In scope: configure `expo-updates`, add a preview EAS build profile, and provide a GitHub `workflow_dispatch` workflow that accepts a PR number, validates an open same-repository PR targeting `main`, runs existing `npm run verify`, then publishes a preview update or starts a cloud preview build.
 - In scope: update `.ai/current.md` and track the bounded approval and setup requirements here.
+- In scope: ignore Expo/EAS generated packages and local signing credential files so they are not accidentally committed or uploaded from the repository.
 - Out of scope: automatic production publish, EAS project/account changes, creating Expo access tokens, writing secrets, running a build or publishing an OTA update during this task, app features/Auth/database, PR merge.
 - Approval source: owner’s written “to ye setup kare” instruction and preceding clarification.
 
@@ -48,6 +49,7 @@
 - `app.json`
 - `package.json`
 - `package-lock.json`
+- `.gitignore`
 - `eas.json`
 - `.github/workflows/expo-pr-preview.yml`
 - `.ai/current.md`
@@ -61,6 +63,7 @@
 - `git diff --check` — passed on tracked local changes before publishing; `.git/index` write was unavailable, so final staged check was not run.
 - `npm run verify` and native builds — not run. Workflow will run existing verification when manually dispatched; no EAS build or update was triggered.
 - Manual GitHub workflow has not run; it is not available from `main` until merge. The `eas-preview` environment and `EXPO_TOKEN` secret name are confirmed in GitHub UI; secret value was not inspected. The repository UI did not expose required-reviewer protection, so workflow dispatch and PR author are restricted to `im-tnyx`.
+- `.gitignore` patterns cover Expo local state, generated APK/AAB/IPA files, and common local signing credential formats; tracked source and EAS project config remain included.
 - The lockfile includes the SDK-matched `expo-updates` dependency so the repository's existing `npm ci` check remains reproducible.
 
 ## PR review evidence and findings
