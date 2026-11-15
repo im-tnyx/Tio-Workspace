@@ -16,11 +16,11 @@
 
 ## Exact owner-requested signup and onboarding
 
-**Email → OTP → Password** is the fixed UI order, not subject to redesign. Continue Username → Mobile (**optional/Skip**) → **Name** → DOB (**required**) → Sex (**required**) → Units → Height → Current Weight → Activity Level → Goal → Home. **Only Mobile is optional.** Name must be its own screen immediately following Mobile. Plan encrypted device-local fitness storage and private minimum cloud identity; existing workout sync/backup rules are unchanged.
+**Email → OTP → Password** is the fixed UI order, not subject to redesign. Continue **Account Setup (Username required + Mobile optional, same screen)** → **Name** → DOB (**required**) → Sex (**required**) → Units → Height → Current Weight → Activity Level → Goal → Home. **Only Mobile is optional; it is not a separate screen.** Name remains its own screen immediately after Account Setup. Plan encrypted device-local fitness storage and private minimum cloud identity; existing workout sync/backup rules are unchanged.
 
 ## Next safe action
 
-Open the documentation-only ADR-019 proposal PR for independent/owner review. Validate source-of-truth consistency and explicit privacy/security decisions; **separate owner merge approval** remains necessary. If the actual Supabase OTP-before-password mechanism cannot be implemented securely, flag the technical blocker without reordering the UI.
+Continue review of the open documentation-only [PR #13](https://github.com/im-tnyx/Tio-Workspace/pull/13) with reviewer `im-tio` requested. Validate source-of-truth consistency and explicit privacy/security decisions; **separate owner merge approval** remains necessary. If the actual Supabase OTP-before-password mechanism cannot be implemented securely, flag the technical blocker without reordering the UI.
 
 After any separately approved docs merge, reconcile and archive this task. **No live Auth/session/SQLite/Supabase implementation or deployment is authorized by this handoff.**
 
