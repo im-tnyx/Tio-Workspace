@@ -2,11 +2,11 @@
 
 | Field | Value |
 |---|---|
-| Status | In Progress — governance PR and independent review pending; App/required-check activation not done |
+| Status | Ready for independent review — PR #17 CI passing on first code head; App/required-check activation NOT done |
 | Objective | Prevent agents from writing AI co-author and equivalent self-credit metadata, while retaining human attribution and `.ai/` multi-agent records |
 | Implementation owner | ChatGPT connected GitHub session, bounded repo governance slice; repository owner retains approval/merge authority |
 | Previous agent | None for this slice; completed preview PR #15 is a separate archived task |
-| Last commit agent | ChatGPT connected GitHub session; inspect the actual GitHub PR head SHA after creation |
+| Last commit agent | ChatGPT connected GitHub session; verified first code commit `6b3f1c4237fa154f48ee2d659bf9d1f7011b2caa`; current PR head must be rechecked after evidence commits |
 | Tracking / approval | Owner's 2026-11-15 instruction approving Tio-Ledger-style setup in Tio-Workspace; **merge/admin activation not authorized** |
 | Branch | `tnyx/security/commit-attribution-guard-20261115` |
 | Base SHA / inspected HEAD | `5b8f03579f3c68b6f773ebde0323b1f6ee95263d` (verified starting `main`; PR head to be inspected) |
@@ -48,8 +48,8 @@
 
 - [x] Read-only comparison and exact GitHub state reconciliation.
 - [x] Prepare scoped scanner/workflows/policy/task changes on feature branch (verify live PR head).
-- [ ] Validate fixtures/CI, patch whitespace and PR diff on published head.
-- [ ] Obtain separate-agent/owner independent review and resolve findings.
+- [x] Validated fixtures/CI and patch on first published code head `6b3f1c4237fa154f48ee2d659bf9d1f7011b2caa` (CI must be rechecked after task-evidence commit).
+- [ ] Independent review **requested** from `im-tio` on [PR #17](https://github.com/im-tnyx/Tio-Workspace/pull/17); final assessed head and verdict pending.
 - [ ] Owner authorizes merge of this exact PR.
 - [ ] Owner/admin configures GitHub App, trusted environment, strict required check and performs negative/positive/stale PR tests.
 
@@ -65,16 +65,16 @@
 
 ## PR review evidence and findings
 
-- Review requested from: pending, independent agent or repository owner.
-- Reviewer identity / link / reviewed SHA: not yet obtained.
+- Review requested from: `im-tio` on [PR #17](https://github.com/im-tnyx/Tio-Workspace/pull/17), confirmed in live GitHub requested reviewers; response pending.
+- Reviewer identity / link / reviewed SHA: `im-tio` request confirmed; review submission and assessed SHA **not yet obtained**.
 - Review status: `REVIEW_PENDING`; verdict: `INCONCLUSIVE` until actual check/review evidence.
 - Required CI vs supplemental: check current repo rules, not guessed status.
 - Merge approval: **not granted**.
 
 ## Validation evidence
 
-- Scanner and fixtures sourced from Tio-Ledger's checked-in tested implementation; **this is not evidence that Tio-Workspace CI ran**.
-- No GitHub App-owned required check can be considered enforced without live installation and source-pinned strict branch protection.
+- Tio-Workspace first code head `6b3f1c4237fa154f48ee2d659bf9d1f7011b2caa`: [Attribution fixture run 43734616083](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43734616083) **72 passed, 0 failed**, completed success; [Phase 1.1 shell run 43734616001](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43734616001) **success** (dependency, design tokens, TypeScript, ESLint, pure tests).
+- First published [PR #17](https://github.com/im-tnyx/Tio-Workspace/pull/17) diff: 13 changed paths (including one archive rename), 1 commit ahead; no trailing whitespace in added lines. Git author + committer both the repository owner's connected GitHub identity; no AI co-author trailer. No GitHub App-owned required check is active or source pinned.
 - Verify changed paths, exact PR SHA, whitespace, CI and test outcomes after PR publication; document anything unrun.
 
 ## Handoff
