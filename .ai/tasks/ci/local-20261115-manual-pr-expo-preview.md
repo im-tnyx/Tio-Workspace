@@ -32,6 +32,7 @@
 
 - Manual workflow input is the PR number; GitHub does not provide a dynamic open-PR dropdown for `workflow_dispatch`.
 - Only open PRs from this repository targeting `main` may run. The workflow checks and checks out the exact PR head SHA.
+- Only the repository owner `im-tnyx` may dispatch it, and it accepts only owner-authored PRs; the job uses the `eas-preview` GitHub Environment secret scope.
 - Updates go to EAS branch/channel `pr-preview`. This workflow has no production publish option.
 - `EXPO_TOKEN` is read only from the GitHub Actions repository secret. It is never stored in source and will not be created by this task.
 - A compatible preview build must be installed once for QR-free OTA updates. Native/API changes require another build; iOS internal distribution may require device registration.
@@ -46,6 +47,7 @@
 
 - `app.json`
 - `package.json`
+- `package-lock.json`
 - `eas.json`
 - `.github/workflows/expo-pr-preview.yml`
 - `.ai/current.md`
@@ -59,7 +61,7 @@
 - `git diff --check` — passed on tracked local changes before publishing; `.git/index` write was unavailable, so final staged check was not run.
 - `npm run verify` and native builds — not run. Workflow will run existing verification when manually dispatched; no EAS build or update was triggered.
 - GitHub workflow has not run; `EXPO_TOKEN` secret is not confirmed/configured.
-- The source lockfile stays unchanged; Actions regenerates it after checking out the PR's `expo-updates` dependency, then installs with `npm ci`.
+- The lockfile includes the SDK-matched `expo-updates` dependency so the repository's existing `npm ci` check remains reproducible.
 
 ## PR review evidence and findings
 

@@ -37,14 +37,20 @@ jobs:
   preview:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    environment: eas-preview
     steps:
       - name: Validate PR and resolve exact head
         id: pr
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
+          DISPATCH_ACTOR: ${{ github.actor }}
         run: |
           set -euo pipefail
+          if [ "$DISPATCH_ACTOR" != "im-tnyx" ]; then
+            echo "Only the repository owner may publish or build an Expo preview." >&2
+            exit 1
+          fi
           if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
             echo "PR number must be numeric" >&2
             exit 1
@@ -56,7 +62,8 @@ jobs:
             '.state == "open" and
              .head.repo.full_name == $repo and
              .base.repo.full_name == $repo and
-             .base.ref == "main"' \
+             .base.ref == "main" and
+             .user.login == "im-tnyx"' \
             "$RUNNER_TEMP/pull-request.json" > /dev/null
 
           echo "head_sha=$(jq -r '.head.sha' "$RUNNER_TEMP/pull-request.json")" >> "$GITHUB_OUTPUT"
@@ -72,9 +79,6 @@ jobs:
         with:
           node-version: 22.13.0
           cache: npm
-
-      - name: Refresh lockfile for Expo Updates
-        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
 
       - name: Install locked dependencies
         run: npm ci --no-audit --no-fund
