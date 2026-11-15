@@ -23,4 +23,6 @@ jobs:
         with:
           persist-credentials: false
       - name: Run deterministic attribution fixtures
-        run: bash scripts/check_commit_attribution_test.sh
+        run: |
+          bash scripts/check_commit_attribution_test.sh
+          bash scripts/check_guard_integrity_test.sh

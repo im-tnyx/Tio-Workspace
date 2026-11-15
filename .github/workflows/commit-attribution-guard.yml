@@ -81,7 +81,9 @@ jobs:
           fetch-depth: 0
 
       - name: Run fixture regression tests (trusted base code)
-        run: bash scripts/check_commit_attribution_test.sh
+        run: |
+          bash scripts/check_commit_attribution_test.sh
+          bash scripts/check_guard_integrity_test.sh
 
       - name: Fetch PR head commit objects as data only
         id: fetch_pr_head
@@ -110,6 +112,17 @@ jobs:
           HEAD_SHA: ${{ steps.fetch_pr_head.outputs.head_sha }}
         run: bash scripts/check_attribution_base_freshness.sh "$BASE_SHA" "$HEAD_SHA"
 
+      # Source files and all workflows are protected from unauthorized PR changes.
+      # The approval variable comes only from the owner-restricted environment.
+      - name: Reject unauthorized guard modifications
+        id: integrity
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ steps.fetch_pr_head.outputs.head_sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          APPROVED_GUARD_PR_HEAD: ${{ vars.ATTRIBUTION_GUARD_CHANGE_APPROVED_PR_HEAD }}
+        run: bash scripts/check_guard_integrity.sh "$BASE_SHA" "$HEAD_SHA" "$PR_NUMBER" "$APPROVED_GUARD_PR_HEAD"
+
       - name: Check PR commits for prohibited AI attribution
         id: checker
         env:
@@ -136,18 +149,19 @@ jobs:
           GH_TOKEN: ${{ steps.app_token.outputs.token }}
           REPO: ${{ github.repository }}
           CHECK_RUN_ID: ${{ steps.app_check.outputs.check_run_id }}
+          INTEGRITY_OUTCOME: ${{ steps.integrity.outcome }}
           CHECKER_OUTCOME: ${{ steps.checker.outcome }}
           CHECKER_RC: ${{ steps.checker.outputs.rc }}
         run: |
           set -euo pipefail
-          if [ "${CHECKER_OUTCOME}" = "success" ] && [ "${CHECKER_RC}" = "0" ]; then
+          if [ "${INTEGRITY_OUTCOME}" = "success" ] && [ "${CHECKER_OUTCOME}" = "success" ] && [ "${CHECKER_RC}" = "0" ]; then
             conclusion=success
-            title='No prohibited AI attribution'
-            summary='The trusted base-controlled checker found no prohibited AI Co-Authored-By attribution (or an exact owner-approved exception applied). See the Attribution guard runner log.'
+            title='Attribution and guard integrity passed'
+            summary='Both the trusted-base attribution scanner and guard-file integrity policy passed (including any explicit exact owner approval). See runner log.'
           else
             conclusion=failure
             title='Attribution guard failed'
-            summary="Checker outcome=${CHECKER_OUTCOME:-not-run}, rc=${CHECKER_RC:-unset} (1 = prohibited attribution, 2 or unset = technical failure). See the Attribution guard runner log."
+            summary="Integrity=${INTEGRITY_OUTCOME:-not-run}, attribution=${CHECKER_OUTCOME:-not-run}, rc=${CHECKER_RC:-unset}; failed/pending checks do not satisfy protection. See runner log."
           fi
           gh api -X PATCH "repos/${REPO}/check-runs/${CHECK_RUN_ID}" \
             -f status=completed \
