@@ -16,6 +16,9 @@ export const en = {
   signInEmailIntro: 'Enter the email address associated with your account.',
   signInEmailPreviewNotice: 'UI preview only. Sign in is not available yet.',
   authPreviewSafetyNotice: 'UI preview only. No email or code is sent. Do not enter a real password.',
+  // Brief visible copy in extreme keyboard-open space; the full safety notice
+  // remains the accessibility label and returns when the keyboard closes.
+  authPreviewCompactNotice: 'UI preview only',
   forgotPassword: 'Forgot password',
   confirmEmail: 'Confirm your email address',
   confirmEmailIntro: 'Enter the email address associated with this account.',

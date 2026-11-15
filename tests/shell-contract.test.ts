@@ -300,6 +300,22 @@ test('auth form adapts to measured keyboard space without scrolling or clipping 
   assert.match(page, /Keyboard\.addListener\('keyboardDidShow'/);
   assert.match(page, /Keyboard\.addListener\('keyboardDidHide'/);
   assert.match(page, /needsKeyboardDismiss\(/);
+  // The floating absolute footer cannot paint over the active input with
+  // maximum Dynamic Type; reserve its height without adding normal scrolling.
+  assert.match(page, /paddingBottom: keyboardVisible && footerHeight !== null/);
+  assert.match(page, /footerHeight \+ keyboardClearance \+ spacing\.lg : 0/);
+  assert.match(page, /overflow: keyboardVisible \? 'hidden' : 'visible'/);
+  // The abbreviated warning is sticky until keyboard hide (avoids the
+  // collapse-expand feedback loop), but is fully spoken by screen readers.
+  assert.match(page, /const \[compactKeyboardNotice, setCompactKeyboardNotice\] = useState\(false\)/);
+  assert.match(page, /if \(!keyboardVisible\) setCompactKeyboardNotice\(false\)/);
+  assert.match(page, /setCompactKeyboardNotice\(true\)/);
+  assert.match(page, /keyboardVisible && \(compactKeyboardNotice/);
+  assert.match(page, /accessibilityLabel=\{footerNotice\}/);
+  assert.match(page, /numberOfLines=\{smallKeyboardNotice \? 1 : undefined\}/);
+  assert.match(page, /smallKeyboardNotice \? copy\('authPreviewCompactNotice'\) : footerNotice/);
+  assert.equal(copy('authPreviewCompactNotice'), 'UI preview only');
+  assert.match(copy('authPreviewSafetyNotice'), /Do not enter a real password/);
   assert.match(page, /showKeyboardEscape \? copy\('hideKeyboard'\) : headerActionLabel/);
   assert.match(page, /showKeyboardEscape \? Keyboard\.dismiss : onHeaderAction/);
   assert.equal(copy('hideKeyboard'), 'Hide keyboard');

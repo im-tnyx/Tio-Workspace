@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useLayoutEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Keyboard, KeyboardAvoidingView, Platform, Text, View, useWindowDimensions } from 'react-native';
 import type { KeyboardEvent, LayoutChangeEvent, ViewInstance } from 'react-native';
@@ -41,6 +41,9 @@ export function AuthPreviewPage({
   const [headerHeight, setHeaderHeight] = useState<number | null>(null);
   const [footerHeight, setFooterHeight] = useState<number | null>(null);
   const [keyboardTopY, setKeyboardTopY] = useState<number | null>(null);
+  // Sticky within one keyboard session: otherwise shrinking the notice frees
+  // height, re-expands it and causes a measurement-driven render loop.
+  const [compactKeyboardNotice, setCompactKeyboardNotice] = useState(false);
 
   const measureRootBottom = useCallback(() => {
     rootRef.current?.measureInWindow((_x, y, _width, height) => {
@@ -131,11 +134,21 @@ export function AuthPreviewPage({
   const availableHeight = authAvailableHeight(
     rootHeight, headerHeight, footerHeight, keyboardClearance,
     spacing.lg, formTopPadding);
-  // Only when the keyboard consumes even the active field's minimum height,
-  // the existing shared TopBar offers a way to dismiss it and reveal the
-  // full form/CTA without violating the owner's no-scroll layout requirement.
-  const showKeyboardEscape = needsKeyboardDismiss(
-    availableHeight, fontScale, keyboardVisible);
+  // With maximum Dynamic Type on a 320dp phone, the full multi-line
+  // warning can share physical space with the active TextInput. Shorten only
+  // its visual copy during that keyboard session; the full safety warning
+  // returns on dismiss and remains its screen-reader accessibilityLabel.
+  // Keep this state until keyboard hide to avoid footer-height oscillation.
+  useEffect(() => {
+    if (!keyboardVisible) setCompactKeyboardNotice(false);
+    else if (needsKeyboardDismiss(availableHeight, fontScale, true))
+      setCompactKeyboardNotice(true);
+  }, [availableHeight, fontScale, keyboardVisible]);
+  // Keep the existing reachable Hide keyboard escape when compressing the
+  // notice, even if that compression raises the measured available height.
+  const showKeyboardEscape = keyboardVisible && (compactKeyboardNotice
+    || needsKeyboardDismiss(availableHeight, fontScale, true));
+  const smallKeyboardNotice = keyboardVisible && compactKeyboardNotice;
 
   const root = <View ref={rootRef} onLayout={onRootLayout}
     style={{ flex: 1, backgroundColor: colors.background }}>
@@ -150,10 +163,15 @@ export function AuthPreviewPage({
         onAction={showKeyboardEscape ? Keyboard.dismiss : onHeaderAction} />
     </View>
 
-    {/* Only the stage-specific content updates. No scroll is introduced. */}
+    {/* The footer is absolute. Reserve its measured footprint *inside* the
+        flex form when the keyboard is open; otherwise a large TextInput can
+        paint on top of the warning despite the compact density mode. */}
     <View style={{
       flex: 1, minHeight: 0, paddingHorizontal: spacing.lg,
       paddingTop: formTopPadding,
+      paddingBottom: keyboardVisible && footerHeight !== null
+        ? footerHeight + keyboardClearance + spacing.lg : 0,
+      overflow: keyboardVisible ? 'hidden' : 'visible',
     }}>
       <AuthAvailableHeightContext.Provider value={availableHeight}>
         {keyboardListenersReady ? children : null}
@@ -169,9 +187,12 @@ export function AuthPreviewPage({
       position: 'absolute', left: spacing.lg, right: spacing.lg,
       bottom: keyboardClearance + spacing.lg, gap: spacing.sm,
     }}>
-      {footerNotice ? <Text style={[typography.caption, {
-        color: colors.muted, textAlign: 'center',
-      }]}>{footerNotice}</Text> : null}
+      {footerNotice ? <Text
+        accessibilityLabel={footerNotice}
+        numberOfLines={smallKeyboardNotice ? 1 : undefined}
+        style={[typography.caption, {
+          color: colors.muted, textAlign: 'center',
+        }]}>{smallKeyboardNotice ? copy('authPreviewCompactNotice') : footerNotice}</Text> : null}
       <Button size="onboarding" label={footerLabel} onPress={onFooterPress}
         disabledTone="soft" disabled={footerDisabled}
         disabledAppearance={footerKeepAppearance ? 'enabled' : 'muted'}
