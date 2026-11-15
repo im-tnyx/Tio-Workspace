@@ -1,0 +1,155 @@
+name: Expo PR preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open PR number targeting main
+        required: true
+        type: number
+      operation:
+        description: Publish an OTA preview or build an installable preview app
+        required: true
+        default: publish_update
+        type: choice
+        options:
+          - publish_update
+          - build_preview
+      platform:
+        description: Android credentials are configured; choose iOS or all only after EAS iOS signing credentials are configured
+        required: true
+        default: android
+        type: choice
+        options:
+          - android
+          - ios
+          - all
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: eas-pr-preview
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment: eas-preview
+    steps:
+      - name: Validate PR and resolve exact head
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          DISPATCH_ACTOR: ${{ github.actor }}
+        run: |
+          set -euo pipefail
+          if [ "$DISPATCH_ACTOR" != "im-tnyx" ]; then
+            echo "Only the repository owner may publish or build an Expo preview." >&2
+            exit 1
+          fi
+          if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "PR number must be numeric" >&2
+            exit 1
+          fi
+
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "$RUNNER_TEMP/pull-request.json"
+          jq -e \
+            --arg repo "$GITHUB_REPOSITORY" \
+            '.state == "open" and
+             .head.repo.full_name == $repo and
+             .base.repo.full_name == $repo and
+             .base.ref == "main" and
+             .user.login == "im-tnyx"' \
+            "$RUNNER_TEMP/pull-request.json" > /dev/null
+
+          echo "head_sha=$(jq -r '.head.sha' "$RUNNER_TEMP/pull-request.json")" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$(jq -r '.base.sha' "$RUNNER_TEMP/pull-request.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout selected PR head
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: ${{ steps.pr.outputs.head_sha }}
+          persist-credentials: false
+
+      - name: Fetch immutable design-token baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+        run: |
+          set -euo pipefail
+          auth_header="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w 0)"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}" \
+            fetch --no-tags origin b8e0250f5b7973b5798399d40fb67b1aa241dcbf "$PR_BASE_SHA"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Verify selected PR
+        run: npm run verify
+
+      - name: Block OTA publish for native-affecting PRs
+        if: ${{ inputs.operation == 'publish_update' }}
+        env:
+          PR_BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+          PR_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          changed_paths="$RUNNER_TEMP/pr-changed-paths.nul"
+          git diff --name-only -z "$PR_BASE_SHA...$PR_SHA" > "$changed_paths"
+          native_change=0
+          while IFS= read -r -d '' path; do
+            case "$path" in
+              app.json|app.config.js|app.config.jsx|app.config.ts|app.config.tsx|app.config.mjs|app.config.cjs|eas.json|package.json|package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml|bun.lock|bun.lockb|expo-module.config.json|android/*|ios/*|plugins/*|modules/*|native/*)
+                echo "OTA publish blocked: $path can change the native runtime. Run build_preview for this PR, install that preview build, then publish an update from a JS-only PR." >&2
+                native_change=1
+                ;;
+            esac
+          done < "$changed_paths"
+          if [ "$native_change" -ne 0 ]; then
+            exit 1
+          fi
+
+      - name: Publish preview update
+        if: ${{ inputs.operation == 'publish_update' }}
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          PR_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "Configure the EXPO_TOKEN repository secret before running this workflow." >&2
+            exit 1
+          fi
+          npx eas-cli@latest update \
+            --branch pr-preview \
+            --message "Manual preview for PR #${PR_NUMBER} (${PR_SHA:0:7})" \
+            --environment preview \
+            --non-interactive
+
+      - name: Build preview app
+        if: ${{ inputs.operation == 'build_preview' }}
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          PLATFORM: ${{ inputs.platform }}
+        run: |
+          set -euo pipefail
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "Configure the EXPO_TOKEN repository secret before running this workflow." >&2
+            exit 1
+          fi
+          npx eas-cli@latest build \
+            --profile preview \
+            --platform "$PLATFORM" \
+            --non-interactive

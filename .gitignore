@@ -1,5 +1,7 @@
 node_modules/
 .expo/
+.expo-shared/
+.metro-health-check*
 dist/
 web-build/
 ios/
@@ -11,3 +13,18 @@ android/
 .DS_Store
 coverage/
 *.tsbuildinfo
+
+# Generated native packages
+*.apk
+*.aab
+*.ipa
+
+# Local signing credentials and EAS credential files
+*.cer
+*.jks
+*.keystore
+*.mobileprovision
+*.p12
+*.p8
+*.pem
+/credentials.json

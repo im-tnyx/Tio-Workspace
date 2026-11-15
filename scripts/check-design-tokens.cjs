@@ -147,7 +147,7 @@ function main() {
   try { git(['cat-file', '-e', BASELINE_COMMIT + '^{commit}']); }
   catch {
     throw new Error('Missing token guard baseline commit ' + BASELINE_COMMIT
-      + '. Fetch full Git history (GitHub Actions checkout fetch-depth: 0).');
+      + '. Fetch the immutable baseline commit before running verification.');
   }
   const actual = new Map();
   const baseline = new Map();
