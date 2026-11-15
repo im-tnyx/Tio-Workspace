@@ -1,6 +1,6 @@
-import { createContext, useCallback, useContext, useLayoutEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Keyboard, Platform, Text, View } from 'react-native';
+import { Keyboard, Platform, Text, View, useWindowDimensions } from 'react-native';
 import type { KeyboardEvent, LayoutChangeEvent, ViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
@@ -8,7 +8,8 @@ import { authPreviewLayout, spacing, typography } from '@/shared/theme/tokens';
 import { Button } from './Button';
 import { TopBar } from './TopBar';
 import { keyboardOverlap } from './authKeyboardGeometry';
-import { authAvailableHeight } from './authViewport';
+import { authAvailableHeight, needsKeyboardDismiss } from './authViewport';
+import { copy } from '@/shared/i18n/en';
 
 const AuthAvailableHeightContext = createContext<number | null>(null);
 export function useAuthAvailableHeight(): number | null {
@@ -29,6 +30,16 @@ export function AuthPreviewPage({
 }) {
   const insets = useSafeAreaInsets();
   const { colors } = useAppearance();
+  const { fontScale } = useWindowDimensions();
+  const [keyboardVisible, setKeyboardVisible] = useState(() => Keyboard.isVisible());
+  // Track only visibility, never a second keyboard position/inset source.
+  // Android's adjustResize supplies the viewport height; iOS keeps the
+  // existing measured root and keyboardWillChangeFrame geometry.
+  useEffect(() => {
+    const show = Keyboard.addListener('keyboardDidShow', () => setKeyboardVisible(true));
+    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardVisible(false));
+    return () => { show.remove(); hide.remove(); };
+  }, []);
   const rootRef = useRef<ViewInstance>(null);
   const [rootBottomY, setRootBottomY] = useState<number | null>(null);
   const [rootHeight, setRootHeight] = useState<number | null>(null);
@@ -109,6 +120,11 @@ export function AuthPreviewPage({
   const availableHeight = authAvailableHeight(
     rootHeight, headerHeight, footerHeight, keyboardClearance,
     spacing.lg, formTopPadding);
+  // Only when the keyboard consumes even the active field's minimum height,
+  // the existing shared TopBar offers a way to dismiss it and reveal the
+  // full form/CTA without violating the owner's no-scroll layout requirement.
+  const showKeyboardEscape = needsKeyboardDismiss(
+    availableHeight, fontScale, keyboardVisible);
 
   return <View ref={rootRef} onLayout={onRootLayout}
     style={{ flex: 1, backgroundColor: colors.background }}>
@@ -119,7 +135,8 @@ export function AuthPreviewPage({
       setHeaderHeight(previous => previous === height ? previous : height);
     }}>
       <TopBar variant="auth" onBack={onBack} safeAreaTop={insets.top}
-        actionLabel={headerActionLabel} onAction={onHeaderAction} />
+        actionLabel={showKeyboardEscape ? copy('hideKeyboard') : headerActionLabel}
+        onAction={showKeyboardEscape ? Keyboard.dismiss : onHeaderAction} />
     </View>
 
     {/* Only the stage-specific content updates. No scroll is introduced. */}

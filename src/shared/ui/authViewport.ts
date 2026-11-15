@@ -27,3 +27,19 @@ export function authDensity(availableHeight: number | null, fontScale: number): 
   if (availableHeight < authPreviewLayout.compactAvailableHeight * scale) return 'compact';
   return 'regular';
 }
+
+/**
+ * The fixed no-scroll auth preview cannot guarantee that every very short
+ * keyboard-open viewport can show both a full-size input and the CTA.
+ * Expose a reachable top-bar escape action rather than allowing a trapped IME.
+ * This is a fallback, not a substitute for physical dynamic-type QA.
+ */
+export function needsKeyboardDismiss(
+  availableHeight: number | null,
+  fontScale: number,
+  keyboardVisible: boolean,
+): boolean {
+  if (!keyboardVisible || availableHeight === null) return false;
+  const scale = Math.max(1, Number.isFinite(fontScale) ? fontScale : 1);
+  return availableHeight < authPreviewLayout.activeInputMinHeight * scale;
+}

@@ -60,6 +60,9 @@ export const authPreviewLayout = {
   // Preserve the standard form until these responsive budget thresholds.
   compactAvailableHeight: 196,
   tightAvailableHeight: 112,
+  // Same existing bare TextInput minimum. Emergency accessibility gate
+  // estimates additional font growth without shrinking the input itself.
+  activeInputMinHeight: 60,
 } as const;
 export const typography = {
   title: { fontSize: 34, lineHeight: 41, fontWeight: '700' as const },

@@ -7,6 +7,7 @@ export const en = {
   signInIntro: 'Sign in with your email and password.',
   email: 'Email', password: 'Password',
   showPassword: 'Show password', hidePassword: 'Hide password',
+  hideKeyboard: 'Hide keyboard',
   emailPlaceholder: 'tom@example.com', passwordPlaceholder: 'Password',
   continue: 'Continue', verificationCode: 'Verification code',
   enterEmail: 'Enter your email address',

@@ -8,7 +8,7 @@ import { copy, formatNumber } from '../src/shared/i18n/en.ts';
 import { canOpenShellPreview } from '../src/bootstrap/shell/shellPreviewAccess.ts';
 import { canContinueAuthPreview, nextAuthPreviewStep, previousAuthPreviewStep } from '../src/features/onboarding/authPreviewSteps.ts';
 import { keyboardOverlap } from '../src/shared/ui/authKeyboardGeometry.ts';
-import { authAvailableHeight, authDensity } from '../src/shared/ui/authViewport.ts';
+import { authAvailableHeight, authDensity, needsKeyboardDismiss } from '../src/shared/ui/authViewport.ts';
 import { authPreviewLayout, authPreviewMuted, controlSizes, radii, spacing, topBarSizes } from '../src/shared/theme/tokens/index.ts';
 import { BRAND_TYPING_INTERVAL_MS, BRAND_DOT_DIAMETER, BRAND_DOT_GAP, BRAND_DOT_FINAL_HOLD_MS, visibleTypingText } from '../src/shared/ui/typing.ts';
 
@@ -226,6 +226,17 @@ test('auth form adapts to measured keyboard space without scrolling or clipping 
   assert.equal(authDensity(215, 1.4), 'compact');
   assert.equal(authDensity(135, 1.4), 'tight');
   assert.equal(authDensity(null, 2), 'regular');
+  // Emergency keyboard dismissal is offered only when the active input cannot
+  // fit at its minimum usable height; regular layout and other header actions
+  // remain unchanged when the keyboard is hidden or space is sufficient.
+  assert.equal(authPreviewLayout.activeInputMinHeight, 60);
+  assert.equal(needsKeyboardDismiss(45, 1, true), true);
+  assert.equal(needsKeyboardDismiss(60, 1, true), false);
+  assert.equal(needsKeyboardDismiss(75, 1.5, true), true);
+  assert.equal(needsKeyboardDismiss(120, 1.5, true), false);
+  assert.equal(needsKeyboardDismiss(0, 1, false), false);
+  assert.equal(needsKeyboardDismiss(null, 2, true), false);
+  assert.equal(needsKeyboardDismiss(80, Number.NaN, true), false);
   assert.equal(authAvailableHeight(null, 100, 90, 250, 16, 8), null);
   assert.equal(authAvailableHeight(180, 130, 90, 250, 16, 8), 0);
   assert.match(helper, /Math\.max\(0, rootHeight - headerHeight - footerHeight/);
@@ -234,6 +245,14 @@ test('auth form adapts to measured keyboard space without scrolling or clipping 
   assert.match(page, /setFooterHeight/);
   assert.match(page, /AuthAvailableHeightContext\.Provider value=\{availableHeight\}/);
   assert.match(page, /paddingTop: formTopPadding/);
+  assert.match(page, /Keyboard\.addListener\('keyboardDidShow'/);
+  assert.match(page, /Keyboard\.addListener\('keyboardDidHide'/);
+  assert.match(page, /needsKeyboardDismiss\(/);
+  assert.match(page, /showKeyboardEscape \? copy\('hideKeyboard'\) : headerActionLabel/);
+  assert.match(page, /showKeyboardEscape \? Keyboard\.dismiss : onHeaderAction/);
+  assert.equal(copy('hideKeyboard'), 'Hide keyboard');
+  const textField = readFileSync('src/shared/ui/TextField.tsx', 'utf8');
+  assert.match(textField, /minHeight: authPreviewLayout\.activeInputMinHeight/);
   assert.match(form, /const density = authDensity\(availableHeight, fontScale\)/);
   assert.match(form, /!tight \? <View/);
   assert.match(form, /tight && step === 'password' \? \{ display: 'none' \}/);

@@ -3,7 +3,7 @@ import type { TextInputInstance, TextInputProps } from 'react-native';
 import { useState } from 'react';
 import type { Ref } from 'react';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
-import { authPreviewMuted, passwordEye, radii, spacing, typography } from '@/shared/theme/tokens';
+import { authPreviewLayout, authPreviewMuted, passwordEye, radii, spacing, typography } from '@/shared/theme/tokens';
 import { copy } from '@/shared/i18n/en';
 
 // Draw a neutral eye/eye-slash with RN primitives: no extra native package.
@@ -68,7 +68,8 @@ export function TextField({
       style={[typography.body, { flex: 1 }, variant === 'bare' ? {
         // Reference-inspired borderless input: no filled box, line or card.
         // Keep the field's label available to assistive technologies.
-        minHeight: 60, paddingHorizontal: 0, paddingVertical: spacing.sm,
+        minHeight: authPreviewLayout.activeInputMinHeight,
+        paddingHorizontal: 0, paddingVertical: spacing.sm,
         fontSize: 27, lineHeight: 34, color: colors.text,
         backgroundColor: 'transparent', borderWidth: 0,
       } : {
