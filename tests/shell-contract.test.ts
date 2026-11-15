@@ -318,7 +318,7 @@ test('auth form adapts to measured keyboard space without scrolling or clipping 
   // The decision uses the full-copy measurement even after the rendered
   // notice shrinks: no footer-height driven flip-flop and no state-in-effect.
   assert.match(page, /const \[fullFooterHeight, setFullFooterHeight\] = useState<number \| null>\(null\)/);
-  assert.match(page, /if \(!smallKeyboardNotice\)/);
+  assert.match(page, /if \(width <= authPreviewLayout\.extremeCompactMaxWidth && !smallKeyboardNotice\)/);
   assert.match(page, /setFullFooterHeight\(previous => previous === height \? previous : height\)/);
   assert.match(page, /fullNoticeAvailableHeight = authAvailableHeight\(/);
   assert.match(page, /smallKeyboardNotice = needsCompactKeyboardNotice\(/);
