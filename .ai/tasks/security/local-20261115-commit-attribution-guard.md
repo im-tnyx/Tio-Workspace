@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Second Codex review P2 fixes prepared — CI and independent re-review pending; App-owned required-check activation NOT done |
+| Status | Second Codex review P2 fixes verified by 100+14 passing fixtures — independent current-head re-review and owner merge gate pending; App-owned required-check activation NOT done |
 | Objective | Prevent agents from writing AI co-author and equivalent self-credit metadata, while retaining human attribution and `.ai/` multi-agent records |
 | Implementation owner | ChatGPT connected GitHub session, bounded repo governance slice; repository owner retains approval/merge authority |
 | Previous agent | None for this slice; completed preview PR #15 is a separate archived task |
@@ -52,7 +52,7 @@
 - [x] Validated fixtures/CI and patch on first published code head `6b3f1c4237fa154f48ee2d659bf9d1f7011b2caa` (CI must be rechecked after task-evidence commit).
 - [x] `im-tio` reviewed `7e28127d992f6dc374df0426f3578cc1b1d4563c`: COMMENTED, no new actionable code defect; P3 PR description evidence needed refresh (review link in PR).
 - [x] Codex [review #5911817400](https://github.com/im-tnyx/Tio-Workspace/pull/17#pullrequestreview-5911817400) on same SHA identified **three open P2 threads**: Claude 3.7 Sonnet names, nonterminal co-author credits, AI author/committer metadata. Fix commit `57b0d4d4b6ce57398695e7d9fcf3a1891b69ec7e` adds precise metadata and full-message scanning and 16 regression cases; verified 88/88 pass, shell checks pass on that code head. Independent re-review is still required before treating the findings as resolved.
-- [ ] [Codex review #5911887685](https://github.com/im-tnyx/Tio-Workspace/pull/17#pullrequestreview-5911887685) on `95db341b` reported three additional P2 issues: qualified AI bot-role identity bypass, guard-source tampering, and email-free legitimate human name false positive. Focused changes add precise bot-role identity detection, precise email-free credit rules, and owner-only exact `PR:SHA` trust-boundary approval for guard-critical paths. New deterministic regression tests added; **CI and independent re-review required**.
+- [x] [Codex review #5911887685](https://github.com/im-tnyx/Tio-Workspace/pull/17#pullrequestreview-5911887685) on `95db341b` reported three additional P2 issues: qualified AI bot-role identity bypass, guard-source tampering, and email-free legitimate human name false positive. Focused changes add precise bot-role identity detection, precise email-free credit rules, and owner-only exact `PR:SHA` trust-boundary approval for guard-critical paths. New deterministic regression tests added; [fixture run 43741139005](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43741139005) confirms **100 attribution tests + 14 integrity tests passed, 0 failed** on code head `5a726fd6c7e0c684b8c6f1e0fb43346aeb4e2e07`; [shell checks 43741138995](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43741138995) also passed. **Independent re-review still required**.
 - [ ] Owner authorizes merge of this exact PR.
 - [ ] Owner reports existing `Tio Attribution Guard` App + Workspace trusted environment Client ID/private-key secret setup completed (2026-11-15); confirm **actual** App installation and credential function with a trusted-run test after PR merge. Owner/admin still must configure strict App-source-pinned required check and perform clean/bad/stale PR tests. GitHub connector does not expose encrypted environment values.
 
@@ -70,7 +70,7 @@
 
 - Review requested from: `im-tio` on [PR #17](https://github.com/im-tnyx/Tio-Workspace/pull/17), confirmed in live GitHub requested reviewers; response pending.
 - Reviewer identity / link / reviewed SHA: `im-tio` request confirmed; review submission and assessed SHA **not yet obtained**.
-- Review status: Three earlier P2 findings have CI-tested fixes on `57b0d4d`, but **three new P2 findings** on `95db341b` require fresh CI and reviewer verdict. im-tio COMMENTED (not APPROVED); independent re-review and final owner gate pending.
+- Review status: All six reported P2 findings have implementations and deterministic passing CI; three new P2 from `95db341b` have code-fix HEAD `5a726fd6` with 100+14 tests passed. **None of the six threads is reviewer-confirmed/resolved**, and `im-tio`'s only formal review is COMMENTED (not APPROVED); independent current-head re-review is required. im-tio COMMENTED (not APPROVED); independent re-review and final owner gate pending.
 - Required CI vs supplemental: check current repo rules, not guessed status.
 - Merge approval: **not granted**.
 
@@ -78,7 +78,8 @@
 
 - Tio-Workspace first code head `6b3f1c4237fa154f48ee2d659bf9d1f7011b2caa`: [Attribution fixture run 43734616083](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43734616083) **72 passed, 0 failed**, completed success; [Phase 1.1 shell run 43734616001](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43734616001) **success** (dependency, design tokens, TypeScript, ESLint, pure tests).
 - First published [PR #17](https://github.com/im-tnyx/Tio-Workspace/pull/17) diff: 13 changed paths (including one archive rename), 1 commit ahead; no trailing whitespace in added lines. Git author + committer both the repository owner's connected GitHub identity; no AI co-author trailer. No GitHub App-owned required check is active or source pinned.
-- Code-fix head `57b0d4d4b6ce57398695e7d9fcf3a1891b69ec7e`: [fixture run 43738705551](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43738705551) **88 passed / 0 failed** (including all three Codex bypasses, human false positives and freshness fixtures); [shell run 43738705449](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43738705449) **success**. PR diff has 0 added-line whitespace issues. A task/evidence follow-up commit must be CI-checked separately.
+- Current code-fix head `5a726fd6c7e0c684b8c6f1e0fb43346aeb4e2e07`: [fixture run 43741139005](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43741139005) **100 attribution + 14 guard integrity cases pass**; [shell run 43741138995](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43741138995) **success**; current PR diff 14 files. Updating this task will advance the PR head, so verify latest-head CI after the evidence-only commit.
+- Earlier code-fix head `57b0d4d4b6ce57398695e7d9fcf3a1891b69ec7e`: [fixture run 43738705551](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43738705551) **88 passed / 0 failed** (including all three Codex bypasses, human false positives and freshness fixtures); [shell run 43738705449](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43738705449) **success**. PR diff has 0 added-line whitespace issues. A task/evidence follow-up commit must be CI-checked separately.
 
 ## Handoff
 
