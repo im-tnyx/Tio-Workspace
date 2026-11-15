@@ -90,7 +90,7 @@ The provided `account_setup_providers.dart` contains `completeAccountSetup({Stri
 | **Pending email verification**: an Auth user row exists, but server-confirmed email ownership has never been established | **7 days** from Auth-account creation, with no new verified activity | **Yes, eligible** only with hard server-side preflight proving no verification, protected activation, profile or local binding eligibility; if provider never created an Auth user, there is no row to remove |
 | **Verified but abandoned setup**: email verified, but password stage or required cloud Username/Name/DOB/Sex profile remains incomplete; never activated/eligible for local account binding | **30 days** of inactivity (and at least 30 days from creation); send a **7-day advance warning** to the already verified email when possible | **Conditional**: only if server-authoritative lifecycle evidence proves this UUID has **never** been activated, bound, or permitted to write a local encrypted database; otherwise **do not delete** |
 | **Cloud profile complete / activation granted**: valid required profile and server-acknowledged protection marker written **before** first account-bound local database access | **No automatic expiry**, even if the device-local Units/Height/Weight/Activity/Goal onboarding remains unfinished | **Never** via abandoned-signup cleanup |
-| **Fully onboarded / established / returning user** | **No inactivity-based deletion** | **Never**; account deletion is a separate explicit user-controlled operation |
+| **Fully onboarded / established / returning user** | **Not eligible for abandoned-signup cleanup** | **Never under the 7/30-day signup cleanup rules.** A separately reviewed **12-month inactive free-account proposal** appears below; it is not approved or running |
 
 ### Authoritative lifecycle and safety conditions
 
@@ -103,9 +103,37 @@ The provided `account_setup_providers.dart` contains `completeAccountSetup({Stri
 - For eventual hard delete, review owned Storage objects and other foreign keys first; Supabase may reject deletion while objects are owned. **Soft delete is not equivalent to reclaiming abandoned Auth rows**. JWTs previously issued may remain usable until expiry, so new protected server operations must check authorization and deletion/session state as appropriate. Do not promise immediate worldwide token invalidation.
 - A deleted abandoned signup must start a **fresh verified registration** if the same email returns later. Do not falsely promise restoration of old UUID, protected installation binding or device-local data. If any evidence of earlier binding/local data exists, the cleanup candidate is ineligible and must be reviewed rather than deleted.
 
-**Required owner decisions before enabling:** whether 7/30 days and 7-day warning are acceptable, where the minimal server-authoritative protection marker lives, how first local account binding is made race-safe, how to represent an OTP-verified-but-password-incomplete identity without creating guest workout access, email/warning deliverability, hard-delete/recovery wording and the server-only job's security controls. The owner has requested a cleanup policy but has **not** approved live deletion or infrastructure changes.
+**Required owner decisions before enabling abandoned-signup cleanup:** whether 7/30 days and 7-day warning are acceptable, where the minimal server-authoritative protection marker lives, how first local account binding is made race-safe, how to represent an OTP-verified-but-password-incomplete identity without creating guest workout access, email/warning deliverability, hard-delete/recovery wording and the server-only job's security controls. **Established free-user expiry is a distinct high-risk proposal below; the abandoned-signup protection rule must not be silently reused to authorize deletion of previously activated local users.** The owner has requested a cleanup policy but has **not** approved live deletion or infrastructure changes.
 
 **Official implementation references (recheck before deployment):** [Supabase Admin deleteUser](https://supabase.com/docs/reference/javascript/auth-admin-deleteuser) · [Managing user data / deletion caveats](https://supabase.com/docs/guides/auth/managing-user-data) · [Scheduling Edge Functions](https://supabase.com/docs/guides/functions/schedule-functions) · [Supabase Cron](https://supabase.com/docs/guides/cron).
+
+## Proposed inactive established FREE-account retention — separate owner risk gate
+
+**New owner request (2026-11-15):** Even a **fully registered/previously active FREE-plan user** who later stops using Tio or uninstalls it should eventually have an unused Supabase account cleaned up after **6 months or 1 year**. **Recommended documentation baseline: 12 months, not 6 months, before any irreversible removal.** This would be a new, **separate account-retention policy**, NOT an extension of the safe 7/30-day abandoned-signup deletion rules. **No live account expiry or job is approved.**
+
+| Case / checkpoint | Proposed action | Status |
+|---|---|---|
+| Registered free user **active** or with recent authenticated server activity | Keep account, reset inactivity clock from trusted online account activity | Proposed |
+| **6 months** since last trusted online account activity | Mark as potentially dormant and optionally send a **retention reminder** to their verified email; **do not delete** | Proposed |
+| **11 months** since last trusted online account activity | Give a clear **at-least-30-day advance deletion warning** to the verified email explaining loss of identity and possible loss of local workouts; allow authenticated **Keep my account / Reactivate** | Proposed |
+| **12 months** with no further trusted online account activity | **Eligibility for review only**, not unconditional deletion: no paid entitlement; full notice/grace satisfied; privacy/restore/security protections below independently approved; race-safe last-minute checks | **High-risk blocker until accepted and validated** |
+| Paid member / later Sync account / user under explicit hold | Do not expire under FREE policy; separate future membership, retention and deletion rules | Proposed exclusion |
+| User signs in, confirms Keep my account, or resumes qualifying authenticated online use | Cancel pending expiry and reset deadline without touching the device-local database | Proposed |
+
+### Why a Tio free account cannot be erased blindly
+
+- **Uninstall detection is not reliable.** The app generally cannot tell Supabase whether a user uninstalled Tio or has spent a year actively using it completely offline. `auth.users.last_sign_in_at`, an expired session, no heartbeat or no workout upload **cannot distinguish offline use from abandonment**.
+- Preserve the [accepted offline-session policy](18-OFFLINE-SESSION-STATE-MACHINE.md): locally authorized workouts do not require repeated server contact. **Do not introduce compulsory online check-ins or server workout-data uploads** solely to make accounts deletable. If a minimal online account-activity timestamp is introduced, it must be server-owned, disclosed, low-volume, authorized, and must **never include workouts, measurements, plans or history**.
+- If the original `auth.users.id` is hard-deleted, the bound installation can **lose its ability to authenticate with that UUID**. A new registration with the same email gets a **new account identity**; automatic rebind would violate the one-account/no-switch safety contract. Previously encrypted local workouts or user-owned backup archives **may become inaccessible or unrecoverable**. Merely retaining SQLite files is not sufficient protection.
+- **Do not automatically delete an activated/locally bound free account in the current MVP.** Before authorizing this distinct future feature, the owner must explicitly accept the offline-user false-positive/data-loss risk **and** approve a tested same-account data export/recovery or account-expiration transition design. Without reliable recovery and enforceable user notice, the 12-month checkpoint remains **review-only / dry-run**, not destructive.
+- Any eventual automatic deletion needs clear signup Terms/Privacy disclosure (with date, precise trigger, consequences and contact), 30-day prior notice plus a final reminder, verified-email deliverability handling, an accessible authenticated Keep my account path, and an adequate grace/appeal/recovery policy. A failed or ambiguous notification, existing account-dispute hold, status mismatch, concurrent login or entitlement uncertainty **blocks deletion**.
+- Server-authoritative inactivity must be based on specifically defined **trusted online account actions** and timestamps, not just `last_sign_in_at`; track **minimal identity activity** only. Silence caused by loss of connectivity is an uncertainty, not proof that the person quit. This makes the proposal conservative and means some dormant accounts may remain until safe to remove.
+- Billing/free status must be **validated on the server** before any cleanup; paid membership and Sync are currently future/unimplemented, so never assume a client-side `is_free` flag or grant new privileges. Do not turn on retention deletion by default as a side effect of enabling future plans.
+- After owner approval, a scheduled private **dry-run report** can examine 6/11/12-month cohorts. Hard deletion, if later authorized, requires a separate non-public privileged job, re-check of UUID, entitlement, holds, authenticated recent activity and notification windows immediately before `auth.admin.deleteUser`. Dry-run, pause switch, batch caps, audit without PII, rollback limitations and independent security review are required.
+
+### Decision conflict requiring explicit owner sign-off
+
+This proposed policy **would change** the previous design's indefinite retention for established account IDs. It **must not silently override** ADR-003/011 persistent login, the single-bound-user rule, offline access, local-only recovery guarantees or future backup/Sync contracts. Either retain the existing permanent protection **or** separately authorize a 12-month expiry with an independently verified recovery/legal/privacy design and documented acceptance of irreversible identity/data consequences. Product requirement **direction** is recorded here; **destructive implementation authorization is not granted**.
 
 ## Signup and resume failure states
 
@@ -130,6 +158,7 @@ The provided `account_setup_providers.dart` contains `completeAccountSetup({Stri
 4. Define `full_name`, phone normalization (when present), local metric ranges/categories, edit/resume/recovery rules and deletion/retention behavior.
 5. Approve migration, ownership RLS, negative authorization tests, platform secure-session adapter and native encrypted database lifecycle **as separate implementation slices**.
 6. Review the proposed **7-day unverified / 30-day verified-but-never-activated cleanup** thresholds, 7-day advance warning, server-authoritative activation guard and server-only dry-run/deletion mechanism. No live job is authorized.
+7. Separately review the owner-requested **established FREE-plan inactivity policy**: **6-month review/reminder**, **11-month advance warning**, **12-month candidate review**. Resolve the conflict with offline-first permanent account binding, notification/identity recovery, privacy/legal and paid entitlement before any automated account deletion; don't mistake uninstall or `last_sign_in_at` for proof.
 
 ## Review/acceptance plan (not executed)
 
@@ -151,6 +180,11 @@ The provided `account_setup_providers.dart` contains `completeAccountSetup({Stri
 | ONB-14 | Verified cloud-profile-incomplete candidate: 30 days inactivity + 7-day verified-email warning, trusted last activity/activation marker and race-safe server preflight; resumed progress prevents deletion |
 | ONB-15 | Cloud-profile-complete, protected/bound and offline-incomplete-local-setup users remain exempt forever from abandoned-signup cleanup even without a remote heartbeat; delete ambiguous cases **never** |
 | ONB-16 | Idempotent daily job, dry-run/kill switch, logs without PII, failure/retry, same-email re-registration after safe deletion, and expired-JWT/session/Storage-FK handling are verified before enabling |
+| ONB-17 | Previously active FREE user at 6/11/12 months without server activity: review-only 6-month checkpoint, verified advance notice by 11 months and **no live deletion** until a separate established-account risk gate is approved |
+| ONB-18 | Activated user working offline for over 12 months must not be misrepresented as uninstalled; test returning login, persisted account UUID, local ciphertext/keys and failure handling if future account expiry is authorized |
+| ONB-19 | Authenticated Keep my account / qualifying server activity cancels retention expiry; final eligibility re-check handles concurrent sign-in, paid entitlements, warning failures, disputes and ambiguous records safely |
+| ONB-20 | Before any established-account hard delete, test privacy disclosure, warning and grace, independent recovery/backup or export solution, irreversibility, same-email new UUID, rejected cross-account rebind and rollback limitations |
+
 
 
 Review evidence must distinguish **docs review** from runtime/server/native tests. Before Phase 1.2+ implementation, also satisfy [AUTH-01–14 and SEC-06](08-TEST-PLAN.md). No tests above have passed simply because they are written.
