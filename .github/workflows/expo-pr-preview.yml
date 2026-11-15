@@ -75,6 +75,15 @@ jobs:
           ref: ${{ steps.pr.outputs.head_sha }}
           persist-credentials: false
 
+      - name: Fetch immutable design-token baseline
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          auth_header="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w 0)"
+          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}" \
+            fetch --no-tags origin b8e0250f5b7973b5798399d40fb67b1aa241dcbf
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:

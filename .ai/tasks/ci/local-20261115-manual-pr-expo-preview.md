@@ -34,7 +34,7 @@
 - Manual workflow input is the PR number; GitHub does not provide a dynamic open-PR dropdown for `workflow_dispatch`.
 - Only open PRs from this repository targeting `main` may run. The workflow checks and checks out the exact PR head SHA.
 - Only the repository owner `im-tnyx` may dispatch it, and it accepts only owner-authored PRs; the job uses the `eas-preview` GitHub Environment secret scope.
-- Checkout fetches full Git history because `npm run verify` checks against the immutable historical design-token baseline.
+- Checkout fetches full history and explicitly fetches the immutable design-token baseline SHA because its original feature branch was deleted; the baseline itself is not changed.
 - Updates go to EAS branch/channel `pr-preview`. This workflow has no production publish option.
 - `EXPO_TOKEN` is read from the `eas-preview` GitHub Environment secret. It is never stored in source.
 - A compatible preview build must be installed once for QR-free OTA updates. Native/API changes require another build; iOS internal distribution may require device registration.
@@ -56,6 +56,8 @@
 - `.gitignore`
 - `eas.json`
 - `.github/workflows/expo-pr-preview.yml`
+- `.github/workflows/phase1-shell.yml`
+- `scripts/check-design-tokens.cjs`
 - `.ai/current.md`
 - `.ai/tasks/ci/local-20261115-manual-pr-expo-preview.md`
 
@@ -64,17 +66,17 @@
 - `npm.cmd install --package-lock-only --ignore-scripts --save expo-updates@~58.0.22 --no-audit --no-fund --cache "$env:TEMP\tnyx-expo-npm-cache"` — completed; resolved SDK 58 dependency and lockfile without install scripts.
 - Node `JSON.parse` for local `app.json`, `eas.json`, `package.json`, `package-lock.json` — passed.
 - Python PyYAML parse of `.github/workflows/expo-pr-preview.yml` — passed.
-- `git diff --check` — passed on tracked local changes before publishing; `.git/index` write was unavailable, so final staged check was not run.
-- `npm run verify` and native builds — not run. Workflow will run existing verification when manually dispatched; no EAS build or update was triggered.
+- `git diff --check` and `git show --check` — passed on the current local changes/commit.
+- `npm run verify` — passed locally after fetching the immutable baseline SHA; 22 contract tests passed. Native builds and EAS build/update were not run.
 - Manual GitHub workflow has not run; it is not available from `main` until merge. The `eas-preview` environment and `EXPO_TOKEN` secret name are confirmed in GitHub UI; secret value was not inspected. The repository UI did not expose required-reviewer protection, so workflow dispatch and PR author are restricted to `im-tnyx`.
 - Expo dashboard credential readiness was checked read-only: Android signing credential exists for `com.tnyx.tio`; iOS signing is not configured. Android `build_preview` can use the EAS-managed credential. iOS/all builds remain unavailable until their signing credentials are configured. No build was started during this check.
 - `.gitignore` patterns cover Expo local state, generated APK/AAB/IPA files, and common local signing credential formats; tracked source and EAS project config remain included.
 - The lockfile includes the SDK-matched `expo-updates` dependency so the repository's existing `npm ci` check remains reproducible.
-- GitHub `Phase 1.1 shell checks` passed on head `3e0e611ae11a186bc0328cd3a51f82a121b726d8`: dependency install, Expo compatibility, token checks, TypeScript, ESLint, and contract tests.
+- GitHub `Phase 1.1 shell checks` passed on head `e9f6608b5cbfaabb61757674df07c1cac600c826`. On head `c43b4c010881c04bd24dd80be5a997e3a0c91059`, run [43729401576](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43729401576) failed at `tokens:check`: the deleted source branch was no longer fetched even with `fetch-depth: 0`. The exact baseline SHA remained fetchable; both workflows now fetch it explicitly. GitHub validation of this fix is pending.
 
 ## PR review evidence and findings
 
-- Codex GitHub review [#5911333001](https://github.com/im-tnyx/Tio-Workspace/pull/15#pullrequestreview-5911333001) reviewed head `d90bbc39fcf2b14e0c5412f386da0c004a31777a` and found the missing full-history checkout needed by the immutable design-token baseline. Fixed with `fetch-depth: 0` in commit `3e0e611ae11a186bc0328cd3a51f82a121b726d8`; latest CI passed, but exact-head re-review remains pending.
+- Codex GitHub review [#5911333001](https://github.com/im-tnyx/Tio-Workspace/pull/15#pullrequestreview-5911333001) reviewed head `d90bbc39fcf2b14e0c5412f386da0c004a31777a` and found the token baseline unavailable. `fetch-depth: 0` was added in commit `3e0e611ae11a186bc0328cd3a51f82a121b726d8`, but later exact-head CI proved that alone was insufficient because the baseline's original feature branch had been deleted. Both CI workflows now fetch the immutable baseline SHA directly using step-scoped `GITHUB_TOKEN`; the baseline commit itself remains unchanged.
 - Codex GitHub review [#5911380555](https://github.com/im-tnyx/Tio-Workspace/pull/15#pullrequestreview-5911380555) reviewed head `e9f6608b5cbfaabb61757674df07c1cac600c826` and requested a documented/verified signing-credential prerequisite. Android credentials have now been verified in the Expo dashboard and the missing iOS setup is explicitly documented; exact-head re-review remains pending.
 - Review status: `REVIEW_PENDING` until the latest GitHub PR diff has a recorded reviewer assessment.
 - Formal GitHub approval and merge authorization: not requested or granted.
