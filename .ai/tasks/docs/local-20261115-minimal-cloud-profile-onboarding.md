@@ -40,7 +40,7 @@
 
 **Owner-required inputs:** Email/OTP/Password, Username, Name, DOB and Sex; **Mobile is the only optional onboarding input**, with Skip. Units/Height/Current Weight/Activity Level/Goal required locally. Mobile is an optional field **within Account Setup** alongside required Username; **no standalone Mobile screen**. Separate Name screen occurs immediately after Account Setup.
 
-**Finalization UX (owner screenshot references):** Centered circular progress with “Personalizing your experience…”, then genuine completion shows a centered checkmark + “You're all set!” and only then a bottom Continue CTA. **Exclude** cards, ratings, stars and carousel. Completion is based on real durable setup saves, not a timer; failures retry safely and returning users skip this first-run step. Acceptance tests ONB-11/12 are in proposed ADR-019.
+**Finalization UX (owner screenshot references):** Centered circular progress ring with a **percentage in the middle when actual completed checkpoints are measurable**, and “Personalizing your experience…”. At genuinely verified 100% replace the percentage with a centered checkmark + “You're all set!”, then reveal the bottom Continue CTA. **Exclude** cards, ratings, stars and carousel. No fake/timer-based percentages: use indeterminate fallback if numeric progress cannot be verified. Failures retry safely and returning users skip this first-run step. Acceptance tests ONB-11/12 are in proposed ADR-019.
 
 **Proposed storage:** Cloud `auth.users` for email/account/password credentials, plus private `public.profiles` for username/full_name/DOB/calculation_sex/nullable mobile. Local encrypted DB for units, height, measured weight, activity, goal, workouts and resume metadata.
 
