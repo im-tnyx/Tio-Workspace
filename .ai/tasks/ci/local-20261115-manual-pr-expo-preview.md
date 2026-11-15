@@ -34,7 +34,7 @@
 - Only open PRs from this repository targeting `main` may run. The workflow checks and checks out the exact PR head SHA.
 - Only the repository owner `im-tnyx` may dispatch it, and it accepts only owner-authored PRs; the job uses the `eas-preview` GitHub Environment secret scope.
 - Updates go to EAS branch/channel `pr-preview`. This workflow has no production publish option.
-- `EXPO_TOKEN` is read only from the GitHub Actions repository secret. It is never stored in source and will not be created by this task.
+- `EXPO_TOKEN` is read from the `eas-preview` GitHub Environment secret. It is never stored in source.
 - A compatible preview build must be installed once for QR-free OTA updates. Native/API changes require another build; iOS internal distribution may require device registration.
 
 ## Selected tools and references
@@ -60,7 +60,7 @@
 - Python PyYAML parse of `.github/workflows/expo-pr-preview.yml` — passed.
 - `git diff --check` — passed on tracked local changes before publishing; `.git/index` write was unavailable, so final staged check was not run.
 - `npm run verify` and native builds — not run. Workflow will run existing verification when manually dispatched; no EAS build or update was triggered.
-- GitHub workflow has not run; `EXPO_TOKEN` secret is not confirmed/configured.
+- Manual GitHub workflow has not run; it is not available from `main` until merge. The `eas-preview` environment and `EXPO_TOKEN` secret name are confirmed in GitHub UI; secret value was not inspected. The repository UI did not expose required-reviewer protection, so workflow dispatch and PR author are restricted to `im-tnyx`.
 - The lockfile includes the SDK-matched `expo-updates` dependency so the repository's existing `npm ci` check remains reproducible.
 
 ## PR review evidence and findings
@@ -70,8 +70,8 @@
 
 ## Handoff
 
-**Next owner:** Repository owner for one-time `EXPO_TOKEN` repository secret and initial compatible preview app installation.
+**Next owner:** Repository owner for review/merge authorization and initial compatible preview app installation.
 
-**Next authorized action:** Review this PR; after merge, add `EXPO_TOKEN` in GitHub Settings → Secrets and variables → Actions, then run **Expo PR preview** from Actions with a valid open PR number.
+**Next authorized action:** Complete review and separately authorize merge. After merge, run **Expo PR preview** from Actions with a valid owner-authored PR number.
 
 **Post-merge synchronization/archive needed:** Yes, after verified review and merge.

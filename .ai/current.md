@@ -28,7 +28,7 @@ Owner additionally requested **Platform, OS version, App build, Avatar, Plan** o
 
 ## Next safe action
 
-Complete the manual PR workflow and review the proposed changes. Before running it, add the Expo access token as the GitHub Actions repository secret `EXPO_TOKEN`; never put the value in this file or source. Install a compatible preview build once to receive QR-free OTA updates. The workflow must publish only to the `pr-preview` branch; production publishing is out of scope.
+Complete review and merge of the manual PR preview workflow before running it. `EXPO_TOKEN` is configured in GitHub's `eas-preview` environment; never put the value in this file or source. Install a compatible preview build once to receive QR-free OTA updates. The workflow must publish only to the `pr-preview` branch; production publishing is out of scope.
 
 After this task, the next product decision remains review of [proposed ADR-019](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) and [Phase 1 readiness](../docs/21-PHASE-1-READINESS.md). No Auth/session/SQLite/Supabase implementation is authorized.
 
