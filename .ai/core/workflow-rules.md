@@ -19,7 +19,7 @@
 - Reconcile conflicting agent assignments and stale branches against actual GitHub state before writing.
 
 ## Approval and execution gates
-- **Phase 0 remains documentation-only**; new runtime code or production changes require separately approved Phase 1 scope.
+- **Phase 1.1 Expo mock shell is merged** in PR #11. This authorization covered only the nonfunctional UI shell and static tooling; **new implementation slices** (including live Auth/OTP, encrypted workout data, Supabase schema and deployment) require separate written owner approval. Documentation review can proceed within an authorized bounded scope.
 - An issue, planning document, task or PR is not permission to implement.
 - Routine subtasks of an approved scope may proceed without repeating the same decision; scope expansions, privacy/security changes and merge/deployment need explicit approvals.
 - Workflow: Discovery → Exploration → Skills/architecture plan → Bounded work → Proportional validation → PR/review → Owner-authorized merge → Verified handoff.
