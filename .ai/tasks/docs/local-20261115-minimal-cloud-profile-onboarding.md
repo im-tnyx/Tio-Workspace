@@ -76,8 +76,8 @@ Expected docs-only paths: `docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md
 
 ## Handoff
 
-**Next owner:** Repository owner / independent docs/security reviewer.  
-**Next authorized action:** Review proposed ADR, reconcile specified choices, complete review gate and **separately authorize merge**; implementation requires separate approved slice.  
-**Post-merge synchronization/archive needed:** Yes, only after verified merge.
+- **Next owner:** Repository owner / independent docs/security reviewer.
+- **Next authorized action:** Review proposed ADR, reconcile specified choices, complete review gate and **separately authorize merge**; implementation requires separate approved slice.
+- **Post-merge synchronization/archive needed:** Yes, only after verified merge.
 
 [← Task guide](../README.md) · [Root agent contract](../../../AGENTS.md)
