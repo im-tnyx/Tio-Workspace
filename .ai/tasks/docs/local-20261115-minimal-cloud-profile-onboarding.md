@@ -20,7 +20,8 @@
 - [x] [Core architecture](../../core/architecture.md), [security](../../core/security-rules.md) and [canonical docs](../../../docs/00-INDEX.md) reviewed
 - [x] Live `main` HEAD and zero open PRs verified before creating the branch
 - [x] GitHub review **requested** from `im-tio` on [PR #13](https://github.com/im-tnyx/Tio-Workspace/pull/13)
-- [ ] Independent PR review **completed**, and explicit owner **merge approval**, both pending
+- [x] Independent **COMMENTED** review posted by `im-tio` on original HEAD `0d4cf52`; one P3 whitespace finding; author pushed a narrow fix
+- [ ] Re-review on updated HEAD, clean checkout `git diff --check` and explicit owner **merge approval** pending
 
 ## Approved scope / non-goals
 
@@ -53,26 +54,27 @@
 - [x] Verified latest GitHub `main`, PR #11 and merged documentation PR #12
 - [x] Produced bounded proposal without changing runtime or Supabase
 - [x] Created [PR #13](https://github.com/im-tnyx/Tio-Workspace/pull/13), with a docs-only 5-file diff; requested review from `im-tio`
-- [ ] Independent review result and owner decision needed
+- [x] Corrected four trailing-whitespace lines in two docs, preserving Markdown structure; GitHub remote patch whitespace scan clean on first fix HEAD `3cc58eb`
+- [ ] Exact PR checkout `git diff --check`, reviewer re-confirmation of fix, and owner decision needed
 
 Expected docs-only paths: `docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md`, `docs/00-INDEX.md`, `docs/09-DECISIONS.md` (proposal pointer only), `.ai/current.md`, this task.
 
 ## PR review evidence and findings
 
-- Review requested from: **`im-tio`** via GitHub [PR #13 reviewer request](https://github.com/im-tnyx/Tio-Workspace/pull/13); request accepted by GitHub, review not yet submitted.
+- Reviewer: **`im-tio`** submitted a GitHub `COMMENTED` review on `0d4cf52` (2026-11-15), identifying one P3 trailing-whitespace issue at [inline discussion](https://github.com/im-tnyx/Tio-Workspace/pull/13#discussion_r4578155572). A fresh re-review of the fix is pending.
 - Reviewer identity and URL: `im-tio`, [PR #13](https://github.com/im-tnyx/Tio-Workspace/pull/13).
-- Inspected SHA: initial PR head `dfbb161437c2a625e3ad80fe815a850313bab0af`; any later SHA needs separate verification/review.
-- Review status: `REVIEW_PENDING`.
-- Review result: `INCONCLUSIVE` pending separate review.
-- Review type: Not yet performed.
-- Blocking findings: approval gates above.
+- Reviewed SHA: `0d4cf52d85f8c4bf022712105b34d174ac87e6cb`. Fixed in commits `dcdfe3071692a8f2bfdaf9c67fd964a7997a31ff` and `3cc58eb9b02e76ac3c1d3f4cc4fc9f2d6df61c71`. The handoff update itself advances the PR HEAD; reviewer must inspect the new SHA.
+- Review status: `COMMENTED`, whitespace P3 addressed in branch; **fix confirmation / reviewer gate still pending**.
+- Review result: no confirmed security/correctness defect in docs proposal; `im-tio` noted P3 whitespace issue and no real checkout test; **not formal APPROVED**.
+- Review type: Independent `im-tio` review of the actual five-file Markdown diff; Codex bot also reported a completed code review with no findings on previous HEAD.
+- Findings: four added trailing-space lines at ADR lines 3–4 and task lines 79–80; the fix is committed, with a zero-finding remote patch scan. The original thread and local `git diff --check` remain to be closed/verified.
 - Merge approval: **Not granted**.
 
 ## Validation evidence
 
 - Pre-change: GitHub repo/branch files and documentation constraints read; connected Supabase previously showed zero `public` tables/migrations.
-- Documentation checks completed against PR head before this handoff update: exactly 5 Markdown-only files in GitHub compare, specified screen/field rules, index/decision/pointer and zero broken relative links in the changed Markdown files (checked against the repository tree). Reviewer gate remains pending.
-- Not run: local `git diff --check`, `npm run verify`, OTP/server/RLS tests and native tests; no worktree or runtime implementation.
+- Documentation checks: five Markdown-only files; links and source-of-truth policy boundaries checked earlier. **Remote GitHub patch scan on HEAD `3cc58eb` reviewed 314 added lines: zero trailing spaces/conflict-marker lines**. This is not the actual checkout `git diff --check`. Recheck after this handoff commit.
+- Not run: **actual local checkout** `git diff --check` (container cannot directly fetch the private GitHub checkout); `npm run verify`, OTP/server/RLS and native tests are not run/not applicable to this docs-only PR. Windows verification: `git fetch origin; git switch docs/phase1-2-minimal-profile-onboarding-20261115; git diff --check origin/main...HEAD`.
 
 ## Handoff
 
