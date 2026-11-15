@@ -83,6 +83,14 @@ async function expoServerIsReady() {
   }
 }
 
+function expoTunnelIsReady() {
+  try {
+    return readFileSync(logPath, 'utf8').includes('Tunnel ready.');
+  } catch {
+    return false;
+  }
+}
+
 async function assertMetroPortIsFree() {
   await new Promise((resolvePort, rejectPort) => {
     const server = createServer();
@@ -192,10 +200,6 @@ async function startServer() {
 
   const deadline = Date.now() + startupTimeoutMs;
   while (Date.now() < deadline) {
-    if (await expoServerIsReady()) {
-      console.log(`Expo Go dev server is running on the Codespace tunnel. Log: ${logPath}`);
-      return;
-    }
     if (exit) {
       try {
         process.kill(-child.pid, 'SIGTERM');
@@ -204,13 +208,17 @@ async function startServer() {
       }
       rmSync(pidPath, { force: true });
       const reason = exit.error?.message ?? `exit ${exit.code ?? exit.signal}`;
-      throw new Error(`Expo exited before Metro became ready (${reason}). See ${logPath}.`);
+      throw new Error(`Expo exited before Metro and the tunnel became ready (${reason}). See ${logPath}.`);
+    }
+    if ((await expoServerIsReady()) && expoTunnelIsReady() && !exit) {
+      console.log(`Expo Go dev server is running on the Codespace tunnel. Log: ${logPath}`);
+      return;
     }
     await delay(1_000);
   }
 
   await stopManagedServer();
-  throw new Error(`Expo did not become ready within 5 minutes. See ${logPath}.`);
+  throw new Error(`Expo Metro and tunnel did not become ready within 5 minutes. See ${logPath}.`);
 }
 
 async function main() {
@@ -229,7 +237,7 @@ async function main() {
 
     if (shouldRestart) {
       await stopManagedServer();
-    } else if (await expoServerIsReady()) {
+    } else if (readManagedPid() && (await expoServerIsReady()) && expoTunnelIsReady()) {
       console.log('Expo Go dev server is already running.');
       return;
     }

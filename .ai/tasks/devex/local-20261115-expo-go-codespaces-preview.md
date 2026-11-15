@@ -64,6 +64,7 @@
 - [x] Changed repository visibility to public; verified `private=false`. Configured and read back `main` protection: one PR approval, stale-review dismissal, last-push approval, conversation resolution, admin enforcement, no force pushes or deletion.
 - [x] Created and verified `expo-codespaces-trusted` with exact `main` deployment branch policy; its secret list is empty.
 - [ ] Re-review the latest PR head and disposition the P2 thread against verified GitHub controls.
+- [x] GitHub Codex [review #5912161075](https://github.com/im-tnyx/Tio-Workspace/pull/18#pullrequestreview-5912161075) on `c35410c` reported remote SSH quoting, tunnel readiness, and Expo-generated worktree findings; remediation is prepared for review.
 - [ ] Owner configures the secret and manually creates one Codespace after merge.
 
 ## Changed files
@@ -72,6 +73,7 @@
 - `.github/workflows/expo-preview-push-signal.yml`, `.github/workflows/expo-codespaces-preview-worker.yml`
 - `scripts/start-codespace-expo.mjs`
 - `scripts/sync-codespace-expo-preview.sh`
+- `.gitignore`; remove generated `expo-env.d.ts` from Git tracking while keeping the local file
 - `docs/00-INDEX.md`, `docs/27-EXPO-GO-CODESPACES-LIVE-PREVIEW.md`
 - `.ai/current.md`, this task file
 
@@ -94,6 +96,7 @@
 - Security boundary: no Codespaces token has been configured; no credential is present in source. The owner will add it only to the verified `expo-codespaces-trusted` environment after review/merge.
 - Independent review findings: `scripts/sync-codespace-expo-preview.sh` initially ran `npm ci` before stopping Metro and fingerprinted only `package-lock.json`; both issues were fixed by stopping first and recording hashes of both dependency manifests after a successful install. Final staged diff re-review returned `PASS`; exact published head still needs review.
 - GitHub Codex found that a repository secret was readable by other repository workflows and that fetching the mutable preview branch could execute a later unaccepted push. The remediation references `expo-codespaces-trusted` and fetches only the SHA from the qualifying push. Independent re-review of `e762fe5` found the SHA issue fixed but token access only partly mitigated: any workflow on allowed `main` could request the environment.
+- Codex review #5912161075 identified three additional startup/sync defects: nested SSH shell quoting flattened the remote command, Metro `/status` appeared before tunnel readiness, and Expo typed-route generation modified tracked files. The follow-up removes nested `bash -lc`, waits for Expo's `Tunnel ready.` log marker as well as local Metro, and ignores/untracks generated `expo-env.d.ts` while preserving its local copy. Exact pushed-head re-review remains pending.
 - Historical finding before visibility change: `im-tio` has push and `im-tnyx` has admin; private-repository `main` protection/rulesets returned HTTP 403. Owner then explicitly approved public visibility after disclosure of source/history/215 Actions logs. On the public repository, live API verification showed protected `main` with one approval, stale-review dismissal, last-push approval, resolved conversations and admin enforcement; force pushes/deletion disabled. The new Codespaces environment has one exact `main` deployment policy and no secret. This removes the identified branch-access blocker but does not replace PR review or device validation.
 
 ## Handoff

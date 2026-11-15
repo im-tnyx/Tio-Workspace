@@ -92,4 +92,4 @@ jobs:
           CODESPACE_NAME: ${{ steps.select.outputs.name }}
         run: >-
           gh codespace ssh --codespace "$CODESPACE_NAME" --
-          bash -lc "cd /workspaces/Tio-Workspace && bash scripts/sync-codespace-expo-preview.sh $ACCEPTED_SHA"
+          bash /workspaces/Tio-Workspace/scripts/sync-codespace-expo-preview.sh "$ACCEPTED_SHA"
