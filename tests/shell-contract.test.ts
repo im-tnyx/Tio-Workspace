@@ -136,7 +136,7 @@ test('post-Welcome auth uses persistent parent header and CTA, middle-only step 
   const welcome = readFileSync('src/features/onboarding/screens/WelcomeScreen.tsx', 'utf8');
 
   assert.doesNotMatch(page, /<KeyboardAvoidingView/);
-  assert.match(page, /\{children\}/);
+  assert.match(page, /keyboardListenersReady \? children : null/);
   assert.match(page, /<Button size="onboarding"/);
   assert.match(page, /label=\{footerLabel\}/);
   assert.match(page, /\{footerNotice\}/);
@@ -144,14 +144,21 @@ test('post-Welcome auth uses persistent parent header and CTA, middle-only step 
   // Temporary warning comes BEFORE the CTA so the bottom edge is 16pt away.
   assert.ok(page.indexOf('{footerNotice ? <Text') < page.indexOf('<Button size="onboarding"'));
   assert.doesNotMatch(page, /<ScrollView/);
-  // One native frame event controls the bottom inset; no KAV or double update.
+  // Native keyboard listeners must exist before autoFocus mounts an input.
+  assert.match(page, /useLayoutEffect\(\(\) =>/);
+  assert.match(page, /Keyboard\.addListener\('keyboardWillShow'/);
   assert.match(page, /Keyboard\.addListener\('keyboardWillChangeFrame'/);
+  assert.match(page, /Keyboard\.addListener\('keyboardDidShow'/);
+  assert.match(page, /Keyboard\.addListener\('keyboardDidHide'/);
+  assert.ok(page.indexOf("Keyboard.addListener('keyboardDidShow'") <
+    page.indexOf('setKeyboardListenersReady(true)'));
+  assert.match(page, /const currentMetrics = Keyboard\.metrics\(\)/);
   assert.match(page, /Keyboard\.scheduleLayoutAnimation\(event\)/);
-  assert.match(page, /event\.endCoordinates\.screenY/);
   assert.match(page, /keyboardOverlap\(/);
-  assert.match(page, /Math\.max\(keyboardInset, insets\.bottom\)/);
-  assert.match(page, /\) \+ spacing\.lg/);
-  assert.match(page, /gap: spacing\.sm, paddingTop: spacing\.sm/);
+  // The fixed 16pt footer stays independently anchored above the IME.
+  assert.match(page, /position: 'absolute', left: spacing\.lg, right: spacing\.lg/);
+  assert.match(page, /bottom: Math\.max\(keyboardInset, insets\.bottom\) \+ spacing\.lg/);
+  assert.match(page, /gap: spacing\.sm/);
   assert.match(page, /paddingHorizontal: spacing\.lg/);
   // Removing temporary preview copy later must not remove CTA edge padding.
   assert.match(page, /footerNotice\?: string/);

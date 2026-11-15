@@ -1,15 +1,16 @@
-import { useEffect, useState } from 'react';
+import { useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Dimensions, Keyboard, Platform, Pressable, Text, View } from 'react-native';
+import type { KeyboardEvent, KeyboardMetrics } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
-import { authPreviewLayout, spacing, typography } from '@/shared/theme/tokens';
+import { spacing, typography } from '@/shared/theme/tokens';
 import { Button } from './Button';
 import { copy } from '@/shared/i18n/en';
 import { keyboardOverlap } from './authKeyboardGeometry';
 
-// Fixed header and non-scrolling form. iOS CTA follows one native keyboard
-// frame event source rather than two competing keyboard avoidance mechanisms.
+// The header is fixed and the auth screen never scrolls. The footer is anchored
+// independently of the changing form, and follows native keyboard-frame events.
 export function AuthPreviewPage({
   onBack, children, headerActionLabel, onHeaderAction,
   footerLabel, footerDisabled, footerKeepAppearance = false, footerNotice, onFooterPress,
@@ -22,24 +23,55 @@ export function AuthPreviewPage({
 }) {
   const insets = useSafeAreaInsets();
   const { colors } = useAppearance();
-  // One positioning owner: keyboard frame event supplies native animation
-  // timing and the precise bottom inset. No separate avoidance wrapper.
-  const [keyboardInset, setKeyboardInset] = useState(() =>
-    Platform.OS === 'ios' ? Keyboard.metrics()?.height ?? 0 : 0);
-  useEffect(() => {
+  const [keyboardInset, setKeyboardInset] = useState(0);
+  // iOS TextInput autoFocus runs on native mount, before a passive effect can
+  // subscribe to the initial keyboard event. Mount inputs only AFTER listeners.
+  const [keyboardListenersReady, setKeyboardListenersReady] =
+    useState(Platform.OS !== 'ios');
+  const lastKeyboardInset = useRef(0);
+
+  useLayoutEffect(() => {
     if (Platform.OS !== 'ios') return;
-    const frame = Keyboard.addListener('keyboardWillChangeFrame', event => {
-      Keyboard.scheduleLayoutAnimation(event);
-      setKeyboardInset(keyboardOverlap(
-        Dimensions.get('screen').height, event.endCoordinates.screenY));
+    const insetFromFrame = (frame: KeyboardMetrics) => {
+      const overlap = keyboardOverlap(
+        Dimensions.get('screen').height, frame.screenY);
+      return overlap > 0 ? Math.max(overlap, frame.height) : 0;
+    };
+    const update = (inset: number, event?: KeyboardEvent) => {
+      if (lastKeyboardInset.current === inset) return;
+      lastKeyboardInset.current = inset;
+      if (event) Keyboard.scheduleLayoutAnimation(event);
+      setKeyboardInset(inset);
+    };
+
+    // Will notifications animate the footer together with the system keyboard.
+    // The DidShow callback is a recovery path if a Will event is not delivered.
+    const willShow = Keyboard.addListener('keyboardWillShow', event => {
+      update(insetFromFrame(event.endCoordinates), event);
     });
-    // Only a fallback if the native WillChangeFrame event was missed.
-    const hidden = Keyboard.addListener('keyboardDidHide', () => setKeyboardInset(0));
-    return () => { frame.remove(); hidden.remove(); };
+    const willChange = Keyboard.addListener('keyboardWillChangeFrame', event => {
+      update(insetFromFrame(event.endCoordinates), event);
+    });
+    const didShow = Keyboard.addListener('keyboardDidShow', event => {
+      update(insetFromFrame(event.endCoordinates));
+    });
+    const willHide = Keyboard.addListener('keyboardWillHide', event => {
+      update(0, event);
+    });
+    const didHide = Keyboard.addListener('keyboardDidHide', () => update(0));
+
+    // Covers an already-visible keyboard when returning to this route.
+    const currentMetrics = Keyboard.metrics();
+    if (currentMetrics) update(insetFromFrame(currentMetrics));
+    // The next render mounts auto-focused TextFields only after subscriptions.
+    setKeyboardListenersReady(true);
+    return () => {
+      willShow.remove(); willChange.remove(); didShow.remove();
+      willHide.remove(); didHide.remove();
+    };
   }, []);
 
   return <View style={{ flex: 1, backgroundColor: colors.background }}>
-    {/* Fixed back arrow: identical safe-area position before/after focus. */}
     <View style={{
       paddingTop: insets.top + spacing.sm,
       paddingHorizontal: spacing.lg,
@@ -69,32 +101,31 @@ export function AuthPreviewPage({
         </Pressable> : null}
       </View>
     </View>
+
+    {/* Form content can change stages without unmounting the persistent footer.
+        No ScrollView; input autoFocus cannot race the listener subscription. */}
     <View style={{
       flex: 1, minHeight: 0, paddingHorizontal: spacing.lg,
       paddingTop: spacing.xl,
-      // Keyboard overlap already includes the home-indicator region.
-      // Preserve the same 16pt edge gutter on both sides and below the CTA.
-      paddingBottom: (Platform.OS === 'ios'
-        ? Math.max(keyboardInset, insets.bottom)
-        : insets.bottom) + spacing.lg,
     }}>
-        {/* Only this middle content updates between Email, OTP and Password. */}
-        <View style={{ flex: 1, minHeight: authPreviewLayout.authMiddleMinHeight }}>
-          {children}
-        </View>
-        {/* Persistent footer: stable temporary notice ABOVE the same CTA. */}
-        <View style={{ gap: spacing.sm, paddingTop: spacing.sm }}>
-          {/* One unchanged warning in every mock step; no blank height slot. */}
-          {footerNotice ? <Text style={[typography.caption, {
-            color: colors.muted, textAlign: 'center',
-          }]}>{footerNotice}</Text> : null}
-          {/* CTA stays last with the 16pt horizontal/bottom design gutter. */}
-          <Button size="onboarding"
-            label={footerLabel} onPress={onFooterPress}
-            disabledTone="soft" disabled={footerDisabled}
-            disabledAppearance={footerKeepAppearance ? 'enabled' : 'muted'}
-          />
-        </View>
+      {keyboardListenersReady ? children : null}
+    </View>
+
+    {/* Absolute footer is always anchored above the keyboard regardless of
+        the size of Email/OTP/Password middle content. Same 16pt side/bottom
+        gutters and 8pt temporary warning-to-button gap. */}
+    <View style={{
+      position: 'absolute', left: spacing.lg, right: spacing.lg,
+      bottom: Math.max(keyboardInset, insets.bottom) + spacing.lg,
+      gap: spacing.sm,
+    }}>
+      {footerNotice ? <Text style={[typography.caption, {
+        color: colors.muted, textAlign: 'center',
+      }]}>{footerNotice}</Text> : null}
+      <Button size="onboarding"
+        label={footerLabel} onPress={onFooterPress}
+        disabledTone="soft" disabled={footerDisabled}
+        disabledAppearance={footerKeepAppearance ? 'enabled' : 'muted'}
+      />
     </View>
   </View>;
-}

@@ -74,3 +74,9 @@ Official Expo SDK 58, Expo Router and Expo Blur docs checked on 2026-11-14. Foll
 - CI token-guard follow-up: replace inline numeric keyboard test inside `paddingBottom` expression with `Math.max(keyboardInset, insets.bottom)`, preserving native keyboard clearance while keeping the project's token guard satisfied. Recheck full CI at updated HEAD; original commit failed the token guard before TypeScript/tests ran.
 
 - Follow-up CI typecheck correction: React Native 0.88 strict types require `TextInputInstance` (not the `TextInput` component function) for the retained Email field `useRef` and reusable TextField `Ref` prop. Exact issue surfaced on previous HEAD after token guard passed; full CI must be rerun.
+
+## Listener-before-autofocus / keyboard overlay recovery (2026-11-15)
+
+- Owner verified Continue was still hidden underneath keyboard at `c94e8def5f`. Current-HEAD Codex review identified `useEffect` listener registration racing native initial `autoFocus`; a keyboard event can be emitted before listener installation. Previous static tests cannot exercise this.
+- New `AuthPreviewPage` registers `keyboardWillShow`, `keyboardWillChangeFrame`, `keyboardDidShow` fallback, hide listeners and metrics reconciliation **before mounting auto-focused form children** using `useLayoutEffect` + ready gate. Footer moves into an absolutely positioned, persistent bottom region at `max(keyboardInset, safeArea.bottom) + 16pt`; left/right inset 16pt, warning CTA gap 8pt. Welcome/real Auth/Supabase unaffected; non-scrolling design preserved.
+- Acceptance requires CI on exact new HEAD plus physical iPhone screenshot/video confirming real native keyboard movement; iOS and Android small-screen/accessibility risk remains unverified. Request independent current-HEAD review and never merge without owner action.
