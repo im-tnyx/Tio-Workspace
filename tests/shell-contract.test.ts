@@ -204,7 +204,8 @@ test('post-Welcome auth uses persistent parent header and CTA, middle-only step 
   // Android now lets native KAV padding own the keyboard movement;
   // the old screenY/physical-screen inference must never compete with it.
   assert.match(page, /return Platform\.OS === 'android'/);
-  assert.match(page, /<KeyboardAvoidingView behavior="padding" style=\{\{ flex: 1 \}\}>\{root\}/);
+  assert.match(page, /<KeyboardAvoidingView behavior="padding"/);
+  assert.match(page, /keyboardVerticalOffset=\{-insets\.top\}/);
   assert.doesNotMatch(page, /Dimensions\.get\('screen'\)|androidKeyboardClearance/);
   // The fixed footer never double-adds keyboard height if the native route
   // already ended at the keyboard's upper edge.
@@ -227,10 +228,16 @@ test('Android SDK 58 edge-to-edge uses native KAV and no competing JS keyboard l
   // The screenshot-confirmed problem persisted through custom screen-height
   // guesses. Android alone now follows Expo's documented native padding API.
   assert.match(page, /return Platform\.OS === 'android'/);
-  assert.match(page, /<KeyboardAvoidingView behavior="padding" style=\{\{ flex: 1 \}\}>\{root\}<\/KeyboardAvoidingView>/);
+  assert.match(page, /<KeyboardAvoidingView behavior="padding"/);
+  assert.match(page, /keyboardVerticalOffset=\{-insets\.top\}/);
+  assert.match(page, /: keyboardVisible \? 0 : insets\.bottom/);
+  assert.match(page, /bottom: keyboardClearance \+ spacing\.lg/);
   assert.match(page, /const root = <View ref=\{rootRef\} onLayout=\{onRootLayout\}/);
   assert.match(page, /const keyboardClearance = Platform\.OS === 'ios'/);
-  assert.match(page, /: insets\.bottom;/);
+  // Keyboard-visible Android's native KAV already owns the IME: no extra
+  // bottom navigation inset; when closed, preserve safe-area clearance.
+  assert.match(page, /: keyboardVisible \? 0 : insets\.bottom/);
+  assert.match(page, /: keyboardVisible \? 0 : insets\.bottom;/);
   assert.doesNotMatch(page, /androidKeyboardClearance|androidKeyboardHeight|unobstructedRootHeight|Dimensions\.get/);
   assert.doesNotMatch(geometry, /androidKeyboardClearance/);
   assert.match(page, /if \(Platform\.OS === 'ios'\) updateKeyboardFrame/);

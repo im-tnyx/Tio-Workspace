@@ -115,14 +115,13 @@ export function AuthPreviewPage({
     };
   }, [measureRootBottom]);
 
-  // Android KAV reduces the root's actual layout height by IME padding;
-  // do NOT add a second keyboard height or screenY offset. Safe-area bottom
-  // remains separate so the footer clears the navigation-bar region at rest.
-  // iOS's proven root-bottom vs native keyboard-top position is untouched.
+  // iOS keeps the existing measured-frame clearance. Android KAV already
+  // clears the opened IME: never add the Android navigation-bar safe inset
+  // ON TOP of that clearance. At rest, retain the system bar protection.
   const keyboardClearance = Platform.OS === 'ios'
-    && keyboardTopY !== null && rootBottomY !== null
-    ? keyboardOverlap(rootBottomY, keyboardTopY)
-    : insets.bottom;
+    ? keyboardTopY !== null && rootBottomY !== null
+      ? keyboardOverlap(rootBottomY, keyboardTopY) : insets.bottom
+    : keyboardVisible ? 0 : insets.bottom;
   const rawAvailableHeight = authAvailableHeight(
     rootHeight, headerHeight, footerHeight, keyboardClearance,
     spacing.lg, spacing.sm);
@@ -180,11 +179,13 @@ export function AuthPreviewPage({
     </View>
   </View>;
 
-  // Expo SDK 58 Android edge-to-edge: behavior MUST be set to 'padding'.
-  // Wrapping the whole auth root (not just the footer) preserves its single
-  // absolute CTA, while the native keyboard inset shrinks the usable root.
-  // iOS intentionally keeps the existing non-KAV layout.
+  // Expo SDK 58 edge-to-edge: Android native KAV is the only keyboard
+  // positioning owner. The root itself already includes the status bar inset;
+  // compensate that offset so the button does not float above Gboard.
+  // iOS intentionally keeps its separate, already verified non-KAV layout.
   return Platform.OS === 'android'
-    ? <KeyboardAvoidingView behavior="padding" style={{ flex: 1 }}>{root}</KeyboardAvoidingView>
+    ? <KeyboardAvoidingView behavior="padding"
+        keyboardVerticalOffset={-insets.top}
+        style={{ flex: 1 }}>{root}</KeyboardAvoidingView>
     : root;
 }
