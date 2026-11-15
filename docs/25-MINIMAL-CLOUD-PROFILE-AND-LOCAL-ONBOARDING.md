@@ -36,7 +36,7 @@ Phase 1.1 is a nonfunctional Expo mock shell. The current preview shows `Email �
 
 Welcome includes Get Started; do not add a redundant separate Get Started page. Sign-in is a separate returning-user path. Final user-facing strings remain English-only for the current MVP per ADR-018.
 
-**Unresolved provider gate:** The owner's `Email → OTP → Password` UX order is **not** proof that the existing email+password signup contract can be implemented that way. Supabase offers email OTP sign-in and authenticated password update paths, but provider configuration, email template, account-creation behavior, session establishment, error/abuse handling and password lifecycle must be verified in the actual project. If these cannot safely reproduce the selected order, show the trade-off and obtain owner approval for a `Email → Password → OTP` alternative **before editing the live flow**. No client-only OTP acceptance or fake email verification.
+**Fixed owner decision — do not change the screen order:** **Email → OTP → Password** must remain the first-time signup UI sequence. Technical feasibility is still a required implementation gate: validate Supabase email OTP account verification, production template/configuration, protected session establishment and authenticated password setup/update **in that exact order**. If a secure supported mechanism is unavailable, block implementation and escalate the provider/architecture issue; **do not reorder to Email → Password → OTP** or fake OTP verification. New workouts never unlock before real server-side email verification and password/session setup.
 
 ## Cloud boundary: minimum account identity
 
@@ -74,7 +74,7 @@ Welcome includes Get Started; do not add a redundant separate Get Started page. 
 
 ## Decisions to finalize before real implementation
 
-1. Verify the actual Supabase password-after-email-OTP mechanism versus the existing ADR-017 order, production email template/SMTP and server-enforced rate limits. Preserve 6 digits, 10 minutes, 60 s resend, 5 sends/hour, 5 failed attempts/challenge and 15-minute cooldown as **targets only until proven**; no CAPTCHA.
+1. Verify the actual Supabase password-after-email-OTP mechanism **without changing the fixed Email → OTP → Password UI order**; reconcile ADR-017 wording, production email template/SMTP and server-enforced rate limits. Preserve 6 digits, 10 minutes, 60 s resend, 5 sends/hour, 5 failed attempts/challenge and 15-minute cooldown as **targets only until proven**; no CAPTCHA.
 2. Define required `calculation_sex` choices/label, DOB minimum/maximum/underage policy and disclosure; avoid unexplained sensitive-data collection.
 3. Finalize global username uniqueness, case/Unicode confusables, 3–16 grapheme validation, safe error messaging and update rules; existing ADR-017 calls username optional and must be revised if accepted.
 4. Define `full_name`, phone normalization (when present), local metric ranges/categories, edit/resume/recovery rules and deletion/retention behavior.
