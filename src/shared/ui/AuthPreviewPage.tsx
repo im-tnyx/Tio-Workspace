@@ -60,12 +60,16 @@ export function AuthPreviewPage({
     });
     const didHide = Keyboard.addListener('keyboardDidHide', () => update(0));
 
-    // Covers an already-visible keyboard when returning to this route.
-    const currentMetrics = Keyboard.metrics();
-    if (currentMetrics) update(insetFromFrame(currentMetrics));
-    // The next render mounts auto-focused TextFields only after subscriptions.
-    setKeyboardListenersReady(true);
+    // Reconcile current metrics and permit initial autofocus only after the
+    // subscriptions are in place. Async frame avoids a synchronous state
+    // update inside the layout effect and handles strict React lint rules.
+    const readyFrame = requestAnimationFrame(() => {
+      const currentMetrics = Keyboard.metrics();
+      if (currentMetrics) update(insetFromFrame(currentMetrics));
+      setKeyboardListenersReady(true);
+    });
     return () => {
+      cancelAnimationFrame(readyFrame);
       willShow.remove(); willChange.remove(); didShow.remove();
       willHide.remove(); didHide.remove();
     };
