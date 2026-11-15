@@ -45,6 +45,8 @@
 
 **Abandoned signup cleanup proposal (new owner request):** Add **7-day unverified** and **30-day verified-but-never-activated inactivity** candidates with a 7-day advance warning for verified email. A server-owned protected activation marker must be durable **before local account binding**; **never delete established accounts or users with locally incomplete onboarding**. Require dry-run, fail-closed eligibility, protected admin delete via scheduled server job, concurrent-resume race tests and separately approved deletion periods/implementation. Acceptance tests ONB-13–16 added. **New owner-requested established FREE-account expiry is separate:** propose 6-month review/reminder, 11-month warning and 12-month review-only checkpoint (ONB-17–20), never equate missing remote activity with uninstall while local-first/offline use remains valid. No real established-account deletion until written owner acceptance of local identity/recovery data-loss risk, privacy notice, actual server activity evidence, authenticated keep-account flow and separate implementation gate. No real server deletion or job configured.
 
+**Additional Supabase account metadata (owner request, proposed only):** optional Avatar image in private Supabase Storage with `profiles.avatar_path`; default `FREE` **account tier (not workout plan)** in a non-client-writable entitlement source; Platform/OS version/App version+build in a **latest-known nullable private account snapshot**, refreshed only with permitted online account interactions. No required Avatar signup step, no automatic device heartbeat, no workout upload, no paid implementation. Enforce per-user RLS, strict Storage ownership, no client tier promotion, bounded device strings and data deletion. Acceptance IDs ONB-21–24; actual schema/bucket/entitlements approvals remain pending.
+
 **Proposed storage:** Cloud `auth.users` for email/account/password credentials, plus private `public.profiles` for username/full_name/DOB/calculation_sex/nullable mobile. Local encrypted DB for units, height, measured weight, activity, goal, workouts and resume metadata.
 
 **Fixed UI:** Email → OTP → Password **must remain exactly in this order**. Owner provided Flutter account-setup adapter reference: `completeAccountSetup({String? mobile})` supports optional mobile without proving actual UI; Flutter implementation is not copied into Expo. **Unresolved technical gates:** cleanup threshold/grace/notification approval, protected activation marker before any local DB access, server-only hard deletion security and JWT/session caveats; **separate established free-account inactivity expiration proposal (12-month candidate only) with owner security/privacy and offline data-recovery decision pending**; provider-supported password setup following verified OTP (do not reorder UI), ADR-017 legacy wording, previously optional username, required sensitive field privacy/age policy, backend RLS/uniqueness, deletion and native encryption validation. No plan counts or existing single-bound-account guarantees changed.
@@ -55,7 +57,8 @@
 - [x] Produced bounded proposal without changing runtime or Supabase
 - [x] Created [PR #13](https://github.com/im-tnyx/Tio-Workspace/pull/13), with a docs-only 5-file diff; requested review from `im-tio`
 - [x] Corrected four trailing-whitespace lines in two docs, preserving Markdown structure; GitHub remote patch whitespace scan clean on first fix HEAD `3cc58eb`
-- [ ] Exact PR checkout `git diff --check`, reviewer re-confirmation of fix, and owner decision needed
+- [x] Owner-provided Windows PowerShell `git diff --check origin/main...origin/docs/phase1-2-minimal-profile-onboarding-20261115` yielded no output on prior PR HEAD `df5595a`; P3 review thread marked resolved and evidence posted
+- [ ] Re-run checkout diff check **after these newer metadata docs commits**; get `im-tio` re-review of the updated HEAD and separate owner merge approval
 
 Expected docs-only paths: `docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md`, `docs/00-INDEX.md`, `docs/09-DECISIONS.md` (proposal pointer only), `.ai/current.md`, this task.
 
@@ -67,14 +70,14 @@ Expected docs-only paths: `docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md
 - Review status: `COMMENTED`, whitespace P3 addressed in branch; **fix confirmation / reviewer gate still pending**.
 - Review result: no confirmed security/correctness defect in docs proposal; `im-tio` noted P3 whitespace issue and no real checkout test; **not formal APPROVED**.
 - Review type: Independent `im-tio` review of the actual five-file Markdown diff; Codex bot also reported a completed code review with no findings on previous HEAD.
-- Findings: four added trailing-space lines at ADR lines 3–4 and task lines 79–80; the fix is committed, with a zero-finding remote patch scan. The original thread and local `git diff --check` remain to be closed/verified.
+- Findings: four added trailing-space lines at ADR lines 3–4 and task lines 79–80; fixed. The original `im-tio` P3 thread **was marked resolved** after the owner-supplied successful Windows `git diff --check` output was posted. Any newer docs changes require a fresh exact-HEAD validation and independent review.
 - Merge approval: **Not granted**.
 
 ## Validation evidence
 
 - Pre-change: GitHub repo/branch files and documentation constraints read; connected Supabase previously showed zero `public` tables/migrations.
 - Documentation checks: five Markdown-only files; links and source-of-truth policy boundaries checked earlier. **Remote GitHub patch scan on HEAD `3cc58eb` reviewed 314 added lines: zero trailing spaces/conflict-marker lines**. This is not the actual checkout `git diff --check`. Recheck after this handoff commit.
-- Not run: **actual local checkout** `git diff --check` (container cannot directly fetch the private GitHub checkout); `npm run verify`, OTP/server/RLS and native tests are not run/not applicable to this docs-only PR. Windows verification: `git fetch origin; git switch docs/phase1-2-minimal-profile-onboarding-20261115; git diff --check origin/main...HEAD`.
+- Owner-run local validation on prior PR HEAD: `git fetch origin` and `git diff --check origin/main...origin/docs/phase1-2-minimal-profile-onboarding-20261115` returned no error output; recorded in [inline review thread](https://github.com/im-tnyx/Tio-Workspace/pull/13#discussion_r4578155572). This agent did **not** execute local Git; a new check is needed after later additions. `npm run verify`, OTP/server/RLS and native tests are not run/not applicable to this docs-only PR.
 
 ## Handoff
 
