@@ -4,15 +4,21 @@
 
 | Field | Value |
 |---|---|
-| Status | **Commit attribution governance PR #17 in review; enforcement NOT active** |
-| Active Task | [Commit attribution guard task](tasks/security/local-20261115-commit-attribution-guard.md) — PR #17 in progress |
+| Status | **PR #17 governance in review; PR #18 Codespaces concurrently open; #17 must merge first by dependency, neither merge authorized** |
+| Active Task | **Merge-sequence priority: PR #17** [commit attribution guard](tasks/security/local-20261115-commit-attribution-guard.md). [PR #18 Codespaces](tasks/devex/local-20261115-expo-go-codespaces-preview.md) is separately active on its own feature branch, but queued behind #17 for `main` merge; do not overwrite its task brief |
 | Active Scope / Owner | Multi-agent commit attribution governance only; owner retains merge and GitHub App/settings authority |
-| Branch | `tnyx/security/commit-attribution-guard-20261115` (open Draft PR #17; no main changes authorized by this task) |
+| Branch | `tnyx/security/commit-attribution-guard-20261115` (open non-draft PR #17; PR #18 branch untouched; no `main` merge authorized) |
 | Base / verified `main` | `095c3edb4a7b1969598bc01162d66496febbf0c2` (merged PR #15 post-merge archive reconciliation; verify live HEAD before future work) |
 | Completed PRs | [#11 Expo mock shell](https://github.com/im-tnyx/Tio-Workspace/pull/11), [#12 prior post-merge docs](https://github.com/im-tnyx/Tio-Workspace/pull/12), [#13 proposed ADR-019 docs](https://github.com/im-tnyx/Tio-Workspace/pull/13), [#14 context reconciliation](https://github.com/im-tnyx/Tio-Workspace/pull/14), [#15 manual Expo preview workflow](https://github.com/im-tnyx/Tio-Workspace/pull/15) — **all merged** |
 | Proposal | [ADR-019 minimal cloud profile and local onboarding](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) |
 | Implementation authority | Owner approved PR #17 governance setup and existing `Tio Attribution Guard` App reuse; owner reports installation/environment setup done, **not independently verified by workflow**. No merge, required ruleset, Auth/DB/sync or production changes authorized |
 | PR #13 final review | `im-tio` **APPROVED** exact head `944efa7799d6f8d803e1a16506ee0ff5ec7d3f81`; 1/1 P3 thread resolved; owner-approved squash merge verified |
+
+## Concurrent PR merge-order / pointer ownership
+
+- **PR #17 must be reviewed and safely bootstrap-merged before PR #18.** The trusted commit attribution guard has to exist on `main` before it can issue the App Check Runs required by PR #18. Both PRs are open and blocked; this sequencing dependency is **not permission to bypass protection rules**.
+- Until #17 merges, this branch's active task pointer identifies **governance #17** as merge-sequence priority. Codespaces work stays in [PR #18's own task](tasks/devex/local-20261115-expo-go-codespaces-preview.md), on its separate branch. There are two open bounded workstreams, but only one canonical `main` pointer at a time.
+- **Before PR #18 merges**, update its branch against the actual post-#17 `main` and explicitly resolve `.ai/current.md` to the then-active **Codespaces #18** pointer without reverting #17's guard policy or task evidence. Require fresh App checks, independent review, resolved threads, and PR #18's own owner `go merge`. Never silently carry the PR #17 pointer over the PR #18 merge.
 
 ## Exact owner-requested signup and onboarding
 

@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Merge gate still BLOCKED: App source-pinned (5032971) and strict mode ON now verified; missing App Check Run + redundant required runner and im-tio CHANGES_REQUESTED / 8 open threads remain. Owner-controlled bootstrap preparation updated; merge NOT authorized |
+| Status | P2 Markdown-emphasis AI credit bypass patched with fixtures; CI/re-review pending. Dependency order #17 guard then #18 Codespaces pointer reconciled; merge still BLOCKED without App checks, approval and owner bootstrap |
 | Objective | Prevent agents from writing AI co-author and equivalent self-credit metadata, while retaining human attribution and `.ai/` multi-agent records |
 | Implementation owner | ChatGPT connected GitHub session, bounded repo governance slice; repository owner retains approval/merge authority |
 | Previous agent | None for this slice; completed preview PR #15 is a separate archived task |
@@ -58,6 +58,7 @@
 - [x] Independently verified live ruleset **27218050** on 2026-11-16: strict required checks **ON**; `Commit attribution guard` is pinned to `tio-attribution-guard` App **5032971**; `Attribution guard runner` remains required with `github-actions` App **15368**. The reviewer’s earlier source-pin/strict findings are **fixed by owner settings**, but neither missing actual Check Run nor bootstrap is resolved.
 - [ ] Owner/admin executes separately authorized, narrowly scoped temporary replacement of only missing guard required contexts with existing successful `checks` and `Commit attribution fixture tests` (both pinned to `github-actions` App **15368**), keeps strict + all PR/review protections, merges **only after independent approval and separate explicit `go merge`**. Then validates real App-owned positive/negative/stale checks and restores a sole App-pinned requirement immediately. No ruleset settings changed by this session.
 - [ ] Owner authorizes merge of this exact PR only after updated independent approval and authorized bootstrap plan.
+- [ ] New P2 review on `5f3671b`: **Markdown emphasis bypass** (`Generated with **Claude Code**` / `Co-Authored-By: **Claude Code** <...>`) and **`.ai/current.md` conflict with concurrent PR #18**. Scanner now removes only **balanced whole-identity Markdown `**`, `__`, `*`, `_`** before exact AI classification and also normalizes Markdown-link labels. Added **15 fixtures** incl legitimate emphasized humans. CI and independent confirmation pending. Chosen dependency order **PR #17 first** (guard needed by #18), then **PR #18 rebase and restore its own current task pointer**; PR #18 branch has not been edited. No merge authority granted.
 - [ ] Owner reports existing `Tio Attribution Guard` App + Workspace trusted environment Client ID/private-key secret setup completed (2026-11-15); confirm **actual** App installation and credential function with a trusted-run test after PR merge. Owner/admin still must configure strict App-source-pinned required check and perform clean/bad/stale PR tests. GitHub connector does not expose encrypted environment values.
 
 ## Changed files

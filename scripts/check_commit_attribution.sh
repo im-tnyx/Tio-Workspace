@@ -161,10 +161,24 @@ has_ai_words() {
   [[ "$v" =~ (^|[^[:alnum:]_])(anthropic|claude|openai|chatgpt|codex|copilot|gemini|grok|deepseek|cursor([[:space:]-]+agent)?|devin[[:space:]-]*ai|ai([[:space:]-]+agent)?|gpt[-[:digit:]]+[[:alnum:].-]*|llm)($|[^[:alnum:]_]) ]]
 }
 
-# Ignore harmless edge punctuation in credit identities, not inside model
-# version numbers. A human called Claude Dupont. is still a human.
+# Ignore harmless edge punctuation and balanced Markdown emphasis around an
+# entire identity. Never remove underscores or asterisks inside a name/model
+# (e.g. version tokens); human names such as **Claude Dupont** remain allowed.
 normalize_credit_name() {
-  printf '%s' "$1" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:].!?;,]*$//'
+  local name="$1" inner
+  name="$(printf '%s' "$name" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:].!?;,]*$//')"
+  while :; do
+    if [[ "$name" =~ ^\*\*(.+)\*\*$ ]] ||
+       [[ "$name" =~ ^__(.+)__$ ]] ||
+       [[ "$name" =~ ^\*(.+)\*$ ]] ||
+       [[ "$name" =~ ^_(.+)_$ ]]; then
+      inner="${BASH_REMATCH[1]}"
+      name="$(printf '%s' "$inner" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:].!?;,]*$//')"
+    else
+      break
+    fi
+  done
+  printf '%s' "$name"
 }
 # Identical, precise attribution classification for human-readable credits
 # and actual Git author/committer metadata. A vendor employment domain alone
@@ -194,7 +208,7 @@ is_explicit_ai_credit_value() {
   markdown_regex='^\[([^][]+)\]\([^)]+\)$'
   if [[ "$value_lc" =~ $markdown_regex ]]; then
     local model_name="${BASH_REMATCH[1]}"
-    if is_ai_name "$model_name"; then return 0; fi
+    if is_ai_name "$(normalize_credit_name "$model_name")"; then return 0; fi
   fi
   return 1
 }

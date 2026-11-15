@@ -484,6 +484,39 @@ run_identity_case fail "Git author Anthropic Bot generic email" \
 run_identity_case pass "Git author Claude Dupont punctuation human" \
   "feat: clean message" "Claude Dupont." "human@example.test" "Jane Developer" "jane@example.com"
 
+# P2 review on HEAD 5f3671b: Markdown emphasis around exact AI identities
+# must not bypass full-message or trailer scanning. Keep human-name precision.
+run_case fail "Generated with bold Claude Code" \
+  "$(printf 'feat: x\n\nGenerated with **Claude Code**')"
+run_case fail "Co-Authored-By bold Claude Code generic email" \
+  "$(printf 'feat: x\n\nCo-Authored-By: **Claude Code** <assistant@example.com>')"
+run_case fail "Co-Authored-By bold Claude Code mid-message" \
+  "$(printf 'feat: x\n\nCo-Authored-By: **Claude Code** <assistant@example.com>\n\nFurther explanation.')"
+run_case fail "Generated-with underscore bold model and punctuation" \
+  "$(printf 'feat: x\n\nGenerated-with: __Claude Code__.')"
+run_case fail "Assisted-by italic GPT-6" \
+  "$(printf 'feat: x\n\nAssisted-by: *GPT-6*')"
+run_case fail "Co-author underscored Claude model with generic email" \
+  "$(printf 'feat: x\n\nCo-Authored-By: __Claude 3.7 Sonnet__ <assistant@example.com>')"
+run_case fail "Generated with markdown link with bold label" \
+  "$(printf 'feat: x\n\nGenerated with [**Claude Code**](https://claude.ai/code)')"
+run_case fail "Generated with bold markdown link" \
+  "$(printf 'feat: x\n\nGenerated with **[Claude Code](https://claude.ai/code)**')"
+run_case fail "Generated with nested bold italic model" \
+  "$(printf 'feat: x\n\nGenerated with ***Claude Code***')"
+run_case fail "Assisted by emphasized model with generic email" \
+  "$(printf 'feat: x\n\nAssisted by **Claude Code** <assistant@example.com>')"
+run_identity_case fail "Git author bold AI identity generic email" \
+  "feat: clean" "**Claude Code**" "assistant@example.com" "Jane Developer" "jane@example.com"
+run_case pass "Human Claude Dupont bold co-author" \
+  "$(printf 'feat: x\n\nCo-Authored-By: **Claude Dupont** <claude.dupont@example.com>')"
+run_case pass "Human Gemini Patel italic email-free credit" \
+  "$(printf 'feat: x\n\nAssisted-by: *Gemini Patel*')"
+run_case pass "Human Claude Dupont bold freeform credit" \
+  "$(printf 'feat: x\n\nGenerated with **Claude Dupont**')"
+run_case pass "Human with underscore inside name is not normalized away" \
+  "$(printf 'feat: x\n\nCo-Authored-By: Claude_Dupont <human@example.com>')"
+
 # Trusted main / PR-head freshness regression cases.
 # Use a disposable bare origin: never touch any real repository or main.
 freshness_checker="$script_dir/check_attribution_base_freshness.sh"
