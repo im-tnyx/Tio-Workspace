@@ -1,9 +1,16 @@
 {
   "expo": {
     "name": "Tnyx",
+    "owner": "tnyx-23",
     "slug": "tnyx",
     "scheme": "tnyx",
     "version": "0.1.0",
+    "runtimeVersion": {
+      "policy": "appVersion"
+    },
+    "updates": {
+      "url": "https://u.expo.dev/884f8cb2-e182-4d24-b1d7-ddec8f7f044d"
+    },
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
     "platforms": [
@@ -22,6 +29,12 @@
     ],
     "experiments": {
       "typedRoutes": true
+    },
+    "extra": {
+      "eas": {
+        "projectId": "884f8cb2-e182-4d24-b1d7-ddec8f7f044d"
+      }
     }
   }
 }
+

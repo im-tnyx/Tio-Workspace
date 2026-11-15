@@ -1,0 +1,115 @@
+name: Expo PR preview
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open PR number targeting main
+        required: true
+        type: number
+      operation:
+        description: Publish an OTA preview or build an installable preview app
+        required: true
+        default: publish_update
+        type: choice
+        options:
+          - publish_update
+          - build_preview
+      platform:
+        description: Platform for build_preview (ignored for publish_update)
+        required: true
+        default: android
+        type: choice
+        options:
+          - android
+          - ios
+          - all
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: eas-pr-preview
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - name: Validate PR and resolve exact head
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
+            echo "PR number must be numeric" >&2
+            exit 1
+          fi
+
+          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "$RUNNER_TEMP/pull-request.json"
+          jq -e \
+            --arg repo "$GITHUB_REPOSITORY" \
+            '.state == "open" and
+             .head.repo.full_name == $repo and
+             .base.repo.full_name == $repo and
+             .base.ref == "main"' \
+            "$RUNNER_TEMP/pull-request.json" > /dev/null
+
+          echo "head_sha=$(jq -r '.head.sha' "$RUNNER_TEMP/pull-request.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout selected PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.pr.outputs.head_sha }}
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.13.0
+          cache: npm
+
+      - name: Install locked dependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Verify selected PR
+        run: npm run verify
+
+      - name: Publish preview update
+        if: ${{ inputs.operation == 'publish_update' }}
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          PR_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "Configure the EXPO_TOKEN repository secret before running this workflow." >&2
+            exit 1
+          fi
+          npx eas-cli@latest update \
+            --branch pr-preview \
+            --message "Manual preview for PR #${PR_NUMBER} (${PR_SHA:0:7})" \
+            --environment preview \
+            --non-interactive
+
+      - name: Build preview app
+        if: ${{ inputs.operation == 'build_preview' }}
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          PLATFORM: ${{ inputs.platform }}
+        run: |
+          set -euo pipefail
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "Configure the EXPO_TOKEN repository secret before running this workflow." >&2
+            exit 1
+          fi
+          npx eas-cli@latest build \
+            --profile preview \
+            --platform "$PLATFORM" \
+            --non-interactive
+

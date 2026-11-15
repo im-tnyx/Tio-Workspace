@@ -4,14 +4,14 @@
 
 | Field | Value |
 |---|---|
-| Status | **Post-PR #13 documentation handoff; no active implementation task** |
-| Active Task | **None** — completed docs task [archived](archive/2026/local-20261115-minimal-cloud-profile-onboarding.md) |
-| Active Scope / Owner | **None assigned**; no Auth/DB implementation authority |
-| Branch | `main` (merged PR #13); post-merge reconciliation changes are review-only |
-| Verified merged `main` | `237a88fe5c6c30ae940a920ec71659cc947aeaf3` (2026-11-15; PR #13 squash merge) |
-| Completed PRs | [#11 Expo mock shell](https://github.com/im-tnyx/Tio-Workspace/pull/11), [#12 prior post-merge docs](https://github.com/im-tnyx/Tio-Workspace/pull/12), [#13 proposed ADR-019 docs](https://github.com/im-tnyx/Tio-Workspace/pull/13) — **all merged** |
+| Status | **Manual GitHub PR preview workflow in progress; preview channel only** |
+| Active Task | [Manual PR preview build/update workflow](tasks/ci/local-20261115-manual-pr-expo-preview.md) |
+| Active Scope / Owner | GitHub Actions + EAS preview publishing; no production publish |
+| Branch | `tnyx/ci/manual-pr-expo-preview` |
+| Base / verified `main` | `762095ff6c049c2e5c559eedfa56f768de7fcbb9` (PR #14 squash merge) |
+| Completed PRs | [#11 Expo mock shell](https://github.com/im-tnyx/Tio-Workspace/pull/11), [#12 prior post-merge docs](https://github.com/im-tnyx/Tio-Workspace/pull/12), [#13 proposed ADR-019 docs](https://github.com/im-tnyx/Tio-Workspace/pull/13), [#14 context reconciliation](https://github.com/im-tnyx/Tio-Workspace/pull/14) — **all merged** |
 | Proposal | [ADR-019 minimal cloud profile and local onboarding](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) |
-| Implementation authority | **None granted** for Phase 1.2+, Supabase tables, real OTP/Auth, encrypted SQLite, Sync or deployment |
+| Implementation authority | Owner authorized this bounded preview-only GitHub/EAS workflow; production publishing and Auth/DB/sync implementation remain unauthorized |
 | PR #13 final review | `im-tio` **APPROVED** exact head `944efa7799d6f8d803e1a16506ee0ff5ec7d3f81`; 1/1 P3 thread resolved; owner-approved squash merge verified |
 
 ## Exact owner-requested signup and onboarding
@@ -28,8 +28,9 @@ Owner additionally requested **Platform, OS version, App build, Avatar, Plan** o
 
 ## Next safe action
 
-**PR #13 is merged**, and its documentation-only task is [archived](archive/2026/local-20261115-minimal-cloud-profile-onboarding.md). The next **owner decision**, not an authorized coding assignment, is to review [proposed ADR-019](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) and [Phase 1 readiness](../docs/21-PHASE-1-READINESS.md): select one bounded implementation slice only after resolving OTP-before-password Supabase feasibility, DOB/sex privacy/age, private profile and avatar RLS/storage, server-owned plan/device metadata, local encryption/recovery and account-retention safety. **Keep the fixed Email → OTP → Password UI order**; do not simulate unsupported verification or approve schema/cleanup by inference.
+Complete the manual PR workflow and review the proposed changes. Before running it, add the Expo access token as the GitHub Actions repository secret `EXPO_TOKEN`; never put the value in this file or source. Install a compatible preview build once to receive QR-free OTA updates. The workflow must publish only to the `pr-preview` branch; production publishing is out of scope.
 
-This post-merge context reconciliation is **a separate docs-only review PR** and needs its own reviewer gate and owner merge authorization. No live Auth/session/SQLite/Supabase implementation or deployment is authorized.
+After this task, the next product decision remains review of [proposed ADR-019](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) and [Phase 1 readiness](../docs/21-PHASE-1-READINESS.md). No Auth/session/SQLite/Supabase implementation is authorized.
 
 [Archived task](archive/2026/local-20261115-minimal-cloud-profile-onboarding.md) · [AGENTS](../AGENTS.md) · [Post-merge playbook](../docs/12-POST-MERGE-PLAYBOOK.md)
+
