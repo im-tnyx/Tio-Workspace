@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Keyboard, KeyboardAvoidingView, Platform, Text, View, useWindowDimensions } from 'react-native';
 import type { KeyboardEvent, LayoutChangeEvent, ViewInstance } from 'react-native';
@@ -40,10 +40,11 @@ export function AuthPreviewPage({
   const [rootHeight, setRootHeight] = useState<number | null>(null);
   const [headerHeight, setHeaderHeight] = useState<number | null>(null);
   const [footerHeight, setFooterHeight] = useState<number | null>(null);
+  // Keep a separate baseline measurement of the FULL footer warning. Once
+  // its visual copy is abbreviated, the smaller current footer must not
+  // flip the adaptive decision back and cause a render-measure loop.
+  const [fullFooterHeight, setFullFooterHeight] = useState<number | null>(null);
   const [keyboardTopY, setKeyboardTopY] = useState<number | null>(null);
-  // Sticky within one keyboard session: otherwise shrinking the notice frees
-  // height, re-expands it and causes a measurement-driven render loop.
-  const [compactKeyboardNotice, setCompactKeyboardNotice] = useState(false);
 
   const measureRootBottom = useCallback(() => {
     rootRef.current?.measureInWindow((_x, y, _width, height) => {
@@ -134,21 +135,19 @@ export function AuthPreviewPage({
   const availableHeight = authAvailableHeight(
     rootHeight, headerHeight, footerHeight, keyboardClearance,
     spacing.lg, formTopPadding);
-  // With maximum Dynamic Type on a 320dp phone, the full multi-line
-  // warning can share physical space with the active TextInput. Shorten only
-  // its visual copy during that keyboard session; the full safety warning
-  // returns on dismiss and remains its screen-reader accessibilityLabel.
-  // Keep this state until keyboard hide to avoid footer-height oscillation.
-  useEffect(() => {
-    if (!keyboardVisible) setCompactKeyboardNotice(false);
-    else if (needsKeyboardDismiss(availableHeight, fontScale, true))
-      setCompactKeyboardNotice(true);
-  }, [availableHeight, fontScale, keyboardVisible]);
-  // Keep the existing reachable Hide keyboard escape when compressing the
-  // notice, even if that compression raises the measured available height.
-  const showKeyboardEscape = keyboardVisible && (compactKeyboardNotice
-    || needsKeyboardDismiss(availableHeight, fontScale, true));
-  const smallKeyboardNotice = keyboardVisible && compactKeyboardNotice;
+  // Derive the keyboard-open squeeze decision from the *full notice*
+  // baseline rather than the shorter displayed footer. This avoids an
+  // expand/collapse loop without synchronously setting state in an effect.
+  const fullNoticeAvailableHeight = authAvailableHeight(
+    rootHeight, headerHeight, fullFooterHeight, keyboardClearance,
+    spacing.lg, formTopPadding);
+  const smallKeyboardNotice = needsKeyboardDismiss(
+    fullNoticeAvailableHeight, fontScale, keyboardVisible);
+  const showKeyboardEscape = smallKeyboardNotice || needsKeyboardDismiss(
+    availableHeight, fontScale, keyboardVisible);
+  // Do not re-expand headings when abbreviated copy frees footer space.
+  const formContentBudget = smallKeyboardNotice
+    ? fullNoticeAvailableHeight : availableHeight;
 
   const root = <View ref={rootRef} onLayout={onRootLayout}
     style={{ flex: 1, backgroundColor: colors.background }}>
@@ -173,7 +172,7 @@ export function AuthPreviewPage({
         ? footerHeight + keyboardClearance + spacing.lg : undefined,
       overflow: keyboardVisible ? 'hidden' : 'visible',
     }}>
-      <AuthAvailableHeightContext.Provider value={availableHeight}>
+      <AuthAvailableHeightContext.Provider value={formContentBudget}>
         {keyboardListenersReady ? children : null}
       </AuthAvailableHeightContext.Provider>
     </View>
@@ -183,6 +182,8 @@ export function AuthPreviewPage({
     <View onLayout={event => {
       const height = event.nativeEvent.layout.height;
       setFooterHeight(previous => previous === height ? previous : height);
+      if (!smallKeyboardNotice)
+        setFullFooterHeight(previous => previous === height ? previous : height);
     }} style={{
       position: 'absolute', left: spacing.lg, right: spacing.lg,
       bottom: keyboardClearance + spacing.lg, gap: spacing.sm,

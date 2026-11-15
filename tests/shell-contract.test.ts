@@ -295,7 +295,7 @@ test('auth form adapts to measured keyboard space without scrolling or clipping 
 
   assert.match(page, /setHeaderHeight/);
   assert.match(page, /setFooterHeight/);
-  assert.match(page, /AuthAvailableHeightContext\.Provider value=\{availableHeight\}/);
+  assert.match(page, /AuthAvailableHeightContext\.Provider value=\{formContentBudget\}/);
   assert.match(page, /paddingTop: formTopPadding/);
   assert.match(page, /Keyboard\.addListener\('keyboardDidShow'/);
   assert.match(page, /Keyboard\.addListener\('keyboardDidHide'/);
@@ -305,12 +305,15 @@ test('auth form adapts to measured keyboard space without scrolling or clipping 
   assert.match(page, /paddingBottom: keyboardVisible && footerHeight !== null/);
   assert.match(page, /footerHeight \+ keyboardClearance \+ spacing\.lg : undefined/);
   assert.match(page, /overflow: keyboardVisible \? 'hidden' : 'visible'/);
-  // The abbreviated warning is sticky until keyboard hide (avoids the
-  // collapse-expand feedback loop), but is fully spoken by screen readers.
-  assert.match(page, /const \[compactKeyboardNotice, setCompactKeyboardNotice\] = useState\(false\)/);
-  assert.match(page, /if \(!keyboardVisible\) setCompactKeyboardNotice\(false\)/);
-  assert.match(page, /setCompactKeyboardNotice\(true\)/);
-  assert.match(page, /keyboardVisible && \(compactKeyboardNotice/);
+  // The decision uses the full-copy measurement even after the rendered
+  // notice shrinks: no footer-height driven flip-flop and no state-in-effect.
+  assert.match(page, /const \[fullFooterHeight, setFullFooterHeight\] = useState<number \| null>\(null\)/);
+  assert.match(page, /if \(!smallKeyboardNotice\)/);
+  assert.match(page, /setFullFooterHeight\(previous => previous === height \? previous : height\)/);
+  assert.match(page, /fullNoticeAvailableHeight = authAvailableHeight\(/);
+  assert.match(page, /smallKeyboardNotice = needsKeyboardDismiss\(/);
+  assert.match(page, /formContentBudget = smallKeyboardNotice/);
+  assert.doesNotMatch(page, /setCompactKeyboardNotice|useEffect\(/);
   assert.match(page, /accessibilityLabel=\{footerNotice\}/);
   assert.match(page, /numberOfLines=\{smallKeyboardNotice \? 1 : undefined\}/);
   assert.match(page, /smallKeyboardNotice \? copy\('authPreviewCompactNotice'\) : footerNotice/);
