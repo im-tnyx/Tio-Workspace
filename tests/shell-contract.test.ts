@@ -302,9 +302,9 @@ test('auth form adapts to measured keyboard space without scrolling or clipping 
   assert.match(page, /needsKeyboardDismiss\(/);
   // The floating absolute footer cannot paint over the active input with
   // maximum Dynamic Type; reserve its height without adding normal scrolling.
-  assert.match(page, /paddingBottom: keyboardVisible && footerHeight !== null/);
+  assert.match(page, /paddingBottom: smallKeyboardNotice && footerHeight !== null/);
   assert.match(page, /footerHeight \+ keyboardClearance \+ spacing\.lg : undefined/);
-  assert.match(page, /overflow: keyboardVisible \? 'hidden' : 'visible'/);
+  assert.match(page, /overflow: smallKeyboardNotice \? 'hidden' : 'visible'/);
   // The decision uses the full-copy measurement even after the rendered
   // notice shrinks: no footer-height driven flip-flop and no state-in-effect.
   assert.match(page, /const \[fullFooterHeight, setFullFooterHeight\] = useState<number \| null>\(null\)/);

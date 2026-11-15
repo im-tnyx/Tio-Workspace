@@ -162,15 +162,15 @@ export function AuthPreviewPage({
         onAction={showKeyboardEscape ? Keyboard.dismiss : onHeaderAction} />
     </View>
 
-    {/* The footer is absolute. Reserve its measured footprint *inside* the
-        flex form when the keyboard is open; otherwise a large TextInput can
-        paint on top of the warning despite the compact density mode. */}
+    {/* Only in the extreme compact keyboard state, reserve the absolute
+        footer's footprint and clip form overflow before it paints over the
+        warning. Regular iOS/Android keyboard layouts remain untouched. */}
     <View style={{
       flex: 1, minHeight: 0, paddingHorizontal: spacing.lg,
       paddingTop: formTopPadding,
-      paddingBottom: keyboardVisible && footerHeight !== null
+      paddingBottom: smallKeyboardNotice && footerHeight !== null
         ? footerHeight + keyboardClearance + spacing.lg : undefined,
-      overflow: keyboardVisible ? 'hidden' : 'visible',
+      overflow: smallKeyboardNotice ? 'hidden' : 'visible',
     }}>
       <AuthAvailableHeightContext.Provider value={formContentBudget}>
         {keyboardListenersReady ? children : null}
