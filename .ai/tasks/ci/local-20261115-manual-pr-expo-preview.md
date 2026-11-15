@@ -46,7 +46,6 @@
 
 - `app.json`
 - `package.json`
-- `package-lock.json`
 - `eas.json`
 - `.github/workflows/expo-pr-preview.yml`
 - `.ai/current.md`
@@ -55,11 +54,12 @@
 ## Validation evidence
 
 - `npm.cmd install --package-lock-only --ignore-scripts --save expo-updates@~58.0.22 --no-audit --no-fund --cache "$env:TEMP\tnyx-expo-npm-cache"` — completed; resolved SDK 58 dependency and lockfile without install scripts.
-- Node `JSON.parse` for `app.json`, `eas.json`, `package.json`, `package-lock.json` — passed.
+- Node `JSON.parse` for local `app.json`, `eas.json`, `package.json`, `package-lock.json` — passed.
 - Python PyYAML parse of `.github/workflows/expo-pr-preview.yml` — passed.
-- `git diff --check` — passed on tracked changes; final staged diff check pending before commit.
+- `git diff --check` — passed on tracked local changes before publishing; `.git/index` write was unavailable, so final staged check was not run.
 - `npm run verify` and native builds — not run. Workflow will run existing verification when manually dispatched; no EAS build or update was triggered.
 - GitHub workflow has not run; `EXPO_TOKEN` secret is not confirmed/configured.
+- The source lockfile stays unchanged; Actions regenerates it after checking out the PR's `expo-updates` dependency, then installs with `npm ci`.
 
 ## PR review evidence and findings
 
@@ -73,4 +73,3 @@
 **Next authorized action:** Review this PR; after merge, add `EXPO_TOKEN` in GitHub Settings → Secrets and variables → Actions, then run **Expo PR preview** from Actions with a valid open PR number.
 
 **Post-merge synchronization/archive needed:** Yes, after verified review and merge.
-

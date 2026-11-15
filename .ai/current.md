@@ -33,4 +33,3 @@ Complete the manual PR workflow and review the proposed changes. Before running 
 After this task, the next product decision remains review of [proposed ADR-019](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) and [Phase 1 readiness](../docs/21-PHASE-1-READINESS.md). No Auth/session/SQLite/Supabase implementation is authorized.
 
 [Archived task](archive/2026/local-20261115-minimal-cloud-profile-onboarding.md) · [AGENTS](../AGENTS.md) · [Post-merge playbook](../docs/12-POST-MERGE-PLAYBOOK.md)
-
