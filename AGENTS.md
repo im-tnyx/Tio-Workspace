@@ -227,3 +227,11 @@ Before ending work, provide a brief, evidence-based handoff:
 ---
 
 **Root rule:** If the owner only says **“Follow AGENTS.md”**, follow this complete operating contract, then load the relevant `.ai/` context and canonical documents. No extra verbal checklist is needed—but **no new approval is implied**.
+
+## 15. Commit attribution and multi-agent identity — mandatory
+
+- Agent ownership and handoff belong in `.ai/tasks/` (fields: `Implementation owner`, `Previous agent`, `Last commit agent`, verified commit SHA). **No agent may add itself, its model, vendor or another AI system as a Git `Co-Authored-By`.** The `.ai/` record is the appropriate attribution ledger for this multi-agent project.
+- Do not add AI `Co-Authored-By`, `Signed-off-by`, `Assisted-by`, `Generated with/by`, `AI-assisted` or comparable credits in commits, PR text, squash messages or release notes. Preserve legitimate human co-authors, true author/committer identity and required human sign-offs.
+- Before push, inspect every new commit message and trailer; before owner-approved squash/merge, inspect the entire final subject and body. For enforced scans, follow [commit attribution guard](docs/26-COMMIT-ATTRIBUTION-GUARD.md). An agent must never bypass, disable or tamper with validation, GitHub App checks or branch rules.
+- An exception requires **explicit owner permission for the exact PR** and the documented owner-controlled mechanism, never self-approval. Do not rewrite published `main` or feature-branch history without separate approval.
+- **Enforcement is currently pending:** a policy file and advisory CI check alone do not prevent merges. Do not claim a non-bypassable guard until the App-owned required check, strict `main` rules and live positive/negative tests are verified.

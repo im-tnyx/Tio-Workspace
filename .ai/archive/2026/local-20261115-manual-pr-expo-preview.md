@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Review complete for code head; merge authorization pending |
+| Status | Complete — PR #15 merged 2026-11-15; no preview deployment claimed |
 | Objective | From GitHub Actions, manually select an open PR number and publish its verified code to the EAS `pr-preview` branch or create an installable preview build, using cloud runners only |
 | Implementation owner | Codex agent; owner-approved bounded preview deployment slice |
 | Previous agent | None |
@@ -91,3 +91,10 @@
 **Next authorized action:** Complete review and separately authorize merge. After merge, run **Expo PR preview** from Actions with a valid owner-authored PR number.
 
 **Post-merge synchronization/archive needed:** Yes, after verified review and merge.
+
+## Post-merge reconciliation (2026-11-15)
+
+- Verified [PR #15](https://github.com/im-tnyx/Tio-Workspace/pull/15) is **merged** as `5b8f03579f3c68b6f773ebde0323b1f6ee95263d`, after the original task was left in an active/review-pending state.
+- Historical review and authorization notes above are preserved as recorded rather than rewritten as approvals. The merge event is now authoritative, but this archive entry does **not** assert that every previously requested formal review occurred.
+- No EAS build, OTA update, iOS signing setup, native device installation, or production deployment was observed or performed by this reconciliation.
+- Archived to restore single-active-task discipline in `.ai/current.md`; any future preview publish/build requires its own appropriate scope and gate.

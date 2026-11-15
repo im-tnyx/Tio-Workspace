@@ -4,14 +4,14 @@
 
 | Field | Value |
 |---|---|
-| Status | **Manual GitHub PR preview workflow in progress; preview channel only** |
-| Active Task | [Manual PR preview build/update workflow](tasks/ci/local-20261115-manual-pr-expo-preview.md) |
-| Active Scope / Owner | GitHub Actions + EAS preview publishing; no production publish |
-| Branch | `tnyx/ci/manual-pr-expo-preview` |
-| Base / verified `main` | `762095ff6c049c2e5c559eedfa56f768de7fcbb9` (PR #14 squash merge) |
-| Completed PRs | [#11 Expo mock shell](https://github.com/im-tnyx/Tio-Workspace/pull/11), [#12 prior post-merge docs](https://github.com/im-tnyx/Tio-Workspace/pull/12), [#13 proposed ADR-019 docs](https://github.com/im-tnyx/Tio-Workspace/pull/13), [#14 context reconciliation](https://github.com/im-tnyx/Tio-Workspace/pull/14) — **all merged** |
+| Status | **Commit attribution governance PR in progress; no main enforcement activated** |
+| Active Task | [Commit attribution guard](tasks/security/local-20261115-commit-attribution-guard.md) |
+| Active Scope / Owner | GitHub governance and `.ai/` attribution records only; owner controls activation, secrets, rulesets and merge |
+| Branch | `tnyx/security/commit-attribution-guard-20261115` (proposed PR; live HEAD must be checked) |
+| Base / verified `main` | `5b8f03579f3c68b6f773ebde0323b1f6ee95263d` (PR #15 verified merged 2026-11-15; snapshot, not permanent HEAD) |
+| Completed PRs | [#11](https://github.com/im-tnyx/Tio-Workspace/pull/11), [#12](https://github.com/im-tnyx/Tio-Workspace/pull/12), [#13](https://github.com/im-tnyx/Tio-Workspace/pull/13), [#14](https://github.com/im-tnyx/Tio-Workspace/pull/14), [#15 manual PR preview](https://github.com/im-tnyx/Tio-Workspace/pull/15) — merged; no EAS publish/build implied |
 | Proposal | [ADR-019 minimal cloud profile and local onboarding](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) |
-| Implementation authority | Owner authorized this bounded preview-only GitHub/EAS workflow; production publishing and Auth/DB/sync implementation remain unauthorized |
+| Implementation authority | Owner approved bounded multi-agent attribution guard setup; **no** GitHub App provisioning, secrets, ruleset changes, final merge, Auth/DB/sync or production publish approved |
 | PR #13 final review | `im-tio` **APPROVED** exact head `944efa7799d6f8d803e1a16506ee0ff5ec7d3f81`; 1/1 P3 thread resolved; owner-approved squash merge verified |
 
 ## Exact owner-requested signup and onboarding
@@ -28,8 +28,6 @@ Owner additionally requested **Platform, OS version, App build, Avatar, Plan** o
 
 ## Next safe action
 
-Complete review and merge of the manual PR preview workflow before running it. `EXPO_TOKEN` is configured in GitHub's `eas-preview` environment; never put the value in this file or source. Install a compatible preview build once to receive QR-free OTA updates. The workflow must publish only to the `pr-preview` branch; production publishing is out of scope.
+Review the [commit attribution guard task](tasks/security/local-20261115-commit-attribution-guard.md) and governance PR. Require tested, base-controlled scanner and at least one recorded independent review; obtain separate owner approval for merge. **Do not claim merge prevention is active** until the private-repo GitHub plan permits branch rules, an owner-controlled Checks App is provisioned, an App-source-pinned strict required check is active, and clean/bad/stale PR cases are live-tested. No application or Supabase implementation follows from this approval.
 
-After this task, the next product decision remains review of [proposed ADR-019](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) and [Phase 1 readiness](../docs/21-PHASE-1-READINESS.md). No Auth/session/SQLite/Supabase implementation is authorized.
-
-[Archived task](archive/2026/local-20261115-minimal-cloud-profile-onboarding.md) · [AGENTS](../AGENTS.md) · [Post-merge playbook](../docs/12-POST-MERGE-PLAYBOOK.md)
+The prior [manual PR preview task](archive/2026/local-20261115-manual-pr-expo-preview.md) is archived after verified merge of PR #15. No EAS build, OTA publication or device installation is claimed by this reconciliation. The next product decision remains proposed ADR-019 / Phase 1 readiness.

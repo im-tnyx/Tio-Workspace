@@ -30,6 +30,10 @@ Related ADR:
 
 **Evidence / results:**
 
+## ✍️ Commit attribution
+- [ ] Every new commit inspected for prohibited AI `Co-Authored-By` / equivalent self-credit; legitimate human attribution preserved
+- [ ] Final squash/merge message will be inspected by owner; see [attribution guard](../docs/26-COMMIT-ATTRIBUTION-GUARD.md)
+
 ## ⚠️ Risks, rollback & limitations
 <!-- What could go wrong? How to revert or recover? -->
 
