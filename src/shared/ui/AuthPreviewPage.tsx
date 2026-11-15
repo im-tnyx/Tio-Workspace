@@ -1,13 +1,13 @@
 import { createContext, useCallback, useContext, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Keyboard, Platform, Text, View, useWindowDimensions } from 'react-native';
+import { Dimensions, Keyboard, Platform, Text, View, useWindowDimensions } from 'react-native';
 import type { KeyboardEvent, LayoutChangeEvent, ViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
 import { authPreviewLayout, spacing, typography } from '@/shared/theme/tokens';
 import { Button } from './Button';
 import { TopBar } from './TopBar';
-import { keyboardOverlap } from './authKeyboardGeometry';
+import { androidKeyboardClearance, keyboardOverlap } from './authKeyboardGeometry';
 import { authAvailableHeight, needsKeyboardDismiss } from './authViewport';
 import { copy } from '@/shared/i18n/en';
 
@@ -37,9 +37,14 @@ export function AuthPreviewPage({
   const rootRef = useRef<ViewInstance>(null);
   const [rootBottomY, setRootBottomY] = useState<number | null>(null);
   const [rootHeight, setRootHeight] = useState<number | null>(null);
+  // Capture the largest route height seen before/after keyboard resize.
+  // A native adjustResize route is already shorter; do not lift it twice.
+  const [unobstructedRootHeight, setUnobstructedRootHeight] =
+    useState<number | null>(null);
   const [headerHeight, setHeaderHeight] = useState<number | null>(null);
   const [footerHeight, setFooterHeight] = useState<number | null>(null);
   const [keyboardTopY, setKeyboardTopY] = useState<number | null>(null);
+  const [androidKeyboardHeight, setAndroidKeyboardHeight] = useState(0);
 
   const measureRootBottom = useCallback(() => {
     rootRef.current?.measureInWindow((_x, y, _width, height) => {
@@ -52,6 +57,8 @@ export function AuthPreviewPage({
   const onRootLayout = useCallback((event: LayoutChangeEvent) => {
     const height = event.nativeEvent.layout.height;
     setRootHeight(previous => previous === height ? previous : height);
+    setUnobstructedRootHeight(previous =>
+      previous === null ? height : Math.max(previous, height));
     measureRootBottom();
   }, [measureRootBottom]);
 
@@ -74,12 +81,16 @@ export function AuthPreviewPage({
     // before the auto-focused children are rendered, never in a passive effect.
     const didShow = Keyboard.addListener('keyboardDidShow', event => {
       setKeyboardVisible(true);
-      // Android edge-to-edge can keep the entire root underneath the IME.
-      // Move the absolute footer above it using the measured native frame.
+      // Android screenY and measureInWindow can have different system-bar
+      // origins. Keep the native reported keyboard HEIGHT as well, so a
+      // missing status-bar offset cannot leave the CTA behind Gboard.
+      if (Platform.OS === 'android')
+        setAndroidKeyboardHeight(event.endCoordinates.height);
       updateKeyboardFrame(event.endCoordinates.screenY);
     });
     const didHide = Keyboard.addListener('keyboardDidHide', () => {
       setKeyboardVisible(false);
+      if (Platform.OS === 'android') setAndroidKeyboardHeight(0);
       updateKeyboardFrame(null);
     });
     // Only iOS supports pre-animation keyboard frame notifications.
@@ -103,7 +114,11 @@ export function AuthPreviewPage({
       // Reconcile an already-open keyboard on BOTH platforms, not just iOS.
       // This also recovers a missed Android DidShow event on navigation return.
       const currentMetrics = Keyboard.metrics();
-      if (currentMetrics) updateKeyboardFrame(currentMetrics.screenY);
+      if (currentMetrics) {
+        if (Platform.OS === 'android')
+          setAndroidKeyboardHeight(currentMetrics.height);
+        updateKeyboardFrame(currentMetrics.screenY);
+      }
       setKeyboardListenersReady(true);
     });
     return () => {
@@ -113,12 +128,22 @@ export function AuthPreviewPage({
     };
   }, [measureRootBottom]);
 
-  // Compare the native keyboard top with this route's measured bottom on
-  // BOTH platforms. Android edge-to-edge needs a positive offset when the
-  // window stays full height; if native resize already occurred, overlap is
-  // zero and the footer is not lifted twice.
+  // iOS uses the already-tested same-window measurement. On Android,
+  // measureInWindow may omit the top system bar while keyboard.screenY uses
+  // physical screen coordinates. Use the larger of the old overlap and the
+  // independent keyboard-height estimate, subtracting any observed native
+  // route resize. The footer clears the ENTIRE IME including Gboard toolbar.
   const keyboardClearance = keyboardTopY === null || rootBottomY === null
-    ? insets.bottom : keyboardOverlap(rootBottomY, keyboardTopY);
+    ? insets.bottom : Platform.OS === 'android'
+      ? Math.max(keyboardOverlap(rootBottomY, keyboardTopY),
+        androidKeyboardClearance({
+          screenHeight: Dimensions.get('screen').height,
+          keyboardTopY, keyboardHeight: androidKeyboardHeight,
+          rootRestHeight: unobstructedRootHeight,
+          rootCurrentHeight: rootHeight,
+          bottomInset: insets.bottom,
+        }))
+      : keyboardOverlap(rootBottomY, keyboardTopY);
   const rawAvailableHeight = authAvailableHeight(
     rootHeight, headerHeight, footerHeight, keyboardClearance,
     spacing.lg, spacing.sm);

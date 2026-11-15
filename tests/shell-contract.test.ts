@@ -7,7 +7,7 @@ import { DEFAULT_PREFERENCES, decodePreferences, resolveMode } from '../src/shar
 import { copy, formatNumber } from '../src/shared/i18n/en.ts';
 import { canOpenShellPreview } from '../src/bootstrap/shell/shellPreviewAccess.ts';
 import { canContinueAuthPreview, nextAuthPreviewStep, previousAuthPreviewStep } from '../src/features/onboarding/authPreviewSteps.ts';
-import { keyboardOverlap } from '../src/shared/ui/authKeyboardGeometry.ts';
+import { androidKeyboardClearance, keyboardOverlap } from '../src/shared/ui/authKeyboardGeometry.ts';
 import { authAvailableHeight, authDensity, needsKeyboardDismiss } from '../src/shared/ui/authViewport.ts';
 import { authPreviewLayout, authPreviewMuted, controlSizes, radii, spacing, topBarSizes } from '../src/shared/theme/tokens/index.ts';
 import { BRAND_TYPING_INTERVAL_MS, BRAND_DOT_DIAMETER, BRAND_DOT_GAP, BRAND_DOT_FINAL_HOLD_MS, visibleTypingText } from '../src/shared/ui/typing.ts';
@@ -232,6 +232,43 @@ test('Android edge-to-edge keyboard position lifts the auth footer without doubl
   assert.match(page, /const currentMetrics = Keyboard\.metrics\(\);\s*if \(currentMetrics\) updateKeyboardFrame\(currentMetrics\.screenY\);/);
   assert.match(page, /bottom: keyboardClearance \+ spacing\.lg/);
   assert.doesNotMatch(page, /if \(Platform\.OS === 'ios'\) updateKeyboardFrame/);
+});
+
+test('Android screenshot: keyboard CTA clearance uses native height and compensates window-origin mismatch', () => {
+  const code = readFileSync('src/shared/ui/AuthPreviewPage.tsx', 'utf8');
+  // Native window-origin mismatch: direct root-bottom vs screenY overlap
+  // is too small. Keyboard depth corrects it without a magic 40dp margin.
+  assert.equal(keyboardOverlap(794, 555), 239);
+  assert.equal(androidKeyboardClearance({
+    screenHeight: 850, keyboardTopY: 555, keyboardHeight: 271,
+    rootRestHeight: 760, rootCurrentHeight: 760, bottomInset: 25,
+  }), 270);
+  // If Android already shrinks root by the full usable keyboard depth,
+  // do not apply that inset a second time.
+  assert.equal(androidKeyboardClearance({
+    screenHeight: 850, keyboardTopY: 555, keyboardHeight: 271,
+    rootRestHeight: 760, rootCurrentHeight: 490, bottomInset: 25,
+  }), 0);
+  // Partial resize, Gboard height change, hidden and invalid metrics.
+  assert.equal(androidKeyboardClearance({
+    screenHeight: 850, keyboardTopY: 555, keyboardHeight: 271,
+    rootRestHeight: 760, rootCurrentHeight: 700, bottomInset: 25,
+  }), 210);
+  assert.equal(androidKeyboardClearance({
+    screenHeight: 850, keyboardTopY: 850, keyboardHeight: 0,
+    rootRestHeight: 760, rootCurrentHeight: 760, bottomInset: 25,
+  }), 0);
+  assert.equal(androidKeyboardClearance({
+    screenHeight: 0, keyboardTopY: Number.NaN, keyboardHeight: 0,
+    rootRestHeight: null, rootCurrentHeight: null, bottomInset: 25,
+  }), 0);
+  assert.match(code, /setAndroidKeyboardHeight\(event\.endCoordinates\.height\)/);
+  assert.match(code, /setAndroidKeyboardHeight\(currentMetrics\.height\)/);
+  assert.match(code, /unobstructedRootHeight/);
+  assert.match(code, /androidKeyboardClearance\(\{/);
+  assert.match(code, /Math\.max\(keyboardOverlap\(rootBottomY, keyboardTopY\)/);
+  assert.match(code, /bottom: keyboardClearance \+ spacing\.lg/);
+  assert.doesNotMatch(code, /<ScrollView|KeyboardAvoidingView/);
 });
 
 test('Android registers keyboard visibility listeners before initial autoFocus', () => {
