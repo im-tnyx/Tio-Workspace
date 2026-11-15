@@ -2,16 +2,25 @@
 
 | Field | Value |
 |---|---|
-| Status | Review complete for code head; merge authorization pending |
+| Status | **Complete — PR #15 squash merged to main on 2026-11-15; first Expo preview build/update not run** |
 | Objective | From GitHub Actions, manually select an open PR number and publish its verified code to the EAS `pr-preview` branch or create an installable preview build, using cloud runners only |
 | Implementation owner | Codex agent; owner-approved bounded preview deployment slice |
 | Previous agent | None |
-| Last commit agent | Codex agent; local Git branch `tnyx/ci/manual-pr-expo-preview` |
-| Tracking / approval | Owner instruction: “to ye setup kare” (2026-11-15); scope clarified as manual PR selection, automatic cloud workflow, no local machine; preview channel only |
+| Last commit agent | Codex agent; final PR head `e849c58aafabea774f0d26aa4d3de8601c73f912`; squash merge `5b8f03579f3c68b6f773ebde0323b1f6ee95263d` |
+| Tracking / approval | Owner instruction to set up manual PR selection/cloud preview and explicit “GO MERGE”; [PR #15](https://github.com/im-tnyx/Tio-Workspace/pull/15), squash merged 2026-11-15 16:03:31 UTC; preview channel only |
 | Branch | `tnyx/ci/manual-pr-expo-preview` |
-| Base SHA / inspected HEAD | `762095ff6c049c2e5c559eedfa56f768de7fcbb9` / see linked PR head |
+| Base SHA / inspected HEAD | `762095ff6c049c2e5c559eedfa56f768de7fcbb9` / `e849c58aafabea774f0d26aa4d3de8601c73f912` |
 | Platform and file scope | Expo iOS/Android updates config, EAS preview build profile, GitHub Actions and `.ai/` task handoff |
 | Created / updated | 2026-11-15 |
+
+## Merge and post-merge evidence
+
+- PR #15 merged to `main` with squash commit `5b8f03579f3c68b6f773ebde0323b1f6ee95263d` at 2026-11-15 16:03:31 UTC.
+- Formal reviewer `im-tio` approved exact PR head `e849c58aafabea774f0d26aa4d3de8601c73f912`; Codex re-review on the same head reported no major issues. All three inline review threads were resolved.
+- GitHub Phase 1.1 checks passed on PR head: [run 43732448155](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43732448155). Post-merge check passed on merge SHA: [run 43733308186](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43733308186).
+- Expected workflow, Expo config, package, ignore and task files are present on `main` at the merge SHA.
+- GitHub branch-protection/ruleset API inspection was unavailable to this connection; no claim is made about configured required-review settings.
+- The manual EAS workflow was not dispatched; no EAS build or OTA update was run. The task is complete as workflow setup/merge only. First compatible Android preview build and installation remain an operational follow-up; iOS signing credentials are not configured.
 
 ## Required context
 
@@ -67,27 +76,27 @@
 - `npm.cmd install --package-lock-only --ignore-scripts --save expo-updates@~58.0.22 --no-audit --no-fund --cache "$env:TEMP\tnyx-expo-npm-cache"` — completed; resolved SDK 58 dependency and lockfile without install scripts.
 - Node `JSON.parse` for local `app.json`, `eas.json`, `package.json`, `package-lock.json` — passed.
 - Python PyYAML parse of `.github/workflows/expo-pr-preview.yml` — passed.
-- `git diff --check` and `git show --check` — passed on the current local changes/commit.
+- `git diff --check` and `git show --check` — passed on the implementation changes before merge.
 - `npm run verify` — passed locally after fetching the immutable baseline SHA; 22 contract tests passed. Native builds and EAS build/update were not run.
-- Current OTA-compatibility fix: both workflow YAML files and `app.json` parse successfully; `git diff --check` passed; `npm run verify` passed (token self-test, baseline token guard, TypeScript, ESLint, and 22 tests). GitHub checks passed on code head `50f153a2b228ee1fb069784097d2fbbeb8ee6cde`: [run 43732234787](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43732234787).
+- OTA-compatibility fix: both workflow YAML files and `app.json` parse successfully; `git diff --check` passed; `npm run verify` passed (token self-test, baseline token guard, TypeScript, ESLint, and 22 tests). GitHub checks passed on code head `50f153a2b228ee1fb069784097d2fbbeb8ee6cde`: [run 43732234787](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43732234787).
 - Manual GitHub workflow has not run; it is not available from `main` until merge. The `eas-preview` environment and `EXPO_TOKEN` secret name are confirmed in GitHub UI; secret value was not inspected. The repository UI did not expose required-reviewer protection, so workflow dispatch and PR author are restricted to `im-tnyx`.
 - Expo dashboard credential readiness was checked read-only: Android signing credential exists for `com.tnyx.tio`; iOS signing is not configured. Android `build_preview` can use the EAS-managed credential. iOS/all builds remain unavailable until their signing credentials are configured. No build was started during this check.
 - `.gitignore` patterns cover Expo local state, generated APK/AAB/IPA files, and common local signing credential formats; tracked source and EAS project config remain included.
 - The lockfile includes the SDK-matched `expo-updates` dependency so the repository's existing `npm ci` check remains reproducible.
-- GitHub `Phase 1.1 shell checks` passed on code head `429402858d932f35802fdd825c0696e3087cc269`: [run 43730420533](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43730420533). Earlier run [43729401576](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43729401576) exposed that `fetch-depth: 0` did not fetch the deleted source branch's baseline; direct baseline-SHA fetch plus non-persisted checkout credentials fixed it.
+- GitHub `Phase 1.1 shell checks` passed on final PR head `e849c58aafabea774f0d26aa4d3de8601c73f912`: [run 43732448155](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43732448155). Earlier run [43729401576](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43729401576) exposed that `fetch-depth: 0` did not fetch the deleted source branch's baseline; direct baseline-SHA fetch plus non-persisted checkout credentials fixed it.
 
 ## PR review evidence and findings
 
 - Codex GitHub review [#5911333001](https://github.com/im-tnyx/Tio-Workspace/pull/15#pullrequestreview-5911333001) reviewed head `d90bbc39fcf2b14e0c5412f386da0c004a31777a` and found the token baseline unavailable. `fetch-depth: 0` was added in commit `3e0e611ae11a186bc0328cd3a51f82a121b726d8`, but later exact-head CI proved that alone was insufficient because the baseline's original feature branch had been deleted. Both CI workflows now fetch the immutable baseline SHA directly using step-scoped `GITHUB_TOKEN`; the baseline commit itself remains unchanged.
 - Codex GitHub review [#5911380555](https://github.com/im-tnyx/Tio-Workspace/pull/15#pullrequestreview-5911380555) reviewed head `e9f6608b5cbfaabb61757674df07c1cac600c826` and requested a documented/verified signing-credential prerequisite. Android credentials have now been verified in the Expo dashboard and the missing iOS setup is explicitly documented.
-- Follow-up Codex review [comment](https://github.com/im-tnyx/Tio-Workspace/pull/15#issuecomment-6896955015) reviewed code head `429402858d932f35802fdd825c0696e3087cc269` and reported no major issues. Both then-open inline findings were answered and resolved on that head. This was a Codex comment, not formal GitHub `APPROVED`.
-- Review [#5911554932](https://github.com/im-tnyx/Tio-Workspace/pull/15#pullrequestreview-5911554932) found that `appVersion` could permit an OTA update with incompatible native code. Commit `50f153a` changes runtime versioning to `fingerprint` and blocks `publish_update` for PR diffs that touch native-affecting config/dependency/plugin/platform paths. Local verification and GitHub checks passed; the inline finding was answered and resolved. Fresh Codex review of this fix is pending.
-- Formal GitHub approval and action-specific merge authorization are not recorded.
+- Follow-up Codex review [comment](https://github.com/im-tnyx/Tio-Workspace/pull/15#issuecomment-6897250500) reviewed exact final head `e849c58aafabea774f0d26aa4d3de8601c73f912` and reported no major issues.
+- Review [#5911554932](https://github.com/im-tnyx/Tio-Workspace/pull/15#pullrequestreview-5911554932) found that `appVersion` could permit an OTA update with incompatible native code. Commit `50f153a` changes runtime versioning to `fingerprint` and blocks `publish_update` for PR diffs that touch native-affecting config/dependency/plugin/platform paths. The reviewer approved the final exact head after re-review; the inline finding was answered and resolved.
+- Owner’s explicit “GO MERGE” authorized this PR #15 merge. No production EAS build or OTA deployment was authorized or performed.
 
 ## Handoff
 
-**Next owner:** Repository owner for review/merge authorization and initial compatible preview app installation.
+**Next owner:** Repository owner for the initial compatible Android preview build and installation when an eligible owner-authored PR is open.
 
-**Next authorized action:** Complete review and separately authorize merge. After merge, run **Expo PR preview** from Actions with a valid owner-authored PR number.
+**Next authorized action:** From GitHub Actions, select `build_preview` with platform `android` for an eligible owner-authored open PR targeting `main`; install that preview binary once. For future JS-only PRs, use `publish_update`. The merged PR #15 is closed and cannot itself be selected by the workflow.
 
-**Post-merge synchronization/archive needed:** Yes, after verified review and merge.
+**Post-merge synchronization/archive needed:** No — verified and archived after merge. First EAS build/update is pending.

@@ -4,14 +4,14 @@
 
 | Field | Value |
 |---|---|
-| Status | **Manual GitHub PR preview workflow in progress; preview channel only** |
-| Active Task | [Manual PR preview build/update workflow](tasks/ci/local-20261115-manual-pr-expo-preview.md) |
-| Active Scope / Owner | GitHub Actions + EAS preview publishing; no production publish |
-| Branch | `tnyx/ci/manual-pr-expo-preview` |
-| Base / verified `main` | `762095ff6c049c2e5c559eedfa56f768de7fcbb9` (PR #14 squash merge) |
-| Completed PRs | [#11 Expo mock shell](https://github.com/im-tnyx/Tio-Workspace/pull/11), [#12 prior post-merge docs](https://github.com/im-tnyx/Tio-Workspace/pull/12), [#13 proposed ADR-019 docs](https://github.com/im-tnyx/Tio-Workspace/pull/13), [#14 context reconciliation](https://github.com/im-tnyx/Tio-Workspace/pull/14) — **all merged** |
+| Status | **No active implementation task; PR #15 merged; preview channel only** |
+| Active Task | **None** — [manual PR Expo preview setup archived](archive/2026/local-20261115-manual-pr-expo-preview.md) |
+| Active Scope / Owner | No active slice; preview-only GitHub/EAS workflow is configured |
+| Branch | `main` |
+| Base / verified `main` | `5b8f03579f3c68b6f773ebde0323b1f6ee95263d` (PR #15 squash merge; post-merge checks passed) |
+| Completed PRs | [#11 Expo mock shell](https://github.com/im-tnyx/Tio-Workspace/pull/11), [#12 prior post-merge docs](https://github.com/im-tnyx/Tio-Workspace/pull/12), [#13 proposed ADR-019 docs](https://github.com/im-tnyx/Tio-Workspace/pull/13), [#14 context reconciliation](https://github.com/im-tnyx/Tio-Workspace/pull/14), [#15 manual Expo preview workflow](https://github.com/im-tnyx/Tio-Workspace/pull/15) — **all merged** |
 | Proposal | [ADR-019 minimal cloud profile and local onboarding](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) |
-| Implementation authority | Owner authorized this bounded preview-only GitHub/EAS workflow; production publishing and Auth/DB/sync implementation remain unauthorized |
+| Implementation authority | Bounded preview-only GitHub/EAS workflow is merged; production publishing and Auth/DB/sync implementation remain unauthorized |
 | PR #13 final review | `im-tio` **APPROVED** exact head `944efa7799d6f8d803e1a16506ee0ff5ec7d3f81`; 1/1 P3 thread resolved; owner-approved squash merge verified |
 
 ## Exact owner-requested signup and onboarding
@@ -28,8 +28,8 @@ Owner additionally requested **Platform, OS version, App build, Avatar, Plan** o
 
 ## Next safe action
 
-Complete review and merge of the manual PR preview workflow before running it. `EXPO_TOKEN` is configured in GitHub's `eas-preview` environment; never put the value in this file or source. Install a compatible preview build once to receive QR-free OTA updates. The workflow must publish only to the `pr-preview` branch; production publishing is out of scope.
+The manual GitHub Expo PR Preview workflow is available on `main`. `EXPO_TOKEN` is configured in GitHub's `eas-preview` environment; never put its value in this file or source. No build or update has been dispatched. For the first compatible install, use `build_preview` with `android` on an eligible owner-authored open PR targeting `main`, then install that binary once. The merged PR #15 itself is closed and cannot be selected. Later JS-only PRs may use `publish_update`; PRs touching native-affecting files are blocked from OTA and need a new preview build first. iOS signing credentials are not configured. Production publishing remains out of scope.
 
 After this task, the next product decision remains review of [proposed ADR-019](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) and [Phase 1 readiness](../docs/21-PHASE-1-READINESS.md). No Auth/session/SQLite/Supabase implementation is authorized.
 
-[Archived task](archive/2026/local-20261115-minimal-cloud-profile-onboarding.md) · [AGENTS](../AGENTS.md) · [Post-merge playbook](../docs/12-POST-MERGE-PLAYBOOK.md)
+[Archived tasks](archive/2026/) · [AGENTS](../AGENTS.md) · [Post-merge playbook](../docs/12-POST-MERGE-PLAYBOOK.md)
