@@ -1,4 +1,4 @@
-import { createContext, useCallback, useContext, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { createContext, useCallback, useContext, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Keyboard, Platform, Text, View, useWindowDimensions } from 'react-native';
 import type { KeyboardEvent, LayoutChangeEvent, ViewInstance } from 'react-native';
@@ -32,14 +32,8 @@ export function AuthPreviewPage({
   const { colors } = useAppearance();
   const { fontScale } = useWindowDimensions();
   const [keyboardVisible, setKeyboardVisible] = useState(() => Keyboard.isVisible());
-  // Track only visibility, never a second keyboard position/inset source.
-  // Android's adjustResize supplies the viewport height; iOS keeps the
-  // existing measured root and keyboardWillChangeFrame geometry.
-  useEffect(() => {
-    const show = Keyboard.addListener('keyboardDidShow', () => setKeyboardVisible(true));
-    const hide = Keyboard.addListener('keyboardDidHide', () => setKeyboardVisible(false));
-    return () => { show.remove(); hide.remove(); };
-  }, []);
+  // Visibility is owned by the early keyboard listener setup below.
+  // Android adjustResize supplies geometry; only iOS uses frame events.
   const rootRef = useRef<ViewInstance>(null);
   const [rootBottomY, setRootBottomY] = useState<number | null>(null);
   const [rootHeight, setRootHeight] = useState<number | null>(null);
@@ -61,15 +55,12 @@ export function AuthPreviewPage({
     measureRootBottom();
   }, [measureRootBottom]);
 
-  // Register listeners before mounting auto-focused TextInputs: otherwise
-  // initial keyboardWillShow may be missed on iOS.
-  const [keyboardListenersReady, setKeyboardListenersReady] =
-    useState(Platform.OS !== 'ios');
+  // Always subscribe before native autoFocus on both iOS and Android.
+  const [keyboardListenersReady, setKeyboardListenersReady] = useState(false);
   const lastKeyboardTopY = useRef<number | null>(null);
 
   useLayoutEffect(() => {
-    if (Platform.OS !== 'ios') return;
-    const update = (screenY: number | null, event?: KeyboardEvent) => {
+    const updateIosFrame = (screenY: number | null, event?: KeyboardEvent) => {
       if (lastKeyboardTopY.current === screenY) return;
       lastKeyboardTopY.current = screenY;
       if (event) Keyboard.scheduleLayoutAnimation(event);
@@ -77,32 +68,44 @@ export function AuthPreviewPage({
       measureRootBottom();
     };
 
-    const willShow = Keyboard.addListener('keyboardWillShow', event => {
-      update(event.endCoordinates.screenY, event);
-    });
-    const willChange = Keyboard.addListener('keyboardWillChangeFrame', event => {
-      update(event.endCoordinates.screenY, event);
-    });
+    // Android's initial keyboard event may fire on native mount. Subscribe
+    // before the auto-focused children are rendered, never in a passive effect.
     const didShow = Keyboard.addListener('keyboardDidShow', event => {
-      update(event.endCoordinates.screenY);
+      setKeyboardVisible(true);
+      if (Platform.OS === 'ios') updateIosFrame(event.endCoordinates.screenY);
     });
-    const willHide = Keyboard.addListener('keyboardWillHide', event => {
-      update(null, event);
+    const didHide = Keyboard.addListener('keyboardDidHide', () => {
+      setKeyboardVisible(false);
+      if (Platform.OS === 'ios') updateIosFrame(null);
     });
-    const didHide = Keyboard.addListener('keyboardDidHide', () => update(null));
+    // Only iOS supports pre-animation keyboard frame notifications.
+    const willShow = Platform.OS === 'ios'
+      ? Keyboard.addListener('keyboardWillShow', event => {
+        updateIosFrame(event.endCoordinates.screenY, event);
+      }) : null;
+    const willChange = Platform.OS === 'ios'
+      ? Keyboard.addListener('keyboardWillChangeFrame', event => {
+        updateIosFrame(event.endCoordinates.screenY, event);
+      }) : null;
+    const willHide = Platform.OS === 'ios'
+      ? Keyboard.addListener('keyboardWillHide', event => {
+        updateIosFrame(null, event);
+      }) : null;
 
-    // Defer autofocus until listeners are installed. Reconcile keyboards that
-    // were already visible on return to this route.
+    // Reconcile a pre-existing keyboard, then permit initial TextInput mount.
     const readyFrame = requestAnimationFrame(() => {
       measureRootBottom();
-      const currentMetrics = Keyboard.metrics();
-      if (currentMetrics) update(currentMetrics.screenY);
+      setKeyboardVisible(Keyboard.isVisible());
+      if (Platform.OS === 'ios') {
+        const currentMetrics = Keyboard.metrics();
+        if (currentMetrics) updateIosFrame(currentMetrics.screenY);
+      }
       setKeyboardListenersReady(true);
     });
     return () => {
       cancelAnimationFrame(readyFrame);
-      willShow.remove(); willChange.remove(); didShow.remove();
-      willHide.remove(); didHide.remove();
+      didShow.remove(); didHide.remove();
+      willShow?.remove(); willChange?.remove(); willHide?.remove();
     };
   }, [measureRootBottom]);
 

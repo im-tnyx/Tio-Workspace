@@ -212,6 +212,19 @@ test('post-Welcome auth uses persistent parent header and CTA, middle-only step 
   assert.match(welcome, /actionPlacement="bottom"/);
 });
 
+test('Android registers keyboard visibility listeners before initial autoFocus', () => {
+  const page = readFileSync('src/shared/ui/AuthPreviewPage.tsx', 'utf8');
+  assert.match(page, /const \\[keyboardListenersReady, setKeyboardListenersReady\\] = useState\\(false\\)/);
+  assert.match(page, /setKeyboardVisible\\(Keyboard\\.isVisible\\(\\)\\)/);
+  assert.ok(page.indexOf("Keyboard.addListener('keyboardDidShow'") <
+    page.indexOf('setKeyboardListenersReady(true)'));
+  assert.ok(page.indexOf("Keyboard.addListener('keyboardDidHide'") <
+    page.indexOf('setKeyboardListenersReady(true)'));
+  assert.match(page, /keyboardListenersReady \\? children : null/);
+  assert.doesNotMatch(page, /useEffect\\(\\(\\) => \\{\\s*const show = Keyboard/);
+  assert.match(page, /Platform\\.OS === 'ios'\\s*\\? Keyboard\\.addListener\\('keyboardWillShow'/);
+});
+
 test('auth form adapts to measured keyboard space without scrolling or clipping the CTA', () => {
   const page = readFileSync('src/shared/ui/AuthPreviewPage.tsx', 'utf8');
   const form = readFileSync('src/features/onboarding/screens/AuthCredentialsScreen.tsx', 'utf8');
