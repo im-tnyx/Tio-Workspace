@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Third Codex review: eight reported P2 fixes CI-validated (116+14 passed); independent current-head re-review and owner merge gate pending; App-owned required-check activation NOT done |
+| Status | **CHANGES_REQUESTED** by im-tio on reviewed HEAD c4d29989: 8 prior P2 code fixes accepted, but P1 App-source pin and P2 strict/bootstrapping remain owner-admin blockers; code CI passed, merge NOT authorized |
 | Objective | Prevent agents from writing AI co-author and equivalent self-credit metadata, while retaining human attribution and `.ai/` multi-agent records |
 | Implementation owner | ChatGPT connected GitHub session, bounded repo governance slice; repository owner retains approval/merge authority |
 | Previous agent | None for this slice; completed preview PR #15 is a separate archived task |
@@ -18,7 +18,7 @@
 - [x] Read root `AGENTS.md`, existing `.ai/tasks/TEMPLATE.md`, current pointer and multi-agent rules.
 - [x] Verified live `main` and that PR #15 merged; existing preview task pointer is stale.
 - [x] Inspected Tio-Ledger's scanner, tests, trusted workflow, post-merge audit, documentation and live ruleset.
-- [x] Checked Tio-Workspace branch protection: `protected: false`; ruleset API returned `403` private-repo feature restriction.
+- [x] Historical starting-state check: `protected: false` and `403` on private repository. **Superseded on 2026-11-15**: repository now **public**, `main` protected, active ruleset `Main Protection` ID `27218050`. This PR did not change visibility or protection.
 - [ ] Independently review changes at exact PR head and review live CI results.
 
 ## Approved scope / non-goals
@@ -34,7 +34,7 @@
 - GitHub connector: read current branches, Ledger implementation and Workspace docs; create one focused governance branch and PR.
 - Bash/Git fixture checks: use the independent fixture workflow; record observed results rather than assuming they ran.
 - Workspace `AGENTS.md` and existing test/review governance: source of truth.
-- Not available here: GitHub private-repo branch rules under current plan; no credential/account administration performed.
+- Live ruleset is readable via GitHub API; this agent did not administer visibility, ruleset, trusted environment, App credentials or merge.
 
 ## Durable decisions
 
@@ -54,7 +54,9 @@
 - [x] Codex [review #5911817400](https://github.com/im-tnyx/Tio-Workspace/pull/17#pullrequestreview-5911817400) on same SHA identified **three open P2 threads**: Claude 3.7 Sonnet names, nonterminal co-author credits, AI author/committer metadata. Fix commit `57b0d4d4b6ce57398695e7d9fcf3a1891b69ec7e` adds precise metadata and full-message scanning and 16 regression cases; verified 88/88 pass, shell checks pass on that code head. Independent re-review is still required before treating the findings as resolved.
 - [x] [Codex review #5911887685](https://github.com/im-tnyx/Tio-Workspace/pull/17#pullrequestreview-5911887685) on `95db341b` reported three additional P2 issues: qualified AI bot-role identity bypass, guard-source tampering, and email-free legitimate human name false positive. Focused changes add precise bot-role identity detection, precise email-free credit rules, and owner-only exact `PR:SHA` trust-boundary approval for guard-critical paths. New deterministic regression tests added; [fixture run 43741139005](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43741139005) confirms **100 attribution tests + 14 integrity tests passed, 0 failed** on code head `5a726fd6c7e0c684b8c6f1e0fb43346aeb4e2e07`; [shell checks 43741138995](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43741138995) also passed. **Independent re-review still required**.
 - [ ] [Codex review #5911970399](https://github.com/im-tnyx/Tio-Workspace/pull/17#pullrequestreview-5911970399) on `cd6e0295` identified **two new P2 residual bypasses**: `OpenAI Assistant` / `Anthropic Bot` with generic emails, and terminal punctuation in `Generated with Claude Code.`. Fix expands **exact curated AI base + explicit role** recognition and trims only edge punctuation for known credit identities, preserving email-free human false positives. Added **16** focused regression cases. Code-fix head `4483dd99fafb3b19a6b6001ce4f27507f712f4eb` passed [fixture run 43743606019](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43743606019) with **116 attribution + 14 integrity tests / 0 failures**; [Phase 1.1 shell run 43743606081](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43743606081) also **passed**. Independent current-head review is still required.
-- [ ] Owner authorizes merge of this exact PR.
+- [x] [im-tio formal CHANGES_REQUESTED review #5912187405](https://github.com/im-tnyx/Tio-Workspace/pull/17#pullrequestreview-5912187405) on `c4d29989fbed2bc4c018a15b3bca1fcf6b86a323`: **8 prior P2 implementation concerns accepted**; new **P1** source-unpinned required guard checks; **P2** `strict_required_status_checks_policy=false`; **P2** impossible missing-check bootstrap. Live active ruleset `27218050` requires `Commit attribution guard` and `Attribution guard runner`, both missing `integration_id`, neither appears on HEAD. Repository now **public** and protected. **Owner-only bootstrap proposal** added to docs; settings not changed.
+- [ ] Owner/admin approves a separately reviewed, narrowly scoped one-time bootstrap strategy (not approved yet), verifies a real App-produced Check Run, pins the required guard check to the correct App source, enables strict mode and removes the runner-only required context.
+- [ ] Owner authorizes merge of this exact PR only after updated independent approval and authorized bootstrap plan.
 - [ ] Owner reports existing `Tio Attribution Guard` App + Workspace trusted environment Client ID/private-key secret setup completed (2026-11-15); confirm **actual** App installation and credential function with a trusted-run test after PR merge. Owner/admin still must configure strict App-source-pinned required check and perform clean/bad/stale PR tests. GitHub connector does not expose encrypted environment values.
 
 ## Changed files
@@ -69,14 +71,15 @@
 
 ## PR review evidence and findings
 
-- Review requested from: `im-tio` on [PR #17](https://github.com/im-tnyx/Tio-Workspace/pull/17), confirmed in live GitHub requested reviewers; response pending.
-- Reviewer identity / link / reviewed SHA: `im-tio` request confirmed; review submission and assessed SHA **not yet obtained**.
-- Review status: Eight P2 findings reported across three Codex reviews, all with passing deterministic CI on code-fix head `4483dd9`; independent reviewer re-assessment and thread resolution remain pending; three new P2 from `95db341b` have code-fix HEAD `5a726fd6` with 100+14 tests passed. **None of the six threads is reviewer-confirmed/resolved**, and `im-tio`'s only formal review is COMMENTED (not APPROVED); independent current-head re-review is required. im-tio COMMENTED (not APPROVED); independent re-review and final owner gate pending.
-- Required CI vs supplemental: check current repo rules, not guessed status.
-- Merge approval: **not granted**.
+- [im-tio review #5912187405](https://github.com/im-tnyx/Tio-Workspace/pull/17#pullrequestreview-5912187405): **CHANGES_REQUESTED** against exact SHA `c4d29989fbed2bc4c018a15b3bca1fcf6b86a323` / base `095c3edb4a7b1969598bc01162d66496febbf0c2`. Reviewer validated all eight earlier P2 fixes and passing 116+14 fixtures + Phase 1.1 checks; **no new scanner defect**.
+- **Current P1:** active `Main Protection` ruleset `27218050` required `Commit attribution guard` and `Attribution guard runner` by name only without `integration_id` expected source. Future requirement must be pinned to exact dedicated App identity.
+- **Current P2 (freshness):** `strict_required_status_checks_policy=false`; require strict up-to-date branches and test main-advance stale PR.
+- **Current P2 (bootstrap):** neither required guard check is present on reviewed PR SHA; only GitHub Actions `checks` and `Commit attribution fixture tests` (GitHub Actions App ID `15368`) are green. Workflow must first merge to trusted `main` under **separately owner-approved one-time plan**, then real App-produced clean/bad/stale checks must be observed before final ruleset is pinned. No bypass/admin action/merge authorized.
+- All eight old Codex P2 threads remain **unresolved in GitHub**, despite im-tio's substantive acceptance; reviewer confirmation/thread resolution and a new formal `APPROVED` review after this docs update are still required. Owner merge approval **not granted**.
 
 ## Validation evidence
 
+- Exact review HEAD `c4d29989fbed2bc4c018a15b3bca1fcf6b86a323`: [attribution fixtures 43743792055](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43743792055) and [Phase 1.1 shell 43743792068](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43743792068) both successful, plus [im-tio CHANGES_REQUESTED review](https://github.com/im-tnyx/Tio-Workspace/pull/17#pullrequestreview-5912187405). Required App check contexts absent, so merge protection NOT green. Documentation-only follow-up requires its own current-head checks/review.
 - Third Codex P2 remediation code HEAD `4483dd99fafb3b19a6b6001ce4f27507f712f4eb`: [attribution/integrity fixtures 43743606019](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43743606019) **116 + 14 passed / 0 failed**, [Phase 1.1 shell 43743606081](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43743606081) **passed**; PR diff 14 files, no added trailing whitespace. New evidence-only HEAD CI requires separate verification.
 - Tio-Workspace first code head `6b3f1c4237fa154f48ee2d659bf9d1f7011b2caa`: [Attribution fixture run 43734616083](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43734616083) **72 passed, 0 failed**, completed success; [Phase 1.1 shell run 43734616001](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43734616001) **success** (dependency, design tokens, TypeScript, ESLint, pure tests).
 - First published [PR #17](https://github.com/im-tnyx/Tio-Workspace/pull/17) diff: 13 changed paths (including one archive rename), 1 commit ahead; no trailing whitespace in added lines. Git author + committer both the repository owner's connected GitHub identity; no AI co-author trailer. No GitHub App-owned required check is active or source pinned.
