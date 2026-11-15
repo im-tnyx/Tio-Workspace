@@ -38,6 +38,7 @@
 - Updates go to EAS branch/channel `pr-preview`. This workflow has no production publish option.
 - `EXPO_TOKEN` is read from the `eas-preview` GitHub Environment secret. It is never stored in source.
 - A compatible preview build must be installed once for QR-free OTA updates. Native/API changes require another build; iOS internal distribution may require device registration.
+- OTA runtime compatibility uses Expo's `fingerprint` policy so native dependency/config changes get a different runtime automatically. The workflow additionally blocks `publish_update` when the selected PR changes app config, package manifests/lockfiles, native directories or Expo config plugins; use `build_preview` for that PR and install the resulting binary first.
 - `build_preview` signing credentials must already exist in EAS for every selected platform; the GitHub workflow does not generate or import signing credentials.
 - Read-only Expo dashboard check on 2026-11-15 confirmed an Android `com.tnyx.tio` application identifier with a default EAS build credential and JKS keystore. This supports the Android preview build without a local credential bootstrap.
 - The same dashboard showed no iOS signing credentials, although `app.json` already defines `ios.bundleIdentifier`. Do not select `ios` or `all` for `build_preview` until iOS credentials are configured. No credential values, aliases, or fingerprints were copied.
@@ -68,6 +69,7 @@
 - Python PyYAML parse of `.github/workflows/expo-pr-preview.yml` — passed.
 - `git diff --check` and `git show --check` — passed on the current local changes/commit.
 - `npm run verify` — passed locally after fetching the immutable baseline SHA; 22 contract tests passed. Native builds and EAS build/update were not run.
+- Current review-fix working tree: both workflow YAML files and `app.json` parse successfully; `git diff --check` passed; `npm run verify` passed (token self-test, baseline token guard, TypeScript, ESLint, and 22 tests). GitHub exact-head validation is pending.
 - Manual GitHub workflow has not run; it is not available from `main` until merge. The `eas-preview` environment and `EXPO_TOKEN` secret name are confirmed in GitHub UI; secret value was not inspected. The repository UI did not expose required-reviewer protection, so workflow dispatch and PR author are restricted to `im-tnyx`.
 - Expo dashboard credential readiness was checked read-only: Android signing credential exists for `com.tnyx.tio`; iOS signing is not configured. Android `build_preview` can use the EAS-managed credential. iOS/all builds remain unavailable until their signing credentials are configured. No build was started during this check.
 - `.gitignore` patterns cover Expo local state, generated APK/AAB/IPA files, and common local signing credential formats; tracked source and EAS project config remain included.
@@ -78,7 +80,8 @@
 
 - Codex GitHub review [#5911333001](https://github.com/im-tnyx/Tio-Workspace/pull/15#pullrequestreview-5911333001) reviewed head `d90bbc39fcf2b14e0c5412f386da0c004a31777a` and found the token baseline unavailable. `fetch-depth: 0` was added in commit `3e0e611ae11a186bc0328cd3a51f82a121b726d8`, but later exact-head CI proved that alone was insufficient because the baseline's original feature branch had been deleted. Both CI workflows now fetch the immutable baseline SHA directly using step-scoped `GITHUB_TOKEN`; the baseline commit itself remains unchanged.
 - Codex GitHub review [#5911380555](https://github.com/im-tnyx/Tio-Workspace/pull/15#pullrequestreview-5911380555) reviewed head `e9f6608b5cbfaabb61757674df07c1cac600c826` and requested a documented/verified signing-credential prerequisite. Android credentials have now been verified in the Expo dashboard and the missing iOS setup is explicitly documented.
-- Follow-up Codex review [comment](https://github.com/im-tnyx/Tio-Workspace/pull/15#issuecomment-6896955015) reviewed code head `429402858d932f35802fdd825c0696e3087cc269` and reported no major issues. Both inline findings were answered and resolved on that head. Review verdict: `PASS` for the code diff; this is a Codex review comment, not formal GitHub `APPROVED`.
+- Follow-up Codex review [comment](https://github.com/im-tnyx/Tio-Workspace/pull/15#issuecomment-6896955015) reviewed code head `429402858d932f35802fdd825c0696e3087cc269` and reported no major issues. Both then-open inline findings were answered and resolved on that head. This was a Codex comment, not formal GitHub `APPROVED`.
+- Review [#5911554932](https://github.com/im-tnyx/Tio-Workspace/pull/15#pullrequestreview-5911554932) found that `appVersion` could permit an OTA update with incompatible native code. The fix changes runtime versioning to `fingerprint` and blocks `publish_update` for PR diffs that touch native-affecting config/dependency/plugin/platform paths. Local verification passed; exact-head GitHub validation and fresh review are pending.
 - Formal GitHub approval and action-specific merge authorization are not recorded.
 
 ## Handoff

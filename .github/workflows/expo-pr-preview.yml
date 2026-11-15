@@ -67,6 +67,7 @@ jobs:
             "$RUNNER_TEMP/pull-request.json" > /dev/null
 
           echo "head_sha=$(jq -r '.head.sha' "$RUNNER_TEMP/pull-request.json")" >> "$GITHUB_OUTPUT"
+          echo "base_sha=$(jq -r '.base.sha' "$RUNNER_TEMP/pull-request.json")" >> "$GITHUB_OUTPUT"
 
       - name: Checkout selected PR head
         uses: actions/checkout@v4
@@ -78,11 +79,12 @@ jobs:
       - name: Fetch immutable design-token baseline
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_BASE_SHA: ${{ steps.pr.outputs.base_sha }}
         run: |
           set -euo pipefail
           auth_header="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w 0)"
           git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}" \
-            fetch --no-tags origin b8e0250f5b7973b5798399d40fb67b1aa241dcbf
+            fetch --no-tags origin b8e0250f5b7973b5798399d40fb67b1aa241dcbf "$PR_BASE_SHA"
 
       - name: Setup Node
         uses: actions/setup-node@v4
@@ -95,6 +97,28 @@ jobs:
 
       - name: Verify selected PR
         run: npm run verify
+
+      - name: Block OTA publish for native-affecting PRs
+        if: ${{ inputs.operation == 'publish_update' }}
+        env:
+          PR_BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+          PR_SHA: ${{ steps.pr.outputs.head_sha }}
+        run: |
+          set -euo pipefail
+          changed_paths="$RUNNER_TEMP/pr-changed-paths.nul"
+          git diff --name-only -z "$PR_BASE_SHA...$PR_SHA" > "$changed_paths"
+          native_change=0
+          while IFS= read -r -d '' path; do
+            case "$path" in
+              app.json|app.config.js|app.config.jsx|app.config.ts|app.config.tsx|app.config.mjs|app.config.cjs|eas.json|package.json|package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml|bun.lock|bun.lockb|expo-module.config.json|android/*|ios/*|plugins/*|modules/*|native/*)
+                echo "OTA publish blocked: $path can change the native runtime. Run build_preview for this PR, install that preview build, then publish an update from a JS-only PR." >&2
+                native_change=1
+                ;;
+            esac
+          done < "$changed_paths"
+          if [ "$native_change" -ne 0 ]; then
+            exit 1
+          fi
 
       - name: Publish preview update
         if: ${{ inputs.operation == 'publish_update' }}
