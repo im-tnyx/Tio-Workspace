@@ -16,7 +16,7 @@ on:
           - publish_update
           - build_preview
       platform:
-        description: Platform for build_preview (ignored for publish_update)
+        description: Android credentials are configured; choose iOS or all only after EAS iOS signing credentials are configured
         required: true
         default: android
         type: choice
