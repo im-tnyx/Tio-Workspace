@@ -49,6 +49,6 @@ export function RootTopBar() {
       opacity, transform: [{ translateY: opacity.interpolate({
         inputRange: [0, 1], outputRange: [-10, 0],
       }) }] }}>
-    <TopBar title={title} />
+    <TopBar variant="root" title={title} />
   </Animated.View>;
 }

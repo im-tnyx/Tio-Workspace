@@ -1,12 +1,12 @@
 import { useCallback, useLayoutEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Keyboard, Platform, Pressable, Text, View } from 'react-native';
+import { Keyboard, Platform, Text, View } from 'react-native';
 import type { KeyboardEvent, ViewInstance } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useAppearance } from '@/shared/theme/AppearanceProvider';
 import { spacing, typography } from '@/shared/theme/tokens';
 import { Button } from './Button';
-import { copy } from '@/shared/i18n/en';
+import { TopBar } from './TopBar';
 import { keyboardOverlap } from './authKeyboardGeometry';
 
 // Shared fixed, non-scrolling auth page. Its persistent CTA is positioned from
@@ -88,36 +88,10 @@ export function AuthPreviewPage({
 
   return <View ref={rootRef} onLayout={measureRootBottom}
     style={{ flex: 1, backgroundColor: colors.background }}>
-    <View style={{
-      paddingTop: insets.top + spacing.sm,
-      paddingHorizontal: spacing.lg,
-      minHeight: insets.top + spacing.sm + 54,
-      justifyContent: 'flex-end',
-    }}>
-      <View style={{ minHeight: 54, flexDirection: 'row',
-        alignItems: 'center', justifyContent: 'space-between' }}>
-        <Pressable onPress={onBack} accessibilityRole="button"
-          accessibilityLabel={copy('back')}
-          style={({ pressed }) => ({
-            minWidth: 48, minHeight: 48, alignSelf: 'flex-start',
-            justifyContent: 'center', opacity: pressed ? 0.65 : 1,
-          })}>
-          <Text accessibilityElementsHidden style={{
-            color: colors.text, fontSize: 32, lineHeight: 38,
-          }}>{'←'}</Text>
-        </Pressable>
-        {headerActionLabel && onHeaderAction ? <Pressable
-          onPress={onHeaderAction} accessibilityRole="button"
-          accessibilityLabel={headerActionLabel}
-          style={({ pressed }) => ({
-            minHeight: 48, justifyContent: 'center',
-            opacity: pressed ? 0.65 : 1,
-          })}>
-          <Text style={{ color: colors.text, fontSize: 16,
-            fontWeight: '600' }}>{headerActionLabel}</Text>
-        </Pressable> : null}
-      </View>
-    </View>
+    {/* Shared TopBar owns the exact same 54pt, plain icon-only auth header.
+        Keyboard inset calculation and CTA placement remain untouched. */}
+    <TopBar variant="auth" onBack={onBack} safeAreaTop={insets.top}
+      actionLabel={headerActionLabel} onAction={onHeaderAction} />
 
     {/* Only the stage-specific content updates. No scroll is introduced. */}
     <View style={{

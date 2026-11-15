@@ -7,6 +7,19 @@ export type ColorTokens = {
 export const spacing = { xs: 4, sm: 8, md: 12, lg: 16, xl: 24, xxl: 32 } as const;
 export const radii = { sm: 10, md: 16, lg: 22, pill: 999 } as const;
 
+// Shared navigation chrome geometry (iOS pt / Android dp). Header min-height
+// excludes the OS status-bar inset; both are deliberately theme-independent.
+// Keep existing visual values while allowing all variants to change together.
+export const topBarSizes = {
+  minHeight: 54,
+  backTouchTarget: 48,
+  authBackIconFontSize: 32,
+  authBackIconLineHeight: 38,
+  authActionFontSize: 16,
+  authActionFontWeight: '600' as const,
+  authPressedOpacity: 0.65,
+} as const;
+
 /** Auth previews use deliberately low-emphasis empty-field and disabled CTA colors.
  * Keep these scoped: global button colors and Welcome CTA remain unchanged. */
 export const authPreviewMuted: Record<ColorMode, {

@@ -8,7 +8,7 @@ import { copy, formatNumber } from '../src/shared/i18n/en.ts';
 import { canOpenShellPreview } from '../src/bootstrap/shell/shellPreviewAccess.ts';
 import { canContinueAuthPreview, nextAuthPreviewStep, previousAuthPreviewStep } from '../src/features/onboarding/authPreviewSteps.ts';
 import { keyboardOverlap } from '../src/shared/ui/authKeyboardGeometry.ts';
-import { authPreviewLayout, authPreviewMuted, controlSizes, radii, spacing } from '../src/shared/theme/tokens/index.ts';
+import { authPreviewLayout, authPreviewMuted, controlSizes, radii, spacing, topBarSizes } from '../src/shared/theme/tokens/index.ts';
 import { BRAND_TYPING_INTERVAL_MS, BRAND_DOT_DIAMETER, BRAND_DOT_GAP, BRAND_DOT_FINAL_HOLD_MS, visibleTypingText } from '../src/shared/ui/typing.ts';
 
 test('initial root navigation has four stable, distinct routes', () => {
@@ -127,6 +127,41 @@ test('app-wide button size and welcome bottom spacing are shared tokens', () => 
   assert.equal(spacing.lg, 16);
   assert.equal(spacing.xl, 24);
   assert.equal(radii.md, 16); // Other surfaces remain rounded.
+});
+
+test('all implemented navigation headers share token-driven TopBar variants', () => {
+  const topBar = readFileSync('src/shared/ui/TopBar.tsx', 'utf8');
+  const root = readFileSync('src/shared/ui/RootChrome.tsx', 'utf8');
+  const nested = readFileSync('src/shared/ui/NestedPage.tsx', 'utf8');
+  const auth = readFileSync('src/shared/ui/AuthPreviewPage.tsx', 'utf8');
+  const tokens = readFileSync('src/shared/theme/tokens/index.ts', 'utf8');
+
+  assert.equal(topBarSizes.minHeight, 54); // preserves existing 54pt header size
+  assert.equal(topBarSizes.backTouchTarget, 48);
+  assert.match(tokens, /export const topBarSizes/);
+  assert.match(root, /<TopBar variant="root" title=\{title\}/);
+  assert.match(nested, /<TopBar variant="nested" title=\{title\}/);
+  assert.match(auth, /<TopBar variant="auth" onBack=\{onBack\}/);
+  assert.match(auth, /safeAreaTop=\{insets\.top\}/);
+  assert.match(auth, /actionLabel=\{headerActionLabel\} onAction=\{onHeaderAction\}/);
+  assert.match(topBar, /props\.variant === 'auth'/);
+  assert.match(topBar, /minHeight: topBarSizes\.minHeight/);
+  assert.match(topBar, /minHeight: props\.safeAreaTop \+ spacing\.sm \+ topBarSizes\.minHeight/);
+  assert.match(topBar, /minWidth: topBarSizes\.backTouchTarget/);
+  assert.match(topBar, /minHeight: topBarSizes\.backTouchTarget/);
+  assert.match(topBar, /actionLabel\?: string/);
+  assert.doesNotMatch(topBar, /minHeight:\s*54\b/);
+  assert.doesNotMatch(auth, /minHeight:\s*(?:insets\.top\s*\+\s*)?54\b/);
+  // Preserve the plain icon-only auth header; no native/default or Glass card.
+  assert.match(topBar, /\{'←'\}/);
+  assert.match(topBar, /<SurfaceMaterial/);
+  assert.match(auth, /keyboardOverlap\(rootBottomY, keyboardTopY\)/);
+  assert.doesNotMatch(auth, /<ScrollView|KeyboardAvoidingView/);
+  // Welcome and optional auth choice intentionally remain headerless.
+  const welcome = readFileSync('src/features/onboarding/screens/WelcomeScreen.tsx', 'utf8');
+  const choice = readFileSync('src/features/onboarding/screens/AuthChoiceScreen.tsx', 'utf8');
+  assert.doesNotMatch(welcome, /TopBar/);
+  assert.doesNotMatch(choice, /TopBar/);
 });
 
 test('post-Welcome auth uses persistent parent header and CTA, middle-only step content', () => {

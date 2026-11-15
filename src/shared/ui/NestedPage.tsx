@@ -11,7 +11,7 @@ export function NestedPage({ title, children }: { title: string; children: React
   const { colors } = useAppearance();
   return <View style={{ flex: 1, paddingTop: insets.top,
     paddingBottom: insets.bottom, backgroundColor: colors.background }}>
-    <TopBar title={title} onBack={() => {
+    <TopBar variant="nested" title={title} onBack={() => {
       if (router.canGoBack()) router.back(); else router.replace('/');
     }} />
     <ScrollView contentContainerStyle={{ padding: spacing.lg,
