@@ -201,7 +201,10 @@ test('post-Welcome auth uses persistent parent header and CTA, middle-only step 
   assert.match(page, /keyboardOverlap\(rootBottomY, keyboardTopY\)/);
   assert.match(page, /ref=\{rootRef\} onLayout=\{onRootLayout\}/);
   assert.match(page, /measureInWindow\(/);
-  assert.doesNotMatch(page, /Dimensions\.get\('screen'\)\.height/);
+  // Android alone may use physical screen height to correct the native
+  // window-vs-screen keyboard coordinate origin; iOS retains root overlap.
+  assert.match(page, /screenHeight: Dimensions\.get\('screen'\)\.height/);
+  assert.match(page, /androidKeyboardClearance\(\{/);
   // The fixed footer never double-adds keyboard height if the native route
   // already ended at the keyboard's upper edge.
   assert.match(page, /position: 'absolute', left: spacing\.lg, right: spacing\.lg/);
