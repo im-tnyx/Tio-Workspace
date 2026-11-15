@@ -66,10 +66,12 @@
 - Manual GitHub workflow has not run; it is not available from `main` until merge. The `eas-preview` environment and `EXPO_TOKEN` secret name are confirmed in GitHub UI; secret value was not inspected. The repository UI did not expose required-reviewer protection, so workflow dispatch and PR author are restricted to `im-tnyx`.
 - `.gitignore` patterns cover Expo local state, generated APK/AAB/IPA files, and common local signing credential formats; tracked source and EAS project config remain included.
 - The lockfile includes the SDK-matched `expo-updates` dependency so the repository's existing `npm ci` check remains reproducible.
+- GitHub `Phase 1.1 shell checks` passed on head `3e0e611ae11a186bc0328cd3a51f82a121b726d8`: dependency install, Expo compatibility, token checks, TypeScript, ESLint, and contract tests.
 
 ## PR review evidence and findings
 
-- Review status: `REVIEW_PENDING` until the final GitHub PR diff has a recorded reviewer assessment.
+- Codex GitHub review [#5911333001](https://github.com/im-tnyx/Tio-Workspace/pull/15#pullrequestreview-5911333001) reviewed head `d90bbc39fcf2b14e0c5412f386da0c004a31777a` and found the missing full-history checkout needed by the immutable design-token baseline. Fixed with `fetch-depth: 0` in commit `3e0e611ae11a186bc0328cd3a51f82a121b726d8`; latest CI passed, but exact-head re-review remains pending.
+- Review status: `REVIEW_PENDING` until the latest GitHub PR diff has a recorded reviewer assessment.
 - Formal GitHub approval and merge authorization: not requested or granted.
 
 ## Handoff
