@@ -168,7 +168,23 @@ has_ai_words() {
 # Preserve human names such as [Claude Dupont](url) and internal underscores.
 normalize_credit_name() {
   local name="$1" inner markdown_regex
-  markdown_regex='^\[([^][]+)\]\(.+\)
+  markdown_regex='^\[([^][]+)\]\(.+\)$'
+  name="$(printf '%s' "$name" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:].!?;,]*$//')"
+  while :; do
+    if [[ "$name" =~ ^\*\*(.+)\*\*$ ]] ||
+       [[ "$name" =~ ^__(.+)__$ ]] ||
+       [[ "$name" =~ ^\*(.+)\*$ ]] ||
+       [[ "$name" =~ ^_(.+)_$ ]]; then
+      inner="${BASH_REMATCH[1]}"
+    elif [[ "$name" =~ $markdown_regex ]]; then
+      inner="${BASH_REMATCH[1]}"
+    else
+      break
+    fi
+    name="$(printf '%s' "$inner" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:].!?;,]*$//')"
+  done
+  printf '%s' "$name"
+}
 # Identical, precise attribution classification for human-readable credits
 # and actual Git author/committer metadata. A vendor employment domain alone
 # is not an AI identity; a known bot mailbox at that domain is.
