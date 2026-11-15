@@ -1,0 +1,35 @@
+# Expo Go live preview from GitHub Codespaces
+
+| Field | Value |
+|---|---|
+| Status | **Preview-only setup; owner token and Codespace have not been configured or verified** |
+| Dedicated branch | `tnyx/expo-preview` |
+| Push signal | [Secret-less preview push signal](../.github/workflows/expo-preview-push-signal.yml) |
+| Trusted worker | [Default-branch Codespaces worker](../.github/workflows/expo-codespaces-preview-worker.yml) |
+| Codespace config | [`devcontainer.json`](../.devcontainer/devcontainer.json) |
+
+This setup keeps the Expo development server in a GitHub Codespace. A push to `tnyx/expo-preview` emits a secret-less signal. A trusted worker from the default branch accepts only the repository owner's push, then wakes its one matching Codespace, fast-forwards a clean worktree, and leaves Metro serving the updated JavaScript/assets. The signal workflow has no secrets and only read permissions. The first Codespace creation remains manual. No workflow runs for pull request open, review, merge, or pushes to other branches.
+
+## One-time GitHub setup
+
+1. Merge the reviewed setup PR. Confirm `tnyx/expo-preview` still exists; if repository auto-delete removed the merged head branch, recreate that branch from `main` in GitHub before creating the Codespace.
+2. Create a fine-grained personal access token for the owner account, restricted to `im-tnyx/Tio-Workspace`, with **Codespaces: read** and **Codespaces lifecycle admin: write**. These permissions list the matching Codespace and start it; the token is not the Expo/EAS token.
+3. In the repository, open **Settings → Secrets and variables → Actions → New repository secret** and name it `CODESPACES_TOKEN`. Paste the token value into GitHub's secret form only. Do not put the value in chat, source, or a Codespace command.
+4. From the repository's **Code → Codespaces** menu, manually create one Codespace on `tnyx/expo-preview`. The dev container installs the locked npm dependencies and starts Expo after creation and on later resumes.
+5. In a Codespace terminal, run `npx expo login` once and sign into the same Expo account already used by Expo Go. The [Expo Go account requirement](https://docs.expo.dev/troubleshooting/expo-go-sign-in-required/) says the CLI and Expo Go must use the same account on a physical iPhone. Open **TNYX** from Expo Go's Projects list; QR scanning is not needed for that account flow. Normal stop/start keeps this Codespace setup; replacing or rebuilding the container may require login again.
+
+The Codespace setup runs `npm ci` and then installs the Expo-documented `@expo/ngrok@4.1.3` tunnel helper globally. The starter uses `npm run mobile`, which runs `expo start --tunnel --go`. Expo's tunnel lets the phone reach a server inside Codespaces without LAN access or a local computer. Tunnel URLs are publicly reachable by anyone who has the URL, so do not share them. This is the existing mock shell; no workout, account, or health data is added to the tunnel by this change. See [Expo CLI tunneling instructions](https://docs.expo.dev/more/expo-cli/#tunneling).
+
+## After setup
+
+- Push UI/JavaScript/assets changes to `tnyx/expo-preview`. The Actions workflow finds exactly one Codespace for that repository and branch, starts it if stopped, then connects over SSH and runs the clean fast-forward sync.
+- Metro watches the updated files; when Expo Go is connected, Fast Refresh should show compatible JavaScript/assets changes. If the Codespace was stopped, reopen TNYX in Expo Go after it wakes if the prior connection does not reconnect.
+- A changed `package.json` or `package-lock.json` stops Metro before `npm ci`, then starts it again after a successful install. A hash of both dependency manifests is recorded outside the repository, so a failed install is retried on the next push. Changes to native modules or native app configuration still need a compatible preview build; Expo Go cannot hot-load new native code.
+- The sync fails closed if the Codespace is on another branch/repository, has uncommitted or untracked work, cannot fast-forward, or if zero/multiple matching Codespaces exist. Resolve that condition in the Codespace, then push a new commit to retry.
+- Only successful push signals for `tnyx/expo-preview` by `im-tnyx` reach the trusted wake/sync worker. GitHub loads the privileged [`workflow_run` worker](https://docs.github.com/en/actions/writing-workflows/choosing-when-your-workflow-runs/events-that-trigger-workflows#workflow_run) from the default branch; the Codespaces token is not available to the branch-controlled signal workflow and no branch artifact is downloaded into the runner.
+
+## Cost and limits
+
+The workflow does not create a Codespace; the owner creates the first one manually. Starting a stopped Codespace consumes Codespaces compute while active. GitHub's default idle timeout is 30 minutes, and a Codespace has a maximum lifetime of 12 hours; the phone preview is unavailable while it is stopped. Auto-wake runs only after a qualifying GitHub push, not on a schedule. See [Codespaces lifecycle](https://docs.github.com/en/codespaces/about-codespaces/understanding-the-codespace-lifecycle) and [Expo tunneling](https://docs.expo.dev/more/expo-cli/#tunneling).
+
+The existing manual EAS PR preview workflow remains separate. This Codespaces path neither publishes an EAS update nor changes production, Auth, Supabase, SQLite, release, or product UI behavior.
