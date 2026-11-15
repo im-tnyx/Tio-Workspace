@@ -22,6 +22,10 @@
 
 Owner requested eventual cleanup of abandoned Supabase account creations. [Proposed ADR-019](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) describes **7-day unverified** and **30-day verified-but-never-activated inactive** candidates with 7-day warning, secure server-side preflight and a **permanent exclusion once an account could own local encrypted data**. A **separate new proposal** covers fully established FREE accounts: **6-month review, 11-month warning, 12-month candidate review**, but destructive removal is **blocked** until the owner approves risks to offline/local bound workout recovery and independent security/privacy tests. Uninstall/fully-offline use is not remotely knowable. Time limits and automatic deletion need separate owner approval; **no job, backend migration, deletion or email was executed**.
 
+## Additional proposed cloud account metadata — not deployed
+
+Owner additionally requested **Platform, OS version, App build, Avatar, Plan** on Supabase. ADR-019 proposes nullable latest-known iOS/Android + OS version + app version/build in an account-private snapshot, optional private Storage Avatar and a server-controlled `FREE` plan status. No new required signup step, no forced network/heartbeat, and no workouts uploaded. Plan entitlement, RLS, avatar privacy, retention and implementation need separate authorization. Existing `im-tio` P3 whitespace thread was resolved; a newer commit changes review scope again, so re-review is necessary.
+
 ## Next safe action
 
 Continue review of the open documentation-only [PR #13](https://github.com/im-tnyx/Tio-Workspace/pull/13) with reviewer `im-tio` requested. Validate source-of-truth consistency and explicit privacy/security decisions; **separate owner merge approval** remains necessary. If the actual Supabase OTP-before-password mechanism cannot be implemented securely, flag the technical blocker without reordering the UI.
