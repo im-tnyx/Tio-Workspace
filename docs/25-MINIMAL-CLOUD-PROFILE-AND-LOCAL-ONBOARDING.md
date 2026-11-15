@@ -31,9 +31,28 @@ Phase 1.1 is a nonfunctional Expo mock shell. The current preview shows `Email �
 | 12 | Current Weight | Starting weight, canonical kilograms and dated measurement | Yes | Local encrypted SQLite |
 | 13 | Activity Level | Selected activity category | Yes | Local encrypted SQLite |
 | 14 | Goal | Lose / Maintain / Gain | Yes | Local encrypted SQLite |
-| 15 | App Entry | Complete gates and open Home | — | Local |
+| 15 | Final Setup | Centered progress circle while finishing real setup; transition to a centered checkmark and **“You're all set!”** only after verified save; then reveal bottom **Continue** | — | Device-local completion gate |
+| 16 | App Entry | **Continue** opens Home for the same verified and locally bound account | — | Local |
 
 Welcome includes Get Started; do not add a redundant separate Get Started page. Sign-in is a separate returning-user path. Final user-facing strings remain English-only for the current MVP per ADR-018.
+
+### Final setup completion screen — owner-selected reference behavior
+
+The owner supplied two screenshots as **interaction/composition references only**. **Do not reproduce their ratings, testimonials, stars, laurels, carousel, pagination dots, promotional statistics, logos, colors or font.** Follow Tio's own approved neutral/system-font theme rather than cloning that app.
+
+| State | Center content | Bottom action | Entry condition |
+|---|---|---|---|
+| **Finalizing** | Centered circular progress indicator with **“Personalizing your experience…”** beneath it | **Continue hidden** | After the user submits Goal; finish the already authorized, required profile/local saves and onboarding completion verification |
+| **Done** | The circle reaches completion and changes to a prominent centered **checkmark / done** symbol with **“You're all set!”** beneath it | Reveal bottom safe-area **Continue** button | Only when all required verified cloud-profile, correct account binding, local fitness data and onboarding-complete marker are durably saved |
+| **Failure / interruption** | Honest error and recovery state; retain existing inputs | **Retry**, not Continue | Save, local DB unlock, identity, or completion check fails; never display success for a timer or fake progress |
+
+- Present **both states on the same final onboarding screen**, not as separate navigation routes. The progress circle and text remain near the visual center; Continue appears only after success in the safe-area bottom action region. Keep screen uncluttered.
+- Progress must reflect real work: use an **indeterminate** circle if no trustworthy numeric progress exists. If numeric progress is shown, derive it from completed steps; no arbitrary percentages, fake progress or fixed waiting animation. When saves finish immediately, show Done directly or transition immediately; do not delay Home for marketing.
+- The indicator **may animate** from progress to checkmark with accessible reduced-motion fallback. Expose “Setting up” / “Setup complete” to assistive technology; the success state and button must be reachable with large fonts and screen readers on Android/iOS.
+- **Continue remains hidden/disabled until genuine completion.** Do not mark onboarding done until after confirmed durable local writes; preserve a safe idempotent resume if the app closes during finalization. Failure should allow retry without duplicated body-weight measurements or wiped profile data.
+- Returning verified users with completed onboarding **bypass** this first-run completion screen, including approved offline reopening. It must not require an artificial cloud call, any ratings/testimonials, cloud workout upload or a generated AI plan.
+
+
 
 **Fixed owner decision — do not change the screen order:** **Email → OTP → Password** must remain the first-time signup UI sequence. Technical feasibility is still a required implementation gate: validate Supabase email OTP account verification, production template/configuration, protected session establishment and authenticated password setup/update **in that exact order**. If a secure supported mechanism is unavailable, block implementation and escalate the provider/architecture issue; **do not reorder to Email → Password → OTP** or fake OTP verification. New workouts never unlock before real server-side email verification and password/session setup.
 
@@ -72,6 +91,7 @@ The provided `account_setup_providers.dart` contains `completeAccountSetup({Stri
 | Name/DOB/Sex absent | Block final cloud-profile completion with accessible field error; **do not mark them optional** |
 | Missing Units/Height/Weight/Activity/Goal | Resume missing local step; Home available only after required first-time setup succeeds |
 | App killed during cloud profile save or local step | Safe idempotent resume after appropriate account/session verification; no duplicate measurement |
+| Finalizing interrupted, incomplete or failed | Never display Done/Continue without durable verified completion; safely Retry or resume, avoid duplicate records or false finished state |
 | Returning user, verified complete, offline | Open correct account-bound local Home without requiring OTP, profile server read or another account |
 | Logout or second account sign-in attempt | Locked store, no account switching and no cross-account reads |
 | Reinstall without local backup | Retrieve only permissible cloud account profile; never claim cloud restored local workouts |
@@ -98,6 +118,8 @@ The provided `account_setup_providers.dart` contains `completeAccountSetup({Stri
 | ONB-08 | Fresh install/reinstall, lost-key, broken connection, partial profile, invalid DOB and optional blank phone |
 | ONB-09 | Cloud profile can be edited/deleted consistently with separate local-workout erase and account deletion contracts |
 | ONB-10 | iOS/Android keyboard, large text, screen reader, date/sex choice UX and meaningful errors after live implementation |
+| ONB-11 | After Goal, one centered progress circle and “Personalizing your experience…” transitions to centered done/checkmark and “You're all set!”; bottom Continue appears **only after** real required saves succeed, then opens Home |
+| ONB-12 | Final screen excludes testimonial cards, stars, ratings, promotional counts, carousels and copied branding; supports reduced motion, dynamic text, interruption/retry and no fake timed progress |
 
 Review evidence must distinguish **docs review** from runtime/server/native tests. Before Phase 1.2+ implementation, also satisfy [AUTH-01–14 and SEC-06](08-TEST-PLAN.md). No tests above have passed simply because they are written.
 
