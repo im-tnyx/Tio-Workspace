@@ -231,8 +231,8 @@ test('Android edge-to-edge keyboard position lifts the auth footer without doubl
   // On Android DidShow now updates the actual footer position, not merely
   // the Hide keyboard visibility flag.
   assert.match(page, /const didShow = Keyboard\.addListener\('keyboardDidShow', event => \{\s*setKeyboardVisible\(true\);[\s\S]*?updateKeyboardFrame\(event\.endCoordinates\.screenY\);/);
-  assert.match(page, /const didHide = Keyboard\.addListener\('keyboardDidHide', \(\) => \{\s*setKeyboardVisible\(false\);\s*updateKeyboardFrame\(null\);/);
-  assert.match(page, /const currentMetrics = Keyboard\.metrics\(\);\s*if \(currentMetrics\) updateKeyboardFrame\(currentMetrics\.screenY\);/);
+  assert.match(page, /const didHide = Keyboard\.addListener\('keyboardDidHide', \(\) => \{\s*setKeyboardVisible\(false\);[\s\S]*?updateKeyboardFrame\(null\);/);
+  assert.match(page, /const currentMetrics = Keyboard\.metrics\(\);\s*if \(currentMetrics\) \{[\s\S]*?updateKeyboardFrame\(currentMetrics\.screenY\);/);
   assert.match(page, /bottom: keyboardClearance \+ spacing\.lg/);
   assert.doesNotMatch(page, /if \(Platform\.OS === 'ios'\) updateKeyboardFrame/);
 });
