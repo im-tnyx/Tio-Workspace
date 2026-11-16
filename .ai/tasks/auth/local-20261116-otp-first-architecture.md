@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Ready for review; production Auth remains BLOCKED |
+| Status | PR #24 review remediation; independent re-review pending; production Auth remains BLOCKED |
 | Objective | Reconcile owner-selected Email → OTP → Password and existing-user OTP login with an honest server-authoritative design |
 | Implementation owner | Codex, documentation-only slice |
 | Previous agent | None for this documentation slice; Task 02 PoC was a separate experiment |
@@ -34,7 +34,7 @@
 
 ## Review and handoff
 
-- Reviewer request: pending PR creation; inspect exact PR HEAD and record review URL/verdict there. `REVIEW_PENDING` is not approval.
+- [PR #24](https://github.com/im-tnyx/Tio-Workspace/pull/24) received a [P2 finding](https://github.com/im-tnyx/Tio-Workspace/pull/24#discussion_r4585625250) on conflated server eligibility and device-local completion. This branch separates those gates and adds forged-completion/fresh-install negative cases; request independent `im-tio` re-review at the new published HEAD. `REVIEW_PENDING` is not approval.
 - Validation: local diff/link/Markdown/sensitive-string checks only; no new runtime, device or hosted tests.
 - Merge authorization: **not granted**. Next action: owner and independent reviewer inspect the documentation PR; separately resolve the direct password-mutation policy before any implementation slice.
 

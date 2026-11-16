@@ -11,43 +11,56 @@ The isolated Task 02 PoC used Supabase CLI 2.121.0, supabase-js 2.119.0 and Mail
 Owner-selected routes:
 
 - **New account:** Email → six-digit OTP → Password → Account Setup (Username required, Mobile optional) → Name → DOB → Sex → Units → Height → Current Weight → Activity Level → Goal → Final Setup → Home.
-- **Existing activated account:** Email → six-digit OTP → direct login → Home. Never show Set Password or call `updateUser({ password })` on this normal path. Keep the same Supabase UUID and the single installation binding.
+- **Existing server-eligible account:** Email → six-digit OTP → direct login; open Home only when protected same-UUID device-local onboarding is complete. On a fresh installation, resume local setup or a separately verified matching restore. Never show Set Password or call `updateUser({ password })` on this normal path. Keep the same Supabase UUID and the single installation binding.
 - **Incomplete account:** Email → OTP → resume the first unfinished authorized stage. Never reset a password because onboarding is incomplete.
 - **Normal reopen:** a valid persisted same-user session does not require another OTP. Previously authorized locally bound users may use encrypted local workouts offline under [ADR-011](18-OFFLINE-SESSION-STATE-MACHINE.md); an online server request still needs fresh server authorization.
 
-## Proposed server-authoritative states
+## Two independent eligibility gates
 
-The state is keyed by immutable `auth.users.id` in a **private, non-client-writable lifecycle record** or equivalent trusted server-owned state. The exact schema, transaction boundary and profile privacy policy need separate approval. `auth.users.encrypted_password` presence/length and `user_metadata` are **not** completion evidence; the PoC found a 60-character hash even for OTP-only accounts. A client-supplied stage, email, JWT `user_metadata` or local navigation flag cannot advance state.
+**Server account eligibility** is keyed by immutable `auth.users.id` in a private, non-client-writable lifecycle record or equivalent trusted server-owned state. Only independently verified server facts may advance it: OTP verification, trusted initial password-enrollment acknowledgement and validated required cloud profile. The exact schema, transaction boundary and profile privacy policy need separate approval. `auth.users.encrypted_password` presence/length and `user_metadata` are **not** completion evidence; the PoC found a 60-character hash even for OTP-only accounts. A client-supplied stage, email, JWT `user_metadata`, `local_complete` or navigation flag cannot advance server eligibility.
+
+**Device-local Home readiness** is separate: a protected binding to that same UUID, durable encrypted local setup and a locally protected completion marker. It is verified by the device gate and cannot be asserted by an Auth session or cloud profile alone. The server cannot independently verify this local marker, so it must never promote the server lifecycle or grant cloud access through RLS. Home requires both prior server eligibility for the same UUID and device-local readiness under the session/offline policy. A fresh installation with a server-eligible account but no bound local database resumes local setup or a separately verified matching restore; it must not open Home or claim restored workouts.
 
 | State | Trusted evidence | Permitted operations | Denied |
 |---|---|---|---|
 | `UNVERIFIED` | No successful server OTP verification | Request/resend OTP subject to provider limits | Protected cloud rows, local binding/Home |
 | `EMAIL_VERIFIED_PASSWORD_PENDING` | Verified Auth UUID and trusted initial-enrollment record | Initial password enrollment **only through a separately verified controlled mechanism**; safe resume | Protected cloud rows, local binding/Home, arbitrary profile activation |
 | `PASSWORD_COMPLETE_PROFILE_PENDING` | Trusted server acknowledgement of first password enrollment | Save/resume approved private required profile fields | Protected workout/activated cloud resources, local Home |
-| `PROFILE_COMPLETE_LOCAL_PENDING` | Required private profile atomically validated and server activation eligibility recorded | Bind same UUID, complete encrypted local onboarding, resume first missing local step | Other UUID's local data; final Home until local completion |
-| `ACTIVE` | Server-owned activation eligibility plus durable same-UUID local completion | Own authorized cloud profile and locally bound Home; OTP or persisted-session login | Other users' resources; silent password replacement in the normal OTP login flow |
-| `LOCKED` / `ACCOUNT_MISMATCH` | Logout, confirmed invalid session, missing protected key or different UUID | Same-account reauth/recovery | Local workout unlock, rebind, erase-on-error |
+| `SERVER_ELIGIBLE` | Required private profile validated and server-owned activation protection durably recorded | Own authorized cloud profile; attempt same-UUID local binding/setup | Other users' cloud resources; Home without local readiness; silent password replacement in normal OTP login |
 
-`PROFILE_COMPLETE_LOCAL_PENDING` is protected from abandoned-signup deletion once server activation eligibility permits local binding, even if local onboarding is unfinished. An offline client cannot newly establish that eligibility. `ACTIVE` combines a server-side authorization gate with a device-local completion marker; server access never trusts the device marker. Cloud profile fields, avatar/storage, device snapshot and server-owned `FREE` entitlement remain **ADR-019 proposals**, not approved schema or live data.
+`SERVER_ELIGIBLE` is protected from abandoned-signup deletion even if local onboarding is unfinished. An offline client cannot newly establish server eligibility. Cloud RLS uses `auth.uid()` and current server-owned eligibility/ownership only; it neither reads nor trusts device-local completion. Cloud profile fields, avatar/storage, device snapshot and server-owned `FREE` entitlement remain **ADR-019 proposals**, not approved schema or live data.
+
+| Device-local state | Protected evidence | Home result |
+|---|---|---|
+| `LOCAL_UNBOUND` | No protected binding/database for the server UUID, including a fresh installation | Deny; begin authorized local setup or separately verified matching restore |
+| `LOCAL_SETUP_PENDING` | Protected same-UUID binding exists; required encrypted local onboarding is incomplete | Deny; resume first missing local step |
+| `LOCAL_READY` | Same-UUID binding, required encrypted local data and durable protected completion marker verified together | Permit only with server eligibility previously established and current session/offline policy satisfied |
+| `LOCAL_LOCKED` / `ACCOUNT_MISMATCH` | Logout, confirmed invalid session, missing key or another UUID | Deny; retain ciphertext, require same-account recovery |
 
 ```mermaid
 stateDiagram-v2
     [*] --> UNVERIFIED: new email
     UNVERIFIED --> EMAIL_VERIFIED_PASSWORD_PENDING: verifyOtp / same UUID
     EMAIL_VERIFIED_PASSWORD_PENDING --> PASSWORD_COMPLETE_PROFILE_PENDING: trusted initial enrollment acknowledged
-    PASSWORD_COMPLETE_PROFILE_PENDING --> PROFILE_COMPLETE_LOCAL_PENDING: required private profile validated
-    PROFILE_COMPLETE_LOCAL_PENDING --> ACTIVE: same-UUID encrypted local setup durably complete
-    ACTIVE --> ACTIVE: OTP login or valid persisted session; password unchanged
+    PASSWORD_COMPLETE_PROFILE_PENDING --> SERVER_ELIGIBLE: required cloud profile validated / server protection recorded
+    SERVER_ELIGIBLE --> SERVER_ELIGIBLE: OTP login or valid persisted session; password unchanged
     EMAIL_VERIFIED_PASSWORD_PENDING --> EMAIL_VERIFIED_PASSWORD_PENDING: interrupted resume
     PASSWORD_COMPLETE_PROFILE_PENDING --> PASSWORD_COMPLETE_PROFILE_PENDING: interrupted resume
-    PROFILE_COMPLETE_LOCAL_PENDING --> PROFILE_COMPLETE_LOCAL_PENDING: interrupted resume
-    ACTIVE --> LOCKED: logout / confirmed reauth required
-    LOCKED --> ACTIVE: same-UUID online reauth; local gate passes
-    LOCKED --> ACCOUNT_MISMATCH: different UUID on bound installation
-    ACCOUNT_MISMATCH --> LOCKED: discard other session; retain ciphertext
+    SERVER_ELIGIBLE --> SERVER_ELIGIBLE: local setup or interrupted resume does not change server state
 ```
 
-Transitions must be monotonic, keyed by UUID, idempotent under retries and written with server time; retries read the latest trusted state and never duplicate profile/measurements. A failed or ambiguous write leaves the earlier state and protected resources closed. If a cloud state read fails during first setup, fail closed. After prior activation, a temporary network failure alone cannot prove revocation or erase local eligibility.
+```mermaid
+stateDiagram-v2
+    [*] --> LOCAL_UNBOUND: fresh installation
+    LOCAL_UNBOUND --> LOCAL_SETUP_PENDING: server eligibility established / bind same UUID
+    LOCAL_SETUP_PENDING --> LOCAL_READY: verified durable encrypted local completion
+    LOCAL_READY --> LOCAL_LOCKED: logout / confirmed reauth required
+    LOCAL_LOCKED --> LOCAL_READY: same-UUID session and protected local gate pass
+    LOCAL_LOCKED --> ACCOUNT_MISMATCH: different UUID attempts login
+    ACCOUNT_MISMATCH --> LOCAL_LOCKED: discard other session; retain ciphertext
+```
+
+Server transitions must be monotonic, keyed by UUID, idempotent under retries and written with server time; retries read the latest trusted server state. Device-local completion must be durable and protected under the same UUID, with idempotent retries that never duplicate local measurements. A failed or ambiguous write leaves the earlier state and protected resources closed. If a cloud state read fails during first setup, fail closed. After prior server eligibility and local readiness, a temporary network failure alone cannot prove revocation or erase local eligibility.
 
 ## Trust boundaries and direct password mutation blocker
 
@@ -56,14 +69,18 @@ flowchart LR
     UI[Expo UI / editable metadata] --> SDK[Supabase Auth SDK]
     SDK --> AUTH[Supabase Auth: OTP creates session]
     AUTH --> API[PostgREST / protected server operations]
-    API --> RLS[RLS: auth.uid plus server-owned lifecycle state]
+    AUTH --> SERVER[Server-owned account eligibility]
+    API --> RLS[RLS: auth.uid plus server-owned eligibility only]
+    SERVER --> RLS
     AUTH --> DIRECT[Direct updateUser password endpoint]
     DIRECT --> RISK[Existing password can be replaced after OTP]
-    SDK --> LOCAL[Protected single-UUID binding and encrypted local gate]
+    SDK --> LOCAL[Protected same-UUID binding and encrypted local readiness]
+    SERVER -. previously established same-UUID eligibility .-> HOME[Home requires both gates]
+    LOCAL --> HOME
     RLS -. no authority over Auth endpoint .-> DIRECT
 ```
 
-`verifyOtp` creates a real Auth session **before** password/profile completion. Treat it as identity proof, not full Tio activation. Every protected cloud table/function/storage policy must enforce both `auth.uid()` ownership and the relevant current server-owned lifecycle state; no broad `TO authenticated`-only read. A stale JWT claim must not upgrade access: query trusted server state for sensitive operations or use a separately proven freshness mechanism; revocation cannot be claimed during offline use. Client gets only a publishable key, never a service-role/secret key. Local workout data remains encrypted on device and is never uploaded by this contract.
+`verifyOtp` creates a real Auth session **before** password/profile completion. Treat it as identity proof, not full Tio activation. Every protected cloud table/function/storage policy must enforce both `auth.uid()` ownership and the relevant current server-owned eligibility; no broad `TO authenticated`-only read. A forged `local_complete` request, metadata value or client flag must change neither server eligibility nor cloud authorization. A stale JWT claim must not upgrade access: query trusted server state for sensitive operations or use a separately proven freshness mechanism; revocation cannot be claimed during offline use. Client gets only a publishable key, never a service-role/secret key. Local workout data remains encrypted on device and is never uploaded by this contract.
 
 **Unresolved:** RLS cannot intercept Supabase Auth's direct `updateUser({ password })`. The local PoC proved a recently OTP-authenticated existing user could replace a password. Hiding Set Password avoids an accidental app call but is **not server-side prevention**. A trusted server can distinguish *first enrollment* from *later change* using its own monotonic enrollment marker, but writing that marker after a client `updateUser` call is not atomic proof that a direct call was the first one. Do not claim an `auth.users` hash, user metadata, app route, or this proposed record blocks direct mutation.
 

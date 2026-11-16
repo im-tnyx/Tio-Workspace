@@ -40,7 +40,7 @@ stateDiagram-v2
     OfflineSession --> SignedOut: Explicit local logout
 ```
 
-**Security refinement:** An OTP-verified but password/profile/local-setup-incomplete Auth session is **not** eligible for `OnlineSession` or `OfflineSession` Home access. Resume its [trusted lifecycle stage](27-OTP-FIRST-AUTH-LIFECYCLE.md) online. If online token refresh fails from network timeout, do **not** treat timeout as confirmed revocation. Distinguish genuine invalid credentials from mere loss of connectivity.
+**Security refinement:** An OTP-verified but password/profile/local-setup-incomplete Auth session is **not** eligible for `OnlineSession` or `OfflineSession` Home access. Server eligibility comes only from trusted server facts; a device `local_complete` claim cannot promote it. Even when the server account is eligible, a fresh installation without protected same-UUID local setup cannot open Home or infer that workouts were restored. Resume the missing [server or device-local lifecycle stage](27-OTP-FIRST-AUTH-LIFECYCLE.md); first server eligibility requires connectivity. If online token refresh fails from network timeout, do **not** treat timeout as confirmed revocation. Distinguish genuine invalid credentials from mere loss of connectivity.
 
 ## 03 · State table
 
