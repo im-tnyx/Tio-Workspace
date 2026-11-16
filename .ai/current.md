@@ -4,21 +4,20 @@
 
 | Field | Value |
 |---|---|
-| Status | **PR #17 governance in review; PR #18 Codespaces concurrently open; #17 must merge first by dependency, neither merge authorized** |
-| Active Task | **Merge-sequence priority: PR #17** [commit attribution guard](tasks/security/local-20261115-commit-attribution-guard.md). [PR #18 Codespaces](tasks/devex/local-20261115-expo-go-codespaces-preview.md) is separately active on its own feature branch, but queued behind #17 for `main` merge; do not overwrite its task brief |
-| Active Scope / Owner | Multi-agent commit attribution governance only; owner retains merge and GitHub App/settings authority |
-| Branch | `tnyx/security/commit-attribution-guard-20261115` (open non-draft PR #17; PR #18 branch untouched; no `main` merge authorized) |
-| Base / verified `main` | `095c3edb4a7b1969598bc01162d66496febbf0c2` (merged PR #15 post-merge archive reconciliation; verify live HEAD before future work) |
-| Completed PRs | [#11 Expo mock shell](https://github.com/im-tnyx/Tio-Workspace/pull/11), [#12 prior post-merge docs](https://github.com/im-tnyx/Tio-Workspace/pull/12), [#13 proposed ADR-019 docs](https://github.com/im-tnyx/Tio-Workspace/pull/13), [#14 context reconciliation](https://github.com/im-tnyx/Tio-Workspace/pull/14), [#15 manual Expo preview workflow](https://github.com/im-tnyx/Tio-Workspace/pull/15) — **all merged** |
+| Status | **PR #17 merged; PR #18 Codespaces preview in review; token/Codespace/device pending** |
+| Active Task | [Codespaces preview task](tasks/devex/local-20261115-expo-go-codespaces-preview.md) — [PR #18](https://github.com/im-tnyx/Tio-Workspace/pull/18) open; [PR #17 guard task](tasks/security/local-20261115-commit-attribution-guard.md) remains recorded |
+| Active Scope / Owner | Dedicated `tnyx/expo-preview` branch, dev container, push-triggered wake/sync, and setup docs only |
+| Branch | `tnyx/expo-preview` |
+| Base / inspected `main` | `fdc33d719975940058018dd283c7e9b4915c0286` after PR #17 merge; verify live state before review/merge |
+| Completed PRs | [#11 Expo mock shell](https://github.com/im-tnyx/Tio-Workspace/pull/11), [#12 prior post-merge docs](https://github.com/im-tnyx/Tio-Workspace/pull/12), [#13 proposed ADR-019 docs](https://github.com/im-tnyx/Tio-Workspace/pull/13), [#14 context reconciliation](https://github.com/im-tnyx/Tio-Workspace/pull/14), [#15 manual Expo preview workflow](https://github.com/im-tnyx/Tio-Workspace/pull/15), [#17 commit attribution guard](https://github.com/im-tnyx/Tio-Workspace/pull/17) — **all merged** |
 | Proposal | [ADR-019 minimal cloud profile and local onboarding](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) |
-| Implementation authority | Owner approved PR #17 governance setup and existing `Tio Attribution Guard` App reuse; owner reports installation/environment setup done, **not independently verified by workflow**. No merge, required ruleset, Auth/DB/sync or production changes authorized |
+| Implementation authority | Owner selected a dedicated Expo Go Codespaces preview branch and push-triggered auto-wake; token/Codespace setup remains owner-operated. PR #17 governance is merged; it does not authorize app features, EAS publishing, production, Auth, DB or sync work |
 | PR #13 final review | `im-tio` **APPROVED** exact head `944efa7799d6f8d803e1a16506ee0ff5ec7d3f81`; 1/1 P3 thread resolved; owner-approved squash merge verified |
 
 ## Concurrent PR merge-order / pointer ownership
 
-- **PR #17 must be reviewed and safely bootstrap-merged before PR #18.** The trusted commit attribution guard has to exist on `main` before it can issue the App Check Runs required by PR #18. Both PRs are open and blocked; this sequencing dependency is **not permission to bypass protection rules**.
-- Until #17 merges, this branch's active task pointer identifies **governance #17** as merge-sequence priority. Codespaces work stays in [PR #18's own task](tasks/devex/local-20261115-expo-go-codespaces-preview.md), on its separate branch. There are two open bounded workstreams, but only one canonical `main` pointer at a time.
-- **Before PR #18 merges**, update its branch against the actual post-#17 `main` and explicitly resolve `.ai/current.md` to the then-active **Codespaces #18** pointer without reverting #17's guard policy or task evidence. Require fresh App checks, independent review, resolved threads, and PR #18's own owner `go merge`. Never silently carry the PR #17 pointer over the PR #18 merge.
+- PR #17 is merged at `fdc33d719975940058018dd283c7e9b4915c0286`; its guard policy, workflows, task evidence and [activation guide](../docs/26-COMMIT-ATTRIBUTION-GUARD.md) remain in `main`.
+- PR #18 is the current bounded task. Require fresh App checks, independent review, resolved threads and PR #18's own owner `go merge`. Merged guard source alone does not prove App Check Run operation or permit a ruleset bypass.
 
 ## Exact owner-requested signup and onboarding
 
@@ -34,9 +33,9 @@ Owner additionally requested **Platform, OS version, App build, Avatar, Plan** o
 
 ## Next safe action
 
-**Current governance scope:** Review [PR #17](https://github.com/im-tnyx/Tio-Workspace/pull/17) at its current SHA. Its 72 attribution fixtures and Expo shell validation passed on the earlier code head; after branch reconciliation verify checks again. `im-tio` independent review and separate owner merge authorization are pending. The owner reports existing `Tio Attribution Guard` installation, Workspace trusted environment variable and secret configured, but **the App-owned runner cannot be proved operational until the trusted workflow is on `main` and a disposable PR creates a correctly sourced Check Run**. `main` now has active `Main Protection` ruleset `27218050` (repo **public**): the dedicated `Commit attribution guard` required check is **correctly pinned** to App ID **5032971** and **strict mode is ON**. However the App Check Run is absent, the extra required `Attribution guard runner` is absent, and trusted workflow is not on main. im-tio **CHANGES_REQUESTED** on [review #5912187405](https://github.com/im-tnyx/Tio-Workspace/pull/17#pullrequestreview-5912187405); eight prior P2 implementations accepted. No owner bootstrap/merge/settings authorization or trusted App protection claim. See [activation guide](../docs/26-COMMIT-ATTRIBUTION-GUARD.md). Do not touch production or app data.
+PR #18 now includes the accepted-SHA sync fix and is reconciling against the merged guard. The repository is public; `main` approval/last-push/admin protection and exact-`main` policy on `expo-codespaces-trusted` were previously verified. No `CODESPACES_TOKEN` or Codespace was present at that check; recheck live state before final handoff. Resolve the latest review findings, verify required guard checks at the new PR head, and obtain PR #18's own merge authorization. After merge, the owner adds the environment secret, creates one Codespace, runs `npx expo login` and restarts the Expo starter once to verify phone connection.
 
-**Separate preview follow-up:** The manual GitHub Expo PR Preview workflow is available on `main`. `EXPO_TOKEN` is configured in GitHub's `eas-preview` environment; never put its value in this file or source. No build or update has been dispatched. For the first compatible install, use `build_preview` with `android` on an eligible owner-authored open PR targeting `main`, then install that binary once. The merged PR #15 itself is closed and cannot be selected. Later JS-only PRs may use `publish_update`; PRs touching native-affecting files are blocked from OTA and need a new preview build first. iOS signing credentials are not configured. Production publishing remains out of scope.
+The manual GitHub Expo PR Preview workflow remains available on `main` as a separate EAS path. `EXPO_TOKEN` in `eas-preview` is unrelated to `CODESPACES_TOKEN`; never put either value in this file or source. It supports a compatible Android preview build or eligible OTA update; iOS signing credentials remain unconfigured. Production publishing remains out of scope.
 
 After this task, the next product decision remains review of [proposed ADR-019](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) and [Phase 1 readiness](../docs/21-PHASE-1-READINESS.md). No Auth/session/SQLite/Supabase implementation is authorized.
 

@@ -1,0 +1,19 @@
+name: Expo preview push signal
+
+# This workflow intentionally has no secrets and no write permissions. The
+# privileged Codespaces worker runs separately from the trusted default branch.
+on:
+  push:
+    branches:
+      - tnyx/expo-preview
+
+permissions:
+  contents: read
+
+jobs:
+  signal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Record preview branch push
+        run: echo "Preview push accepted at $GITHUB_SHA"
