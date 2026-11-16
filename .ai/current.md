@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Status | **PR #17 merged; trusted attribution App gate activated; PR #18 pending independent review and updated-main reconciliation** |
-| Active Task | **PR #18 Codespaces preview**, tracked in [its task brief](tasks/devex/local-20261115-expo-go-codespaces-preview.md). Security guard activation verified separately; do not infer PR #18 merge approval |
+| Active Task | **PR #18 Codespaces preview**, tracked in [its task brief](https://github.com/im-tnyx/Tio-Workspace/blob/tnyx/expo-preview/.ai/tasks/devex/local-20261115-expo-go-codespaces-preview.md). Security guard activation verified separately; do not infer PR #18 merge approval |
 | Active Scope / Owner | Codespaces preview PR review/reconciliation only; owner retains merge and repository settings authority |
 | Branch | PR #18 feature branch (verify current live head before any change) |
 | Base / verified `main` | `fdc33d719975940058018dd283c7e9b4915c0286` (PR #17 squash merge; verify live HEAD before work) |
