@@ -4,12 +4,12 @@
 
 | Field | Value |
 |---|---|
-| Status | **Phase 1.2 Task 03 documentation merged; production Auth BLOCKED** |
-| Active Task | No Auth implementation task assigned. [Task 03 documentation record](archive/2026/local-20261116-otp-first-architecture.md) is archived; prior preview task remains [archived](archive/2026/local-20261115-expo-go-codespaces-preview.md). |
-| Active Scope / Owner | No active product implementation; owner retains Auth implementation, hosted settings, privacy and merge decisions |
-| Branch | Task 03 branch `tnyx/phase12-auth-architecture` merged through PR #24; resolve current branch and PR state live |
-| Verified merged `main` | `13b87912af6606f50b4c9e9a4dd5c44cad564e78` (PR #24 squash merge, 2026-11-16); reverify before subsequent work |
-| Completed PRs | [#11](https://github.com/im-tnyx/Tio-Workspace/pull/11), [#12](https://github.com/im-tnyx/Tio-Workspace/pull/12), [#13](https://github.com/im-tnyx/Tio-Workspace/pull/13), [#14](https://github.com/im-tnyx/Tio-Workspace/pull/14), [#15](https://github.com/im-tnyx/Tio-Workspace/pull/15), [#17](https://github.com/im-tnyx/Tio-Workspace/pull/17), [#18](https://github.com/im-tnyx/Tio-Workspace/pull/18), [#21](https://github.com/im-tnyx/Tio-Workspace/pull/21), [#22](https://github.com/im-tnyx/Tio-Workspace/pull/22), [#23](https://github.com/im-tnyx/Tio-Workspace/pull/23) and [#24](https://github.com/im-tnyx/Tio-Workspace/pull/24) merged |
+| Status | **Phase 1.2 Task 05 unified Auth policy documentation in review; production Auth BLOCKED** |
+| Active Task | Task 05 documentation-only policy reconciliation; no Auth implementation task assigned. [Task 03 documentation record](archive/2026/local-20261116-otp-first-architecture.md) remains archived. |
+| Active Scope / Owner | Shared Auth UX contract and canonical docs only; owner retains Auth implementation, hosted settings, privacy, security-policy and merge decisions |
+| Branch | `docs/phase12-unified-auth-policy`; verify live PR and branch HEAD before action |
+| Verified merged `main` | `4acf1416137a89544333b718f677fcfdaadccd2f` (PR #25 merge, verified 2026-11-17); reverify before subsequent work |
+| Completed PRs | [#11](https://github.com/im-tnyx/Tio-Workspace/pull/11), [#12](https://github.com/im-tnyx/Tio-Workspace/pull/12), [#13](https://github.com/im-tnyx/Tio-Workspace/pull/13), [#14](https://github.com/im-tnyx/Tio-Workspace/pull/14), [#15](https://github.com/im-tnyx/Tio-Workspace/pull/15), [#17](https://github.com/im-tnyx/Tio-Workspace/pull/17), [#18](https://github.com/im-tnyx/Tio-Workspace/pull/18), [#21](https://github.com/im-tnyx/Tio-Workspace/pull/21), [#22](https://github.com/im-tnyx/Tio-Workspace/pull/22), [#23](https://github.com/im-tnyx/Tio-Workspace/pull/23), [#24](https://github.com/im-tnyx/Tio-Workspace/pull/24) and [#25](https://github.com/im-tnyx/Tio-Workspace/pull/25) merged |
 | Proposal | [ADR-019 minimal cloud profile and local onboarding](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) — **proposed, not implemented** |
 | Implementation authority | Only previously approved mock-shell/preview infrastructure changes are merged. No real Auth, Supabase profile, avatar bucket, local SQLCipher workout DB, paid sync, auto-deletion, EAS publishing or production work has been authorized. |
 | Commit attribution gate | [Main Protection ruleset `27218050`](https://github.com/im-tnyx/Tio-Workspace/rules/27218050) is active and strict, with **App-owned `Commit attribution guard`** (App ID `5032971`) required. Clean/bad disposable PR #19/#20 checks were demonstrated; stale-head/spoofed-check/integrity adversarial PR tests remain outstanding. |
@@ -25,6 +25,8 @@
 
 ## Exact owner-requested signup and onboarding
 
+**Task 05 owner-approved unified Auth UX:** Existing shared Expo preview stays visually unchanged. Sign Up: Email → OTP → Create Password. Sign In: Email → reveal Password after Continue → `signInWithPassword` → server eligibility → same-UUID local readiness; no normal Sign In OTP or password update. Forgot Password remains separate Email → recovery verification → New Password → Sign In. A valid persisted same-user session bypasses unnecessary Sign In. Existing email on Sign Up needs generic, non-enumerating guidance to explicit Sign In/Forgot Password. This is a documentation policy, not real Auth approval or a resolution of direct Auth password mutation. See [ADR-017](../docs/09-DECISIONS.md), [lifecycle](../docs/27-OTP-FIRST-AUTH-LIFECYCLE.md) and [tests](../docs/08-TEST-PLAN.md).
+
 **Email → OTP → Password** is the fixed UI order, not subject to redesign. Continue **Account Setup (Username required + Mobile optional, same screen)** → **Name** → DOB (**required**) → Sex (**required**) → Units → Height → Current Weight → Activity Level → Goal → **Final Setup (progress circle → done/checkmark → bottom Continue)** → Home. Only show success after verified saves; no ratings/stars/testimonials. **Only Mobile is optional; it is not a separate screen.** Name remains its own screen immediately after Account Setup. Plan encrypted device-local fitness storage and private minimum cloud identity; existing workout sync/backup rules are unchanged.
 
 ## Additional pending policy — abandoned signup cleanup
@@ -37,7 +39,7 @@ Owner additionally requested **Platform, OS version, App build, Avatar, Plan** o
 
 ## Next safe action
 
-Task 03 OTP-first Auth architecture was merged through [PR #24](https://github.com/im-tnyx/Tio-Workspace/pull/24) after independent approval and owner-authorized merge. Its design records a production Auth blocker; the documentation merge does not authorize Auth code, hosted Supabase settings, private-profile schema or deletion jobs. The next security-design decision is whether explicit OTP-based password recovery may coexist with direct Supabase Auth password replacement, or a provider-enforced prevention mechanism is required and proven. No choice or implementation is approved yet.
+Task 03 OTP-first Auth architecture was merged through [PR #24](https://github.com/im-tnyx/Tio-Workspace/pull/24); PR #25 also merged. Task 05 only reconciles the owner's unified Auth UX in docs and awaits independent review plus explicit owner merge authorization. The production Auth blocker remains: the owner must decide whether explicit OTP-based password recovery may coexist with direct Supabase Auth password replacement, or require a provider-enforced prevention mechanism proven to cover direct Auth calls. No choice or implementation is approved yet.
 
 **Next product decision (not yet authorized to implement):** review [proposed ADR-019](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md), [Phase 1 readiness](../docs/21-PHASE-1-READINESS.md), and [open Phase 0 issue #2](https://github.com/im-tnyx/Tio-Workspace/issues/2). In particular, prove the fixed **Email → OTP → Password** Supabase Auth mechanism before schema/UI implementation, and separately approve sensitive profile/RLS/privacy, age policy, installation-bound offline safety and cleanup/recovery tradeoffs.
 

@@ -19,7 +19,7 @@ flowchart TD
   S["Session gate"] -->|Previously server-eligible same UUID, local-ready, session policy passes| Dock["Configured bottom nav - initial four roots"]
   S -->|First signup / signed out / setup incomplete| Auth["Auth / pending setup"]
   Auth -->|New: Email then OTP then Password then required cloud profile| Eligible["Trusted server eligibility"]
-  Auth -->|Existing: Email then OTP, same server-eligible UUID| Eligible
+  Auth -->|Existing: Email then Password, same server-eligible UUID| Eligible
   Eligible -->|Protected same-UUID local onboarding or verified matching restore| Ready["Device-local readiness"]
   Ready --> Dock
   Auth -->|Different UUID| Denied["Account mismatch - blocked"]
@@ -61,10 +61,12 @@ flowchart TD
 
 ## 02 · Screen contract
 
+**Owner-approved unified Auth presentation (policy only):** Keep the existing shared Expo Auth preview, its Sign In/Sign Up headings and helper text, typography, Email/Password fields, keyboard/focus behavior, Header/Back, persistent footer/Continue, accessibility, small-screen layout and visual styling. The two lightweight routes may continue to share one component. Selected **Sign Up** starts with Email only; Continue opens six-digit OTP, then successful verification reveals Create Password. Selected **Sign In** starts with Email only; Continue reveals the existing Password field while Email stays visible; `signInWithPassword` is the future normal authentication call, with no OTP or credential mutation. Do not use a public email-existence lookup or automatically switch mode. An existing email entered on Sign Up needs generic, non-enumerating guidance toward explicit Sign In or Forgot Password, with provider behavior verified before implementation. **Forgot Password** retains its preview text/behavior and follows Email → recovery verification → New Password → Sign In. Recovery-authenticated sessions may permit direct password updates; UI separation does not solve that Auth-level risk. No new screen, visual redesign or working Auth is implied.
+
 | Screen | Primary CTA | Offline | Empty/error state |
 |---|---|---|---|
 | Session gate | Resume existing authenticated user | Yes if account is initialized and locally eligible | Need login / reauth / unavailable key |
-| Auth | **Online new Email → OTP → Password → required cloud profile → protected same-UUID local onboarding → Home**; existing server-eligible Email → OTP direct login opens Home only when same-UUID local-ready | No for new signup/verification | Pending/wrong/expired OTP, resend 429/cooldown, no guest, account mismatch denied, network error; OTP session or server eligibility alone cannot open Home/workout DB |
+| Auth | **Online new Email → OTP → Password → required cloud profile → protected same-UUID local onboarding → Home**; existing server-eligible Email → Password login without OTP opens Home only when same-UUID local-ready | No for new signup/verification | Pending/wrong/expired OTP, resend 429/cooldown, no guest, account mismatch denied, network error; OTP session or server eligibility alone cannot open Home/workout DB |
 | Home | Start / Resume Workout | Yes | “Create your first plan” / “Start a free workout” |
 | Workout (root) | Start/resume, plans and history links | Yes | Empty plans, in-progress resume |
 | Exercise Library (Library root) | Browse/search **curated exercises only** in current MVP | Yes, offline curated list | Empty results, choose exercise; **no custom-create screen until future membership, max 50/member** |

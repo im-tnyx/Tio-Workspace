@@ -27,7 +27,7 @@ stateDiagram-v2
     Boot --> OnlineSession: Verified stored session + network
     Boot --> OfflineSession: Previously verified account + no network
     Boot --> ReauthRequired: No recoverable credentials/key
-    SignedOut --> OnlineSession: Completed first online setup or same-bound active-user OTP login
+    SignedOut --> OnlineSession: Completed first online setup or same-bound active-user password login
     SignedOut --> AccountMismatch: Login returns different UUID while bound
     AccountMismatch --> SignedOut: Cancel / use same account
     AccountMismatch --> SignedOut: Separately confirmed local reset

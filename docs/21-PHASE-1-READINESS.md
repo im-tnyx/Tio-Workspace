@@ -21,7 +21,7 @@
 | Gate | What must be true | Current |
 |---|---|---|
 | Product | **Tnyx + `com.tnyx.tio`; Neutral, Glass(default)/Solid, System(default)/Light/Dark; portrait-only Android/iOS; English-only with OS/system fonts** (ADR-018). Future Accent Color, Hindi and Custom Font controls deferred | ⬜ Real device orientation/theme/English-font QA, icon and app ID registration pending |
-| Session | New: **Email → OTP → Password**; existing active: **Email → OTP direct login**; pending: trusted-stage resume; no guest, server anti-abuse controls (ADR-017), plus previously verified offline access (ADR-011); test revocation and errors | ⬜ Provider/numeric settings & runtime evidence pending |
+| Session | New: **Email → OTP → Password**; existing active: **Email → Password login without OTP**; pending: trusted-stage resume; no guest, server anti-abuse controls (ADR-017), plus previously verified offline access (ADR-011); test revocation and errors | ⬜ Provider/numeric settings & runtime evidence pending |
 | Data isolation | **One account/installation, no switching, logout retains data; separate reset** selected; native key/erase lifecycle and tests still required | ⬜ Technical validation pending |
 | Native build | SQLCipher build/validation strategy accepted (Expo Go limitations understood) | ⬜ Pending |
 | Migrations | **ADR-010 tooling selected**; compatible native versions/bundling, account-specific journal, safe migration and recovery still require validation/sign-off | ⬜ Technical gate pending |
@@ -32,7 +32,7 @@
 | Tests | Password 8–64, required proposed Username 3–16, program/routine names 3–25 graphemes and count max 50/30, sets 1–8 and deferred member-only custom exercises max 50 selected; OTP targets approved, **provider/server feasibility unverified** | ⬜ Runtime evidence pending |
 | Owner authorization | Explicit approval for each bounded Phase 1 slice | ✅ Phase 1.1 approved and merged; ⬜ Phase 1.2+ pending |
 
-**ADR-017 refined scope:** Phase 1.1 is shell placeholders only. Phase 1.2 Auth implementation remains **BLOCKED** pending direct password-mutation policy, hosted delivery, server-enforced abuse controls, device persistence and separate approval. Task 02 Mailpit evidence is local only; see the [lifecycle contract](27-OTP-FIRST-AUTH-LIFECYCLE.md). No CAPTCHA is selected. Phase 1.4–1.6 implement **count-based program/routine/exercise/sets caps** with free curated Library, **no functional Create Custom Exercise UI or membership gate**. Later approved membership enables max 50 custom exercises/member and separately gated paid Sync; app lock, billing and paywall are deferred. All native/provider tests pending.
+**ADR-017 refined scope:** Phase 1.1 is shell placeholders only. Phase 1.2 Auth implementation remains **BLOCKED** pending direct password-mutation policy, secure initial password enrollment, hosted six-digit OTP delivery, server-enforced send/resend/failure controls, server-owned lifecycle/RLS, profile privacy/cleanup/recovery guarantees, native session/local-encryption evidence and separate approval. Task 02 Mailpit evidence is local only; see the [lifecycle contract](27-OTP-FIRST-AUTH-LIFECYCLE.md). No CAPTCHA is selected. Phase 1.4–1.6 implement **count-based program/routine/exercise/sets caps** with free curated Library, **no functional Create Custom Exercise UI or membership gate**. Later approved membership enables max 50 custom exercises/member and separately gated paid Sync; app lock, billing and paywall are deferred. All native/provider tests pending.
 
 **ADR-018 owner-selected initial shell constraints:** native app-shell orientation **portrait-only** on supported phones; Appearance preference **System(default)/Light/Dark**; English UI/system font and centralized copy/formatting abstractions. Do NOT add Language/Custom Font settings, translations, Hindi font binaries or landscape layouts in Phase 1.1; these are deferred. This is docs policy, not coding permission.
 
@@ -52,7 +52,7 @@ Do **not** pull AI, Drive/iCloud backup or Postgres sync into Phase 1 by implica
 
 ## 03 · Validation matrix
 
-- [ ] `AUTH-01–14` (including `AUTH-10`): signup **email OTP**, no-guest verification gate, brute-force/resend handling, reopening and previously verified offline access, wrong user, revoked session and explicit reset.
+- [ ] `AUTH-01–29` (including `AUTH-10`, `AUTH-28/29`): signup **email OTP**, normal returning-user password Sign In, shared mode transitions, generic existing-email/invalid-credential handling, no-guest verification gate, brute-force/resend handling, reopening and previously verified offline access, wrong user, revoked session and explicit reset.
 - [x] Product numbers selected: password **8–64**, username **3–16**, programs max 50, routines/program max 30, planned exercise slots max 30, sets **1–8**, sessions max 40 and later members' custom exercises max 50. No minimum creation count; **saved program/routine title length 3–25 graphemes**.
 - [ ] Implement and test **LIMIT-01–05 P0** in appropriate approved slices, **LIMIT-06 P2** only in future membership; independently verify actual Auth/OTP provider rate limits and anti-abuse without CAPTCHA.
 - [ ] `SEC-06` for OTP/replay/abuse, unverified/anonymous/wrong-account bypass and sensitive logging, in addition to `SEC-01–05`.
