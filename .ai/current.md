@@ -4,21 +4,22 @@
 
 | Field | Value |
 |---|---|
-| Status | **PR #17 merged; trusted attribution App gate activated; PR #18 pending independent review and updated-main reconciliation** |
-| Active Task | **PR #18 Codespaces preview**, tracked in [its task brief](https://github.com/im-tnyx/Tio-Workspace/blob/tnyx/expo-preview/.ai/tasks/devex/local-20261115-expo-go-codespaces-preview.md). Security guard activation verified separately; do not infer PR #18 merge approval |
-| Active Scope / Owner | Codespaces preview PR review/reconciliation only; owner retains merge and repository settings authority |
-| Branch | PR #18 feature branch (verify current live head before any change) |
-| Base / verified `main` | `fdc33d719975940058018dd283c7e9b4915c0286` (PR #17 squash merge; verify live HEAD before work) |
-| Completed PRs | #11, #12, #13, #14, #15 and **#17 commit attribution guard** — merged |
+| Status | **PR #17 guard activated; PR #18 Codespaces preview merged; PR #21 documentation reconciliation in review** |
+| Active Task | [PR #21](https://github.com/im-tnyx/Tio-Workspace/pull/21) is the bounded docs-only continuity update. [PR #18 task](tasks/devex/local-20261115-expo-go-codespaces-preview.md) and [PR #17 guard task](tasks/security/local-20261115-commit-attribution-guard.md) remain as historical task records. |
+| Active Scope / Owner | Reconcile guard activation and the completed Codespaces setup with current `main`; owner retains guard-file exception and merge authority |
+| Branch | `docs/reconcile-current-pointer-after-guard-20261116` (PR #21) |
+| Base / inspected `main` | `941484bbd6109fd263681ca49200bf689e24d9e2` (PR #18 squash merge); verify live HEAD before merge |
+| Completed PRs | [#11 Expo mock shell](https://github.com/im-tnyx/Tio-Workspace/pull/11), [#12 prior post-merge docs](https://github.com/im-tnyx/Tio-Workspace/pull/12), [#13 proposed ADR-019 docs](https://github.com/im-tnyx/Tio-Workspace/pull/13), [#14 context reconciliation](https://github.com/im-tnyx/Tio-Workspace/pull/14), [#15 manual Expo preview workflow](https://github.com/im-tnyx/Tio-Workspace/pull/15), [#17 commit attribution guard](https://github.com/im-tnyx/Tio-Workspace/pull/17), [#18 Codespaces preview](https://github.com/im-tnyx/Tio-Workspace/pull/18) — **all merged** |
 | Proposal | [ADR-019 minimal cloud profile and local onboarding](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) |
-| Implementation authority | Owner approved PR #17 governance and App reuse; **PR #17 merged**. Required App check on main ruleset confirmed live, but this does not authorize PR #18 merge or Auth/DB implementation |
-| Attribution gate evidence | Ruleset `27218050` active, strict, requires only `Commit attribution guard` pinned to App ID `5032971`. Disposable [PR #19](https://github.com/im-tnyx/Tio-Workspace/pull/19) clean PASS and [PR #20](https://github.com/im-tnyx/Tio-Workspace/pull/20) prohibited AI attribution FAIL; both closed unmerged. Additional stale-head, spoofing and integrity edge-case live tests remain unverified |
+| Implementation authority | Owner approved and merged the Codespaces preview setup. `CODESPACES_TOKEN` exists in the `expo-codespaces-trusted` environment; one matching Codespace and CLI tunnel were verified, and owner reported the UI visible in Expo Go. Push-triggered wake/sync has not yet been tested. No app features, EAS publishing, production, Auth, DB or workout sync are approved. |
+| Attribution gate evidence | Ruleset `27218050` requires the strict App-owned `Commit attribution guard` check (App ID `5032971`); clean PR #19 passed and prohibited-credit PR #20 failed. Guard-changing PR #21 still needs the owner-controlled exact-head approval and a passing App check. See [activation guide](../docs/26-COMMIT-ATTRIBUTION-GUARD.md). |
+| PR #13 final review | `im-tio` **APPROVED** exact head `944efa7799d6f8d803e1a16506ee0ff5ec7d3f81`; 1/1 P3 thread resolved; owner-approved squash merge verified |
 
-## Concurrent PR merge-order / pointer ownership
+## Merge history and current boundaries
 
-- **PR #17 merged before PR #18**, satisfying the original workflow-on-main dependency. The trusted App check is now operational on test PR heads.
-- **PR #18 remains separate:** reconcile its branch with the actual post-#17 `main`, preserve the attribution policy, verify the App-owned required check at the latest head, obtain independent approval and resolve review threads. Owner must explicitly authorize any PR #18 merge.
-- Do not treat the closed test PRs or successful guard smoke tests as authorization to bypass security or merge PR #18.
+- PR #17 merged at `fdc33d719975940058018dd283c7e9b4915c0286`; its guard policy, workflows and task evidence remain in `main`. PR #18 merged later at `941484bbd6109fd263681ca49200bf689e24d9e2`; PR #21 must retain its Codespaces files and task brief.
+- PR #21 updates documentation only. Its protected guard guide change needs an exact-head owner approval through `attribution-guard-trusted`, a passing App-owned required check, current-head review and separate owner merge authorization. Resolving old review threads is not approval.
+- The preview Codespace was created on `tnyx/expo-preview`; Expo CLI reported account `tnyx-23` and the starter reported a running tunnel. The owner confirmed the UI opened on the phone. A stopped Codespace resume and push-triggered wake/sync remain unverified.
 
 ## Exact owner-requested signup and onboarding
 
@@ -34,9 +35,9 @@ Owner additionally requested **Platform, OS version, App build, Avatar, Plan** o
 
 ## Next safe action
 
-**Current scope:** Review and reconcile [PR #18](https://github.com/im-tnyx/Tio-Workspace/pull/18) against live `main` following PR #17 merge. Verify changed files, independent review, required App check and exact-head merge gate. Do not merge without explicit owner approval. Security activation has passed clean/negative disposable smoke tests; stale-head, spoofing and guard-integrity edge-case tests are not yet claimed complete.
+Recheck PR #21 against the live `main` head after this reconciliation. Verify the exact-head guard approval, required App check, independent review and resolved threads; stop at the merge gate until the owner explicitly authorizes PR #21's merge. The Codespaces guide and task brief contain setup-era snapshots; treat the verified facts above as the current status until those documents receive a focused post-merge update.
 
-**Separate preview follow-up:** The manual GitHub Expo PR Preview workflow is available on `main`. `EXPO_TOKEN` is configured in GitHub's `eas-preview` environment; never put its value in this file or source. No build or update has been dispatched. For the first compatible install, use `build_preview` with `android` on an eligible owner-authored open PR targeting `main`, then install that binary once. The merged PR #15 itself is closed and cannot be selected. Later JS-only PRs may use `publish_update`; PRs touching native-affecting files are blocked from OTA and need a new preview build first. iOS signing credentials are not configured. Production publishing remains out of scope.
+The manual GitHub Expo PR Preview workflow remains available on `main` as a separate EAS path. `EXPO_TOKEN` in `eas-preview` is unrelated to `CODESPACES_TOKEN`; never put either value in this file or source. It supports a compatible Android preview build or eligible OTA update; iOS signing credentials remain unconfigured. Production publishing remains out of scope.
 
 After this task, the next product decision remains review of [proposed ADR-019](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) and [Phase 1 readiness](../docs/21-PHASE-1-READINESS.md). No Auth/session/SQLite/Supabase implementation is authorized.
 

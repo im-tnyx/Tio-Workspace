@@ -1,0 +1,95 @@
+name: Expo Go Codespaces preview worker
+
+# GitHub loads this workflow from the default branch for workflow_run. It does
+# not check out or execute the pushed branch on the Actions runner.
+on:
+  workflow_run:
+    workflows:
+      - Expo preview push signal
+    types:
+      - completed
+    branches:
+      - tnyx/expo-preview
+
+permissions:
+  contents: read
+
+concurrency:
+  group: expo-codespaces-preview-sync
+  cancel-in-progress: false
+
+jobs:
+  sync-codespace:
+    if: >-
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_repository.full_name == 'im-tnyx/Tio-Workspace' &&
+      github.event.workflow_run.head_branch == 'tnyx/expo-preview' &&
+      github.event.workflow_run.actor.login == 'im-tnyx' &&
+      github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: expo-codespaces-trusted
+    env:
+      GH_TOKEN: ${{ secrets.CODESPACES_TOKEN }}
+      ACCEPTED_SHA: ${{ github.event.workflow_run.head_sha }}
+    steps:
+      - name: Require Codespaces API token
+        run: |
+          if [[ -z "$GH_TOKEN" ]]; then
+            echo "::error::Add CODESPACES_TOKEN to the expo-codespaces-trusted environment before enabling automatic wake and sync."
+            exit 1
+          fi
+          if [[ ! "$ACCEPTED_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::The accepted push SHA is invalid."
+            exit 1
+          fi
+
+      - name: Find the one preview Codespace
+        id: select
+        run: |
+          response="$(gh api --paginate '/user/codespaces?per_page=100' \
+            --jq '.codespaces[] | select(.repository.full_name == "im-tnyx/Tio-Workspace" and .git_status.ref == "tnyx/expo-preview") | .name')"
+          if [[ -z "$response" ]]; then
+            echo "::error::Create one Codespace for im-tnyx/Tio-Workspace on tnyx/expo-preview, then retry this push with a new commit."
+            exit 1
+          fi
+
+          mapfile -t codespaces <<< "$response"
+          if [[ "${#codespaces[@]}" -ne 1 || -z "${codespaces[0]}" ]]; then
+            echo "::error::Expected exactly one Codespace on tnyx/expo-preview; found ${#codespaces[@]}. Remove the ambiguity and retry."
+            exit 1
+          fi
+
+          printf 'name=%s\n' "${codespaces[0]}" >> "$GITHUB_OUTPUT"
+
+      - name: Start the Codespace if it is stopped
+        env:
+          CODESPACE_NAME: ${{ steps.select.outputs.name }}
+        run: |
+          state="$(gh api "/user/codespaces/${CODESPACE_NAME}" --jq '.state')"
+          if [[ "$state" != "Available" ]]; then
+            gh api --method POST "/user/codespaces/${CODESPACE_NAME}/start" >/dev/null
+          fi
+
+          for attempt in $(seq 1 120); do
+            state="$(gh api "/user/codespaces/${CODESPACE_NAME}" --jq '.state')"
+            if [[ "$state" == "Available" ]]; then
+              exit 0
+            fi
+            if [[ "$state" == "Deleted" ]]; then
+              echo "::error::The preview Codespace was deleted. Create it again on tnyx/expo-preview."
+              exit 1
+            fi
+            sleep 5
+          done
+
+          echo "::error::Codespace did not become available within 10 minutes."
+          exit 1
+
+      - name: Fast-forward the clean Codespace and refresh Expo
+        env:
+          CODESPACE_NAME: ${{ steps.select.outputs.name }}
+        run: >-
+          gh codespace ssh --codespace "$CODESPACE_NAME" --
+          bash /workspaces/Tio-Workspace/scripts/sync-codespace-expo-preview.sh "$ACCEPTED_SHA"

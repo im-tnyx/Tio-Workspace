@@ -1,0 +1,18 @@
+{
+  "name": "TNYX Expo Go preview",
+  "image": "mcr.microsoft.com/devcontainers/javascript-node:22-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/sshd:1": {
+      "version": "latest"
+    }
+  },
+  "postCreateCommand": "npm ci",
+  "postStartCommand": "node scripts/start-codespace-expo.mjs",
+  "portsAttributes": {
+    "8081": {
+      "label": "Expo Metro (Expo Go tunnel)",
+      "onAutoForward": "ignore"
+    }
+  },
+  "remoteUser": "node"
+}
