@@ -1,6 +1,8 @@
 # Tio Workspace — Copilot Review Instructions
 
-Read the repository [AGENTS.md](../AGENTS.md) and the focused [review guide](REVIEW_GUIDE.md). This repository is **Phase 0 / documentation-only**; do not treat planned Expo, Supabase or backup features as implemented.
+Read the repository [AGENTS.md](../AGENTS.md) and the focused [review guide](REVIEW_GUIDE.md). The **Phase 1.1 Expo/React Native mock shell is merged**, but real Supabase Auth, encrypted workout storage and backup/sync are **not implemented**; new feature slices require separate owner approval.
+
+For **post-merge Git sync or a new-task checkout**, read [`.github/POST-MERGE-SYNC.md`](POST-MERGE-SYNC.md) and [the post-merge playbook](../docs/12-POST-MERGE-PLAYBOOK.md). Never auto-stash, reset, force-delete, or mutate another agent's worktree. For a **read-only code review**, do not execute the sync or assume any local command ran.
 
 In every PR review:
 1. Flag concrete accidental workout data uploads, cross-account local data access, client-side secrets or missing explicit consent for AI/backup/future sync; cite the changed line and impacted requirement.
