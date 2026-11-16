@@ -1,8 +1,13 @@
 # Expo Go live preview from GitHub Codespaces
 
+> **Post-merge closure verified 2026-11-16:** GitHub reports [PR #18](https://github.com/im-tnyx/Tio-Workspace/pull/18) squash-merged on 2026-11-16 04:17:17 UTC at `941484bbd6109fd263681ca49200bf689e24d9e2` (reviewed PR HEAD `6980df08b4a72efa38017b2ee2cb84a2614e818c`). PR #21 then merged at `6b0ec5b0413cf3a22c3c631368ac883f7f29d630`. The owner confirmed an Expo Go UI preview opened and the required Codespaces environment secret had been configured. A later owner `tnyx/expo-preview` push `b366ff856f0faad761ed7315530198cf72078861` completed [push signal run 43815555568](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43815555568) successfully; the trusted [worker run 43815573691](https://github.com/im-tnyx/Tio-Workspace/actions/runs/43815573691) also succeeded, including Codespace discovery, start-if-stopped step and fast-forward/refresh script. **These runs verify successful workflow execution, not that the Codespace was actually stopped first or that a physical phone auto-refreshed after this push.** No production app, native build, Auth, SQL, Supabase, EAS publish or OTA release resulted. Historical review/setup notes below are preserved as snapshots from before the merge.
+>
+> **Outstanding follow-up (new independent task if authorized):** physically test a stopped Codespace being restarted by a later eligible push; confirm the updated UI on an actual compatible Expo Go device. Monitor Codespaces cost/idle lifetime. No automatic backend implementation approval. This record is archived as a *completed infrastructure setup task*, not as proof that all phone/platform QA is complete.
+
+
 | Field | Value |
 |---|---|
-| Status | REVIEW — PR #17 merged; PR #18 findings, current-head checks and owner setup pending |
+| Status | **Complete for approved Codespaces preview infrastructure — PR #18 merged; post-merge push/sync verified; device QA remains open** |
 | Objective | Let the owner manually create one Codespace on `tnyx/expo-preview`, then have owner pushes wake/sync it so Expo Go can load the latest compatible mock-shell UI without a local machine |
 | Implementation owner | Codex local workspace session; repository owner keeps GitHub secret/Codespace and merge authority |
 | Previous agent | None |

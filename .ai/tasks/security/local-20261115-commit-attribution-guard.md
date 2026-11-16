@@ -3,9 +3,13 @@
 **Post-merge activation update (2026-11-16):** PR #17 squash-merged as `fdc33d719975940058018dd283c7e9b4915c0286`. Live ruleset `27218050` requires only App-owned `Commit attribution guard` (App ID `5032971`, strict). Clean disposable PR #19 passed; intentionally noncompliant PR #20 failed; both closed unmerged. See [canonical activation evidence](../../../docs/26-COMMIT-ATTRIBUTION-GUARD.md#verified-activation--2026-11-16). Historical task status, pre-merge blockers and setup instructions below are retained as historical records, not current blockers. Stale-head/spoofing/integrity adversarial PR tests remain pending.
 
 
+**PR #21 close-out and temporary exception (owner-confirmed, 2026-11-16):** [PR #21](https://github.com/im-tnyx/Tio-Workspace/pull/21) received formal `im-tio` **APPROVED** review on exact HEAD `fe91eb77ec32a5b2e98b3d441e23161318a7631e` after the source-pinned App-owned `Commit attribution guard` passed. Its two P2 threads were resolved and the PR was owner-authorized and squash-merged at `6b0ec5b0413cf3a22c3c631368ac883f7f29d630`. **Owner reports the one-time `ATTRIBUTION_GUARD_CHANGE_APPROVED_PR_HEAD` environment variable has now been removed**; the connector cannot independently inspect its absence, so do not mislabel this as a tool-verified deletion. Live ruleset `27218050` still requires the sole strict App-owned `Commit attribution guard` (App ID `5032971`). No ruleset, trusted workflow, App credentials, service tokens or environment settings were changed by this handoff. Historical TODOs below are preserved as their original pre-merge state; do not re-run bootstrap. Stale-head/spoof/integrity adversarial PR tests remain to be completed independently when scoped and approved.
+
+
+
 | Field | Value |
 |---|---|
-| Status | P2 Markdown-link structured-credit fix verified on code HEAD `af2101a` (142 attribution + 14 integrity fixtures, Phase 1.1 green); PR #17 precedes PR #18; independent re-review, 9 threads, App bootstrap and owner merge gate BLOCKED |
+| Status | **Completed governance activation (PR #17 merged, PR #21 reconciliation merged); protected guard is active. Historical pre-merge progress retained; adversarial stale-head/spoof/integrity PR tests remain unverified.** |
 | Objective | Prevent agents from writing AI co-author and equivalent self-credit metadata, while retaining human attribution and `.ai/` multi-agent records |
 | Implementation owner | ChatGPT connected GitHub session, bounded repo governance slice; repository owner retains approval/merge authority |
 | Previous agent | None for this slice; completed preview PR #15 is a separate archived task |
