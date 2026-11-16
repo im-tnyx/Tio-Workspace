@@ -27,7 +27,7 @@ stateDiagram-v2
     Boot --> OnlineSession: Verified stored session + network
     Boot --> OfflineSession: Previously verified account + no network
     Boot --> ReauthRequired: No recoverable credentials/key
-    SignedOut --> OnlineSession: Completed first online setup or same-bound active-user password login
+    SignedOut --> OnlineSession: Server eligibility + same-UUID local safety after setup or password login
     SignedOut --> AccountMismatch: Login returns different UUID while bound
     AccountMismatch --> SignedOut: Cancel / use same account
     AccountMismatch --> SignedOut: Separately confirmed local reset
@@ -40,7 +40,7 @@ stateDiagram-v2
     OfflineSession --> SignedOut: Explicit local logout
 ```
 
-**Security refinement:** An OTP-verified but password/profile/local-setup-incomplete Auth session is **not** eligible for `OnlineSession` or `OfflineSession` Home access. Server eligibility comes only from trusted server facts; a device `local_complete` claim cannot promote it. Even when the server account is eligible, a fresh installation without protected same-UUID local setup cannot open Home or infer that workouts were restored. Resume the missing [server or device-local lifecycle stage](27-OTP-FIRST-AUTH-LIFECYCLE.md); first server eligibility requires connectivity. If online token refresh fails from network timeout, do **not** treat timeout as confirmed revocation. Distinguish genuine invalid credentials from mere loss of connectivity.
+**Security refinement:** An OTP-verified but password- or mandatory-cloud-profile-incomplete Auth session is **not** eligible for `OnlineSession` or `OfflineSession` Home access. Server eligibility comes only from trusted server facts; a device `local_complete` claim cannot promote it. Even when the server account is eligible, a fresh installation without protected same-UUID binding, OS-protected key, encrypted store and durable local safety record cannot open Home or infer that workouts were restored. An uninterrupted first setup still completes the ordered fitness flow and Final Setup before Home. After interruption, a previously server-eligible same-user session may enter Home with local fitness fields pending **only after** the local safety gate passes; missing-value features request the required inputs and full completion is never forged. Offline cached access needs prior eligibility and the same protected local gate. Resume the correct [server or device-local lifecycle stage](27-OTP-FIRST-AUTH-LIFECYCLE.md); first server eligibility requires connectivity. A network timeout is **not** confirmed revocation.
 
 ## 03 · State table
 
