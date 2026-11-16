@@ -2,12 +2,15 @@
 
 **Status:** Process checklist for **after a PR is actually merged**; nothing in this file runs automatically.
 
+For **local checkout / remote ref synchronization** after verifying the GitHub merge, follow [the safe post-merge Git sync guide](../.github/POST-MERGE-SYNC.md). It checks dirty worktrees, uses `git pull --ff-only`, verifies the *actual squash merge commit* and avoids automatic branch deletion. This playbook covers repository/task evidence; the sync guide covers local Git operations.
+
 [← Docs hub](00-INDEX.md) · [🔀 PR review](11-PR-REVIEW-WORKFLOW.md) · [🗞 Changelog](../CHANGELOG.md)
 
 ## 01 · Confirm the merge
 
 - [ ] PR state is **merged**; capture PR URL, resulting commit SHA and merge time.
 - [ ] Target branch is correct, typically `main`.
+- [ ] If syncing a local checkout, follow the [Git sync procedure](../.github/POST-MERGE-SYNC.md) without overwriting changes; record actual local `main` SHA and skipped steps.
 - [ ] Verify expected changed files exist on `main` and link from README/docs index.
 - [ ] Check any branch protection/status checks actually configured; do not assume approval and checks imply a successful deploy.
 - [ ] Record the completed reviewer/agent/bot/owner assessment link, disposition of blocking inline comments, reviewed SHA/scope, and distinct owner merge authorization. Do not relabel automated comments as GitHub formal approvals.
