@@ -96,7 +96,7 @@ async function expoTunnelIsReady() {
 
     const { url } = await response.json();
     const deepLink = new URL(url);
-    return deepLink.protocol === 'exp:'
+    return ['exp:', 'exps:'].includes(deepLink.protocol)
       && (deepLink.hostname.endsWith('.on.expo.app')
         || deepLink.hostname.endsWith('.exp.direct'));
   } catch {

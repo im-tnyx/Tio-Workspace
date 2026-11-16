@@ -45,7 +45,7 @@
 - Use an environment-scoped Actions secret `CODESPACES_TOKEN` in `expo-codespaces-trusted`, restricted to `main`, separate from Expo/EAS `EXPO_TOKEN`; the owner configures it directly in GitHub.
 - Pass the accepted `workflow_run.head_sha` into Codespace sync and fetch that immutable commit, so a later branch update cannot change what this run executes.
 - Remote sync is clean-worktree-only and `git merge --ff-only`; it never resets, stashes, or overwrites Codespace edits.
-- Expo Go needs the same Expo account as Expo CLI. Tunnel URLs are publicly reachable to anyone with the URL.
+- Expo Go needs the same Expo account as Expo CLI and a device binary compatible with project SDK 58. Physical iPhone compatibility was not verified. Tunnel URLs are publicly reachable to anyone with the URL.
 - PR #17 merged first. This branch reconciles `.ai/current.md` against its merge commit, preserves the guard policy and task evidence, and keeps PR #18 as the active pointer.
 
 ## Progress
@@ -66,6 +66,7 @@
 - [x] Prior five Codex review threads were fixed and resolved; later `im-tio` review raised two new startup findings at `9e0a8e2`.
 - [x] PR #17 merged as `fdc33d7`; reconciled its `.ai/current.md` and docs index conflicts on PR #18's branch without reverting the attribution guard.
 - [ ] Publish the SDK 58 tunnel readiness and first-login retry fixes, then re-review the new head and required App checks.
+- [ ] Owner verifies a compatible SDK 58 Expo Go binary on the physical iPhone; the logged-in Projects listing alone does not prove it.
 - [x] GitHub Codex [review #5912161075](https://github.com/im-tnyx/Tio-Workspace/pull/18#pullrequestreview-5912161075) on `c35410c` reported remote SSH quoting, tunnel readiness, and Expo-generated worktree findings; remediation is prepared for review.
 - [ ] Owner configures the secret and manually creates one Codespace after merge.
 
