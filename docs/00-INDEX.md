@@ -27,6 +27,7 @@
 | Work with an AI coding agent | [Agent instructions](../AGENTS.md) | [AI context system](../.ai/README.md) |
 | Resume a previously authorized task | [Current context pointer](../.ai/current.md) | [Task handoff template](../.ai/tasks/TEMPLATE.md) |
 | Finish a merged change | [Post-merge playbook](12-POST-MERGE-PLAYBOOK.md) | [Changelog](../CHANGELOG.md) |
+| Sync local `main` safely after a merge | [Post-merge Git sync guide](../.github/POST-MERGE-SYNC.md) | [Post-merge playbook](12-POST-MERGE-PLAYBOOK.md) |
 
 ## 🗃 Detailed document catalog
 

@@ -1,6 +1,6 @@
 # 🤝 Contributing to Tio Workspace
 
-**Stage:** Documentation-first planning. Proposed app code will come later, after approval.
+**Stage:** Phase 1.1 Expo/React Native mock shell merged; real Auth, local workout database and later features remain separately approval-gated.
 
 [🏠 Home](README.md) · [📚 Documentation](docs/00-INDEX.md) · [🎨 Design](DESIGN.md) · [🤖 Agent instructions](AGENTS.md)
 
@@ -29,10 +29,10 @@ Keep unrelated edits out of the same PR. Do not commit `.env` files, API keys or
 6. **Open PR:** use [PR template](.github/PULL_REQUEST_TEMPLATE.md), link issue, state explicit scope and risks.
 7. **Review:** resolve feedback, run applicable checks and obtain owner approval.
 8. **Merge:** only after approval and gates pass; prefer squash for one coherent change unless maintainer chooses otherwise.
-9. **Post-merge:** follow [playbook](docs/12-POST-MERGE-PLAYBOOK.md), update status/changelog and confirm `main`.
+9. **Post-merge:** verify GitHub merge, follow the [playbook](docs/12-POST-MERGE-PLAYBOOK.md), then use the [safe local Git sync procedure](.github/POST-MERGE-SYNC.md) for a clean worktree before starting newly approved work. Never reset user changes or delete branches without authorization.
 
 > [!IMPORTANT]
-> The current repository is **documentation only**. A merged docs PR is not permission to build the mobile app or deploy cloud services.
+> **Phase 1.1's Expo/React Native mock shell is already merged**, but real Supabase Auth/OTP, encrypted local workout storage, further app features and cloud deployments are not implemented or authorized by that merge. Every additional implementation slice requires separate, bounded owner approval; merging documentation alone does not authorize implementation or deployment.
 
 ## Review requirements
 

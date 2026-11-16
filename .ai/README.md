@@ -29,7 +29,9 @@ Read in this exact order:
 4. **Only required context** — load the specific [`core/`](core/README.md) summaries and canonical docs referenced by that task.
 5. **Verify before acting** — inspect actual branch/worktree, PR status, owner approval, source, dependencies and relevant checks. Never use a prior conversation or cached SHA as proof.
 
-**Do not preload** all of `core/`, scan `tasks/` or browse `archive/` at session start. If `current.md` says idle, there is no active implementation assignment.
+**Do not preload** all of `core/`, scan `tasks/` or browse `archive/` at session start.
+
+After a **verified** merge, use the [post-merge Git sync guide](../.github/POST-MERGE-SYNC.md) only for the local worktree/refs, and follow [the playbook](../docs/12-POST-MERGE-PLAYBOOK.md) for task archive/handoff. These steps do not authorize a new implementation task. If `current.md` says idle, there is no active implementation assignment.
 
 ## 🧭 What should I open?
 
@@ -43,6 +45,7 @@ Read in this exact order:
 | Review existing shell or plan new coding (**after scope approval**) | [Coding rules](core/coding-rules.md) | [Readiness gate](../docs/21-PHASE-1-READINESS.md) |
 | Open or review a PR | [Workflow rules](core/workflow-rules.md) | [PR process](../docs/11-PR-REVIEW-WORKFLOW.md) |
 | Hand off a bounded task | [Task guide](tasks/README.md) and [template](tasks/TEMPLATE.md) | [Post-merge playbook](../docs/12-POST-MERGE-PLAYBOOK.md) |
+| Sync a clean checkout after GitHub merge | [Safe Git post-merge sync](../.github/POST-MERGE-SYNC.md) | [Post-merge playbook](../docs/12-POST-MERGE-PLAYBOOK.md); never reset user changes or delete branches automatically |
 | View completed context | [Archive policy](archive/README.md) | Live Git history; do not preload archives |
 
 ## 🏋️ Product direction and current reality
