@@ -28,7 +28,7 @@
 
 ## Owner decisions and blockers
 
-- Selected UX: new Email → OTP → Password; existing activated Email → OTP → direct login without password update; incomplete users resume their trusted stage. Username required, Mobile optional in proposed Account Setup.
+- Selected UX: new Email → OTP → Password; existing activated Email → OTP → direct login without password update. Before initial password, provisional signup return requires fresh Email + OTP and owner-selected short cleanup target; password-complete incomplete users resume their trusted cloud/local stage. Username required, Mobile optional in proposed Account Setup.
 - **BLOCKED:** Owner must choose whether normal explicit OTP-based password recovery is acceptable while direct Auth API replacement remains possible, or require a proven provider-level direct-mutation restriction. Hosted default SMTP and selected abuse quotas also block public Auth rollout.
 - Private profile, avatar, device snapshot, server-owned FREE entitlement, lifecycle schema/privacy, local SQLCipher and cleanup proposals remain unapproved implementation slices.
 

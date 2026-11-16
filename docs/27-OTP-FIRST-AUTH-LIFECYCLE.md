@@ -12,8 +12,9 @@ Owner-selected routes:
 
 - **New account:** Email → six-digit OTP → Password → Account Setup (Username required, Mobile optional) → Name → DOB → Sex → Units → Height → Current Weight → Activity Level → Goal → Final Setup → Home.
 - **Existing server-eligible account:** Email → six-digit OTP → direct login; open Home only when protected same-UUID device-local onboarding is complete. On a fresh installation, resume local setup or a separately verified matching restore. Never show Set Password or call `updateUser({ password })` on this normal path. Keep the same Supabase UUID and the single installation binding.
-- **Incomplete account:** Email → OTP → resume the first unfinished authorized stage. Never reset a password because onboarding is incomplete.
-- **Normal reopen:** a valid persisted same-user session does not require another OTP. Previously authorized locally bound users may use encrypted local workouts offline under [ADR-011](18-OFFLINE-SESSION-STATE-MACHINE.md); an online server request still needs fresh server authorization.
+- **Password not yet set:** A provisional Supabase Auth row/session is not a completed Tio account. On return, require Email → a fresh OTP → Password; do not restore a password-pending screen from a persisted session. If server cleanup already removed the provisional UUID, registration starts with a new UUID. Never apply this short cleanup rule to an existing password-complete account.
+- **Password-complete incomplete account:** Email → OTP → resume the first unfinished cloud-profile or device-local stage. Never reset a password because onboarding is incomplete.
+- **Normal reopen after password completion:** a valid persisted same-user session does not require another OTP. Previously authorized locally bound users may use encrypted local workouts offline under [ADR-011](18-OFFLINE-SESSION-STATE-MACHINE.md); an online server request still needs fresh server authorization.
 
 ## Two independent eligibility gates
 
@@ -24,7 +25,7 @@ Owner-selected routes:
 | State | Trusted evidence | Permitted operations | Denied |
 |---|---|---|---|
 | `UNVERIFIED` | No successful server OTP verification | Request/resend OTP subject to provider limits | Protected cloud rows, local binding/Home |
-| `EMAIL_VERIFIED_PASSWORD_PENDING` | Verified Auth UUID and trusted initial-enrollment record | Initial password enrollment **only through a separately verified controlled mechanism**; safe resume | Protected cloud rows, local binding/Home, arbitrary profile activation |
+| `EMAIL_VERIFIED_PASSWORD_PENDING` | Provisional verified Auth UUID and trusted initial-enrollment record; no completed Tio account | Initial password enrollment **only through a separately verified controlled mechanism** within the owner-selected cleanup window; on return require fresh Email + OTP | Protected cloud rows, local binding/Home, arbitrary profile activation or persisted-session-only resume |
 | `PASSWORD_COMPLETE_PROFILE_PENDING` | Trusted server acknowledgement of first password enrollment | Save/resume approved private required profile fields | Protected workout/activated cloud resources, local Home |
 | `SERVER_ELIGIBLE` | Required private profile validated and server-owned activation protection durably recorded | Own authorized cloud profile; attempt same-UUID local binding/setup | Other users' cloud resources; Home without local readiness; silent password replacement in normal OTP login |
 
@@ -44,7 +45,8 @@ stateDiagram-v2
     EMAIL_VERIFIED_PASSWORD_PENDING --> PASSWORD_COMPLETE_PROFILE_PENDING: trusted initial enrollment acknowledged
     PASSWORD_COMPLETE_PROFILE_PENDING --> SERVER_ELIGIBLE: required cloud profile validated / server protection recorded
     SERVER_ELIGIBLE --> SERVER_ELIGIBLE: OTP login or valid persisted session; password unchanged
-    EMAIL_VERIFIED_PASSWORD_PENDING --> EMAIL_VERIFIED_PASSWORD_PENDING: interrupted resume
+    EMAIL_VERIFIED_PASSWORD_PENDING --> EMAIL_VERIFIED_PASSWORD_PENDING: return before cleanup / fresh Email + OTP verification
+    EMAIL_VERIFIED_PASSWORD_PENDING --> [*]: 15-minute target / provisional-row cleanup
     PASSWORD_COMPLETE_PROFILE_PENDING --> PASSWORD_COMPLETE_PROFILE_PENDING: interrupted resume
     SERVER_ELIGIBLE --> SERVER_ELIGIBLE: local setup or interrupted resume does not change server state
 ```
@@ -61,6 +63,8 @@ stateDiagram-v2
 ```
 
 Server transitions must be monotonic, keyed by UUID, idempotent under retries and written with server time; retries read the latest trusted server state. Device-local completion must be durable and protected under the same UUID, with idempotent retries that never duplicate local measurements. A failed or ambiguous write leaves the earlier state and protected resources closed. If a cloud state read fails during first setup, fail closed. After prior server eligibility and local readiness, a temporary network failure alone cannot prove revocation or erase local eligibility.
+
+**Owner-selected provisional-row cleanup target (design only):** For a new unverified email, delete a provisional Auth row 15 minutes after the **latest issued** 10-minute OTP expires if no successful verification or password enrollment occurred. For a verified OTP with no initial password enrollment, delete the provisional row 15 minutes after verification. The app does not preserve a password-pending resume stage; a returning user enters Email and obtains a new OTP. Supabase may create `auth.users` at `signInWithOtp`, so “no completed Tio account” is a product/lifecycle distinction, not a claim that no Auth row exists. Server-only cleanup must recheck the exact UUID and trusted enrollment/activation markers immediately before deletion, reject ambiguous or racing writes, and never target an existing password-complete, server-eligible or locally bound user. The target is not a promise of exact deletion time; scheduling, provider configuration and secure deletion remain unimplemented and require separate authorization. See [ADR-019 cleanup proposal](25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md).
 
 ## Trust boundaries and direct password mutation blocker
 
@@ -93,9 +97,9 @@ Before production, the owner must choose and security-test one explicit policy: 
 | Invalid, expired or replayed OTP | Reject; retain locked stage; generic accessible error; never log code. Local rejection was proven. |
 | Resend or HTTP 429 | Honor actual server retry timing; UI countdown is explanatory only. Local immediate resend failed and request after 61 seconds passed. |
 | 5 sends/email/hour; 5 failures/challenge; 15-minute cooldown | **Targets, not proven controls.** Local valid OTP still worked after five wrong codes. Need approved server-enforced design and negative tests without a client-only counter. |
-| Existing email | Send OTP with non-enumerating response, verify UUID, read trusted stage. Active → login without password update; pending → resume only the missing stage. Never create a second account or bind another UUID. |
+| Existing email | Send OTP with non-enumerating response, verify UUID, read trusted stage. Active → login without password update; password-complete/profile-pending → resume missing stage; provisional/password-pending → fresh OTP before initial enrollment, subject to cleanup. Never create a duplicate active account or bind another UUID. |
 | Password recovery | Separate Forgot/Reset Password intent and UX; no implicit reset during OTP login. Test provider reset/re-auth behavior and account isolation before enabling. |
-| Interrupted signup / app restart | Restore protected session where valid; re-read trusted server stage and resume idempotently. No first-time offline activation. A valid persisted active session skips OTP. |
+| Interrupted signup / app restart | Before initial password enrollment, clear/ignore any provisional local session for product navigation and require a fresh Email + OTP; an Auth session may still exist server-side until cleanup, so RLS must deny protected resources. After password enrollment, re-read trusted stage and resume cloud/local setup idempotently. A valid persisted active session skips OTP. |
 | Email/provider error | Generic, non-enumerating and actionable retry where safe; do not claim an email was sent or unlock on timeout. |
 
 No custom domain, Brevo SMTP, Google OAuth, paid Supabase upgrade or provider-setting change is approved. Supabase's built-in email provider is currently restricted to authorized project-team addresses and 2 messages/project/hour; it cannot establish public signup or the 5/email/hour target. Mailpit evidence cannot prove hosted Free-tier template/delivery behavior. Hosted template, delivery, quotas, rate enforcement and native Android/iOS persistence remain **BLOCKED/UNVERIFIED**. [Default SMTP](https://supabase.com/docs/guides/auth/auth-smtp) · [rate limits](https://supabase.com/docs/guides/auth/rate-limits) · [passwordless flow](https://supabase.com/docs/guides/auth/auth-email-passwordless).
