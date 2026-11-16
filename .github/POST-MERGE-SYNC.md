@@ -35,7 +35,8 @@ Confirm that GitHub shows **merged**, not merely `closed` or a green check. Reco
 For example, if GitHub CLI (`gh`) is already configured with access:
 
 ```powershell
-gh pr view <PR_NUMBER> --repo im-tnyx/Tio-Workspace --json state,mergedAt,mergeCommit,baseRefName
+$PrNumber = 23 # Replace with the actual PR number
+gh pr view $PrNumber --repo im-tnyx/Tio-Workspace --json state,mergedAt,mergeCommit,baseRefName
 ```
 
 Otherwise inspect the PR on GitHub or use an authorized connector. **Use the returned merge commit SHA** for verification. With **squash merges** the original PR-head commit is typically **not** part of `main` history. Do not treat `git branch --contains <PR_HEAD_SHA>` as a valid squash-merge test.
@@ -67,9 +68,10 @@ git status -sb
 After a successful clean `git pull --ff-only`, local `main` and `origin/main` should have the **same SHA**. Use the **actual GitHub merge SHA** to check that the merged commit is an ancestor of the current `main`:
 
 ```powershell
-git merge-base --is-ancestor <MERGE_COMMIT_SHA> main
+$MergeSha = "PASTE_VERIFIED_GITHUB_MERGE_SHA"
+git merge-base --is-ancestor $MergeSha main
 if ($LASTEXITCODE -ne 0) { throw "Merge commit not contained in local main" }
-git show --check --oneline <MERGE_COMMIT_SHA>
+git show --check --oneline $MergeSha
 ```
 
 The merge commit need not still be the **tip** of `main` if subsequent PRs have landed. Do not assume a successful `git fetch` alone updated local `main`; it updates remote-tracking refs, not the checked-out branch.
@@ -90,9 +92,11 @@ Only execute tests that fit the changed scope and available environment. Report 
 After confirming a merge, and **only if** the repository owner approves deletion and no other worktree, PR or workflow still needs the branch:
 
 ```powershell
-git branch -d <MERGED_LOCAL_BRANCH>
-# Only with explicit owner approval, after verifying the exact remote branch:
-git push origin --delete <MERGED_REMOTE_BRANCH>
+$MergedLocalBranch = "docs/verified-merged-task" # Replace only after checking worktrees and approval
+git branch -d $MergedLocalBranch
+# Separately approved remote deletion only; verify the branch still exists and is disposable:
+$MergedRemoteBranch = "docs/verified-merged-task"
+git push origin --delete $MergedRemoteBranch
 ```
 
 **Important for squash merges:** `git branch -d` can refuse because the squashed source commits are not ancestors of `main`. This is a safety signal: **stop rather than using `git branch -D`**. Never force-delete automatically. Avoid deleting `main`, `tnyx/expo-preview`, protected branches, live task branches or branches owned by other agents. GitHub may have already auto-deleted a PR branch.
@@ -105,7 +109,8 @@ After recording the previous task's actual merged status and receiving a **new b
 git switch main
 git pull --ff-only origin main
 git status -sb
-git switch -c docs/<NEW_TASK_NAME>
+$NewBranch = "docs/approved-new-task" # Replace with the exact approved topic
+git switch -c $NewBranch
 ```
 
 Use the appropriate `docs/`, `feat/` or `fix/` branch prefix and follow [CONTRIBUTING.md](../CONTRIBUTING.md). Do not reuse a merged source branch, begin Auth/SQLCipher/Supabase implementation merely from a merged ADR, or push to `main` directly. A new PR needs its **own** review, required App-owned `Commit attribution guard` check, and separate owner merge authorization.
