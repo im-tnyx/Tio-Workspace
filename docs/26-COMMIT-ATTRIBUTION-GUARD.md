@@ -1,6 +1,18 @@
 # Commit attribution guard — Tio Workspace
 
-**Status: code and fixture CI validated; trusted App gate NOT yet activated.** The root [AGENTS.md](../AGENTS.md) is the normative multi-agent attribution policy. The dedicated [task record](../.ai/tasks/security/local-20261115-commit-attribution-guard.md) tracks this bounded governance slice.
+**Status (2026-11-16): trusted App gate ACTIVATED and verified.** The root [AGENTS.md](../AGENTS.md) is the normative multi-agent attribution policy. The dedicated [task record](../.ai/tasks/security/local-20261115-commit-attribution-guard.md) tracks this bounded governance slice.
+
+
+## Verified activation — 2026-11-16
+
+- PR #17 merged into `main` at squash commit `fdc33d719975940058018dd283c7e9b4915c0286`.
+- Live `Main Protection` ruleset `27218050` is active, strict, and requires **only** `Commit attribution guard` from GitHub App ID `5032971`; one approving review, stale-approval dismissal and review-thread resolution remain enabled.
+- Disposable [PR #19](https://github.com/im-tnyx/Tio-Workspace/pull/19) verified an App-owned success on clean HEAD `8e228f7f0800a5b848c492b7a95a9f1cd7042395`.
+- Disposable [PR #20](https://github.com/im-tnyx/Tio-Workspace/pull/20) verified an App-owned failure on prohibited AI co-author credit HEAD `a548b626737b30e2c18f7c60273c3f66c97ca8ae`; both test PRs were closed without merge.
+- The `pull_request_target` trusted runner and App environment remain necessary, but the runner and advisory fixture job are **not** required status checks.
+- Live stale-head, spoofed-check and guard-file-integrity adversarial PR tests have **not** yet been independently verified. Do not claim those edge cases completed.
+
+**Historical note:** The bootstrap instructions and earlier findings below describe the pre-activation state as of 2026-11-15. They are retained for audit/history, **not** as instructions to remove the now-working App-owned required check or restore temporary advisory requirements.
 
 ## Policy and scope
 
