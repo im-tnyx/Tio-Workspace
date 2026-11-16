@@ -2,11 +2,11 @@
 
 | Field | Value |
 |---|---|
-| Status | PR #24 review remediation; independent re-review pending; production Auth remains BLOCKED |
+| Status | **MERGED / DOCUMENTATION COMPLETE**; production Auth remains BLOCKED |
 | Objective | Reconcile owner-selected Email → OTP → Password and existing-user OTP login with an honest server-authoritative design |
 | Implementation owner | Codex, documentation-only slice |
 | Previous agent | None for this documentation slice; Task 02 PoC was a separate experiment |
-| Last commit agent | Codex; resolve exact current PR HEAD from GitHub after publication |
+| Last commit agent | Codex; reviewed final PR HEAD `adc0d5c3e6ba8426f145406adaa3b9e9db8d6321` |
 | Tracking / approval | Owner's Phase 1.2 Task 03 instruction in this chat; [Phase 0 Issue #2](https://github.com/im-tnyx/Tio-Workspace/issues/2) is planning-only |
 | Branch | `tnyx/phase12-auth-architecture` (from verified `main`) |
 | Base SHA / inspected HEAD | `2a6877899ef51331739c38e850b6d2a6455e8795` on 2026-11-16 |
@@ -34,8 +34,10 @@
 
 ## Review and handoff
 
-- [PR #24](https://github.com/im-tnyx/Tio-Workspace/pull/24) received a [P2 finding](https://github.com/im-tnyx/Tio-Workspace/pull/24#discussion_r4585625250) on conflated server eligibility and device-local completion. This branch separates those gates and adds forged-completion/fresh-install negative cases; request independent `im-tio` re-review at the new published HEAD. `REVIEW_PENDING` is not approval.
-- Validation: local diff/link/Markdown/sensitive-string checks only; no new runtime, device or hosted tests.
-- Merge authorization: **not granted**. Next action: owner and independent reviewer inspect the documentation PR; separately resolve the direct password-mutation policy before any implementation slice.
+- [PR #24](https://github.com/im-tnyx/Tio-Workspace/pull/24) final reviewed HEAD `adc0d5c3e6ba8426f145406adaa3b9e9db8d6321` received formal independent [im-tio APPROVED review](https://github.com/im-tnyx/Tio-Workspace/pull/24#pullrequestreview-5921363173) for the documentation scope. The P2 server/local eligibility, P2 first-user UX and P3 Markdown-table findings were independently verified fixed and their three threads resolved before merge.
+- Owner conditionally authorized the final gate in this conversation. The required App-owned `Commit attribution guard` (App ID `5032971`) passed on the exact HEAD; supplemental guard checks passed. GitHub confirmed squash merge `13b87912af6606f50b4c9e9a4dd5c44cad564e78` on 2026-11-16. Local `main` fast-forwarded to that SHA and was clean.
+- Documentation validation at the gate: `git diff --check origin/main...origin/tnyx/phase12-auth-architecture`, `git show --check`, relative links/fences across 17 Markdown files and `Bun.markdown.html` rendering of all 91 test IDs passed. No runtime Auth, device, hosted Supabase, email-delivery or account-deletion test ran in Task 03 or its merge gate; Task 02 local PoC evidence was historical, not rerun.
+- Remaining blockers: direct Auth password-mutation policy decision and proof; hosted default-email delivery and abuse limits; private profile/schema/privacy and server lifecycle authorization; secure native session/local storage; separate implementation approval. No production Auth or cleanup deployment resulted from this merge.
+- Post-merge handoff: archived by Task 04 in a separate reviewable documentation PR; Phase 0 Issue #2 remains open. The next bounded task is an owner decision and security-design proof for direct Auth password replacement, not app implementation.
 
-[← Task guide](../README.md) · [Root contract](../../../AGENTS.md)
+[← Archive guide](../README.md) · [Root contract](../../../AGENTS.md)
