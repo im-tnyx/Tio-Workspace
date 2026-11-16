@@ -1,5 +1,8 @@
 # Prevent unintended AI commit attribution
 
+**Post-merge activation update (2026-11-16):** PR #17 squash-merged as `fdc33d719975940058018dd283c7e9b4915c0286`. Live ruleset `27218050` requires only App-owned `Commit attribution guard` (App ID `5032971`, strict). Clean disposable PR #19 passed; intentionally noncompliant PR #20 failed; both closed unmerged. See [canonical activation evidence](../../../docs/26-COMMIT-ATTRIBUTION-GUARD.md#verified-activation--2026-11-16). Historical task status, pre-merge blockers and setup instructions below are retained as historical records, not current blockers. Stale-head/spoofing/integrity adversarial PR tests remain pending.
+
+
 | Field | Value |
 |---|---|
 | Status | P2 Markdown-link structured-credit fix verified on code HEAD `af2101a` (142 attribution + 14 integrity fixtures, Phase 1.1 green); PR #17 precedes PR #18; independent re-review, 9 threads, App bootstrap and owner merge gate BLOCKED |
