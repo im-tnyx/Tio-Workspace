@@ -83,11 +83,26 @@ async function expoServerIsReady() {
   }
 }
 
-function expoTunnelIsReady() {
+async function expoTunnelIsReady() {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 1_500);
+
   try {
-    return readFileSync(logPath, 'utf8').includes('Tunnel ready.');
+    const response = await fetch(
+      `http://127.0.0.1:${metroPort}/_expo/open?platform=ios&runtime=expo`,
+      { signal: controller.signal },
+    );
+    if (!response.ok) return false;
+
+    const { url } = await response.json();
+    const deepLink = new URL(url);
+    return deepLink.protocol === 'exp:'
+      && (deepLink.hostname.endsWith('.on.expo.app')
+        || deepLink.hostname.endsWith('.exp.direct'));
   } catch {
     return false;
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
@@ -210,7 +225,7 @@ async function startServer() {
       const reason = exit.error?.message ?? `exit ${exit.code ?? exit.signal}`;
       throw new Error(`Expo exited before Metro and the tunnel became ready (${reason}). See ${logPath}.`);
     }
-    if ((await expoServerIsReady()) && expoTunnelIsReady() && !exit) {
+    if ((await expoServerIsReady()) && (await expoTunnelIsReady()) && !exit) {
       console.log(`Expo Go dev server is running on the Codespace tunnel. Log: ${logPath}`);
       return;
     }
@@ -237,7 +252,7 @@ async function main() {
 
     if (shouldRestart) {
       await stopManagedServer();
-    } else if (readManagedPid() && (await expoServerIsReady()) && expoTunnelIsReady()) {
+    } else if (readManagedPid() && (await expoServerIsReady()) && (await expoTunnelIsReady())) {
       console.log('Expo Go dev server is already running.');
       return;
     }

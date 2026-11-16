@@ -1,0 +1,28 @@
+name: Commit attribution fixture tests
+
+# Bootstrap/regression signal; this pull_request workflow is NOT an
+# independently trusted required guard. PR code can modify this workflow.
+# Required enforcement is the App-owned check from the trusted main workflow.
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  fixtures:
+    name: Commit attribution fixture tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout tested commit
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Run deterministic attribution fixtures
+        run: |
+          bash scripts/check_commit_attribution_test.sh
+          bash scripts/check_guard_integrity_test.sh

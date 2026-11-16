@@ -6,7 +6,7 @@
       "version": "latest"
     }
   },
-  "postCreateCommand": "npm ci && npm install --global @expo/ngrok@4.1.3",
+  "postCreateCommand": "npm ci",
   "postStartCommand": "node scripts/start-codespace-expo.mjs",
   "portsAttributes": {
     "8081": {
