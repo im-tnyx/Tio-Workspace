@@ -32,7 +32,7 @@ Keep unrelated edits out of the same PR. Do not commit `.env` files, API keys or
 9. **Post-merge:** verify GitHub merge, follow the [playbook](docs/12-POST-MERGE-PLAYBOOK.md), then use the [safe local Git sync procedure](.github/POST-MERGE-SYNC.md) for a clean worktree before starting newly approved work. Never reset user changes or delete branches without authorization.
 
 > [!IMPORTANT]
-> The current repository is **documentation only**. A merged docs PR is not permission to build the mobile app or deploy cloud services.
+> **Phase 1.1's Expo/React Native mock shell is already merged**, but real Supabase Auth/OTP, encrypted local workout storage, further app features and cloud deployments are not implemented or authorized by that merge. Every additional implementation slice requires separate, bounded owner approval; merging documentation alone does not authorize implementation or deployment.
 
 ## Review requirements
 
