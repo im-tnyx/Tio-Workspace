@@ -61,7 +61,7 @@ flowchart TD
 | Screen | Primary CTA | Offline | Empty/error state |
 |---|---|---|---|
 | Session gate | Resume existing authenticated user | Yes if account is initialized and locally eligible | Need login / reauth / unavailable key |
-| Auth | **Online email/password Signup → Email OTP verify**; existing same-bound Sign in | No for new signup/verification | Pending/wrong/expired OTP, resend 429/cooldown, no guest, account mismatch denied, network error; unverified cannot open Home/workout DB |
+| Auth | **Online new Email → OTP → Password → required setup**; existing active same-bound Email → OTP direct login | No for new signup/verification | Pending/wrong/expired OTP, resend 429/cooldown, no guest, account mismatch denied, network error; unverified cannot open Home/workout DB |
 | Home | Start / Resume Workout | Yes | “Create your first plan” / “Start a free workout” |
 | Workout (root) | Start/resume, plans and history links | Yes | Empty plans, in-progress resume |
 | Exercise Library (Library root) | Browse/search **curated exercises only** in current MVP | Yes, offline curated list | Empty results, choose exercise; **no custom-create screen until future membership, max 50/member** |
@@ -110,7 +110,7 @@ flowchart TD
 | Reauth | “Sign in again with the account already linked to this device.” | Do not claim the account was deleted because internet is unavailable |
 | Different account login | “This device is linked to another Tnyx account. Sign in with that account; changing accounts is not supported.” | Block before data access; no automatic reset |
 
-**Owner-selected security/limit UX (ADR-017):** required email/password signup OTP and no-guest access; target 6 digits/10-minute expiry/60-second resend/5 sends-hour/5 incorrect attempts/15-minute cooldown, requiring real provider/server verification; **CAPTCHA not in MVP**. Password 8–64, optional username 3–16 graphemes, program/routine creation max 50/30 (no minimum **creation count**; **saved program/routine names 3–25 graphemes**), sets 1–8. Free Library uses curated exercises; **custom exercise creation reserved for later paid members (max 50)**, with no current paywall or add-custom action. Previously verified same-account offline use retained. See [limits](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md).
+**Owner-selected security/limit UX (ADR-017):** required new Email → OTP → Password and no-guest access; target 6 digits/10-minute expiry/60-second resend/5 sends-hour/5 incorrect attempts/15-minute cooldown, requiring real provider/server verification; **CAPTCHA not in MVP**. Password 8–64, required proposed Account Setup Username 3–16 graphemes, program/routine creation max 50/30 (no minimum **creation count**; **saved program/routine names 3–25 graphemes**), sets 1–8. Free Library uses curated exercises; **custom exercise creation reserved for later paid members (max 50)**, with no current paywall or add-custom action. Previously verified same-account offline use retained. See [limits](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md).
 
 ## 05A · Future paid Sync membership gate
 

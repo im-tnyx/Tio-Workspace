@@ -27,7 +27,7 @@ stateDiagram-v2
     Boot --> OnlineSession: Verified stored session + network
     Boot --> OfflineSession: Previously verified account + no network
     Boot --> ReauthRequired: No recoverable credentials/key
-    SignedOut --> OnlineSession: First online signup or same-bound-user re-login
+    SignedOut --> OnlineSession: Completed first online setup or same-bound active-user OTP login
     SignedOut --> AccountMismatch: Login returns different UUID while bound
     AccountMismatch --> SignedOut: Cancel / use same account
     AccountMismatch --> SignedOut: Separately confirmed local reset
@@ -40,7 +40,7 @@ stateDiagram-v2
     OfflineSession --> SignedOut: Explicit local logout
 ```
 
-**Security refinement:** If online token refresh fails from network timeout, do **not** treat timeout as confirmed revocation. Distinguish genuine invalid credentials from mere loss of connectivity.
+**Security refinement:** An OTP-verified but password/profile/local-setup-incomplete Auth session is **not** eligible for `OnlineSession` or `OfflineSession` Home access. Resume its [trusted lifecycle stage](27-OTP-FIRST-AUTH-LIFECYCLE.md) online. If online token refresh fails from network timeout, do **not** treat timeout as confirmed revocation. Distinguish genuine invalid credentials from mere loss of connectivity.
 
 ## 03 · State table
 

@@ -36,7 +36,7 @@
 | 01 | [Product requirements](01-PRODUCT-REQUIREMENTS.md) | Scope, user journeys, non-goals |
 | 02 | [System architecture](02-SYSTEM-ARCHITECTURE.md) | Boundaries and local-first flow |
 | 03 | [Local data model](03-LOCAL-DATA-MODEL.md) | SQLite structure and migration strategy |
-| 04 | [Auth & security](04-AUTH-AND-SECURITY.md) | Sessions, identity, encryption, secrets |
+| 04 | [Auth & security](04-AUTH-AND-SECURITY.md) | Sessions, identity, encryption, secrets; [OTP-first lifecycle design](27-OTP-FIRST-AUTH-LIFECYCLE.md) |
 | 05 | [Backup & sync](05-BACKUP-AND-SYNC.md) | Restore, backup and future opt-in sync |
 | 06 | [Roadmap](06-ROADMAP.md) | Phase-gated development plan |
 | 07 | [API contracts](07-API-CONTRACTS.md) | Proposed AI Edge Function contract |

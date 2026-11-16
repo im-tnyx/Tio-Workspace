@@ -13,7 +13,7 @@
 
 ## Context and owner-requested UX
 
-Phase 1.1 is a nonfunctional Expo mock shell. The current preview shows `Email → OTP → Password` for signup, while [ADR-017](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md) specifies `Email + Password → OTP` as the authoritative Auth contract. The owner has fixed the signup sequence and now wants **Mobile as an optional field inside Account Setup alongside required Username**, not a standalone Mobile screen. **Name remains a dedicated screen immediately after Account Setup. DOB and Sex are required; Mobile alone is optional** among signup/profile fields. All local fitness fields listed here are required for this proposed onboarding.
+Phase 1.1 is a nonfunctional Expo mock shell. The owner selected `Email → OTP → Password` for new signup and `Email → OTP → direct login` for an existing activated account. [ADR-017](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md) is reconciled to this order; the [lifecycle contract](27-OTP-FIRST-AUTH-LIFECYCLE.md) records the direct password-mutation blocker. The owner has fixed the signup sequence and now wants **Mobile as an optional field inside Account Setup alongside required Username**, not a standalone Mobile screen. **Name remains a dedicated screen immediately after Account Setup. DOB and Sex are required; Mobile alone is optional** among signup/profile fields. All local fitness fields listed here are required for this proposed onboarding.
 
 ### Proposed first-time screen order
 
@@ -56,7 +56,7 @@ The owner supplied two screenshots as **interaction/composition references only*
 
 
 
-**Fixed owner decision — do not change the screen order:** **Email → OTP → Password** must remain the first-time signup UI sequence. Technical feasibility is still a required implementation gate: validate Supabase email OTP account verification, production template/configuration, protected session establishment and authenticated password setup/update **in that exact order**. If a secure supported mechanism is unavailable, block implementation and escalate the provider/architecture issue; **do not reorder to Email → Password → OTP** or fake OTP verification. New workouts never unlock before real server-side email verification and password/session setup.
+**Fixed owner decision — do not change the screen order:** **Email → OTP → Password** remains the first-time signup UI sequence. An existing activated user goes from OTP directly to login/Home without Set Password or automatic password update; an incomplete user resumes its trusted stage. Technical feasibility is still a required implementation gate: validate Supabase email OTP account verification, production template/configuration, protected session establishment and authenticated password setup/update **in that exact order**. If a secure supported mechanism is unavailable, block implementation and escalate the provider/architecture issue; **do not reorder to Email → Password → OTP** or fake OTP verification. New workouts never unlock before real server-side email verification and password/session setup.
 
 
 ### Uploaded Flutter reference — architecture hint only

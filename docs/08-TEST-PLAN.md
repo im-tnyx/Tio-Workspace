@@ -21,10 +21,22 @@
 
 | ID | Priority | Scenario | Expected result |
 |---|---|---|---|
-| AUTH-11 | P0 | Fresh signup email+password, pending email verification, invalid code, then correct OTP | Unverified signup and invalid OTP cannot initialize/unlock any workout store; only verified same-bound-user UUID can access; first signup requires online connection |
+| AUTH-11 | P0 | New Email → OTP → Password → required setup; incomplete stage resume; existing active Email → OTP direct login | OTP-only and password-incomplete users cannot access protected resources/Home; active existing user keeps UUID/password; first signup requires online same-UUID completion |
 | AUTH-12 | P0 | OTP 6 digits, 10-minute expiry, 60 s resend, 5 sends/hour, 5 failures/challenge, 15-minute cooldown; replay/flood/429 | Real **provider/server-backed** throttles and no-guest verification; app countdown insufficient; **no CAPTCHA in MVP**; never claim current implementation passed |
 | AUTH-13 | P0 | Fresh install no login, anonymous Supabase session, wrong UUID, logout or reauth required | No protected local workout UI/CRUD without previously verified and permitted same-bound-user state; no guest path; signed-out store locked |
 | AUTH-14 | P0 | Verified user reopens offline with retained protected binding, then later online revocation | Offline local workout use still works per ADR-011 without repeated OTP; server operations revalidate, confirmed invalid session requires reauth; no cross-account unlock |
+| AUTH-15 | P0 | New Email → six-digit OTP → Password → required setup | `verifyOtp` creates a session but protected resources/Home stay closed until trusted password/profile/local completion |
+| AUTH-16 | P0 | Existing active email uses OTP login | Same UUID opens same-bound Home directly; Set Password is absent and no automatic password update occurs |
+| AUTH-17 | P0 | Compare existing password before/after normal OTP login | Existing password still works; direct `updateUser({ password })` risk is separately tested and explicitly dispositioned, not hidden by UI |
+| AUTH-18 | P0 | Interrupt at password-pending, profile-pending and local-pending stages; retry writes | Trusted server stage and same UUID resume exactly once; no password reset, duplicate profile/measurement, false activation or deletion |
+| AUTH-19 | P0 | OTP-verified session tries protected Data API, function and storage operations; forges `user_metadata` | Server-owned lifecycle plus UUID ownership denies each unauthorized operation; UI-only gate is insufficient |
+| AUTH-20 | P0 | Different UUID signs in on already bound installation | Reject and discard other session; binding/key/ciphertext remain intact; no cross-account local read |
+| AUTH-21 | P0 | Invalid, expired and replayed OTP | All fail without a session or activation; no code/token in diagnostics |
+| AUTH-22 | P0 | Resend/send/verify flood, 429, five wrong attempts and 15-minute cooldown | Actual provider/server enforcement matches selected numbers or implementation remains blocked; client countdown is not evidence |
+| AUTH-23 | P0 | Explicit Forgot/Reset Password versus existing active-user OTP login | OTP login leaves password unchanged; recovery is separate and same-UUID safe; generic errors avoid account enumeration |
+| AUTH-24 | P0 | Cold restart with valid persisted session; eligible offline reopen; later confirmed revocation | No routine OTP; protected same-UUID local gate works offline, while online operations revalidate; confirmed revocation locks without deleting workouts |
+
+**Evidence boundary (2026-11-16):** Task 02's isolated Mailpit PoC proved local OTP/session/password flow, expired/invalid/replay rejection, and disposable RLS denial. It also proved existing-account direct password overwrite and absence of a five-failure challenge block in that local configuration. **None of AUTH-15–24 has passed in the Tio app, on a device or on hosted Free/default-email.** See [lifecycle design and blockers](27-OTP-FIRST-AUTH-LIFECYCLE.md).
 | AUTH-01 | P0 | Fresh install -> register online | Verified user account and correct local partition |
 | AUTH-02 | P0 | Force-close and reopen after login | Dashboard opens without requiring another login |
 | AUTH-03 | P0 | Disable internet and reopen app | Already initialized user's local workouts accessible |
@@ -35,7 +47,7 @@
 | AUTH-08 | P0 | Remote session invalid while device offline | Previously verified account may access locally under accepted trust policy; online protected calls blocked until revalidation |
 | LIMIT-05 | P0 | Free MVP Library on empty/search/detail flows without membership | Curated exercises selectable; **no active custom-exercise create screen, payment gate, subscription or CAPTCHA**, local workouts unaffected |
 | LIMIT-06 | P2 | **Later paid custom exercise feature**, owner-approved entitlement, 49/50/51 records, expired/forged entitlement | Max 50 custom exercises per authorized member and strict server entitlement; curated library/core data never blocked, no retroactive deletion |
-| LIMIT-01 | P0 | Password 7/8/64/65 and optional Unicode/Hindi username 2/3/16/17 grapheme boundaries | Accept owner-selected 8–64 password and 3–16 username; no trimming, server/feature enforcement, no auth bypass |
+| LIMIT-01 | P0 | Password 7/8/64/65 and required proposed Account Setup Unicode/Hindi Username 2/3/16/17 grapheme boundaries | Accept owner-selected 8–64 password and 3–16 username; no trimming, server/feature enforcement, no auth bypass |
 | LIMIT-02 | P0 | Create 0/50/51 programs/account and 0/30/31 routines/program; test Hindi program/routine title lengths 2/3/25/26 graphemes | **Creation count** zero allowed with max 50/30; **saved name length** min 3 max 25; atomic validation, readable errors and no silent truncation |
 | LIMIT-03 | P0 | Create 0/30/31 exercise slots per routine and 0/1/8/9 sets per workout exercise; session 1/40/41 exercises | 1–8 sets per saved exercise, draft 0 allowed; max slot/session caps enforced transactionally; no truncation |
 | LIMIT-04 | P0 | Legacy workouts above later limits; navigate curated library without membership | Historic data remains readable when safe and never silently deleted; no Create Custom Exercise button or paywall in MVP |

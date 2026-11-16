@@ -21,7 +21,7 @@
 | Gate | What must be true | Current |
 |---|---|---|
 | Product | **Tnyx + `com.tnyx.tio`; Neutral, Glass(default)/Solid, System(default)/Light/Dark; portrait-only Android/iOS; English-only with OS/system fonts** (ADR-018). Future Accent Color, Hindi and Custom Font controls deferred | ⬜ Real device orientation/theme/English-font QA, icon and app ID registration pending |
-| Session | **Email/password + mandatory signup email OTP, no guest, server anti-abuse controls** (ADR-017), plus previously verified offline access (ADR-011); test revocation and errors | ⬜ Provider/numeric settings & runtime evidence pending |
+| Session | New: **Email → OTP → Password**; existing active: **Email → OTP direct login**; pending: trusted-stage resume; no guest, server anti-abuse controls (ADR-017), plus previously verified offline access (ADR-011); test revocation and errors | ⬜ Provider/numeric settings & runtime evidence pending |
 | Data isolation | **One account/installation, no switching, logout retains data; separate reset** selected; native key/erase lifecycle and tests still required | ⬜ Technical validation pending |
 | Native build | SQLCipher build/validation strategy accepted (Expo Go limitations understood) | ⬜ Pending |
 | Migrations | **ADR-010 tooling selected**; compatible native versions/bundling, account-specific journal, safe migration and recovery still require validation/sign-off | ⬜ Technical gate pending |
@@ -29,10 +29,10 @@
 | Secrets | AI provider secrets server-side; publishable keys understood | ✅ Requirement recorded, **not tested** |
 | OS-managed backup privacy | Android legacy/12+ cloud/device-transfer and iOS native exclusions, plus stale-key fail-closed recovery | ⬜ Native validation pending (`SEC-04/05`) |
 | Backup | **ADR-012 optional backup OFF by default** and cleared-data empty/restore UX selected; portable secret required. Providers, encryption implementation, auto timing and restore proofs deferred to later phase | ✅ UX policy recorded; future tests pending |
-| Tests | Password 8–64, optional username 3–16, program/routine names 3–25 graphemes and count max 50/30, sets 1–8 and deferred member-only custom exercises max 50 selected; OTP targets approved, **provider/server feasibility unverified** | ⬜ Runtime evidence pending |
+| Tests | Password 8–64, required proposed Username 3–16, program/routine names 3–25 graphemes and count max 50/30, sets 1–8 and deferred member-only custom exercises max 50 selected; OTP targets approved, **provider/server feasibility unverified** | ⬜ Runtime evidence pending |
 | Owner authorization | Explicit approval for each bounded Phase 1 slice | ✅ Phase 1.1 approved and merged; ⬜ Phase 1.2+ pending |
 
-**ADR-017 refined scope:** Phase 1.1 is shell placeholders only; Phase 1.2 separately implements verified email OTP with selected server-enforced targets and **no CAPTCHA**. Phase 1.4–1.6 implement **count-based program/routine/exercise/sets caps** with free curated Library, **no functional Create Custom Exercise UI or membership gate**. Later approved membership enables max 50 custom exercises/member and separately gated paid Sync; app lock, billing and paywall are deferred. All native/provider tests pending.
+**ADR-017 refined scope:** Phase 1.1 is shell placeholders only. Phase 1.2 Auth implementation remains **BLOCKED** pending direct password-mutation policy, hosted delivery, server-enforced abuse controls, device persistence and separate approval. Task 02 Mailpit evidence is local only; see the [lifecycle contract](27-OTP-FIRST-AUTH-LIFECYCLE.md). No CAPTCHA is selected. Phase 1.4–1.6 implement **count-based program/routine/exercise/sets caps** with free curated Library, **no functional Create Custom Exercise UI or membership gate**. Later approved membership enables max 50 custom exercises/member and separately gated paid Sync; app lock, billing and paywall are deferred. All native/provider tests pending.
 
 **ADR-018 owner-selected initial shell constraints:** native app-shell orientation **portrait-only** on supported phones; Appearance preference **System(default)/Light/Dark**; English UI/system font and centralized copy/formatting abstractions. Do NOT add Language/Custom Font settings, translations, Hindi font binaries or landscape layouts in Phase 1.1; these are deferred. This is docs policy, not coding permission.
 
