@@ -4,12 +4,12 @@
 
 | Field | Value |
 |---|---|
-| Status | **PR #17 guard active; PR #18 preview setup and PR #21 reconciliation merged; post-merge handoff pending this docs-only PR review** |
-| Active Task | **None assigned for product implementation.** PR #18's completed setup [archived](archive/2026/local-20261115-expo-go-codespaces-preview.md); PR #17's [historical guard record](tasks/security/local-20261115-commit-attribution-guard.md) remains linked from protected guard documentation. |
-| Active Scope / Owner | **Docs-only post-merge continuity**; owner retains Phase 1.2 Auth, infrastructure and merge authorization |
-| Branch | `main` verified at `6b0ec5b0413cf3a22c3c631368ac883f7f29d630`; handoff is a separate review PR |
-| Verified merged `main` | `6b0ec5b0413cf3a22c3c631368ac883f7f29d630` (PR #21 squash merge, 2026-11-16) |
-| Completed PRs | [#11](https://github.com/im-tnyx/Tio-Workspace/pull/11), [#12](https://github.com/im-tnyx/Tio-Workspace/pull/12), [#13](https://github.com/im-tnyx/Tio-Workspace/pull/13), [#14](https://github.com/im-tnyx/Tio-Workspace/pull/14), [#15](https://github.com/im-tnyx/Tio-Workspace/pull/15), [#17](https://github.com/im-tnyx/Tio-Workspace/pull/17), [#18](https://github.com/im-tnyx/Tio-Workspace/pull/18) and [#21](https://github.com/im-tnyx/Tio-Workspace/pull/21) all merged |
+| Status | **Phase 1.2 Task 03 documentation review in progress; production Auth BLOCKED** |
+| Active Task | [OTP-first Auth architecture and ADR reconciliation](tasks/auth/local-20261116-otp-first-architecture.md); no product implementation assigned. Prior preview task remains [archived](archive/2026/local-20261115-expo-go-codespaces-preview.md). |
+| Active Scope / Owner | Codex documentation-only branch; owner retains Auth implementation, hosted settings, privacy and merge decisions |
+| Branch | `tnyx/phase12-auth-architecture` from verified `main` `2a6877899ef51331739c38e850b6d2a6455e8795`; resolve PR HEAD live |
+| Verified merged `main` | `2a6877899ef51331739c38e850b6d2a6455e8795` (PR #23 merge, 2026-11-16); GitHub had no open PR at Task 03 bootstrap |
+| Completed PRs | [#11](https://github.com/im-tnyx/Tio-Workspace/pull/11), [#12](https://github.com/im-tnyx/Tio-Workspace/pull/12), [#13](https://github.com/im-tnyx/Tio-Workspace/pull/13), [#14](https://github.com/im-tnyx/Tio-Workspace/pull/14), [#15](https://github.com/im-tnyx/Tio-Workspace/pull/15), [#17](https://github.com/im-tnyx/Tio-Workspace/pull/17), [#18](https://github.com/im-tnyx/Tio-Workspace/pull/18), [#21](https://github.com/im-tnyx/Tio-Workspace/pull/21), [#22](https://github.com/im-tnyx/Tio-Workspace/pull/22) and [#23](https://github.com/im-tnyx/Tio-Workspace/pull/23) all merged |
 | Proposal | [ADR-019 minimal cloud profile and local onboarding](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) — **proposed, not implemented** |
 | Implementation authority | Only previously approved mock-shell/preview infrastructure changes are merged. No real Auth, Supabase profile, avatar bucket, local SQLCipher workout DB, paid sync, auto-deletion, EAS publishing or production work has been authorized. |
 | Commit attribution gate | [Main Protection ruleset `27218050`](https://github.com/im-tnyx/Tio-Workspace/rules/27218050) is active and strict, with **App-owned `Commit attribution guard`** (App ID `5032971`) required. Clean/bad disposable PR #19/#20 checks were demonstrated; stale-head/spoofed-check/integrity adversarial PR tests remain outstanding. |
@@ -29,7 +29,7 @@
 
 ## Additional pending policy — abandoned signup cleanup
 
-Owner requested eventual cleanup of abandoned Supabase account creations. [Proposed ADR-019](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) describes **7-day unverified** and **30-day verified-but-never-activated inactive** candidates with 7-day warning, secure server-side preflight and a **permanent exclusion once an account could own local encrypted data**. A **separate new proposal** covers fully established FREE accounts: **6-month review, 11-month warning, 12-month candidate review**, but destructive removal is **blocked** until the owner approves risks to offline/local bound workout recovery and independent security/privacy tests. Uninstall/fully-offline use is not remotely knowable. Time limits and automatic deletion need separate owner approval; **no job, backend migration, deletion or email was executed**.
+Owner selected a short cleanup target for **provisional pre-password** Supabase Auth rows: unverified = **15 minutes after the latest 10-minute OTP expires**; OTP-verified/password-pending = **15 minutes after verification**. Before initial password enrollment, return requires fresh Email + OTP, not saved password-pending resume; an Auth row/session can nevertheless exist. This supersedes the earlier 7-day unverified proposal. [Proposed ADR-019](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) still describes **30-day password-complete but cloud-profile-incomplete inactivity** with 7-day warning, server-side preflight and permanent exclusion once an account could own encrypted local data. A separate proposal covers fully established FREE accounts: **6-month review, 11-month warning, 12-month candidate review**, but destructive removal is blocked pending recovery/privacy risk approval. Uninstall/offline use is not remotely knowable. No job, migration, deletion or email was executed; hosted OTP configuration and cleanup implementation require separate approval.
 
 ## Additional proposed cloud account metadata — not deployed
 
@@ -37,7 +37,7 @@ Owner additionally requested **Platform, OS version, App build, Avatar, Plan** o
 
 ## Next safe action
 
-This post-merge handoff requires its own reviewer and explicit owner merge approval. Once merged, do not leave this documentation PR as an active product task.
+Task 03 OTP-first Auth architecture PR requires independent review and separate owner merge approval. Its design records a production Auth blocker; merging docs will not authorize Auth code, hosted Supabase settings or private-profile schema.
 
 **Next product decision (not yet authorized to implement):** review [proposed ADR-019](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md), [Phase 1 readiness](../docs/21-PHASE-1-READINESS.md), and [open Phase 0 issue #2](https://github.com/im-tnyx/Tio-Workspace/issues/2). In particular, prove the fixed **Email → OTP → Password** Supabase Auth mechanism before schema/UI implementation, and separately approve sensitive profile/RLS/privacy, age policy, installation-bound offline safety and cleanup/recovery tradeoffs.
 

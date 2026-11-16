@@ -16,9 +16,12 @@
 
 ```mermaid
 flowchart TD
-  S["Session gate"] -->|Previously verified account| Dock["Configured bottom nav - initial four roots"]
-  S -->|First login / signed out| Auth["Welcome / Sign in / Sign up"]
-  Auth -->|Same bound account| Dock
+  S["Session gate"] -->|Previously server-eligible same UUID, local-ready, session policy passes| Dock["Configured bottom nav - initial four roots"]
+  S -->|First signup / signed out / setup incomplete| Auth["Auth / pending setup"]
+  Auth -->|New: Email then OTP then Password then required cloud profile| Eligible["Trusted server eligibility"]
+  Auth -->|Existing: Email then OTP, same server-eligible UUID| Eligible
+  Eligible -->|Protected same-UUID local onboarding or verified matching restore| Ready["Device-local readiness"]
+  Ready --> Dock
   Auth -->|Different UUID| Denied["Account mismatch - blocked"]
   Dock --> Home["Home - root"]
   Dock --> Workout["Workout - root"]
@@ -61,7 +64,7 @@ flowchart TD
 | Screen | Primary CTA | Offline | Empty/error state |
 |---|---|---|---|
 | Session gate | Resume existing authenticated user | Yes if account is initialized and locally eligible | Need login / reauth / unavailable key |
-| Auth | **Online email/password Signup → Email OTP verify**; existing same-bound Sign in | No for new signup/verification | Pending/wrong/expired OTP, resend 429/cooldown, no guest, account mismatch denied, network error; unverified cannot open Home/workout DB |
+| Auth | **Online new Email → OTP → Password → required cloud profile → protected same-UUID local onboarding → Home**; existing server-eligible Email → OTP direct login opens Home only when same-UUID local-ready | No for new signup/verification | Pending/wrong/expired OTP, resend 429/cooldown, no guest, account mismatch denied, network error; OTP session or server eligibility alone cannot open Home/workout DB |
 | Home | Start / Resume Workout | Yes | “Create your first plan” / “Start a free workout” |
 | Workout (root) | Start/resume, plans and history links | Yes | Empty plans, in-progress resume |
 | Exercise Library (Library root) | Browse/search **curated exercises only** in current MVP | Yes, offline curated list | Empty results, choose exercise; **no custom-create screen until future membership, max 50/member** |
@@ -77,12 +80,14 @@ flowchart TD
 
 ## 03 · Happy path — first user
 
-1. Welcome → sign up online with email + password → **enter emailed OTP** and verify it server-side → confirm same-user immutable UUID → bind/unlock encrypted local store → Home. Until confirmed, only Auth/OTP screens, no guest workouts.
-2. Home offers “Start workout” and “Create plan”.
-3. User starts a session, picks exercise, logs repetitions/weight and marks sets complete.
-4. App commits changes to local SQLite transactionally. A clear “Saved on this device” indicator appears.
-5. User finishes session; History and Progress update from local records.
-6. Closing and reopening the app normally returns to Home, not sign-in.
+1. Welcome → enter Email online → enter and verify the six-digit emailed OTP with Supabase Auth → create the initial Password. OTP verification creates an Auth session but does not grant Home or activated protected cloud-resource access.
+2. Complete the proposed required private cloud profile in order: Account Setup (Username required, Mobile optional) → Name → DOB → Sex. Only trusted server evidence of initial password enrollment and validated required profile advances the same UUID to server eligibility; a client `local_complete` signal cannot do so. The private schema and Auth mechanism still require separate approval.
+3. After server eligibility is durably recorded, bind that UUID to the installation and complete protected device-local onboarding: Units → Height → Current Weight → Activity Level → Goal → Final Setup. Verify durable encrypted local completion for that UUID. **Home opens only when independent server eligibility and device-local readiness gates both pass** under the session policy; no guest workouts or early store unlock.
+4. Home offers “Start workout” and “Create plan”.
+5. User starts a session, picks exercise, logs repetitions/weight and marks sets complete.
+6. App commits changes to local SQLite transactionally. A clear “Saved on this device” indicator appears.
+7. User finishes session; History and Progress update from local records.
+8. Closing and reopening the app normally returns to Home without sign-in only when the previously verified same-UUID session/offline policy and protected local readiness still permit access.
 
 ## 04 · Happy path — no internet at the gym
 
@@ -110,7 +115,7 @@ flowchart TD
 | Reauth | “Sign in again with the account already linked to this device.” | Do not claim the account was deleted because internet is unavailable |
 | Different account login | “This device is linked to another Tnyx account. Sign in with that account; changing accounts is not supported.” | Block before data access; no automatic reset |
 
-**Owner-selected security/limit UX (ADR-017):** required email/password signup OTP and no-guest access; target 6 digits/10-minute expiry/60-second resend/5 sends-hour/5 incorrect attempts/15-minute cooldown, requiring real provider/server verification; **CAPTCHA not in MVP**. Password 8–64, optional username 3–16 graphemes, program/routine creation max 50/30 (no minimum **creation count**; **saved program/routine names 3–25 graphemes**), sets 1–8. Free Library uses curated exercises; **custom exercise creation reserved for later paid members (max 50)**, with no current paywall or add-custom action. Previously verified same-account offline use retained. See [limits](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md).
+**Owner-selected security/limit UX (ADR-017):** required new Email → OTP → Password and no-guest access; target 6 digits/10-minute expiry/60-second resend/5 sends-hour/5 incorrect attempts/15-minute cooldown, requiring real provider/server verification; **CAPTCHA not in MVP**. Password 8–64, required proposed Account Setup Username 3–16 graphemes, program/routine creation max 50/30 (no minimum **creation count**; **saved program/routine names 3–25 graphemes**), sets 1–8. Free Library uses curated exercises; **custom exercise creation reserved for later paid members (max 50)**, with no current paywall or add-custom action. Previously verified same-account offline use retained. See [limits](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md).
 
 ## 05A · Future paid Sync membership gate
 

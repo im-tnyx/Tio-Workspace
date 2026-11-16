@@ -36,7 +36,7 @@
 | 01 | [Product requirements](01-PRODUCT-REQUIREMENTS.md) | Scope, user journeys, non-goals |
 | 02 | [System architecture](02-SYSTEM-ARCHITECTURE.md) | Boundaries and local-first flow |
 | 03 | [Local data model](03-LOCAL-DATA-MODEL.md) | SQLite structure and migration strategy |
-| 04 | [Auth & security](04-AUTH-AND-SECURITY.md) | Sessions, identity, encryption, secrets |
+| 04 | [Auth & security](04-AUTH-AND-SECURITY.md) | Sessions, identity, encryption, secrets; [OTP-first lifecycle design](27-OTP-FIRST-AUTH-LIFECYCLE.md) |
 | 05 | [Backup & sync](05-BACKUP-AND-SYNC.md) | Restore, backup and future opt-in sync |
 | 06 | [Roadmap](06-ROADMAP.md) | Phase-gated development plan |
 | 07 | [API contracts](07-API-CONTRACTS.md) | Proposed AI Edge Function contract |
@@ -57,7 +57,7 @@
 | 22 | [Phase 0 design & Phase 1 owner approval](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) | Proposed visual freeze, deferred risks and explicit sign-off template |
 | 23 | [Input limits, OTP & deferred membership](23-INPUT-LIMITS-OTP-AND-FUTURE-MEMBERSHIP.md) | Proposed numeric caps, approved verified-signup and membership deferment policy |
 | 24 | [Phase 1.1 shell implementation guide](24-PHASE-1-1-SHELL.md) | Merged mock shell, PR-head CI/review evidence, remaining native QA and out-of-scope features |
-| 25 | [Proposed minimal cloud profile + local onboarding (ADR-019)](25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) | Fixed Email → OTP → Password; Account Setup has required Username + optional Mobile, then required Name/DOB/Sex, local fitness, a real progress → Done → Continue screen, plus proposed private **`avatar_url` / Storage photo lifecycle** with Name initials fallback (`Tnyx Tio` → `TT`), later Google signup import, server-owned Free Plan and latest Platform/OS/App build snapshot and 7/30-day signup/12-month free-account cleanup **review gates** — pending owner review |
+| 25 | [Proposed minimal cloud profile + local onboarding (ADR-019)](25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) | Fixed Email → OTP → Password; Account Setup has required Username + optional Mobile, then required Name/DOB/Sex, local fitness, a real progress → Done → Continue screen, plus proposed private **`avatar_url` / Storage photo lifecycle** with Name initials fallback (`Tnyx Tio` → `TT`), later Google signup import, server-owned Free Plan and latest Platform/OS/App build snapshot; owner-selected short provisional-row cleanup target, proposed 30-day profile-incomplete and separate 12-month free-account cleanup review gates — no live deletion |
 | 26 | [Commit attribution guard](26-COMMIT-ATTRIBUTION-GUARD.md) | Multi-agent `.ai/` identity records, AI co-author prevention, trusted GitHub checks and owner activation gate |
 | 27 | [Expo Go live preview from Codespaces](27-EXPO-GO-CODESPACES-LIVE-PREVIEW.md) | Push-triggered sync for the dedicated `tnyx/expo-preview` branch; requires one manually created Codespace and an environment-scoped Actions token secret; no product/Auth/DB changes |
 
