@@ -30,6 +30,7 @@
 - Use [task guide](../tasks/README.md) and [template](../tasks/TEMPLATE.md).
 - Keep context short and evidence-based; no transcripts, copied specs, secrets or raw command dumps.
 - Record exact checks performed, skipped validation, independent/self/automated review status and one next action.
+- After a verified merge, follow the [safe local Git sync guide](../../.github/POST-MERGE-SYNC.md) to refresh a **clean** `main` with `--ff-only`; never overwrite local work, force-delete PR branches or treat a squash PR head as the merge commit.
 - After verified merge and post-merge checks, archive completed task and clear current pointer through an authorized tracked change.
 
-**Canonical:** [Agent contract](../../AGENTS.md) · [PR workflow](../../docs/11-PR-REVIEW-WORKFLOW.md) · [Post-merge playbook](../../docs/12-POST-MERGE-PLAYBOOK.md)
+**Canonical:** [Agent contract](../../AGENTS.md) · [PR workflow](../../docs/11-PR-REVIEW-WORKFLOW.md) · [Post-merge playbook](../../docs/12-POST-MERGE-PLAYBOOK.md) · [Post-merge Git sync](../../.github/POST-MERGE-SYNC.md)
