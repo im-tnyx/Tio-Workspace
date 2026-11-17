@@ -16,36 +16,40 @@
 
 ```mermaid
 flowchart TD
-  S["Session gate"] -->|Previously server-eligible same UUID, local-ready, session policy passes| Dock["Configured bottom nav - initial four roots"]
-  S -->|First signup / signed out / setup incomplete| Auth["Auth / pending setup"]
+  S["Session gate"] -->|Server-eligible same UUID, protected local safety and session policy pass| Dock["Configured bottom nav - initial four roots"]
+  S -->|First signup / signed out / mandatory cloud or local safety pending| Auth["Auth / pending setup"]
   Auth -->|New: Email then OTP then Password then required cloud profile| Eligible["Trusted server eligibility"]
-  Auth -->|Existing: Email then OTP, same server-eligible UUID| Eligible
-  Eligible -->|Protected same-UUID local onboarding or verified matching restore| Ready["Device-local readiness"]
-  Ready --> Dock
+  Auth -->|Existing: Email then Password, same server-eligible UUID| Eligible
+  Auth -->|Password complete, required cloud field missing| CloudPending["Resume first missing mandatory cloud field"]
+  CloudPending --> Eligible
+  Eligible -->|Protected same-UUID binding, key and encrypted store| Ready["Device-local safety"]
+  Ready -->|Uninterrupted first setup| Fitness["Required local fitness fields then Final Setup"]
+  Fitness --> Dock
+  Ready -->|Valid same-user return; fitness may remain pending| Dock
   Auth -->|Different UUID| Denied["Account mismatch - blocked"]
   Dock --> Home["Home - root"]
   Dock --> Workout["Workout - root"]
   Dock --> Library["Library - root"]
-  Dock --> You["You - root"]
+  Dock --> Progress["Progress - root"]
   Home --> Active["Active Workout - nested, dock hidden"]
   Workout --> Plans["Plans / Plan Editor - nested"]
   Workout --> Active
   Workout --> History["History - nested"]
   Library --> Exercise["Exercise detail / editor - nested"]
-  You --> Progress["Progress - nested"]
-  You --> Settings["Settings - nested"]
+  Home --> Profile["Profile - nested via Home TopBar action"]
+  Profile --> Settings["Settings - nested"]
   Settings --> Appear["Appearance: Glass/Solid, System(default)/Light/Dark"]
   Settings --> Backup["Personal Backup - later"]
   Settings --> Sync["Paid Sync - future"]
 ```
 
-**Initial configured root tabs:** **Home, Workout, Library, You** (four for this MVP). This is a **Standard full-width bottom navigation bar now**, not a floating Pill or modal sheet. Its **material is default iPhone-inspired translucent Glass**, so **Standard + Glass** has background showing through; Solid is the separate Settings preference. A **Pill layout is a later presentation option, not included or user-selectable now**. The shared bar must consume an ordered **tab registry/config** so future owner-selected fewer/more/reordered roots work without hardcoded screen logic. The current Standard bar persists while scrolling configured root screens and hides on Active Workout, Plan Editor, History, Progress, exercise details, Settings, Backup and all non-tab/Auth/nested/full-screen routes. **Root compact TopBar is hidden at scroll top and appears only after scrolling**; nested routes show shared compact/back TopBar immediately. Workout links plans/history/session, Library has exercise lookup, You links Progress/Settings and Home start/resume.
+**Initial configured root tabs:** **Home, Workout, Library, Progress** (four for this MVP). This is a **Standard full-width bottom navigation bar now**, not a floating Pill or modal sheet. Its **material is default iPhone-inspired translucent Glass**, so **Standard + Glass** has background showing through; Solid is the separate Settings preference. A **Pill layout is a later presentation option, not included or user-selectable now**. The shared bar must consume an ordered **tab registry/config** so future owner-selected fewer/more/reordered roots work without hardcoded screen logic. The current Standard bar persists while scrolling configured root screens and hides on Active Workout, Plan Editor, History, Profile, exercise details, Settings, Backup and all non-tab/Auth/nested/full-screen routes. **Root compact title chrome remains scroll-revealed**; the Home TopBar profile action must remain directly reachable when Home opens, without requiring a scroll solely to reach Profile. Nested routes show shared compact/back TopBar immediately. Exact UI implementation needs separate approval; the current Expo mock remains unchanged. Workout links plans/history/session, Library has exercise lookup, Progress is a root, and Home's TopBar profile action opens the nested Profile screen with Settings and the incomplete-profile pill.
 
 ### Shared shell and theme choices (owner-selected)
 
 - Settings → Appearance: **System(default), Light, Dark** and independent **Glass(default)/Solid**. System follows OS changes; manual overrides persist. Six preference combos resolve to four rendered material × Light/Dark states. No duplicate per-screen theme decisions.
 - One **TopBar** takes the reference's rounded/translucent grouped style without copied branding or unapproved search/notifications. On root tab screens the compact TopBar is **hidden initially**, revealing **after scrolling** via centrally owned threshold/reduced-motion-friendly transition and hiding when back at top. On nested screens it is **visible immediately** with back affordance.
-- One **BottomTabBar** draws the current **Standard safe-area-aligned, full-width bar**, with default background-translucent **Glass** or Settings-selected **Solid** material at any root scroll position. Its destinations come from the future **app-owned ordered tab config** (initial Home/Workout/Library/You, changeable later), not a four-slot constant; optional floating **Pill** is a later layout variant. All shared fields, buttons, cards, sheets, switches/selects and text use `src/shared/theme/tokens/` in light/dark.
+- One **BottomTabBar** draws the current **Standard safe-area-aligned, full-width bar**, with default background-translucent **Glass** or Settings-selected **Solid** material at any root scroll position. Its destinations come from the future **app-owned ordered tab config** (initial Home/Workout/Library/Progress, changeable later), not a four-slot constant; optional floating **Pill** is a later layout variant. All shared fields, buttons, cards, sheets, switches/selects and text use `src/shared/theme/tokens/` in light/dark.
 - Future `src/shared/theme/tokens/` supplies tokens, `src/shared/ui/` supplies shared primitives, `src/app/` owns routes/tab visibility and shared scroll TopBar coordinator; features compose them. **Every screen stays dumb** (view state/props and callbacks only), with async/state orchestration in feature hooks/controllers, business rules in domain/application and SDK/I/O in data/platform. See [module architecture](10-REPOSITORY-STRUCTURE.md). **Future paths only**.
 - Glass uses readable tinted translucent/blurred surfaces with borders; Solid uses opaque equivalents. Validate iOS/Android text contrast, keyboard/safe areas, 44pt/48dp touch targets, dynamic type and reduce-transparency/high-contrast fallback after implementation. If blur unavailable, render Solid fallback without changing saved preference.
 
@@ -61,18 +65,20 @@ flowchart TD
 
 ## 02 · Screen contract
 
+**Owner-approved unified Auth presentation (policy only):** Keep the existing shared Expo Auth preview, its Sign In/Sign Up headings and helper text, typography, Email/Password fields, keyboard/focus behavior, Header/Back, persistent footer/Continue, accessibility, small-screen layout and visual styling. The two lightweight routes may continue to share one component. Selected **Sign Up** starts with Email only; Continue opens six-digit OTP, then successful verification reveals Create Password. Selected **Sign In** starts with Email only; Continue reveals the existing Password field while Email stays visible; `signInWithPassword` is the future normal authentication call, with no OTP or credential mutation. Do not use a public email-existence lookup or automatically switch mode. An email entered on Sign Up needs a generic, non-enumerating response: after fresh OTP, a surviving provisional UUID may securely finish **initial** password enrollment; a safely deleted provisional identity may start fresh; a password-complete account uses explicit Sign In/Forgot Password and must never be re-enrolled. Verify the provider/server mechanism before implementation. **Forgot Password** retains its preview text/behavior and follows Email → recovery verification → New Password → Sign In. Recovery-authenticated sessions may permit direct password updates; UI separation does not solve that Auth-level risk. No new screen, visual redesign or working Auth is implied.
+
 | Screen | Primary CTA | Offline | Empty/error state |
 |---|---|---|---|
 | Session gate | Resume existing authenticated user | Yes if account is initialized and locally eligible | Need login / reauth / unavailable key |
-| Auth | **Online new Email → OTP → Password → required cloud profile → protected same-UUID local onboarding → Home**; existing server-eligible Email → OTP direct login opens Home only when same-UUID local-ready | No for new signup/verification | Pending/wrong/expired OTP, resend 429/cooldown, no guest, account mismatch denied, network error; OTP session or server eligibility alone cannot open Home/workout DB |
+| Auth | **Online new Email → OTP → Password → required cloud profile → local fitness onboarding → Final Setup → Home**; returning password login checks server eligibility and same-UUID local safety before the correct destination | No for new signup/verification | Pending/wrong/expired OTP, resend 429/cooldown, no guest, account mismatch denied, network error; OTP session or server eligibility alone cannot open Home/workout DB |
 | Home | Start / Resume Workout | Yes | “Create your first plan” / “Start a free workout” |
 | Workout (root) | Start/resume, plans and history links | Yes | Empty plans, in-progress resume |
 | Exercise Library (Library root) | Browse/search **curated exercises only** in current MVP | Yes, offline curated list | Empty results, choose exercise; **no custom-create screen until future membership, max 50/member** |
-| You (root) | Account, Progress and Settings links | Mostly | Bound identity / offline state |
+| Progress (root) | Workout progress and trends | Yes for eligible local users | Insufficient data; calculations requiring missing fitness inputs request them |
 | Plan Editor | Save workout plan | Yes | Missing required exercise fields |
 | Active Workout | Log/complete sets | Yes | Autosave/transaction failure and resume |
 | History | Open past session | Yes | No logged sessions |
-| Progress | View PRs / volume | Yes | Insufficient data, unit selection |
+| Profile (nested from Home TopBar) | Account, Settings and incomplete-profile pill | Mostly | Same-UUID account state; pill shown only for verified missing required fields |
 | Settings (nested) | Appearance **System/Light/Dark** and Glass/Solid, account, logout and separate erase/reset | Mostly | OS-follow/manual override; **no Language/Custom Font picker in English MVP**, no account switch and reset warning |
 | Personal Backup (later) | Optional Back up now / Restore / settings | Needs network for remote upload/download; manual encrypted file workflow depends on platform | OFF by default; last success/progress/failure/quota/recovery states |
 | AI Draft (later) | Generate then approve | No | AI unavailable; preserve local session |
@@ -82,12 +88,19 @@ flowchart TD
 
 1. Welcome → enter Email online → enter and verify the six-digit emailed OTP with Supabase Auth → create the initial Password. OTP verification creates an Auth session but does not grant Home or activated protected cloud-resource access.
 2. Complete the proposed required private cloud profile in order: Account Setup (Username required, Mobile optional) → Name → DOB → Sex. Only trusted server evidence of initial password enrollment and validated required profile advances the same UUID to server eligibility; a client `local_complete` signal cannot do so. The private schema and Auth mechanism still require separate approval.
-3. After server eligibility is durably recorded, bind that UUID to the installation and complete protected device-local onboarding: Units → Height → Current Weight → Activity Level → Goal → Final Setup. Verify durable encrypted local completion for that UUID. **Home opens only when independent server eligibility and device-local readiness gates both pass** under the session policy; no guest workouts or early store unlock.
+3. After server eligibility is durably recorded, bind that UUID to the installation and complete protected device-local onboarding: Units → Height → Current Weight → Activity Level → Goal → Final Setup. Verify durable encrypted local completion for that UUID. **The uninterrupted first-run Home entry requires server eligibility and full device-local fitness completion; an interrupted return has the separate same-UUID local safety gate described below** under the session policy; no guest workouts or early store unlock.
 4. Home offers “Start workout” and “Create plan”.
 5. User starts a session, picks exercise, logs repetitions/weight and marks sets complete.
 6. App commits changes to local SQLite transactionally. A clear “Saved on this device” indicator appears.
 7. User finishes session; History and Progress update from local records.
 8. Closing and reopening the app normally returns to Home without sign-in only when the previously verified same-UUID session/offline policy and protected local readiness still permit access.
+
+### Interrupted account and fitness setup
+
+- **Before initial password:** Supabase may hold a provisional Auth UUID, but it is not a completed Tio account. Restart Email + fresh OTP; a surviving provisional UUID can finish secure first enrollment after trusted verification, while a safely deleted UUID starts fresh. OTP expiry alone never deletes the Auth row. A password-complete account is never re-enrolled or silently reset through Sign Up; public responses stay generic.
+- **Password complete, mandatory cloud profile incomplete:** after password login or a valid same-user session, resume the first missing Username, Name, DOB or Sex step without Home, duplicate data or UUID change. Verified Email plus those four fields are the mandatory cloud account minimum; Mobile is optional.
+- **Cloud profile complete, local fitness incomplete:** an uninterrupted first attempt continues Units → Height → Current Weight → Activity Level → Goal → Final Setup. If interrupted and returning later, allow Home only after the independently verified same-UUID local binding, protected key and encrypted-store safety gate. Show a tappable **Profile-screen** completion pill reached through Home TopBar: “Your profile is 80% finished” with a trailing arrow, where 80% is only an example. Compute saved verified required fields / 10; exclude Mobile, and reserve 100% for a durably verified fitness-completion marker. If all fields are saved but that marker is pending, show a nonnumeric pending state. The pill opens the first missing fitness field or retries final verification, preserves prior answers and disappears only when all required values and full completion are durable. Missing-value calculations request inputs; unrelated safe features remain available. The pill is unrelated to the deferred bottom-navigation Pill layout.
+- **Reinstall:** authenticate the same account, recover only its verified cloud profile, then safely initialize the local encrypted store or verify a matching restore. Auth does not restore workouts; do not bind or unlock another UUID. After local safety passes, do not repeat already saved fitness steps unnecessarily.
 
 ## 04 · Happy path — no internet at the gym
 
@@ -136,7 +149,7 @@ The owner-provided iOS/Android screenshots inform **information hierarchy only**
 - Each screen covers `loading`, `empty`, `offline`, `error`, and account-safety states.
 - Never expose cached workout data when a different account attempts login; **no identity-switching flow exists**.
 
-**Owner-selected shell (ADR-015):** **initial** four tab roots Home / Workout / Library / You in a **Standard full-width layout with default Glass translucency**, future tab count/order via config and Pill layout deferred; root compact TopBar **scroll-revealed only**, nested TopBar immediately visible; Settings-only Solid, System(default)/Light/Dark, portrait-only; centralized theme tokens and dumb screens. Existing MVP features remain nested. See the [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md) and P0 UX-01–05/08–11 versus later P1 UX-06, P2 UX-07; final palette/QA/screenshot sign-off remains pending.
+**Owner-selected shell (ADR-015, revised):** **initial** four tab roots Home / Workout / Library / Progress in a **Standard full-width layout with default Glass translucency**; Profile is a nested screen reached from Home TopBar, with its action available when Home opens. Future tab count/order remains config-driven and the bottom-bar Pill layout is deferred. Root compact title chrome retains scroll reveal, while the Home profile action remains reachable without a scroll; nested TopBar is immediately visible. Settings-only Solid, System(default)/Light/Dark, portrait-only, centralized theme tokens and dumb screens remain. This revised navigation is documentation policy; the current mock shell still has a You tab and requires a separately approved UI slice. See the [approval pack](22-PHASE-0-DESIGN-AND-PHASE-1-APPROVAL.md).
 
 ## 07 · Design acceptance checklist
 
