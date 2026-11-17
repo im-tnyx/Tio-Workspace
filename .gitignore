@@ -29,3 +29,7 @@ coverage/
 *.p8
 *.pem
 /credentials.json
+
+# Task 06G local Supabase CLI metadata (never part of evidence PRs)
+/experiments/task06g/supabase/.branches/
+/experiments/task06g/supabase/.temp/
