@@ -2,6 +2,7 @@
 import { execFileSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import http from 'node:http';
+import { classifyHookDenial, classifyHookPasswordLogin } from './hook-denial-assertion.mjs';
 
 const cli = process.env.SUPABASE_CLI;
 if (!cli) throw new Error('Set SUPABASE_CLI to the pinned local executable');
@@ -272,9 +273,9 @@ try {
   // A second disposable Auth clone tests documented hooks and direct API paths.
   const hookAddress = email(), recoveryAddress = email(), deliveryAddress = email();
   const hookPassword = password(), changedPassword = password();
-  requireOk(await admin(local.API_URL, '/admin/users',
+  const hookUser = requireOk(await admin(local.API_URL, '/admin/users',
     { email: hookAddress, password: hookPassword, email_confirm: true }), 'hook test user');
-  requireOk(await admin(local.API_URL, '/admin/users',
+  const recoveryUser = requireOk(await admin(local.API_URL, '/admin/users',
     { email: recoveryAddress, password: password(), email_confirm: true }), 'hook recovery test user');
   requireOk(await admin(local.API_URL, '/admin/users',
     { email: deliveryAddress, password: password(), email_confirm: true }), 'hook delivery test user');
@@ -283,6 +284,9 @@ try {
   const sessionCode = await codeFor(hookAddress, 'local signup');
   const prehookSession = requireOk(await request(local.API_URL, '/verify',
     { email: hookAddress, token: sessionCode, type: 'email' }), 'hook preexisting OTP verify');
+  if (!hookUser.id || !recoveryUser.id || prehookSession.user?.id !== hookUser.id) {
+    throw new Error('Hook test identity mismatch');
+  }
   await sleep(1200);
   requireOk(await request(local.API_URL, '/otp',
     { email: hookAddress, create_user: false }), 'hook preissued OTP send');
@@ -298,18 +302,19 @@ try {
       let event = {};
       try { event = JSON.parse(body); } catch {}
       if (req.url === '/email') {
-        hookEvents.push('email');
+        hookEvents.push({ kind: 'email' });
         res.writeHead(200, { 'content-type': 'application/json' });
         res.end('{}');
         return;
       }
       const method = event.authentication_method ?? 'none';
-      hookEvents.push(`token:${method}`);
       const amr = event.claims?.amr ?? [];
       const otpOrigin = Array.isArray(amr) && amr.some(entry =>
         ['otp', 'recovery', 'magiclink', 'email'].includes(entry.method));
       const blocked = ['otp', 'recovery', 'magiclink', 'email', 'signup'].includes(method) ||
         (method === 'token_refresh' && otpOrigin);
+      hookEvents.push({ kind: 'token', userId: event.user_id, method,
+        denied: blocked, status: blocked ? 500 : 200 });
       res.writeHead(blocked ? 500 : 200, { 'content-type': 'application/json' });
       res.end(blocked ? '{"error":"Unauthorized"}' : JSON.stringify({ claims: event.claims }));
     });
@@ -352,10 +357,14 @@ try {
   if (!hookReady) throw new Error('Hook clone did not become healthy');
   record('HOOK_CONFIG', true, 'local GoTrue hook clone healthy');
 
-  const hookLogin = await request(hookApi, '/token?grant_type=password',
+  const safeHookRequest = async (...args) => {
+    try { return await request(...args); } catch { return null; }
+  };
+  const loginStart = hookEvents.length;
+  const hookLogin = await safeHookRequest(hookApi, '/token?grant_type=password',
     { email: hookAddress, password: hookPassword });
-  record('HOOK_PASSWORD_LOGIN', hookLogin.ok,
-    `${hookLogin.status}/${hookLogin.value.error_code ?? 'none'}`);
+  rows.push({ id: 'HOOK_PASSWORD_LOGIN',
+    ...classifyHookPasswordLogin(hookLogin, hookEvents, loginStart, hookUser.id) });
   const hookOtp = await request(hookApi, '/otp', { email: hookAddress, create_user: false });
   record('HOOK_DIRECT_OTP_DISABLED', hookOtp.status === 422,
     `${hookOtp.status}/${hookOtp.value.error_code ?? 'none'}`);
@@ -363,24 +372,27 @@ try {
     { email: email(), password: password() });
   record('HOOK_DIRECT_SIGNUP_DISABLED', !hookSignup.ok,
     `${hookSignup.status}/${hookSignup.value.error_code ?? 'none'}`);
-  const hookVerify = await request(hookApi, '/verify',
+  const otpVerifyStart = hookEvents.length;
+  const hookVerify = await safeHookRequest(hookApi, '/verify',
     { email: hookAddress, token: hookOtpCode, type: 'email' });
-  record('HOOK_PREISSUED_OTP_VERIFY_BLOCKED', !hookVerify.ok,
-    `${hookVerify.status}/${hookVerify.value.error_code ?? 'none'}`);
-  const hookRecoveryVerify = await request(hookApi, '/verify',
+  rows.push({ id: 'HOOK_PREISSUED_OTP_VERIFY_BLOCKED',
+    ...classifyHookDenial(hookVerify, hookEvents, otpVerifyStart, hookUser.id, 'otp') });
+  const recoveryVerifyStart = hookEvents.length;
+  const hookRecoveryVerify = await safeHookRequest(hookApi, '/verify',
     { email: recoveryAddress, token: hookRecoveryCode, type: 'recovery' });
-  record('HOOK_PREISSUED_RECOVERY_VERIFY_BLOCKED', !hookRecoveryVerify.ok,
-    `${hookRecoveryVerify.status}/${hookRecoveryVerify.value.error_code ?? 'none'}`);
+  rows.push({ id: 'HOOK_PREISSUED_RECOVERY_VERIFY_BLOCKED',
+    ...classifyHookDenial(hookRecoveryVerify, hookEvents, recoveryVerifyStart, recoveryUser.id, 'otp') });
   const mailBefore = (await messages()).length;
   const hookRecover = await request(hookApi, '/recover', { email: deliveryAddress });
   await sleep(500);
   const mailAfter = (await messages()).length;
   record('HOOK_RECOVER_NO_NATIVE_EMAIL', hookRecover.ok && mailAfter === mailBefore,
     `${hookRecover.status}/${hookRecover.value.error_code ?? 'none'}; mail_delta=${mailAfter - mailBefore}`);
-  const hookRefresh = await request(hookApi, '/token?grant_type=refresh_token',
+  const refreshStart = hookEvents.length;
+  const hookRefresh = await safeHookRequest(hookApi, '/token?grant_type=refresh_token',
     { refresh_token: prehookSession.refresh_token });
-  record('HOOK_PREEXISTING_OTP_REFRESH_BLOCKED', !hookRefresh.ok,
-    `${hookRefresh.status}/${hookRefresh.value.error_code ?? 'none'}`);
+  rows.push({ id: 'HOOK_PREEXISTING_OTP_REFRESH_BLOCKED',
+    ...classifyHookDenial(hookRefresh, hookEvents, refreshStart, hookUser.id, 'token_refresh') });
   const hookUserUpdate = await request(hookApi, '/user',
     { password: changedPassword }, prehookSession.access_token, 'PUT');
   const originalHookLogin = await request(hookApi, '/token?grant_type=password',
@@ -392,8 +404,9 @@ try {
     !hookUserUpdate.ok && !!hookUserUpdate.value.error_code &&
       originalHookLogin.ok && !changedLogin.ok,
     `update=${hookUserUpdate.status}/${hookUserUpdate.value.error_code ?? 'none'}; old_works=${originalHookLogin.ok}; new_works=${changedLogin.ok}`);
-  record('HOOK_INVOCATION_OBSERVED', hookEvents.some(x => x.startsWith('token:')) &&
-    hookEvents.includes('email'), [...new Set(hookEvents)].join(','));
+  record('HOOK_INVOCATION_OBSERVED', hookEvents.some(x => x.kind === 'token') &&
+    hookEvents.some(x => x.kind === 'email'),
+    [...new Set(hookEvents.map(x => x.kind === 'email' ? 'email' : `token:${x.method}`))].join(','));
 } catch (error) {
   rows.push({ id: 'HARNESS', result: 'FAIL', observed: String(error.message).slice(0, 180) });
 } finally {
@@ -408,4 +421,4 @@ try {
   }
 }
 console.log(JSON.stringify({ scope: 'Task 06D isolated local boundary, no secrets', rows }, null, 2));
-if (rows.some(r => r.result === 'FAIL')) process.exitCode = 1;
+if (rows.some(r => r.result !== 'PASS')) process.exitCode = 1;
