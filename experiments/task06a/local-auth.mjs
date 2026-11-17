@@ -184,11 +184,13 @@ try {
   const afterFailures = await call('/verify', {
     email: freshEmail, token: floodCode, type: 'email',
   });
+  // PASS only on a challenge-specific lock — not IP/project rate-limit or HTTP 5xx.
   record('AUTH-22_FIVE_FAILURE_COOLDOWN',
-    failures.every(x => !x.ok) && !afterFailures.ok,
+    failures.every(x => !x.ok && !!x.value.error_code) &&
+      !afterFailures.ok && afterFailures.value.error_code === 'challenge_locked',
     failures.every(x => !x.ok) && afterFailures.ok
       ? 'FAIL: correct code succeeded after five invalid attempts'
-      : 'Five-attempt outcome requires investigation');
+      : `wrong=${failures.map(x => `${x.status}/${x.value.error_code ?? 'none'}`).join(',')}; after=${afterFailures.status}/${afterFailures.value.error_code ?? 'none'}`);
   const replay = await call('/verify', {
     email: freshEmail, token: floodCode, type: 'email',
   });
