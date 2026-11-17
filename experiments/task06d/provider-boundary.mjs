@@ -211,7 +211,8 @@ try {
   const newPasswordLogin = await request(clone, '/token?grant_type=password',
     { email: address, password: pw2 });
   record('PREEXISTING_OTP_PASSWORD_PROTECTION',
-    !oldPasswordUpdate.ok && oldPasswordLogin.ok && !newPasswordLogin.ok,
+    !oldPasswordUpdate.ok && !!oldPasswordUpdate.value.error_code &&
+      oldPasswordLogin.ok && !newPasswordLogin.ok,
     `update=${oldPasswordUpdate.status}/${oldPasswordUpdate.value.error_code ?? 'none'}; old_works=${oldPasswordLogin.ok}; new_works=${newPasswordLogin.ok}`);
 
   const badCode = floodCode === '000000' ? '111111' : '000000';
@@ -236,10 +237,15 @@ try {
     if (recoverySession.ok) {
       const replacement = await request(clone, '/user', { password: pw3 },
         recoverySession.value.access_token, 'PUT');
+      const originalLogin = await request(clone, '/token?grant_type=password',
+        { email: address, password: pw1 });
       const replacementLogin = await request(clone, '/token?grant_type=password',
         { email: address, password: pw3 });
-      record('DIRECT_RECOVERY_PASSWORD_PROTECTION', !replacement.ok && !replacementLogin.ok,
-        `update=${replacement.status}/${replacement.value.error_code ?? 'none'}; new_works=${replacementLogin.ok}`);
+      // PASS only when Auth denies the mutation with an error_code and the original password still works.
+      record('DIRECT_RECOVERY_PASSWORD_PROTECTION',
+        !replacement.ok && !!replacement.value.error_code &&
+          originalLogin.ok && !replacementLogin.ok,
+        `update=${replacement.status}/${replacement.value.error_code ?? 'none'}; old_works=${originalLogin.ok}; new_works=${replacementLogin.ok}`);
     }
   }
   const resendRecovery = await request(clone, '/resend', { email: address, type: 'recovery' });
@@ -377,10 +383,15 @@ try {
     `${hookRefresh.status}/${hookRefresh.value.error_code ?? 'none'}`);
   const hookUserUpdate = await request(hookApi, '/user',
     { password: changedPassword }, prehookSession.access_token, 'PUT');
+  const originalHookLogin = await request(hookApi, '/token?grant_type=password',
+    { email: hookAddress, password: hookPassword });
   const changedLogin = await request(hookApi, '/token?grant_type=password',
     { email: hookAddress, password: changedPassword });
-  record('HOOK_PREEXISTING_OTP_PASSWORD_PROTECTION', !hookUserUpdate.ok && !changedLogin.ok,
-    `update=${hookUserUpdate.status}/${hookUserUpdate.value.error_code ?? 'none'}; new_works=${changedLogin.ok}`);
+  // PASS only when Auth denies with an error_code and the pre-update password still works.
+  record('HOOK_PREEXISTING_OTP_PASSWORD_PROTECTION',
+    !hookUserUpdate.ok && !!hookUserUpdate.value.error_code &&
+      originalHookLogin.ok && !changedLogin.ok,
+    `update=${hookUserUpdate.status}/${hookUserUpdate.value.error_code ?? 'none'}; old_works=${originalHookLogin.ok}; new_works=${changedLogin.ok}`);
   record('HOOK_INVOCATION_OBSERVED', hookEvents.some(x => x.startsWith('token:')) &&
     hookEvents.includes('email'), [...new Set(hookEvents)].join(','));
 } catch (error) {
