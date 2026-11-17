@@ -3,6 +3,7 @@ import { execFileSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { classifyAuth17 } from './auth17-assertion.mjs';
 
 const workdir = dirname(fileURLToPath(import.meta.url));
 const cli = process.env.SUPABASE_CLI || 'supabase';
@@ -161,19 +162,19 @@ try {
     email: pendingEmail, token: existingCode, type: 'email',
   }), 'existing account OTP verification');
   const replacementPassword = password();
-  const directReplacement = await call('/user', { password: replacementPassword },
+  const auth17Call = async (...args) => {
+    try { return await call(...args); } catch { return null; }
+  };
+  const directReplacement = await auth17Call('/user', { password: replacementPassword },
     existingOtpSession.access_token);
-  const oldPassword = await call('/token?grant_type=password', {
+  const oldPassword = await auth17Call('/token?grant_type=password', {
     email: pendingEmail, password: pendingPassword,
   });
-  const replacementLogin = await call('/token?grant_type=password', {
+  const replacementLogin = await auth17Call('/token?grant_type=password', {
     email: pendingEmail, password: replacementPassword,
   });
-  record('AUTH-17_DIRECT_MUTATION_PREVENTION',
-    !directReplacement.ok && oldPassword.ok && !replacementLogin.ok,
-    directReplacement.ok && !oldPassword.ok && replacementLogin.ok
-      ? 'FAIL: direct authenticated Auth API replaced existing password'
-      : 'Direct replacement outcome requires investigation');
+  results.push({ id: 'AUTH-17_DIRECT_MUTATION_PREVENTION',
+    ...classifyAuth17(directReplacement, oldPassword, replacementLogin, pending.user?.id) });
 
   const floodCode = await codeFor(freshEmail, 'local signup');
   const invalidCode = floodCode === '000000' ? '111111' : '000000';
@@ -220,4 +221,4 @@ try {
 }
 
 console.log(JSON.stringify({ scope: 'local Supabase and Mailpit only', results }, null, 2));
-if (results.some(item => item.result === 'FAIL')) process.exitCode = 1;
+if (results.some(item => item.result !== 'PASS')) process.exitCode = 1;
