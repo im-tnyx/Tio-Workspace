@@ -52,6 +52,8 @@ Required sections: **Why**, **What changed**, **Scope/phase**, **Architecture/pr
 ## 04 · Request and record a review
 
 **Default: one recorded review of every PR before merge.** Review provider may be:
+- **Cursor Bugbot** — when enabled for `im-tnyx/Tio-Workspace` in Cursor Automations; automatic on PR push, or comment `bugbot run` / `cursor review`. Tuned by `.cursor/config/bugbot.yaml` on the base branch. Leaves inline comments/suggestions; check name typically `Cursor Bugbot`.
+- **Cursor Security Reviewer** — when a Security Review automation is configured for this repo; check name typically `Cursor Security Agent: Security Reviewer`. Use Workspace instructions in `.cursor/config/security-reviewer.instructions.md`.
 - **GitHub Copilot Code Review** — request under GitHub PR **Reviewers → Copilot** if the account/repository is eligible; automated review can be configured in GitHub Settings. It normally leaves `COMMENT`, not a required formal approval.
 - **Codex Code Review** — request `@codex review` in a PR comment only where Codex GitHub Code Review is enabled; `AGENTS.md` supplies focused product rules.
 - **Independent AI agent / ChatGPT reviewer** — review the actual current diff and canonical docs **read-only**, then post a clearly labeled AI-assisted review, ideally with inline path/line references and a link to evidence.

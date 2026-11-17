@@ -1,0 +1,24 @@
+# Cursor Bugbot — Tio-Workspace repository settings
+# Read from the PR base branch (usually main). See https://cursor.com/docs/bugbot
+#
+# Dashboard enablement is still required: Automations → Bugbot → enable
+# im-tnyx/Tio-Workspace. This file only tunes review behavior once enabled.
+version: 1
+
+triggers:
+  drafts: false
+  frequency: everyPush # everyPush | oncePerPr
+
+review:
+  # Auth/privacy docs and isolated harnesses need careful reading, not a skim.
+  # Project rules live in always-on `.cursor/BUGBOT.md` (smartPrompt only applies when effort is `smart`).
+  effort: high # low | default | high | smart
+  incremental: true
+
+prSummary:
+  mode: comment # disabled | description | comment
+  riskScore: true
+
+# Keep disabled: owner merge gates + commit attribution guard; do not auto-push fixes.
+autofix:
+  mode: disabled # disabled | newBranch | existingBranch

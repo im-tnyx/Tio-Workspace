@@ -9,10 +9,14 @@
 
 | Reviewer | How to request | Evidence to retain |
 |---|---|---|
+| **Cursor Bugbot** | Enable `im-tnyx/Tio-Workspace` in Cursor Automations → Bugbot; runs on PR pushes when enabled. Manual: comment `bugbot run` or `cursor review` on the PR. Repo tune file: [`.cursor/config/bugbot.yaml`](../.cursor/config/bugbot.yaml) (read from **base** branch). | `Cursor Bugbot` check, inline comments / suggestions, reviewed SHA |
+| **Cursor Security Reviewer** | Enable/create agent in Automations → Security Review for this repo; use [security-reviewer.instructions.md](../.cursor/config/security-reviewer.instructions.md). Requires Cloud Agents / plan eligibility. | `Cursor Security Agent: Security Reviewer` check + inline findings |
 | **GitHub Copilot Code Review** | PR → Reviewers → Copilot → Request, **when eligible**; optional auto-review in GitHub settings | Copilot review URL, result and exact scope; normally `COMMENT` |
 | **Codex Code Review** | `@codex review` PR comment **only after integration is enabled** | Bot review/comment link and findings; do not infer GitHub `APPROVED` |
 | **Independent ChatGPT/AI agent** | Provide PR link **with authorized repo access** and ask for read-only review following `AGENTS.md` | Posted review summary/inline notes with reviewed commit SHA and reviewer identity |
 | **Owner/human** | Files changed → inspect diff → leave meaningful PR review/comment | GitHub review or owner sign-off comment with scope |
+
+**Tio-Workspace note:** Tio-World already shows Bugbot + Security Reviewer checks on PRs. This repository needs the same Cursor dashboard enablement for `im-tnyx/Tio-Workspace`. Repo YAML/instructions alone do not turn the GitHub checks on.
 
 A genuinely **separate reviewer** is preferred over author self-review. One recorded review is the default quality gate; for sensitive auth, key/backup, local erase or remote data handling, request a security-minded second perspective where practical. **Only owner authorization** allows review deferral; deferral is not a way around repository-required checks.
 
@@ -76,9 +80,19 @@ Merge authorization: <separate owner authorization or NOT GRANTED>
 
 ## 5. Official setup references
 
+- [Cursor Bugbot](https://cursor.com/docs/bugbot) — dashboard enable + optional `.cursor/config/bugbot.yaml`
+- [Cursor Security Review](https://cursor.com/docs/security-review) — Automations Security Reviewer agent
 - [GitHub Copilot code review](https://docs.github.com/en/copilot/how-tos/copilot-on-github/use-copilot-agents/copilot-code-review)
 - [Configure automatic Copilot reviews](https://docs.github.com/en/copilot/how-tos/copilot-on-github/set-up-copilot/configure-code-review)
 - [Codex custom review rules in AGENTS.md](https://developers.openai.com/blog/custom-code-review-rules-for-codex)
+
+### One-time Cursor enable checklist (owner)
+
+1. Cursor → Automations → **Bugbot** → connect GitHub if needed → turn **on** for `im-tnyx/Tio-Workspace`.
+2. Automations → **Security Review** → create/select Security Reviewer → select this repo → paste instructions from `.cursor/config/security-reviewer.instructions.md` → attach at least one tool/MCP → save.
+3. Open a PR and confirm checks appear: `Cursor Bugbot`, `Cursor Security Agent: Security Reviewer` (names may match Tio-World).
+4. Optional manual re-run: PR comment `bugbot run`.
+5. Do **not** require Bugbot/Security as the sole merge gate until usage limits and fail-on-findings policy are accepted; Main Protection attribution guard remains separate.
 
 ---
 
