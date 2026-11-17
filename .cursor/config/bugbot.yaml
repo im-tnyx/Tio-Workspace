@@ -1,0 +1,39 @@
+# Cursor Bugbot — Tio-Workspace repository settings
+# Read from the PR base branch (usually main). See https://cursor.com/docs/bugbot
+#
+# Dashboard enablement is still required: Automations → Bugbot → enable
+# im-tnyx/Tio-Workspace. This file only tunes review behavior once enabled.
+version: 1
+
+triggers:
+  drafts: false
+  frequency: everyPush # everyPush | oncePerPr
+
+review:
+  # Auth/privacy docs and isolated harnesses need careful reading, not a skim.
+  effort: high # low | default | high | smart
+  incremental: true
+  smartPrompt: |
+    Repository: im-tnyx/Tio-Workspace. Follow AGENTS.md, .github/REVIEW_GUIDE.md,
+    docs/04-AUTH-AND-SECURITY.md, and docs/11-PR-REVIEW-WORKFLOW.md.
+
+    Prioritize:
+    - Local-first workout privacy: no default cloud upload of workouts/sets/plans.
+    - Auth honesty: do not treat local GoTrue/Mailpit results as managed-hosted proof.
+    - AUTH-12 / AUTH-17 / AUTH-22: flag FAIL mislabeled as PASS, or production Auth unblocked without managed proof.
+    - Cutover claims: logout-alone is not complete safe cutover; Admin/service_role is server-only.
+    - Secrets: tokens, OTPs, passwords, service_role values, .env, or real user data in diffs.
+    - Scope: Expo UI, hosted Auth PATCH, production migrations, or GitHub protection weakening in unrelated PRs.
+    - Docs/evidence PRs: LOCAL ONLY vs NOT VERIFIED vs BLOCKED / INCONCLUSIVE labels must stay accurate.
+    - Attribution: no AI Co-Authored-By / Assisted-by trailers.
+
+    Prefer Blocking / Non-blocking / Question. Inline suggestions should be minimal and safe.
+    Bot COMMENT is not GitHub APPROVED and not merge authorization.
+
+prSummary:
+  mode: comment # disabled | description | comment
+  riskScore: true
+
+# Keep disabled: owner merge gates + commit attribution guard; do not auto-push fixes.
+autofix:
+  mode: disabled # disabled | newBranch | existingBranch
