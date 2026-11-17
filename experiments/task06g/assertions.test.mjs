@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { classifyConcurrent, classifyReplay, classifyNegative, classifyFiveWrong,
-  classifyPasswordMutation, classifyResendTiming, safeStatus } from './assertions.mjs';
+  classifyOldCodeInvalidation, classifyInvalidCode, classifyPasswordMutation,
+  classifyResendTiming, safeStatus } from './assertions.mjs';
 
 const id = '11111111-1111-4111-8111-111111111111';
 const otherId = '22222222-2222-4222-8222-222222222222';
@@ -99,6 +100,137 @@ test('wrong and replay responses do not use generic errors as proof', () => {
   assert.equal(classifyNegative(generic), 'INCONCLUSIVE');
   assert.equal(classifyReplay(issued(), issued(sid2), id, email, probe()), 'FAIL');
   assert.equal(classifyFiveWrong(Array(5).fill(denied), issued(), id), 'FAIL');
+});
+
+test('five-wrong cooldown requires five recognized OTP rejections', () => {
+  const rateLimited = { status: 429, value: { error_code: 'over_request_rate_limit' } };
+  const cases = [
+    {
+      name: 'five recognized wrong then complete correct auth fails',
+      wrong: Array(5).fill(denied),
+      correct: issued(),
+      expected: 'FAIL',
+    },
+    {
+      name: '429 among five attempts is inconclusive even if correct succeeds',
+      wrong: [denied, denied, rateLimited, denied, denied],
+      correct: issued(),
+      expected: 'INCONCLUSIVE',
+    },
+    {
+      name: '503 among five attempts is inconclusive',
+      wrong: [denied, denied, denied, unavailable, denied],
+      correct: issued(),
+      expected: 'INCONCLUSIVE',
+    },
+    {
+      name: 'generic 4xx among five attempts is inconclusive',
+      wrong: [denied, generic, denied, denied, denied],
+      correct: issued(),
+      expected: 'INCONCLUSIVE',
+    },
+    {
+      name: 'missing wrong attempt is ERROR',
+      wrong: [denied, denied, denied, denied, null],
+      correct: issued(),
+      expected: 'ERROR',
+    },
+    {
+      name: 'timeout among wrong attempts is ERROR',
+      wrong: [denied, denied, { kind: 'timeout', status: null, value: null }, denied, denied],
+      correct: issued(),
+      expected: 'ERROR',
+    },
+    {
+      name: 'incomplete correct response never confirms cooldown FAIL',
+      wrong: Array(5).fill(denied),
+      correct: { status: 200, value: { user: { id, email }, access_token: jwt() } },
+      expected: 'INCONCLUSIVE',
+    },
+    {
+      name: 'recognized wrong then locked correct remains inconclusive not PASS',
+      wrong: Array(5).fill(denied),
+      correct: denied,
+      expected: 'INCONCLUSIVE',
+    },
+    {
+      name: 'wrong attempt that issued a session fails closed',
+      wrong: [denied, denied, issued(), denied, denied],
+      correct: denied,
+      expected: 'FAIL',
+    },
+  ];
+  for (const item of cases) {
+    assert.equal(classifyFiveWrong(item.wrong, item.correct, id), item.expected, item.name);
+  }
+});
+
+test('old-code invalidation fails independently of new-code verification', () => {
+  const cases = [
+    {
+      name: 'old-code complete auth fails even when new-code is rejected',
+      old: issued(sid1),
+      next: denied,
+      options: { distinctCodes: true },
+      expected: 'FAIL',
+    },
+    {
+      name: 'old rejected plus complete new success passes',
+      old: denied,
+      next: issued(sid2),
+      options: { distinctCodes: true, newProbe: probe() },
+      expected: 'PASS',
+    },
+    {
+      name: 'old rejected without usable new positive control is inconclusive',
+      old: denied,
+      next: generic,
+      options: { distinctCodes: true },
+      expected: 'INCONCLUSIVE',
+    },
+    {
+      name: 'indistinct codes are inconclusive',
+      old: denied,
+      next: issued(),
+      options: { distinctCodes: false, newProbe: probe() },
+      expected: 'INCONCLUSIVE',
+    },
+    {
+      name: 'partial old response alone is inconclusive',
+      old: { status: 200, value: { user: { id, email }, access_token: jwt() } },
+      next: denied,
+      options: { distinctCodes: true },
+      expected: 'INCONCLUSIVE',
+    },
+    {
+      name: 'partial old response with bearer proof fails',
+      old: { status: 200, value: { user: { id, email }, access_token: jwt() } },
+      next: denied,
+      options: { distinctCodes: true, oldProbe: probe() },
+      expected: 'FAIL',
+    },
+    {
+      name: 'network failure on old verify is ERROR',
+      old: { kind: 'network_error', status: null, value: null },
+      next: issued(),
+      options: { distinctCodes: true },
+      expected: 'ERROR',
+    },
+    {
+      name: '503 on new verify after old rejection is inconclusive',
+      old: denied,
+      next: unavailable,
+      options: { distinctCodes: true },
+      expected: 'INCONCLUSIVE',
+    },
+  ];
+  for (const item of cases) {
+    assert.equal(
+      classifyOldCodeInvalidation(item.old, item.next, id, email, item.options),
+      item.expected,
+      item.name,
+    );
+  }
 });
 
 test('authenticated replay with unexpected UUID fails closed', () => {
@@ -222,6 +354,117 @@ test('password-state evidence remains independent of OTP consumption', () => {
   assert.equal(classifyPasswordMutation({ ...mutation, beforeProbe: probe(otherId) }), 'INCONCLUSIVE');
   assert.equal(classifyPasswordMutation({ ...mutation, beforeGrant: { kind: 'timeout' } }), 'ERROR');
   assert.equal(classifyPasswordMutation({ ...mutation, update: unavailable }), 'INCONCLUSIVE');
+});
+
+test('AUTH-17 PASS requires documented current-password policy denial', () => {
+  const base = {
+    beforeGrant: issued(),
+    beforeProbe: probe(),
+    oldGrant: issued(),
+    newGrant: generic,
+    id,
+  };
+  const cases = [
+    {
+      name: 'current_password_required with intact old password passes',
+      update: { status: 400, value: { error_code: 'current_password_required' } },
+      expected: 'PASS',
+    },
+    {
+      name: 'current_password_invalid with intact old password passes',
+      update: { status: 400, value: { error_code: 'current_password_invalid' } },
+      expected: 'PASS',
+    },
+    {
+      name: 'session_not_found denial is inconclusive',
+      update: { status: 403, value: { error_code: 'session_not_found' } },
+      expected: 'INCONCLUSIVE',
+    },
+    {
+      name: 'validation_failed denial is inconclusive',
+      update: { status: 400, value: { error_code: 'validation_failed' } },
+      expected: 'INCONCLUSIVE',
+    },
+    {
+      name: 'generic 401 with arbitrary error_code is inconclusive',
+      update: { status: 401, value: { error_code: 'bad_jwt' } },
+      expected: 'INCONCLUSIVE',
+    },
+    {
+      name: 'rate-limited update is inconclusive',
+      update: { status: 429, value: { error_code: 'over_request_rate_limit' } },
+      expected: 'INCONCLUSIVE',
+    },
+    {
+      name: 'confirmed mutation path remains FAIL',
+      update: { status: 200, value: {} },
+      oldGrant: generic,
+      newGrant: issued(),
+      expected: 'FAIL',
+    },
+  ];
+  for (const item of cases) {
+    assert.equal(classifyPasswordMutation({
+      ...base,
+      update: item.update,
+      ...(item.oldGrant ? { oldGrant: item.oldGrant } : {}),
+      ...(item.newGrant ? { newGrant: item.newGrant } : {}),
+    }), item.expected, item.name);
+  }
+});
+
+test('wrong OTP authentication fails independently of later correct verify', () => {
+  const cases = [
+    {
+      name: 'wrong OTP authenticated then correct rejected fails',
+      wrong: issued(sid1),
+      correct: denied,
+      options: {},
+      expected: 'FAIL',
+    },
+    {
+      name: 'wrong rejected then correct authenticated passes',
+      wrong: denied,
+      correct: issued(sid2),
+      options: { correctProbe: probe() },
+      expected: 'PASS',
+    },
+    {
+      name: 'wrong partial 200 alone is inconclusive',
+      wrong: { status: 200, value: { user: { id, email }, access_token: jwt() } },
+      correct: denied,
+      options: {},
+      expected: 'INCONCLUSIVE',
+    },
+    {
+      name: 'wrong partial 200 with bearer proof fails',
+      wrong: { status: 200, value: { user: { id, email }, access_token: jwt() } },
+      correct: denied,
+      options: { wrongProbe: probe() },
+      expected: 'FAIL',
+    },
+    {
+      name: 'wrong transport failure is ERROR',
+      wrong: { kind: 'timeout', status: null, value: null },
+      correct: issued(),
+      options: {},
+      expected: 'ERROR',
+    },
+    {
+      name: 'infrastructure on correct after wrong rejection is inconclusive',
+      wrong: denied,
+      correct: unavailable,
+      options: {},
+      expected: 'INCONCLUSIVE',
+    },
+  ];
+  for (const item of cases) {
+    assert.equal(
+      classifyInvalidCode(item.wrong, item.correct, id, email, item.options),
+      item.expected,
+      item.name,
+    );
+  }
 });
 
 test('resend timing uses HTTP dispatch/receipt before mail processing', () => {

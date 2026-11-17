@@ -91,13 +91,62 @@ export function classifyNegative(result) {
     result.value?.access_token && result.value?.refresh_token ? 'FAIL' : 'INCONCLUSIVE';
 }
 
+function recognizedWrongOtp(r) {
+  // Only an explicit GoTrue invalid/expired OTP rejection counts as a processed wrong attempt.
+  return rejected(r);
+}
+
+function completeAuthResponse(r, id) {
+  return r?.status === 200 && r.value?.user?.id === id &&
+    typeof r.value?.access_token === 'string' && Boolean(r.value.access_token) &&
+    typeof r.value?.refresh_token === 'string' && Boolean(r.value.refresh_token);
+}
+
 export function classifyFiveWrong(wrong, correct, id) {
   if (!Array.isArray(wrong) || wrong.length !== 5 || wrong.some(transportError) ||
       transportError(correct)) return 'ERROR';
-  if (wrong.some(r => r.status < 400 || !noSession(r))) return 'FAIL';
-  if (correct.status === 200 && correct.value?.user?.id === id &&
-      correct.value?.access_token && correct.value?.refresh_token) return 'FAIL';
-  return 'INCONCLUSIVE'; // A generic/429 denial cannot prove a 15-minute challenge lock.
+  // A wrong-code attempt that already issued session material is itself a security failure.
+  if (wrong.some(r => !noSession(r) || completeAuthResponse(r, id))) return 'FAIL';
+  // Cooldown FAIL requires five recognized OTP rejections, not generic 4xx/429/5xx.
+  if (!wrong.every(recognizedWrongOtp)) return 'INCONCLUSIVE';
+  // Incomplete correct-code evidence never confirms cooldown non-enforcement.
+  if (completeAuthResponse(correct, id)) return 'FAIL';
+  return 'INCONCLUSIVE';
+}
+
+export function classifyOldCodeInvalidation(oldResult, newResult, id, email, options = {}) {
+  const { distinctCodes = false, oldProbe = null, newProbe = null } = options;
+  // A new challenge must be accepted and codes confirmed distinct before judging invalidation.
+  if (!distinctCodes) return 'INCONCLUSIVE';
+  if (transportError(oldResult) || transportError(newResult) ||
+      (oldProbe && transportError(oldProbe)) || (newProbe && transportError(newProbe))) {
+    return 'ERROR';
+  }
+  const oldEvidence = inspectSession(oldResult, id, email, oldProbe);
+  const newEvidence = inspectSession(newResult, id, email, newProbe);
+  if (oldEvidence.wrongIdentity || newEvidence.wrongIdentity) return 'FAIL';
+  // Successful old-code authentication is already an invalidation violation.
+  if (oldEvidence.validResponse || oldEvidence.probeValidated) return 'FAIL';
+  const oldAccess = typeof oldResult?.value?.access_token === 'string' &&
+    Boolean(oldResult.value.access_token);
+  if (oldAccess && oldProbe && !transportError(oldProbe) && oldProbe.status === 200 &&
+      validUuid(oldProbe.value?.id) && oldProbe.value.id === id) {
+    return 'FAIL';
+  }
+  // Recognized old-code rejection needs a usable new-code positive control for PASS.
+  if (oldEvidence.state === 'REJECTED') {
+    if (newEvidence.validResponse || newEvidence.probeValidated) return 'PASS';
+    return 'INCONCLUSIVE';
+  }
+  return 'INCONCLUSIVE';
+}
+
+function currentPasswordPolicyDenial(update) {
+  // Only documented GoTrue current-password policy denials prove AUTH-17 enforcement.
+  // Observed in Task 06A/06B: current_password_required / current_password_invalid.
+  return update?.status === 400 &&
+    (update.value?.error_code === 'current_password_required' ||
+      update.value?.error_code === 'current_password_invalid');
 }
 
 export function classifyPasswordMutation({ beforeGrant, beforeProbe, update, oldGrant, newGrant, id }) {
@@ -111,10 +160,37 @@ export function classifyPasswordMutation({ beforeGrant, beforeProbe, update, old
       oldGrant.value?.error_code === 'invalid_credentials' &&
       newGrant.status === 200 && newGrant.value?.user?.id === id &&
       newGrant.value?.access_token && newGrant.value?.refresh_token) return 'FAIL';
-  if (update.status >= 400 && update.status < 500 && update.value?.error_code &&
+  // Generic 4xx/session_not_found/validation_failed are not current-password enforcement.
+  if (currentPasswordPolicyDenial(update) &&
       oldGrant.status === 200 && oldGrant.value?.user?.id === id &&
       oldGrant.value?.access_token && oldGrant.value?.refresh_token &&
       newGrant.status === 400 && newGrant.value?.error_code === 'invalid_credentials') return 'PASS';
+  return 'INCONCLUSIVE';
+}
+
+export function classifyInvalidCode(wrongResult, correctResult, id, email, options = {}) {
+  const { wrongProbe = null, correctProbe = null } = options;
+  if (transportError(wrongResult) || transportError(correctResult) ||
+      (wrongProbe && transportError(wrongProbe)) ||
+      (correctProbe && transportError(correctProbe))) {
+    return 'ERROR';
+  }
+  const wrongEvidence = inspectSession(wrongResult, id, email, wrongProbe);
+  const correctEvidence = inspectSession(correctResult, id, email, correctProbe);
+  if (wrongEvidence.wrongIdentity || correctEvidence.wrongIdentity) return 'FAIL';
+  // Authenticated wrong OTP is already a security failure.
+  if (wrongEvidence.validResponse || wrongEvidence.probeValidated) return 'FAIL';
+  const wrongAccess = typeof wrongResult?.value?.access_token === 'string' &&
+    Boolean(wrongResult.value.access_token);
+  if (wrongAccess && wrongProbe && !transportError(wrongProbe) && wrongProbe.status === 200 &&
+      validUuid(wrongProbe.value?.id) && wrongProbe.value.id === id) {
+    return 'FAIL';
+  }
+  // Recognized rejection needs a usable correct-code positive control for PASS.
+  if (wrongEvidence.state === 'REJECTED') {
+    if (correctEvidence.validResponse || correctEvidence.probeValidated) return 'PASS';
+    return 'INCONCLUSIVE';
+  }
   return 'INCONCLUSIVE';
 }
 

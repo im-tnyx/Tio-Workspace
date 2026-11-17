@@ -4,7 +4,8 @@ import { execFileSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { classifyReplay, classifyConcurrent, classifyNegative,
-  classifyFiveWrong, classifyPasswordMutation, classifyResendTiming, safeStatus } from './assertions.mjs';
+  classifyFiveWrong, classifyOldCodeInvalidation, classifyInvalidCode,
+  classifyPasswordMutation, classifyResendTiming, safeStatus } from './assertions.mjs';
 
 const workdir = 'experiments/task06g';
 const project = 'tio-task06g-local-otp';
@@ -198,8 +199,15 @@ if (local) {
       const address = email(), code = await issue(address);
       const invalid = await auth('/verify', { email: address, token: wrongCode(code), type: 'email' });
       const valid = await auth('/verify', { email: address, token: code, type: 'email' });
-      row('INVALID_CODE', valid.status === 200 && valid.value?.access_token ? classifyNegative(invalid) : 'INCONCLUSIVE',
-        `wrong_then_valid=${describe(invalid, valid)}`);
+      const expectedId = valid.value?.user?.id || invalid.value?.user?.id;
+      const invalidProbe = await probeUser(invalid);
+      const validProbe = await probeUser(valid);
+      row('INVALID_CODE', classifyInvalidCode(invalid, valid, expectedId || '', address, {
+        wrongProbe: invalidProbe,
+        correctProbe: validProbe,
+      }),
+        `wrong_then_valid=${describe(invalid, valid)}; ` +
+        `wrong_user_probe=${safeStatus(invalidProbe)}; valid_user_probe=${safeStatus(validProbe)}`);
     });
     await runCase('FIVE_WRONG_COOLDOWN', async () => {
       const address = email(), id = await localUser(address);
@@ -211,8 +219,10 @@ if (local) {
       const fiveResult = classifyFiveWrong(wrong, valid, id);
       row('FIVE_WRONG_COOLDOWN', fiveResult,
         `wrong=${describe(...wrong)}; correct=${safeStatus(valid)}; correct_session=${Boolean(valid.value?.access_token)}`);
-      row('COOLDOWN_15_MIN', fiveResult === 'FAIL' && valid.value?.access_token ? 'FAIL' : 'NOT TESTED',
-        `correct_immediately_after_five=${safeStatus(valid)}; session=${Boolean(valid.value?.access_token)}`);
+      row('COOLDOWN_15_MIN', fiveResult === 'FAIL' && valid.value?.access_token &&
+        valid.value?.refresh_token ? 'FAIL' : 'NOT TESTED',
+        `correct_immediately_after_five=${safeStatus(valid)}; ` +
+        `session=${Boolean(valid.value?.access_token && valid.value?.refresh_token)}`);
     });
     await runCase('SIGNUP_AS_RECOVERY', async () => {
       const address = email(), signupCode = await issue(address);
@@ -282,9 +292,18 @@ if (local) {
       const newCode = await codeFor(address, 'local signup');
       const oldVerify = await auth('/verify', { email: address, token: oldCode, type: 'email' });
       const newVerify = await auth('/verify', { email: address, token: newCode, type: 'email' });
-      row('OLD_CODE_INVALIDATED', oldCode !== newCode && newVerify.status === 200 &&
-        newVerify.value?.access_token ? classifyNegative(oldVerify) : 'INCONCLUSIVE',
-        `old_then_new=${describe(oldVerify, newVerify)}; distinct_codes=${oldCode !== newCode}`);
+      const expectedId = newVerify.value?.user?.id || oldVerify.value?.user?.id;
+      const oldProbe = await probeUser(oldVerify);
+      const newProbe = await probeUser(newVerify);
+      row('OLD_CODE_INVALIDATED', classifyOldCodeInvalidation(oldVerify, newVerify,
+        expectedId || '', address, {
+          distinctCodes: oldCode !== newCode,
+          oldProbe,
+          newProbe,
+        }),
+        `old_then_new=${describe(oldVerify, newVerify)}; ` +
+        `old_user_probe=${safeStatus(oldProbe)}; new_user_probe=${safeStatus(newProbe)}; ` +
+        `distinct_codes=${oldCode !== newCode}`);
     });
     await runCase('AUTH17_PASSWORD_MUTATION', async () => {
       const address = email(), oldPassword = password(), newPassword = password();
