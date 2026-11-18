@@ -214,13 +214,15 @@ if (local) {
       for (let n = 0; n < 5; n++) wrong.push(await auth('/verify',
         { email: address, token: wrongCode(code), type: 'email' }));
       const valid = await auth('/verify', { email: address, token: code, type: 'email' });
-      const fiveResult = classifyFiveWrong(wrong, valid, id);
-      row('FIVE_WRONG_COOLDOWN', fiveResult,
-        `wrong=${describe(...wrong)}; correct=${safeStatus(valid)}; correct_session=${Boolean(valid.value?.access_token)}`);
-      row('COOLDOWN_15_MIN', wrong.every(r => classifyNegative(r) === 'PASS') &&
-        fiveResult === 'FAIL' ? 'FAIL' : 'NOT TESTED',
+      const five = classifyFiveWrong(wrong, valid, id);
+      row('FIVE_WRONG_COOLDOWN', five.result,
+        `wrong=${describe(...wrong)}; correct=${safeStatus(valid)}; ` +
+        `correct_session=${Boolean(valid.value?.access_token)}; kind=${five.kind}`);
+      // Cooldown row only when matching-UUID auth proves non-enforcement — not identity mismatch.
+      row('COOLDOWN_15_MIN', five.kind === 'cooldown_bypass' ? 'FAIL' : 'NOT TESTED',
         `correct_immediately_after_five=${safeStatus(valid)}; ` +
-        `session=${Boolean(valid.value?.access_token && valid.value?.refresh_token)}`);
+        `session=${Boolean(valid.value?.access_token && valid.value?.refresh_token)}; ` +
+        `kind=${five.kind}`);
     });
     await runCase('SIGNUP_AS_RECOVERY', async () => {
       const address = email(), signupCode = await issue(address);
@@ -250,6 +252,7 @@ if (local) {
     });
     for (const type of ['email', 'signup', 'magiclink', 'recovery']) {
       await runCase(`RECOVERY_AS_${type.toUpperCase()}`, async () => {
+        // Each type uses an independently isolated synthetic account and challenge.
         const address = email(), id = await localUser(address, true);
         const sent = await auth('/recover', { email: address });
         if (sent.status !== 200) throw new Error('Recovery issuance unavailable');
@@ -259,19 +262,55 @@ if (local) {
         const session = verified.status === 200 && verified.value?.user?.id === id &&
           verified.value?.access_token && verified.value?.refresh_token &&
           probe?.status === 200 && probe.value?.id === id;
-        const result = type === 'recovery' ? session ? 'PASS' : 'INCONCLUSIVE' :
-          classifyPurposeCrossing(verified, {
-            expectedId: id,
-            expectedEmail: address,
-            probe,
-            positiveControlValidated: false,
-          });
+        if (type === 'recovery') {
+          row('RECOVERY_AS_RECOVERY', session ? 'PASS' : 'INCONCLUSIVE',
+            `verify=${safeStatus(verified)}; user_probe=${safeStatus(probe)}; ` +
+            `session=${Boolean(session)}; same_uuid=${verified.value?.user?.id === id}`);
+          return;
+        }
+        // Decisive wrong-purpose authentication fails closed before any recovery control.
+        const early = classifyPurposeCrossing(verified, {
+          expectedId: id, expectedEmail: address, probe, positiveControlValidated: false,
+        });
+        if (early === 'FAIL' || early === 'ERROR') {
+          row(`RECOVERY_AS_${type.toUpperCase()}`, early,
+            `verify=${safeStatus(verified)}; user_probe=${safeStatus(probe)}; ` +
+            `session=${Boolean(session)}; same_uuid=${verified.value?.user?.id === id}; ` +
+            `bearer_auth=${Boolean(probe?.status === 200 && probe.value?.id === id)}; ` +
+            `purpose_crossover=${Boolean(session || (probe?.status === 200 &&
+              probe.value?.id === id && verified.value?.access_token))}; ` +
+            `recovery_control=NOT_ATTEMPTED`);
+          return;
+        }
+        let recoveryControl = null, recoveryProbe = null, positiveControlValidated = false;
+        if (verified.status === 403 && verified.value?.error_code === 'otp_expired' &&
+            !verified.value?.access_token && !verified.value?.refresh_token) {
+          recoveryControl = await auth('/verify',
+            { email: address, token: code, type: 'recovery' });
+          if (recoveryControl.kind && ['network_error', 'timeout', 'invalid_json']
+              .includes(recoveryControl.kind)) {
+            row(`RECOVERY_AS_${type.toUpperCase()}`, 'ERROR',
+              `verify=${safeStatus(verified)}; user_probe=${safeStatus(probe)}; ` +
+              `recovery_control=${safeStatus(recoveryControl)}; positive_control=false`);
+            return;
+          }
+          recoveryProbe = await probeUser(recoveryControl);
+          positiveControlValidated = recoveryControl.status === 200 &&
+            recoveryControl.value?.user?.id === id &&
+            Boolean(recoveryControl.value?.access_token && recoveryControl.value?.refresh_token) &&
+            recoveryProbe?.status === 200 && recoveryProbe.value?.id === id;
+        }
+        const result = classifyPurposeCrossing(verified, {
+          expectedId: id, expectedEmail: address, probe, positiveControlValidated,
+        });
         row(`RECOVERY_AS_${type.toUpperCase()}`, result,
           `verify=${safeStatus(verified)}; user_probe=${safeStatus(probe)}; ` +
           `session=${Boolean(session)}; same_uuid=${verified.value?.user?.id === id}; ` +
           `bearer_auth=${Boolean(probe?.status === 200 && probe.value?.id === id)}; ` +
-          `purpose_crossover=${type !== 'recovery' && Boolean(session ||
-            (probe?.status === 200 && probe.value?.id === id && verified.value?.access_token))}`);
+          `purpose_crossover=${Boolean(session || (probe?.status === 200 &&
+            probe.value?.id === id && verified.value?.access_token))}; ` +
+          `recovery_control=${safeStatus(recoveryControl)}; ` +
+          `positive_control=${positiveControlValidated}`);
       });
     }
     row('APP_AUTHORIZATION', 'NOT TESTED', 'No Tio enrollment, Home, or server eligibility implementation');

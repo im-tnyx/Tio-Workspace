@@ -130,6 +130,11 @@ function completeAuthResponse(r, id) {
     typeof r.value?.refresh_token === 'string' && Boolean(r.value.refresh_token);
 }
 
+function completeAuthResponseAny(r) {
+  // Any structurally complete authentication response, regardless of expected UUID.
+  return completeAuthResponse(r);
+}
+
 function authenticatedBearer(result, probe) {
   // The harness probes /user with this verify response's access token.
   return !transportError(result) && result.status === 200 &&
@@ -138,15 +143,21 @@ function authenticatedBearer(result, probe) {
 }
 
 export function classifyFiveWrong(wrong, correct, id) {
-  if (!Array.isArray(wrong) || wrong.length !== 5) return 'ERROR';
+  const out = (result, kind) => ({ result, kind });
+  if (!Array.isArray(wrong) || wrong.length !== 5) return out('ERROR', 'invalid_input');
   // A complete wrong-code authentication is decisive even if a later request fails.
-  if (wrong.some(r => completeAuthResponse(r))) return 'FAIL';
-  if (wrong.some(transportError) || transportError(correct)) return 'ERROR';
-  // Cooldown FAIL requires five recognized OTP rejections, not generic 4xx/429/5xx.
-  if (!wrong.every(recognizedWrongOtp)) return 'INCONCLUSIVE';
-  // Incomplete correct-code evidence never confirms cooldown non-enforcement.
-  if (completeAuthResponse(correct, id)) return 'FAIL';
-  return 'INCONCLUSIVE';
+  if (wrong.some(r => completeAuthResponseAny(r))) return out('FAIL', 'wrong_code_auth');
+  if (wrong.some(transportError) || transportError(correct)) return out('ERROR', 'transport');
+  // Cooldown verdict requires five recognized OTP rejections, not generic 4xx/429/5xx.
+  if (!wrong.every(recognizedWrongOtp)) return out('INCONCLUSIVE', 'unrecognized_wrong');
+  // Matching expected UUID + complete auth = cooldown non-enforcement.
+  if (validUuid(id) && completeAuthResponse(correct, id)) return out('FAIL', 'cooldown_bypass');
+  // Complete auth for a different valid UUID is an identity failure, not cooldown proof.
+  if (completeAuthResponseAny(correct) && validUuid(id) && correct.value.user.id !== id) {
+    return out('FAIL', 'wrong_identity');
+  }
+  // Missing/malformed UUID or incomplete tokens never confirm cooldown or wrong identity.
+  return out('INCONCLUSIVE', 'incomplete_correct');
 }
 
 export function classifyOldCodeInvalidation(oldResult, newResult, id, email, options = {}) {

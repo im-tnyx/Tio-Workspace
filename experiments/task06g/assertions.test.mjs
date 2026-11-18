@@ -99,7 +99,8 @@ test('wrong and replay responses do not use generic errors as proof', () => {
   assert.equal(classifyNegative(denied), 'PASS');
   assert.equal(classifyNegative(generic), 'INCONCLUSIVE');
   assert.equal(classifyReplay(issued(), issued(sid2), id, email, probe()), 'FAIL');
-  assert.equal(classifyFiveWrong(Array(5).fill(denied), issued(), id), 'FAIL');
+  assert.equal(classifyFiveWrong(Array(5).fill(denied), issued(), id).result, 'FAIL');
+  assert.equal(classifyFiveWrong(Array(5).fill(denied), issued(), id).kind, 'cooldown_bypass');
 });
 
 test('wrong-purpose bearer proof is a decisive FAIL without refresh token', () => {
@@ -174,70 +175,113 @@ test('five-wrong cooldown requires five recognized OTP rejections', () => {
   const rateLimited = { status: 429, value: { error_code: 'over_request_rate_limit' } };
   const cases = [
     {
-      name: 'five recognized wrong then complete correct auth fails',
+      name: 'five recognized wrong then expected-UUID auth is cooldown bypass',
       wrong: Array(5).fill(denied),
       correct: issued(),
       expected: 'FAIL',
+      kind: 'cooldown_bypass',
+    },
+    {
+      name: 'five recognized wrong then different-UUID complete session is wrong_identity',
+      wrong: Array(5).fill(denied),
+      correct: issued(sid2, otherId),
+      expected: 'FAIL',
+      kind: 'wrong_identity',
+    },
+    {
+      name: 'correct response missing UUID is inconclusive',
+      wrong: Array(5).fill(denied),
+      correct: { status: 200, value: {
+        user: { email }, access_token: jwt(), refresh_token: 'synthetic-refresh',
+      } },
+      expected: 'INCONCLUSIVE',
+      kind: 'incomplete_correct',
+    },
+    {
+      name: 'correct response malformed UUID is inconclusive',
+      wrong: Array(5).fill(denied),
+      correct: { status: 200, value: {
+        user: { id: 'not-a-uuid', email }, access_token: jwt(), refresh_token: 'synthetic-refresh',
+      } },
+      expected: 'INCONCLUSIVE',
+      kind: 'incomplete_correct',
     },
     {
       name: '429 among five attempts is inconclusive even if correct succeeds',
       wrong: [denied, denied, rateLimited, denied, denied],
       correct: issued(),
       expected: 'INCONCLUSIVE',
+      kind: 'unrecognized_wrong',
     },
     {
       name: '503 among five attempts is inconclusive',
       wrong: [denied, denied, denied, unavailable, denied],
       correct: issued(),
       expected: 'INCONCLUSIVE',
+      kind: 'unrecognized_wrong',
     },
     {
       name: 'generic 4xx among five attempts is inconclusive',
       wrong: [denied, generic, denied, denied, denied],
       correct: issued(),
       expected: 'INCONCLUSIVE',
+      kind: 'unrecognized_wrong',
     },
     {
       name: 'missing wrong attempt is ERROR',
       wrong: [denied, denied, denied, denied, null],
       correct: issued(),
       expected: 'ERROR',
+      kind: 'transport',
     },
     {
       name: 'timeout among wrong attempts is ERROR',
       wrong: [denied, denied, { kind: 'timeout', status: null, value: null }, denied, denied],
       correct: issued(),
       expected: 'ERROR',
+      kind: 'transport',
+    },
+    {
+      name: 'correct transport error is ERROR',
+      wrong: Array(5).fill(denied),
+      correct: { kind: 'timeout', status: null, value: null },
+      expected: 'ERROR',
+      kind: 'transport',
     },
     {
       name: 'incomplete correct response never confirms cooldown FAIL',
       wrong: Array(5).fill(denied),
       correct: { status: 200, value: { user: { id, email }, access_token: jwt() } },
       expected: 'INCONCLUSIVE',
+      kind: 'incomplete_correct',
     },
     {
       name: 'recognized wrong then locked correct remains inconclusive not PASS',
       wrong: Array(5).fill(denied),
       correct: denied,
       expected: 'INCONCLUSIVE',
+      kind: 'incomplete_correct',
     },
     {
       name: 'wrong attempt that issued a session fails closed',
       wrong: [denied, denied, issued(), denied, denied],
       correct: denied,
       expected: 'FAIL',
+      kind: 'wrong_code_auth',
     },
     {
       name: 'complete wrong-code authentication survives later timeout',
       wrong: [denied, denied, issued(), denied, denied],
       correct: { kind: 'timeout', status: null, value: null },
       expected: 'FAIL',
+      kind: 'wrong_code_auth',
     },
     {
       name: 'wrong-identity authentication is still decisive',
       wrong: [denied, denied, issued(sid1, otherId), denied, denied],
       correct: { kind: 'timeout', status: null, value: null },
       expected: 'FAIL',
+      kind: 'wrong_code_auth',
     },
     {
       name: 'one token alone does not prove wrong-code authentication',
@@ -245,6 +289,7 @@ test('five-wrong cooldown requires five recognized OTP rejections', () => {
         value: { user: { id, email }, access_token: jwt() } }, denied, denied],
       correct: issued(),
       expected: 'INCONCLUSIVE',
+      kind: 'unrecognized_wrong',
     },
     {
       name: 'partial wrong response followed by timeout is ERROR',
@@ -252,11 +297,43 @@ test('five-wrong cooldown requires five recognized OTP rejections', () => {
         value: { user: { id, email }, refresh_token: 'synthetic-refresh' } }, denied, denied],
       correct: { kind: 'timeout', status: null, value: null },
       expected: 'ERROR',
+      kind: 'transport',
     },
   ];
   for (const item of cases) {
-    assert.equal(classifyFiveWrong(item.wrong, item.correct, id), item.expected, item.name);
+    const classified = classifyFiveWrong(item.wrong, item.correct, id);
+    assert.equal(classified.result, item.expected, item.name);
+    assert.equal(classified.kind, item.kind, `${item.name} kind`);
   }
+});
+
+test('recovery purpose isolation requires rejection plus recovery positive control', () => {
+  const accessOnly = { status: 200, value: { user: { id, email }, access_token: jwt() } };
+  const timeout = { kind: 'timeout', status: null, value: null };
+  assert.equal(classifyPurposeCrossing(denied, {
+    expectedId: id, expectedEmail: email, probe: null, positiveControlValidated: true,
+  }), 'PASS', 'wrong-purpose rejection + recovery control');
+  assert.equal(classifyPurposeCrossing(accessOnly, {
+    expectedId: id, expectedEmail: email, probe: probe(), positiveControlValidated: false,
+  }), 'FAIL', 'wrong-purpose authenticated bearer without refresh');
+  assert.equal(classifyPurposeCrossing(issued(), {
+    expectedId: id, expectedEmail: email, probe: probe(), positiveControlValidated: false,
+  }), 'FAIL', 'wrong-purpose complete session');
+  assert.equal(classifyPurposeCrossing(issued(sid2, otherId), {
+    expectedId: id, expectedEmail: email, probe: probe(otherId), positiveControlValidated: false,
+  }), 'FAIL', 'wrong-purpose different UUID');
+  assert.equal(classifyPurposeCrossing(denied, {
+    expectedId: id, expectedEmail: email, probe: null, positiveControlValidated: false,
+  }), 'INCONCLUSIVE', 'rejection without successful recovery control');
+  assert.equal(classifyPurposeCrossing(accessOnly, {
+    expectedId: id, expectedEmail: email, probe: probe(),
+  }), 'FAIL', 'confirmed wrong-purpose auth before later control error');
+  assert.equal(classifyPurposeCrossing(denied, {
+    expectedId: id, expectedEmail: email, probe: null, positiveControlValidated: false,
+  }), 'INCONCLUSIVE', 'malformed recovery identity leaves control invalid');
+  assert.equal(classifyPurposeCrossing({ kind: 'invalid_json', status: 200, value: null }, {
+    expectedId: id, expectedEmail: email, probe: timeout, positiveControlValidated: true,
+  }), 'ERROR');
 });
 
 test('old-code invalidation fails independently of new-code verification', () => {
