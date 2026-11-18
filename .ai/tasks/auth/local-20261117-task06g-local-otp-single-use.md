@@ -7,7 +7,7 @@
 | Approval | Owner's Task 06G-L instruction in this session: local harness and synthetic local tests only; no hosted, production, paid, UI, migration or Git publication actions |
 | Implementation owner | Codex implementation agent, this local slice |
 | Previous agent | Task 06F local harness owner; prior artifacts preserved |
-| Last commit agent | None; no commit in this task |
+| Last commit agent | None during Task 06G-L itself; this report was later first committed in PR #30 commit `0b87e16023c82a58947d1c445bf0d8a525ce63cd` (see Task 06G-P addendum) |
 | Branch / baseline SHA | `main` / `e4ac4bb3367734575468f36f725626600099dc38` |
 | Baseline worktree | `git status --short --branch`: `## main...origin/main`, no preexisting changes |
 | Local stack | Project `tio-task06g-local-otp`; CLI `2.121.0`; GoTrue `v2.197.0`; Node `v24.17.0`; API `127.0.0.1:55621`; Mailpit `127.0.0.1:55624` |
@@ -78,3 +78,7 @@ The `PASS` rows above are **LOCAL ONLY observations of GoTrue v2.197.0 in this c
 - No mutation was sent to hosted Supabase. No paid provisioning, upgrade, SMTP, Brevo, EAS, deployment, migration, frontend change or Git publication occurred. Production Auth remains **BLOCKED**.
 
 **Next recommended narrowly scoped action:** independent read-only security review of this exact local harness and its concurrency/purpose findings, then an owner decision on whether to investigate a server-enforced atomic OTP boundary in a separately approved slice. Do not treat this local result as production implementation approval.
+
+## Publication status addendum (PR #30, 2026-11-18)
+
+The statements above that no commit, push or PR was made are **historical for Task 06G-L only**. This report was later published unchanged in content, together with the Task 06G harness as subsequently modified by Tasks 06G-N/P, for review in [PR #30](https://github.com/im-tnyx/Tio-Workspace/pull/30) (first commit `0b87e16023c82a58947d1c445bf0d8a525ce63cd`), and the harness was subsequently corrected there (see the [Task 06G-P](local-20261117-task06g-p-evidence-integrity-corrections.md) PR #30 addendum). PR #30 is **not merged**. All PASS/FAIL rows in this report remain **LOCAL ONLY** historical observations of GoTrue `v2.197.0`; managed-hosted Supabase Auth remains **NOT VERIFIED**; no request was sent to `bsfwzvgynwriswapxpsp`; Production Auth remains **BLOCKED**.

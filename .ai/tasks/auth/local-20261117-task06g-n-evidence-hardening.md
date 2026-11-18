@@ -7,7 +7,7 @@
 | Baseline | `main` / `e4ac4bb3367734575468f36f725626600099dc38` |
 | Initial worktree | `## main...origin/main`; no tracked changes; Task 06G-L report and `experiments/task06g/` were untracked and preserved |
 | Local runtime | Node `v24.17.0`; pinned CLI `2.121.0`; project `tio-task06g-local-otp`; API `http://127.0.0.1:55621`; Mailpit `http://127.0.0.1:55624`; GoTrue `v2.197.0` |
-| Independent review | **REVIEW_PENDING**; no separate reviewer or GitHub approval is claimed |
+| Independent review | **REVIEW_PENDING** at Task 06G-N time. Later: Task 06G-N-R conversational read-only review (no repository record) and PR #30 automated reviews (Codex, Cursor Bugbot, `COMMENTED` only). No formal GitHub approval is claimed. |
 
 ## Changed-file inventory and preservation
 
@@ -98,3 +98,7 @@ The current application has no real Auth enrollment or protected Home gate, so T
 The historical 7/9 result above is preserved. In those seven pairs, both accepted bearer tokens independently returned `GET /user 200` for the expected UUID, and the decoded JWT `session_id` claims differed. The earlier label `DISTINCT_SESSIONS_CONFIRMED=true` described that **claim comparison**, not independently inspected server-side session records. Task 06G-P renamed the diagnostic to `sessionIdClaimComparison`; server-side session records remain **NOT TESTED**. The two authenticated responses still establish a strict single-use **FAIL**, irrespective of whether their session-ID claims match.
 
 The historical AUTH-17 run did not include a successful original-password login immediately before OTP-bearer mutation. Task 06G-P added that positive control to the harness and unit tests, but did not rerun integration because the observed local CLI stack port binding was not loopback-only. The original mutation observation remains historical evidence; replacement of a *confirmed working* original password in a fresh Task 06G-P run is **NOT RUN**. See [Task 06G-P corrections](local-20261117-task06g-p-evidence-integrity-corrections.md).
+
+## Publication status addendum (PR #30, 2026-11-18)
+
+"Final task status: REVIEW … no commit, push, PR or merge" above is **historical for Task 06G-N**. The report was later committed in [PR #30](https://github.com/im-tnyx/Tio-Workspace/pull/30) (`0b87e16023c82a58947d1c445bf0d8a525ce63cd`). The 7/9 concurrent-pair result, five-wrong-then-correct acceptance, `email`/`magiclink` recovery-purpose crossover and AUTH-17 observations remain **LOCAL ONLY historical evidence** and were **not re-run** after the PR #30 classifier corrections. Managed-hosted Auth remains **NOT VERIFIED**; Production Auth remains **NO-GO**.

@@ -28,7 +28,7 @@ All seven intended 06G-L files and the 06G-N report were inspected before edits.
 
 The Task 06G-L report, `config.toml`, both templates and Tasks 06A–06F are not modified. Nothing was staged, committed, pushed or published.
 
-For a future evidence-only PR, the full intended inventory is these seven changed files **plus** the preserved Task 06G-L report, `config.toml`, `magic_link.html` and `recovery.html`: **11 files total**. The two CLI metadata files remain on disk but are excluded. File selection must be checked again before any future staging.
+For a future evidence-only PR, the full intended inventory is these seven changed files **plus** the preserved Task 06G-L report, `config.toml`, `magic_link.html` and `recovery.html`: **11 files total**. The two CLI metadata files remain on disk but are excluded. File selection must be checked again before any future staging. *(Superseded after publication: PR #30 now changes **13** files; see the PR #30 post-review addendum below.)*
 
 ## Review findings and corrected classifications
 
@@ -88,3 +88,39 @@ The Task 06G-P-R read-only reviewer reproduced a `FAIL` from a wrong-UUID `HTTP 
 ### Task 06G-R classification correction (2026-11-18)
 
 The independent Task 06G-Q-R review found that `/user HTTP 200` without a usable UUID could be marked `WRONG_IDENTITY` because an absent `id` compared unequal to the expected UUID. Task 06G-R now requires structurally valid expected, verification-response and `/user` UUIDs before comparing identity. A `/user 200` with missing, null, empty, wrong-type or malformed `id`, a nested malformed user object, or invalid JSON does not establish a wrong authenticated identity; with one otherwise complete response and a recognized OTP rejection it is **INCONCLUSIVE**. A valid different `/user` UUID with a bearer remains **FAIL**; a valid matching probe supports **PASS** only when the other response is a recognized rejection and all existing session evidence is complete. Verification transport/JSON failures remain **ERROR**. New offline regressions cover these cases in replay and concurrent orderings; the complete assertion suite passed **22/22**. This correction did not rerun Auth HTTP integration, alter historical 7/9 concurrency or AUTH-17 observations, verify server-side session records, or change the LAN-binding blocker. AUTH-12, AUTH-17 and AUTH-22 remain **BLOCKED**; managed Supabase remains **NOT VERIFIED**; Production Auth remains **NO-GO**. PR readiness awaits independent review.
+
+### PR #30 post-review correction addendum (2026-11-18)
+
+**Publication.** The 11-file scope above was committed as `0b87e16023c82a58947d1c445bf0d8a525ce63cd` in [PR #30](https://github.com/im-tnyx/Tio-Workspace/pull/30) (branch `docs/task06g-local-auth-evidence`). The statements above that nothing was committed, pushed or published, and that no branch or PR was created, are **historical** for Tasks 06G-P/Q/R. Three later code-only commits addressed automated review findings:
+
+| Commit | Change | Files |
+|---|---|---|
+| `599127c2a057be00a7b4cc45e4daa2a862c594e4` | Five-wrong cooldown requires five recognized OTP rejections; old-code authentication fails independently of new-code result (plus two Cursor Bugbot findings) | `assertions.mjs`, `assertions.test.mjs`, `local-otp.mjs` |
+| `1f46fdd3c9fb98761340f5451cb0799ea2ba3665` | Loopback preflight validates **every** container on the project network (incl. Studio/analytics); probe-error ordering (Cursor Bugbot) | adds `loopback-preflight.mjs`, `loopback-preflight.test.mjs`; edits `assertions*.mjs`, `local-otp.mjs` |
+| `22f95c3ee1161b444ee9723ed337b70e6e73e60d` | Decisive wrong-/old-code authentication evaluated before later transport/probe failures | `assertions.mjs`, `assertions.test.mjs`, `local-otp.mjs` |
+
+PR #30 therefore changes **13 files**: the 11 above plus `experiments/task06g/loopback-preflight.mjs` and `experiments/task06g/loopback-preflight.test.mjs`.
+
+**Review-finding disposition (offline classifier level only):**
+
+| Finding (reviewer) | Disposition at `22f95c3` | Regression coverage |
+|---|---|---|
+| Cooldown FAIL without five recognized rejections (Codex P2) | Fixed: `classifyFiveWrong` requires five explicit `403/otp_expired` rejections; 429/5xx/generic 4xx → `INCONCLUSIVE` | `assertions.test.mjs` "five-wrong cooldown requires five recognized OTP rejections" |
+| Old-code acceptance masked by new-code result (Codex P2) | Fixed: authenticated old code → `FAIL` before any new-code or transport check | "old-code invalidation fails independently of new-code verification"; "decisive old-code evidence precedes later transport failures" |
+| Loopback preflight checked only four containers (Codex P2) | Fixed: all project-network containers must publish only on `127.0.0.1`/`::1` | `loopback-preflight.test.mjs` (Studio and analytics LAN-publish cases) |
+| Wrong-code authentication hidden by later transport failure (Codex P2) | Fixed: authenticated wrong code → `FAIL` before transport/probe errors | "decisive wrong-code evidence precedes later transport failures" |
+| Generic 4xx could pass AUTH-17; wrong OTP success marked inconclusive; probe errors hid OTP failures (Cursor Bugbot) | Addressed in code; GitHub threads resolved | AUTH-17 and wrong/old-code ordering tests |
+
+**Validation.** `node --check` on all five `.mjs` files: PASS. `node --test experiments/task06g/assertions.test.mjs`: **28/28 PASS**; `node --test experiments/task06g/loopback-preflight.test.mjs`: **5/5 PASS** (offline only). Corrected Auth HTTP integration remains **NOT RUN**; whether the local Supabase CLI stack can be started loopback-only remains unestablished.
+
+**Evidence boundary.**
+
+| Evidence class | Status |
+|---|---|
+| Historical LOCAL ONLY GoTrue `v2.197.0` observations (7/9 dual redemption, five-wrong-then-correct acceptance, purpose crossover, AUTH-17 mutation) | Preserved unchanged; not re-run |
+| Corrected classifiers (offline unit tests) | PASS; classifier correctness only, not Auth behavior |
+| Corrected local integration run | **NOT RUN** |
+| Managed-hosted Supabase Auth | **NOT VERIFIED** |
+| `bsfwzvgynwriswapxpsp` | Not contacted |
+
+AUTH-12, AUTH-17 and AUTH-22 remain **BLOCKED**; Production Auth remains **NO-GO**. Merge requires one formal approving GitHub review, resolved review threads, the required App-owned check on the final head, and separate owner merge authorization. Merge would not authorize Auth implementation, hosted experiments or spending.
