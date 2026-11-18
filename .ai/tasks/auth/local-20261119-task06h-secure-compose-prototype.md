@@ -43,27 +43,42 @@ All images are strictly pinned to cached local digests and versions without `:la
 
 ## 4. Harness Adaptation & Security Controls
 
-The Task 06H adapter (`experiments/task06h/local-otp-adapter.mjs`) addresses all compatibility gaps identified in Task 06H-B:
+The Task 06H adapter (`experiments/task06h/local-otp-adapter.mjs`) and preflight guards address all compatibility gaps identified in Task 06H-B:
 
-1. **Independent Credential Management:** Does not invoke `supabase status`. Derives cryptographically valid local HMAC-SHA256 JWT tokens from the stack's local test secret for `service_role` and `publishable` roles.
-2. **Windows Listener Gate:** Executes `validateWindowsListeners()` via PowerShell `Get-NetTCPConnection` at runtime. Asserts that ports 55621 and 55624 listen strictly on `127.0.0.1`, failing closed if any `0.0.0.0` or `[::]` socket exists.
-3. **Container Metadata Inspection:** Runs `validateIsolatedLoopbackStack()` to inspect `NetworkSettings.Ports` on all running project containers before any HTTP traffic is permitted.
-4. **Preserved Security Classifiers:** Inherits all fail-closed assertion logic from Task 06G (`assertions.mjs`).
+1. **Mandatory Secrets & Insecure Fallback Elimination:** `docker-compose.yml` strictly enforces required variables (`${POSTGRES_PASSWORD:?}` and `${JWT_SECRET:?}`). Compose fails closed immediately if untracked credentials are not provided via environment or untracked `.env`.
+2. **Independent Credential Management:** Does not invoke `supabase status`. Derives cryptographically valid local HMAC-SHA256 JWT tokens from the stack's local test secret for `service_role` and `publishable` roles.
+3. **Windows Listener Gate:** Executes `validateWindowsListeners()` via PowerShell `Get-NetTCPConnection` at runtime. Asserts that ports 55621 and 55624 listen strictly on `127.0.0.1`, failing closed if any `0.0.0.0` or `[::]` socket exists.
+4. **Hardened Preflight & Container Identity:** `validateIsolatedLoopbackStack()` asserts exact container count (rejects extra rogue sidecars), checks both `HostConfig.PortBindings` and `NetworkSettings.Ports`, and forbids host port mappings on `auth` and `db`.
+5. **Accurate Preflight Scope:** Preflight documentation clarified: preflight executes post-startup and prevents running tests on an exposed stack; it does not prevent initial startup exposure. Immediate stack termination is required if a non-loopback port is detected.
+6. **Executable Integration Suite:** Full 12-case test runner logic scaffolded in `executeAuthIntegrationSuite(local)`, remaining gated until Stage C/D startup authorization.
 
 ---
 
 ## 5. Offline Validation Evidence
 
-* **Docker Compose Config Syntax:** `docker compose -f experiments/task06h/docker-compose.yml config` parsed with 0 errors.
-* **Static Security Suite:** `experiments/task06h/compose-security.test.mjs` (5/5 PASS).
-* **Preflight & Listener Suite:** `experiments/task06h/loopback-preflight.test.mjs` (7/7 PASS).
-* **Adapter Unit Suite:** `experiments/task06h/local-otp-adapter.test.mjs` (3/3 PASS).
+* **Docker Compose Config Syntax:** `docker compose --env-file experiments/task06h/.env.example -f experiments/task06h/docker-compose.yml config` parsed with 0 errors.
+* **Fail-Closed Verification:** `docker compose -f experiments/task06h/docker-compose.yml config` without environment variables fails closed with required variable errors.
+* **Static Security Suite:** `experiments/task06h/compose-security.test.mjs` (6/6 PASS).
+* **Preflight & Listener Suite:** `experiments/task06h/loopback-preflight.test.mjs` (9/9 PASS).
+* **Adapter Unit Suite:** `experiments/task06h/local-otp-adapter.test.mjs` (4/4 PASS).
 * **Assertion Classifier Suite:** `experiments/task06h/assertions.test.mjs` (42/42 PASS).
-* **Total Offline Test Suite:** **57 passed, 0 failed (100% pass rate)**.
+* **Total Offline Test Suite:** **61 passed, 0 failed (100% pass rate)**.
 
 ---
 
-## 6. Retained Security Boundaries
+## 6. Integration-Readiness Gap List (Uncertainties Requiring Live Verification)
+
+The following aspects cannot be proven offline and are explicitly marked **NOT VERIFIED** until separately authorized Task 06H-E startup:
+
+1. **Gap 1 (Database Bootstrap):** Whether `supabase/postgres:17.11.0.004` startup triggers GoTrue auto-migrations for `auth` schema roles without Supabase CLI initialization hooks.
+2. **Gap 2 (Kong Declarative Proxying):** Live Kong routing of `/auth/v1/health` and `/auth/v1/otp` to GoTrue upstream on the internal bridge network.
+3. **Gap 3 (Mailpit SMTP Relay):** Live SMTP packet delivery from GoTrue to Mailpit on internal port 1025.
+4. **Gap 4 (API Key Format Evaluation):** Whether Kong/GoTrue strictly evaluates legacy HS256 anon JWT vs modern `sb_publishable_` format in local standalone mode.
+5. **Gap 5 (Live Integration Suite):** Execution of the 12 live security assertions (concurrency, replay, cooldown, password mutation).
+
+---
+
+## 7. Retained Security Boundaries
 
 * **AUTH-12** (Atomic Single-Use): **BLOCKED**
 * **AUTH-17** (Direct Password Mutation): **BLOCKED**

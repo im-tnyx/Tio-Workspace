@@ -78,3 +78,13 @@ test('Compose file uses dedicated Task 06H network and volume namespaces', () =>
   // Verify historical Task 06G namespaces are NOT referenced
   assert.doesNotMatch(composeText, /tio-task06g/);
 });
+
+test('Compose file enforces mandatory secrets and rejects insecure fallback defaults', () => {
+  // Assert presence of ${VAR:?error} syntax for credentials
+  assert.match(composeText, /\$\{POSTGRES_PASSWORD:\?[^}]+\}/, 'POSTGRES_PASSWORD must be required without fallback');
+  assert.match(composeText, /\$\{JWT_SECRET:\?[^}]+\}/, 'JWT_SECRET must be required without fallback');
+
+  // Assert absence of insecure default fallbacks (e.g. :-postgres or :-super-secret)
+  assert.doesNotMatch(composeText, /\$\{POSTGRES_PASSWORD:-/);
+  assert.doesNotMatch(composeText, /\$\{JWT_SECRET:-/);
+});

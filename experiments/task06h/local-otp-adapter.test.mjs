@@ -56,3 +56,15 @@ test('adapter defaults adhere to isolated Task 06H namespace', () => {
   assert.equal(expected.API_URL, 'http://127.0.0.1:55621');
   assert.equal(expected.MAILPIT_URL, 'http://127.0.0.1:55624');
 });
+
+test('executeAuthIntegrationSuite fails closed if required stack credentials are missing', async () => {
+  const { executeAuthIntegrationSuite } = await import('./local-otp-adapter.mjs');
+  await assert.rejects(
+    async () => executeAuthIntegrationSuite(null),
+    /Local stack configuration and credentials required to run integration suite/
+  );
+  await assert.rejects(
+    async () => executeAuthIntegrationSuite({ API_URL: 'http://127.0.0.1:55621' }),
+    /Local stack configuration and credentials required to run integration suite/
+  );
+});

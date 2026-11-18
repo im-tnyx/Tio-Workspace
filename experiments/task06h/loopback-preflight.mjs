@@ -22,7 +22,8 @@ export function preflightFailureKind(error) {
 export function preflightFailureObservation(kind) {
   if (kind === 'unsafe_published_port') {
     return 'UNSAFE_PUBLISHED_PORT: stack rejected; non-loopback (0.0.0.0 or [::]) binding detected; ' +
-      'harness fails closed to guarantee zero LAN exposure.';
+      'harness fails closed to prevent executing Auth experiments on an exposed stack. ' +
+      'NOTE: Preflight executes post-startup and prevents testing on unsafe ports; it does not prevent initial startup exposure. Immediate stack shutdown required.';
   }
   if (kind === 'missing_listener') {
     return 'MISSING_LISTENER: expected local service listener absent on Windows host; test aborted.';
@@ -83,17 +84,37 @@ export function validateIsolatedLoopbackStack({
     throw new Error('Project network identity unavailable');
   }
 
-  // Every container attached to the project network must be running and loopback-only.
+  // Exact membership assertion: reject missing or extra containers attached to the stack
+  const expectedNames = new Set(requiredParts.map(part => `supabase_${part}_${project}`));
+  if (containers.length !== requiredParts.length) {
+    throw new Error(`Container count mismatch: expected ${requiredParts.length}, found ${containers.length}`);
+  }
+
   for (const found of containers) {
+    const sName = containerShortName(found);
+    if (!expectedNames.has(sName)) {
+      throw new Error(`Unexpected extra container attached to project network: ${sName || 'unknown'}`);
+    }
     if (!found?.State?.Running) {
-      throw new Error(`Unexpected local container state: ${containerShortName(found) || 'unknown'}`);
+      throw new Error(`Unexpected local container state: ${sName || 'unknown'}`);
     }
     const nets = found.NetworkSettings?.Networks ?? {};
     if (Object.keys(nets).length !== 1 || !nets[network]) {
-      throw new Error(`Unexpected local container/network: ${containerShortName(found) || 'unknown'}`);
+      throw new Error(`Unexpected local container/network: ${sName || 'unknown'}`);
+    }
+
+    // Verify Compose project label if present
+    const composeProj = found.Config?.Labels?.['com.docker.compose.project'];
+    if (composeProj && composeProj !== project) {
+      throw new Error(`Unexpected Compose project identity on ${sName}: ${composeProj}`);
+    }
+
+    // Inspect BOTH HostConfig.PortBindings and NetworkSettings.Ports for non-loopback exposure
+    if (nonLoopbackPublishedPorts(found.HostConfig?.PortBindings).length) {
+      throw new Error(`Local container ${sName} has non-loopback HostConfig published ports`);
     }
     if (nonLoopbackPublishedPorts(found.NetworkSettings?.Ports).length) {
-      throw new Error('Local stack has a non-loopback published port');
+      throw new Error(`Local container ${sName} has non-loopback NetworkSettings published ports`);
     }
   }
 
@@ -110,6 +131,16 @@ export function validateIsolatedLoopbackStack({
     if (part === 'db' && found.Config?.Image !== postgresImage) {
       throw new Error('Unexpected Postgres image');
     }
+
+    // Auth and DB must NOT have any host port bindings
+    if (['auth', 'db'].includes(part)) {
+      const hostBinds = Object.values(found.HostConfig?.PortBindings ?? {}).flat();
+      const netBinds = Object.values(found.NetworkSettings?.Ports ?? {}).flat();
+      if (hostBinds.length > 0 || netBinds.length > 0) {
+        throw new Error(`Security violation: ${part} container must not have any published host ports`);
+      }
+    }
+
     if (part === 'kong') {
       const bindings = Object.values(found.NetworkSettings?.Ports ?? {}).flat();
       const hasPort = bindings.some(b => b?.HostPort === apiHostPort && LOOPBACK.has(b?.HostIp));

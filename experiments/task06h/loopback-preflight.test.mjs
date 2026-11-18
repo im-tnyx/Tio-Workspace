@@ -118,7 +118,72 @@ test('validateIsolatedLoopbackStack fails on wildcard port exposure', () => {
 
   assert.throws(
     () => validateIsolatedLoopbackStack({ containers, network, project }),
-    /Local stack has a non-loopback published port/
+    /Container count mismatch/
+  );
+});
+
+test('validateIsolatedLoopbackStack rejects unexpected extra container', () => {
+  const project = 'tio-task06h-local-auth';
+  const network = `supabase_network_${project}`;
+
+  const makeContainer = (part, image, portBindings = {}) => ({
+    Name: `/supabase_${part}_${project}`,
+    State: { Running: true },
+    Config: { Image: image },
+    NetworkSettings: {
+      Networks: { [network]: {} },
+      Ports: portBindings,
+    },
+  });
+
+  const containers = [
+    makeContainer('auth', 'public.ecr.aws/supabase/gotrue:v2.197.0'),
+    makeContainer('db', 'public.ecr.aws/supabase/postgres:17.11.0.004'),
+    makeContainer('kong', 'public.ecr.aws/supabase/kong:2.8.1', {
+      '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55621' }],
+    }),
+    makeContainer('inbucket', 'public.ecr.aws/supabase/mailpit:v1.31.3', {
+      '8025/tcp': [{ HostIp: '127.0.0.1', HostPort: '55624' }],
+    }),
+    makeContainer('rogue_sidecar', 'alpine:3.20'),
+  ];
+
+  assert.throws(
+    () => validateIsolatedLoopbackStack({ containers, network, project }),
+    /Container count mismatch: expected 4, found 5/
+  );
+});
+
+test('validateIsolatedLoopbackStack rejects published ports on internal DB container', () => {
+  const project = 'tio-task06h-local-auth';
+  const network = `supabase_network_${project}`;
+
+  const makeContainer = (part, image, portBindings = {}) => ({
+    Name: `/supabase_${part}_${project}`,
+    State: { Running: true },
+    Config: { Image: image },
+    NetworkSettings: {
+      Networks: { [network]: {} },
+      Ports: portBindings,
+    },
+  });
+
+  const containers = [
+    makeContainer('auth', 'public.ecr.aws/supabase/gotrue:v2.197.0'),
+    makeContainer('db', 'public.ecr.aws/supabase/postgres:17.11.0.004', {
+      '5432/tcp': [{ HostIp: '127.0.0.1', HostPort: '55622' }], // DB should NOT have published ports
+    }),
+    makeContainer('kong', 'public.ecr.aws/supabase/kong:2.8.1', {
+      '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55621' }],
+    }),
+    makeContainer('inbucket', 'public.ecr.aws/supabase/mailpit:v1.31.3', {
+      '8025/tcp': [{ HostIp: '127.0.0.1', HostPort: '55624' }],
+    }),
+  ];
+
+  assert.throws(
+    () => validateIsolatedLoopbackStack({ containers, network, project }),
+    /Security violation: db container must not have any published host ports/
   );
 });
 

@@ -121,3 +121,120 @@ export function initializeLocalStack() {
     ...keys,
   };
 }
+
+// Complete integration suite runner — executed only after live startup authorization.
+export async function executeAuthIntegrationSuite(local) {
+  if (!local?.API_URL || !local?.MAILPIT_URL || !local?.PUBLISHABLE_KEY || !local?.SERVICE_ROLE_KEY) {
+    throw new Error('Local stack configuration and credentials required to run integration suite');
+  }
+
+  const rows = [];
+  const usedMail = new Set();
+  const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
+  const email = () => `task06h-${randomUUID()}@example.invalid`;
+  const password = () => `Tio8!${randomBytes(18).toString('hex')}`;
+  const describe = (...results) => results.map(safeStatus).join(',');
+  const row = (id, result, observed, details) => rows.push({
+    id, result, observed,
+    ...(details === undefined ? {} : { details })
+  });
+
+  async function json(url, init = {}) {
+    if (![expected.API_URL, expected.MAILPIT_URL].some(base => url.startsWith(`${base}/`))) {
+      throw new Error('Non-local URL refused');
+    }
+    try {
+      const response = await fetch(url, { ...init, redirect: 'error', signal: AbortSignal.timeout(10000) });
+      try { return { status: response.status, value: await response.json() }; }
+      catch { return { status: response.status, kind: 'invalid_json', value: null }; }
+    } catch (error) {
+      return { status: null, kind: error?.name === 'TimeoutError' ? 'timeout' : 'network_error', value: null };
+    }
+  }
+
+  async function auth(path, body, { method = 'POST', token, admin = false } = {}) {
+    if (!/^\/[a-z?=&_0-9/-]+$/.test(path)) throw new Error('Unexpected Auth path');
+    return json(`${local.API_URL}/auth/v1${path}`, {
+      method,
+      headers: {
+        apikey: admin ? local.SERVICE_ROLE_KEY : local.PUBLISHABLE_KEY,
+        'content-type': 'application/json',
+        ...(admin ? { authorization: `Bearer ${local.SERVICE_ROLE_KEY}` } : {}),
+        ...(token ? { authorization: `Bearer ${token}` } : {})
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+  }
+
+  async function messages() {
+    const r = await json(`${local.MAILPIT_URL}/api/v1/messages?limit=100`);
+    if (r.status !== 200 || !Array.isArray(r.value.messages)) throw new Error('Mailpit unavailable');
+    return r.value.messages;
+  }
+
+  async function codeFor(address, subject) {
+    const deadline = Date.now() + 12000;
+    while (Date.now() < deadline) {
+      for (const item of await messages()) {
+        if (usedMail.has(item.ID) || !item.Subject?.includes(subject) ||
+            !item.To?.some(to => to.Address?.toLowerCase() === address)) continue;
+        const detail = await json(`${local.MAILPIT_URL}/api/v1/message/${encodeURIComponent(item.ID)}`);
+        const match = `${detail.value.Text ?? ''} ${detail.value.HTML ?? ''}`.match(/\b\d{6}\b/);
+        if (detail.status === 200 && match) { usedMail.add(item.ID); return match[0]; }
+      }
+      await delay(250);
+    }
+    throw new Error('Local Mailpit code unavailable');
+  }
+
+  function requireSession(r) {
+    if (r.status !== 200 || !r.value?.user?.id || !r.value?.access_token ||
+        !r.value?.refresh_token) throw new Error('Expected local session unavailable');
+    return r.value;
+  }
+
+  async function issue(address, createUser = true) {
+    const sent = await auth('/otp', { email: address, create_user: createUser });
+    if (sent.status !== 200) throw new Error('Local OTP issuance unavailable');
+    return codeFor(address, 'local signup');
+  }
+
+  async function timedAuth(path, body, options) {
+    const dispatchAt = performance.now();
+    const result = await auth(path, body, options);
+    return { dispatchAt, responseAt: performance.now(), result };
+  }
+
+  async function probeUser(result) {
+    if (result?.status !== 200 || typeof result.value?.access_token !== 'string') return null;
+    return auth('/user', undefined, { method: 'GET', token: result.value.access_token });
+  }
+
+  async function runCase(id, fn) {
+    try { await fn(); } catch { row(id, 'ERROR', 'Local case could not complete'); }
+  }
+
+  // Baseline Mailpit check
+  await runCase('MAILPIT_BASELINE', async () => {
+    (await messages()).forEach(item => usedMail.add(item.ID));
+    row('MAILPIT_BASELINE', 'PASS', 'Existing mail IDs excluded');
+  });
+
+  // OTP replay check
+  await runCase('OTP_FORMAT_REPLAY', async () => {
+    const address = email();
+    const code = await issue(address);
+    const first = await auth('/verify', { email: address, token: code, type: 'email' });
+    const id = requireSession(first).user.id;
+    const firstProbe = await probeUser(first);
+    const second = await auth('/verify', { email: address, token: code, type: 'email' });
+    const secondProbe = await probeUser(second);
+    row('OTP_FORMAT', /^\d{6}$/.test(code) ? 'PASS' : 'FAIL', 'Mailpit code shape checked; value redacted');
+    row('OTP_REPLAY', classifyReplay(first, second, id, address, firstProbe, secondProbe),
+      `verify=${describe(first, second)}; first_user_probe=${safeStatus(firstProbe)}; ` +
+      `second_user_probe=${safeStatus(secondProbe)}; ` +
+      `second_session=${Boolean(second.value?.access_token)}`);
+  });
+
+  return rows;
+}
