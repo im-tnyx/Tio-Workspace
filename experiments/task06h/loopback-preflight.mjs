@@ -86,6 +86,52 @@ export function validateWindowsListeners(requiredPorts = ['55621', '55624'], con
   return true;
 }
 
+export function assertExactPortBinding({
+  containerName,
+  part,
+  expectedContainerPort,
+  expectedHostPort,
+  expectedHostIp = '127.0.0.1',
+  hostConfigPorts,
+  networkSettingsPorts,
+}) {
+  const hostBinds = extractPublishedBindings(hostConfigPorts);
+  const netBinds = extractPublishedBindings(networkSettingsPorts);
+
+  if (hostBinds.length === 0) {
+    throw new Error(`Missing HostConfig port bindings on ${containerName}`);
+  }
+  if (netBinds.length === 0) {
+    throw new Error(`Missing NetworkSettings port bindings on ${containerName}`);
+  }
+  if (hostBinds.length !== 1) {
+    throw new Error(`Unauthorized or duplicate HostConfig port bindings on ${containerName}: expected 1, found ${hostBinds.length}`);
+  }
+  if (netBinds.length !== 1) {
+    throw new Error(`Unauthorized or duplicate NetworkSettings port bindings on ${containerName}: expected 1, found ${netBinds.length}`);
+  }
+
+  const hb = hostBinds[0];
+  const nb = netBinds[0];
+
+  // Enforce exact expected values on HostConfig (strictly 127.0.0.1, no wildcard, no IPv6)
+  if (hb.containerPort !== expectedContainerPort || hb.hostPort !== expectedHostPort || hb.hostIp !== expectedHostIp) {
+    throw new Error(`Unexpected HostConfig port mapping on ${containerName}: expected ${expectedContainerPort} -> ${expectedHostIp}:${expectedHostPort}, got ${hb.containerPort} -> ${hb.hostIp}:${hb.hostPort}`);
+  }
+
+  // Enforce exact expected values on NetworkSettings (strictly 127.0.0.1, no wildcard, no IPv6)
+  if (nb.containerPort !== expectedContainerPort || nb.hostPort !== expectedHostPort || nb.hostIp !== expectedHostIp) {
+    throw new Error(`Unexpected NetworkSettings port mapping on ${containerName}: expected ${expectedContainerPort} -> ${expectedHostIp}:${expectedHostPort}, got ${nb.containerPort} -> ${nb.hostIp}:${nb.hostPort}`);
+  }
+
+  // Enforce exact equivalence between HostConfig and NetworkSettings
+  if (hb.containerPort !== nb.containerPort || hb.hostIp !== nb.hostIp || hb.hostPort !== nb.hostPort) {
+    throw new Error(`Inconsistent port bindings on ${containerName}: HostConfig (${hb.containerPort} -> ${hb.hostIp}:${hb.hostPort}) does not match NetworkSettings (${nb.containerPort} -> ${nb.hostIp}:${nb.hostPort})`);
+  }
+
+  return true;
+}
+
 export function validateIsolatedLoopbackStack({
   containers,
   network,
@@ -169,31 +215,27 @@ export function validateIsolatedLoopbackStack({
     }
 
     if (part === 'kong') {
-      const netBinds = extractPublishedBindings(found.NetworkSettings?.Ports);
-      const hostBinds = extractPublishedBindings(found.HostConfig?.PortBindings);
-
-      // Enforce exact 1-to-1 port inventory: reject unauthorized extra localhost or wildcard ports
-      if (netBinds.length !== 1 || (hostBinds.length > 0 && hostBinds.length !== 1)) {
-        throw new Error(`Unauthorized port inventory on Kong: expected exactly 1 published mapping, found ${netBinds.length}`);
-      }
-      const b = netBinds[0];
-      if (b.containerPort !== '8000/tcp' || b.hostPort !== apiHostPort || !LOOPBACK.has(b.hostIp)) {
-        throw new Error(`Unexpected API port mapping on Kong: expected 8000/tcp -> 127.0.0.1:${apiHostPort}, got ${b.containerPort} -> ${b.hostIp}:${b.hostPort}`);
-      }
+      assertExactPortBinding({
+        containerName: name,
+        part: 'kong',
+        expectedContainerPort: '8000/tcp',
+        expectedHostPort: apiHostPort,
+        expectedHostIp: '127.0.0.1',
+        hostConfigPorts: found.HostConfig?.PortBindings,
+        networkSettingsPorts: found.NetworkSettings?.Ports,
+      });
     }
 
     if (part === 'inbucket') {
-      const netBinds = extractPublishedBindings(found.NetworkSettings?.Ports);
-      const hostBinds = extractPublishedBindings(found.HostConfig?.PortBindings);
-
-      // Enforce exact 1-to-1 port inventory: reject unauthorized extra localhost or wildcard ports
-      if (netBinds.length !== 1 || (hostBinds.length > 0 && hostBinds.length !== 1)) {
-        throw new Error(`Unauthorized port inventory on Mailpit: expected exactly 1 published mapping, found ${netBinds.length}`);
-      }
-      const b = netBinds[0];
-      if (b.containerPort !== '8025/tcp' || b.hostPort !== mailHostPort || !LOOPBACK.has(b.hostIp)) {
-        throw new Error(`Unexpected Mailpit port mapping: expected 8025/tcp -> 127.0.0.1:${mailHostPort}, got ${b.containerPort} -> ${b.hostIp}:${b.hostPort}`);
-      }
+      assertExactPortBinding({
+        containerName: name,
+        part: 'inbucket',
+        expectedContainerPort: '8025/tcp',
+        expectedHostPort: mailHostPort,
+        expectedHostIp: '127.0.0.1',
+        hostConfigPorts: found.HostConfig?.PortBindings,
+        networkSettingsPorts: found.NetworkSettings?.Ports,
+      });
     }
   }
 

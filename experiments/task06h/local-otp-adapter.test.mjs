@@ -2,13 +2,14 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
+import * as localOtpModule from './local-otp-adapter.mjs';
 import {
   signLocalJwt,
   generateLocalKeys,
   getRequiredJwtSecret,
   assertRuntimeStackIsolation,
   executeAuthIntegrationSuite,
-  _executeAuthIntegrationSuiteInternal,
+  validateLocalStackConfig,
   project,
   network,
   expected,
@@ -108,61 +109,77 @@ test('executeAuthIntegrationSuite public entrypoint unconditionally enforces rea
   }
 });
 
-test('_executeAuthIntegrationSuiteInternal enforces isolation checker and fails closed if credentials missing', async () => {
-  await assert.rejects(
-    async () => _executeAuthIntegrationSuiteInternal(null, async () => true),
-    /Invalid or non-loopback stack URLs refused/
+test('local-otp-adapter does not export bypassable internal network runners', () => {
+  // Ensure _executeAuthIntegrationSuiteInternal or any mockable network runner is NOT exported
+  assert.equal(
+    typeof localOtpModule._executeAuthIntegrationSuiteInternal,
+    'undefined',
+    'Internal runner _executeAuthIntegrationSuiteInternal must not be exported'
   );
-  await assert.rejects(
-    async () => _executeAuthIntegrationSuiteInternal(
-      { API_URL: 'http://127.0.0.1:55621', MAILPIT_URL: 'http://127.0.0.1:55624' },
-      async () => true
-    ),
-    /Local stack configuration and credentials required to run integration suite/
+
+  // executeAuthIntegrationSuite is the only network entrypoint and takes exactly 1 parameter (local)
+  assert.equal(
+    typeof localOtpModule.executeAuthIntegrationSuite,
+    'function',
+    'executeAuthIntegrationSuite must be exported'
+  );
+  assert.equal(
+    localOtpModule.executeAuthIntegrationSuite.length,
+    1,
+    'executeAuthIntegrationSuite must accept only 1 parameter (local)'
   );
 });
 
-test('_executeAuthIntegrationSuiteInternal enforces isolation checker and prevents HTTP dispatch on failure', async () => {
-  let fetchCalled = false;
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => {
-    fetchCalled = true;
-    throw new Error('fetch should not be called');
-  };
+test('validateLocalStackConfig validates loopback URLs and credentials purely offline without network', () => {
+  assert.throws(
+    () => validateLocalStackConfig(null),
+    /Invalid or non-loopback stack URLs refused/
+  );
+  assert.throws(
+    () => validateLocalStackConfig({}),
+    /Invalid or non-loopback stack URLs refused/
+  );
+  assert.throws(
+    () => validateLocalStackConfig({
+      API_URL: 'http://192.168.1.100:55621',
+      MAILPIT_URL: 'http://127.0.0.1:55624',
+      PUBLISHABLE_KEY: 'test-pub',
+      SERVICE_ROLE_KEY: 'test-serv',
+    }),
+    /Invalid or non-loopback stack URLs refused/
+  );
+  assert.throws(
+    () => validateLocalStackConfig({
+      API_URL: 'http://127.0.0.1:55621',
+      MAILPIT_URL: 'http://10.0.0.1:55624',
+      PUBLISHABLE_KEY: 'test-pub',
+      SERVICE_ROLE_KEY: 'test-serv',
+    }),
+    /Invalid or non-loopback stack URLs refused/
+  );
+  assert.throws(
+    () => validateLocalStackConfig({
+      API_URL: 'http://127.0.0.1:55621',
+      MAILPIT_URL: 'http://127.0.0.1:55624',
+    }),
+    /Local stack configuration and credentials required to run integration suite/
+  );
+  assert.throws(
+    () => validateLocalStackConfig({
+      API_URL: 'http://127.0.0.1:55621',
+      MAILPIT_URL: 'http://127.0.0.1:55624',
+      PUBLISHABLE_KEY: 'test-pub',
+    }),
+    /Local stack configuration and credentials required to run integration suite/
+  );
 
-  try {
-    // 1. Failed isolation check aborts before any HTTP call
-    await assert.rejects(
-      async () => _executeAuthIntegrationSuiteInternal(
-        {
-          API_URL: 'http://127.0.0.1:55621',
-          MAILPIT_URL: 'http://127.0.0.1:55624',
-          PUBLISHABLE_KEY: 'test-pub',
-          SERVICE_ROLE_KEY: 'test-serv',
-        },
-        async () => {
-          throw new Error('UNSAFE_WINDOWS_LISTENER: non-loopback detected');
-        }
-      ),
-      /UNSAFE_WINDOWS_LISTENER: non-loopback detected/
-    );
-    assert.equal(fetchCalled, false, 'No fetch request must be made when isolation checker fails');
-
-    // 2. Non-loopback URL rejected before HTTP call
-    await assert.rejects(
-      async () => _executeAuthIntegrationSuiteInternal(
-        {
-          API_URL: 'http://192.168.1.100:55621',
-          MAILPIT_URL: 'http://127.0.0.1:55624',
-          PUBLISHABLE_KEY: 'test-pub',
-          SERVICE_ROLE_KEY: 'test-serv',
-        },
-        async () => true
-      ),
-      /Invalid or non-loopback stack URLs refused/
-    );
-    assert.equal(fetchCalled, false, 'No fetch request must be made for non-loopback URL');
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
+  assert.equal(
+    validateLocalStackConfig({
+      API_URL: 'http://127.0.0.1:55621',
+      MAILPIT_URL: 'http://127.0.0.1:55624',
+      PUBLISHABLE_KEY: 'test-pub',
+      SERVICE_ROLE_KEY: 'test-serv',
+    }),
+    true
+  );
 });

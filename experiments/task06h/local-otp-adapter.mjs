@@ -140,23 +140,7 @@ export function assertRuntimeStackIsolation() {
   return true;
 }
 
-// Public production integration entrypoint: ALWAYS executes real Docker and Windows isolation validation.
-// No caller-controlled argument or callback can bypass this gate.
-export async function executeAuthIntegrationSuite(local) {
-  assertRuntimeStackIsolation();
-  return _runAuthIntegrationSuiteInternal(local);
-}
-
-// Internal runner for testing isolation gates without external caller bypass capability.
-export async function _executeAuthIntegrationSuiteInternal(local, isolationChecker = assertRuntimeStackIsolation) {
-  if (typeof isolationChecker !== 'function') {
-    throw new Error('Valid isolation checker required');
-  }
-  await isolationChecker(local);
-  return _runAuthIntegrationSuiteInternal(local);
-}
-
-async function _runAuthIntegrationSuiteInternal(local) {
+export function validateLocalStackConfig(local) {
   // Strict Loopback URL enforcement
   const allowedBases = ['http://127.0.0.1:55621', 'http://127.0.0.1:55624'];
   if (!local?.API_URL || !local?.MAILPIT_URL ||
@@ -168,6 +152,19 @@ async function _runAuthIntegrationSuiteInternal(local) {
   if (!local?.PUBLISHABLE_KEY || !local?.SERVICE_ROLE_KEY) {
     throw new Error('Local stack configuration and credentials required to run integration suite');
   }
+
+  return true;
+}
+
+// Public production integration entrypoint: ALWAYS executes real Docker and Windows isolation validation.
+// No caller-controlled argument or callback can bypass this gate.
+export async function executeAuthIntegrationSuite(local) {
+  assertRuntimeStackIsolation();
+  return _runAuthIntegrationSuiteInternal(local);
+}
+
+async function _runAuthIntegrationSuiteInternal(local) {
+  validateLocalStackConfig(local);
 
   const rows = [];
   const usedMail = new Set();

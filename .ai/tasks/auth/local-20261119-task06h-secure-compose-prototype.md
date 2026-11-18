@@ -8,7 +8,7 @@
 | Implementation owner | Agent / Codex Implementation, Task 06H slice |
 | Baseline commit | `9980dde9978871db113d2a926f192048f04ae2a5` (`main`) |
 | Worktree branch | `feat/task06h-secure-compose-prototype` |
-| Verified GitHub HEAD | `bcf5bb6b7124d25b432d4b26479429d3b8d21518` (PR #32 base/head verified) |
+| Verified GitHub HEAD | Reconciled across PR #32 commits up to Task 06H-D-U |
 | Security Invariants | AUTH-12/17/22 **BLOCKED**; Corrected local Auth integration **NOT RUN**; Managed Auth **NOT VERIFIED**; Production Auth **NO-GO** |
 
 ---
@@ -50,8 +50,11 @@ The Task 06H adapter (`experiments/task06h/local-otp-adapter.mjs`) and preflight
 
 1. **Mandatory Secrets & Insecure Fallback Elimination:** `docker-compose.yml` strictly enforces required variables (`${POSTGRES_PASSWORD:?}` and `${JWT_SECRET:?}`). Compose fails closed immediately if untracked credentials are not provided via environment or untracked `.env`. Fixed fallbacks have been removed from both Compose and the adapter runtime.
 2. **Runtime Secret Validation:** `getRequiredJwtSecret()` strictly mandates an untracked environment secret with a minimum length of 32 characters, failing closed on missing, short, or whitespace-only keys.
-3. **Elimination of Runtime Preflight Bypass:** `executeAuthIntegrationSuite(local)` public entrypoint unconditionally invokes `assertRuntimeStackIsolation()` without accepting caller-provided bypass arguments or callbacks. Preflight cannot be bypassed by any caller. Non-loopback URLs are rejected immediately before network dispatch.
-4. **Exact Published-Port Inventory Enforcement:** `validateIsolatedLoopbackStack()` asserts exact container count (rejects extra rogue sidecars), validates the required Compose project label (`com.docker.compose.project`), checks both `HostConfig.PortBindings` and `NetworkSettings.Ports`, enforces exact 1-to-1 port mappings on Kong (`8000/tcp -> 127.0.0.1:55621`) and Mailpit (`8025/tcp -> 127.0.0.1:55624`) while rejecting extra localhost or wildcard ports, forbids host port mappings on `auth` and `db`, and forbids mounting historical Task 06G volumes.
+3. **Elimination of Runtime Preflight Bypass & Exported Runners:** `executeAuthIntegrationSuite(local)` is the sole exported network-capable runner and unconditionally invokes `assertRuntimeStackIsolation()` without accepting caller-provided bypass arguments or callbacks. The previously exported `_executeAuthIntegrationSuiteInternal` has been removed completely to eliminate any possibility of external callers substituting a passing mock validator. Offline configuration validation is handled by pure `validateLocalStackConfig(local)`. Non-loopback URLs and missing credentials are fail-closed before network dispatch.
+4. **Exact Published-Port Inventory & HostConfig Equivalence:** `validateIsolatedLoopbackStack()` and `assertExactPortBinding()` assert exact container count (rejects extra rogue sidecars), validate the required Compose project label (`com.docker.compose.project`), strictly enforce that BOTH `HostConfig.PortBindings` and `NetworkSettings.Ports` exist and contain the exact same mappings:
+   - Kong: exactly `8000/tcp -> 127.0.0.1:55621` in both.
+   - Mailpit: exactly `8025/tcp -> 127.0.0.1:55624` in both.
+   - Rejects missing HostConfig bindings, inconsistent HostConfig vs NetworkSettings mappings, duplicate mappings, unauthorized extra localhost ports, wildcard/IPv6 bindings, and any published host ports on Auth/DB. Forbids mounting historical Task 06G volumes.
 5. **Windows Listener Gate:** Executes `validateWindowsListeners()` via PowerShell `Get-NetTCPConnection` at runtime. Asserts that ports 55621 and 55624 listen strictly on `127.0.0.1`, failing closed if any `0.0.0.0` or `[::]` socket exists.
 6. **Accurate Preflight Scope:** Preflight documentation clarified: preflight executes post-startup and prevents running tests on an exposed stack; it does not prevent initial startup exposure. Immediate stack termination is required if a non-loopback port is detected.
 7. **Complete Integration Runner Implementation:** All 12 test sequences (Mailpit baseline, OTP format/replay, 3 concurrent pairs, invalid code rejection, 5-wrong lock/cooldown, signup-to-recovery crossing, recovery-to-other-purpose crossings, 60s resend interval / old-code invalidation, and AUTH-17 unrevoked OTP password mutation) are fully implemented in `executeAuthIntegrationSuite(local)`. Live execution remains strictly GATED until Stage C/D startup authorization.
@@ -63,10 +66,10 @@ The Task 06H adapter (`experiments/task06h/local-otp-adapter.mjs`) and preflight
 * **Docker Compose Config Syntax:** `docker compose --env-file experiments/task06h/.env.example -f experiments/task06h/docker-compose.yml config` parsed with 0 errors.
 * **Fail-Closed Verification:** `docker compose -f experiments/task06h/docker-compose.yml config` without environment variables fails closed with required variable errors.
 * **Static Security Suite:** `experiments/task06h/compose-security.test.mjs` (6/6 PASS).
-* **Preflight & Listener Suite:** `experiments/task06h/loopback-preflight.test.mjs` (13/13 PASS).
+* **Preflight & Listener Suite:** `experiments/task06h/loopback-preflight.test.mjs` (18/18 PASS).
 * **Adapter Unit Suite:** `experiments/task06h/local-otp-adapter.test.mjs` (7/7 PASS).
 * **Assertion Classifier Suite:** `experiments/task06h/assertions.test.mjs` (42/42 PASS).
-* **Total Offline Test Suite:** **68 passed, 0 failed (100% pass rate)**.
+* **Total Offline Test Suite:** **73 passed, 0 failed (100% pass rate)**.
 
 ---
 

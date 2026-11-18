@@ -7,6 +7,7 @@ import {
   preflightFailureObservation,
   validateWindowsListeners,
   validateIsolatedLoopbackStack,
+  assertExactPortBinding,
 } from './loopback-preflight.mjs';
 
 test('nonLoopbackPublishedPorts flags empty, wildcard and non-loopback IPs', () => {
@@ -74,6 +75,9 @@ test('validateIsolatedLoopbackStack validates compliant Compose containers', () 
       Image: image,
       Labels: { 'com.docker.compose.project': project },
     },
+    HostConfig: {
+      PortBindings: portBindings,
+    },
     NetworkSettings: {
       Networks: { [network]: {} },
       Ports: portBindings,
@@ -139,6 +143,9 @@ test('validateIsolatedLoopbackStack rejects unexpected extra container', () => {
       Image: image,
       Labels: { 'com.docker.compose.project': project },
     },
+    HostConfig: {
+      PortBindings: portBindings,
+    },
     NetworkSettings: {
       Networks: { [network]: {} },
       Ports: portBindings,
@@ -173,6 +180,9 @@ test('validateIsolatedLoopbackStack rejects published ports on internal DB conta
     Config: {
       Image: image,
       Labels: { 'com.docker.compose.project': project },
+    },
+    HostConfig: {
+      PortBindings: portBindings,
     },
     NetworkSettings: {
       Networks: { [network]: {} },
@@ -209,6 +219,9 @@ test('validateIsolatedLoopbackStack rejects missing or mismatched Compose projec
     Config: {
       Image: image,
       Labels: labels,
+    },
+    HostConfig: {
+      PortBindings: {},
     },
     NetworkSettings: {
       Networks: { [network]: {} },
@@ -252,6 +265,9 @@ test('validateIsolatedLoopbackStack rejects unauthorized extra localhost port on
       Image: image,
       Labels: { 'com.docker.compose.project': project },
     },
+    HostConfig: {
+      PortBindings: portBindings,
+    },
     NetworkSettings: {
       Networks: { [network]: {} },
       Ports: portBindings,
@@ -272,7 +288,7 @@ test('validateIsolatedLoopbackStack rejects unauthorized extra localhost port on
 
   assert.throws(
     () => validateIsolatedLoopbackStack({ containers, network, project }),
-    /Unauthorized port inventory on Kong: expected exactly 1 published mapping, found 2/
+    /Unauthorized or duplicate HostConfig port bindings on supabase_kong_tio-task06h-local-auth: expected 1, found 2/
   );
 });
 
@@ -286,6 +302,9 @@ test('validateIsolatedLoopbackStack rejects unauthorized extra localhost port on
     Config: {
       Image: image,
       Labels: { 'com.docker.compose.project': project },
+    },
+    HostConfig: {
+      PortBindings: portBindings,
     },
     NetworkSettings: {
       Networks: { [network]: {} },
@@ -307,7 +326,7 @@ test('validateIsolatedLoopbackStack rejects unauthorized extra localhost port on
 
   assert.throws(
     () => validateIsolatedLoopbackStack({ containers, network, project }),
-    /Unauthorized port inventory on Mailpit: expected exactly 1 published mapping, found 2/
+    /Unauthorized or duplicate HostConfig port bindings on supabase_inbucket_tio-task06h-local-auth: expected 1, found 2/
   );
 });
 
@@ -321,6 +340,9 @@ test('validateIsolatedLoopbackStack rejects attachment of historical Task 06G vo
     Config: {
       Image: image,
       Labels: { 'com.docker.compose.project': project },
+    },
+    HostConfig: {
+      PortBindings: portBindings,
     },
     Mounts: mounts,
     NetworkSettings: {
@@ -364,4 +386,366 @@ test('preflight failure classifications map correctly', () => {
 
   const obs = preflightFailureObservation('unsafe_published_port');
   assert.match(obs, /UNSAFE_PUBLISHED_PORT/);
+});
+
+test('assertExactPortBinding asserts exact match between HostConfig and NetworkSettings', () => {
+  const validHostConfig = {
+    '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55621' }],
+  };
+  const validNetworkSettings = {
+    '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55621' }],
+  };
+
+  assert.equal(
+    assertExactPortBinding({
+      containerName: 'test-kong',
+      part: 'kong',
+      expectedContainerPort: '8000/tcp',
+      expectedHostPort: '55621',
+      expectedHostIp: '127.0.0.1',
+      hostConfigPorts: validHostConfig,
+      networkSettingsPorts: validNetworkSettings,
+    }),
+    true
+  );
+
+  // Missing HostConfig
+  assert.throws(
+    () => assertExactPortBinding({
+      containerName: 'test-kong',
+      part: 'kong',
+      expectedContainerPort: '8000/tcp',
+      expectedHostPort: '55621',
+      hostConfigPorts: {},
+      networkSettingsPorts: validNetworkSettings,
+    }),
+    /Missing HostConfig port bindings on test-kong/
+  );
+
+  // Missing NetworkSettings
+  assert.throws(
+    () => assertExactPortBinding({
+      containerName: 'test-kong',
+      part: 'kong',
+      expectedContainerPort: '8000/tcp',
+      expectedHostPort: '55621',
+      hostConfigPorts: validHostConfig,
+      networkSettingsPorts: {},
+    }),
+    /Missing NetworkSettings port bindings on test-kong/
+  );
+
+  // Inconsistent HostPort between HostConfig and NetworkSettings
+  assert.throws(
+    () => assertExactPortBinding({
+      containerName: 'test-kong',
+      part: 'kong',
+      expectedContainerPort: '8000/tcp',
+      expectedHostPort: '55621',
+      hostConfigPorts: validHostConfig,
+      networkSettingsPorts: {
+        '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55622' }],
+      },
+    }),
+    /Unexpected NetworkSettings port mapping on test-kong/
+  );
+
+  // Inconsistent HostIp (e.g. HostConfig has 127.0.0.1, NetworkSettings has 0.0.0.0)
+  assert.throws(
+    () => assertExactPortBinding({
+      containerName: 'test-kong',
+      part: 'kong',
+      expectedContainerPort: '8000/tcp',
+      expectedHostPort: '55621',
+      hostConfigPorts: validHostConfig,
+      networkSettingsPorts: {
+        '8000/tcp': [{ HostIp: '0.0.0.0', HostPort: '55621' }],
+      },
+    }),
+    /Unexpected NetworkSettings port mapping on test-kong/
+  );
+
+  // Duplicate mappings in HostConfig
+  assert.throws(
+    () => assertExactPortBinding({
+      containerName: 'test-kong',
+      part: 'kong',
+      expectedContainerPort: '8000/tcp',
+      expectedHostPort: '55621',
+      hostConfigPorts: {
+        '8000/tcp': [
+          { HostIp: '127.0.0.1', HostPort: '55621' },
+          { HostIp: '127.0.0.1', HostPort: '55621' },
+        ],
+      },
+      networkSettingsPorts: validNetworkSettings,
+    }),
+    /Unauthorized or duplicate HostConfig port bindings on test-kong: expected 1, found 2/
+  );
+
+  // Extra port in HostConfig
+  assert.throws(
+    () => assertExactPortBinding({
+      containerName: 'test-kong',
+      part: 'kong',
+      expectedContainerPort: '8000/tcp',
+      expectedHostPort: '55621',
+      hostConfigPorts: {
+        '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55621' }],
+        '8443/tcp': [{ HostIp: '127.0.0.1', HostPort: '55629' }],
+      },
+      networkSettingsPorts: validNetworkSettings,
+    }),
+    /Unauthorized or duplicate HostConfig port bindings on test-kong: expected 1, found 2/
+  );
+
+  // IPv6 binding rejected (strictly 127.0.0.1 required)
+  assert.throws(
+    () => assertExactPortBinding({
+      containerName: 'test-kong',
+      part: 'kong',
+      expectedContainerPort: '8000/tcp',
+      expectedHostPort: '55621',
+      hostConfigPorts: {
+        '8000/tcp': [{ HostIp: '::1', HostPort: '55621' }],
+      },
+      networkSettingsPorts: {
+        '8000/tcp': [{ HostIp: '::1', HostPort: '55621' }],
+      },
+    }),
+    /Unexpected HostConfig port mapping on test-kong: expected 8000\/tcp -> 127\.0\.0\.1:55621, got 8000\/tcp -> ::1:55621/
+  );
+});
+
+test('validateIsolatedLoopbackStack rejects missing or mismatched HostConfig on Kong', () => {
+  const project = 'tio-task06h-local-auth';
+  const network = `supabase_network_${project}`;
+
+  const makeContainer = (part, image, hostPorts = {}, netPorts = {}) => ({
+    Name: `/supabase_${part}_${project}`,
+    State: { Running: true },
+    Config: {
+      Image: image,
+      Labels: { 'com.docker.compose.project': project },
+    },
+    HostConfig: {
+      PortBindings: hostPorts,
+    },
+    NetworkSettings: {
+      Networks: { [network]: {} },
+      Ports: netPorts,
+    },
+  });
+
+  // Missing HostConfig on Kong
+  const missingHostConfigContainers = [
+    makeContainer('auth', 'public.ecr.aws/supabase/gotrue:v2.197.0'),
+    makeContainer('db', 'public.ecr.aws/supabase/postgres:17.11.0.004'),
+    makeContainer('kong', 'public.ecr.aws/supabase/kong:2.8.1', {}, {
+      '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55621' }],
+    }),
+    makeContainer('inbucket', 'public.ecr.aws/supabase/mailpit:v1.31.3', {
+      '8025/tcp': [{ HostIp: '127.0.0.1', HostPort: '55624' }],
+    }, {
+      '8025/tcp': [{ HostIp: '127.0.0.1', HostPort: '55624' }],
+    }),
+  ];
+
+  assert.throws(
+    () => validateIsolatedLoopbackStack({ containers: missingHostConfigContainers, network, project }),
+    /Missing HostConfig port bindings on supabase_kong_tio-task06h-local-auth/
+  );
+
+  // Mismatched HostConfig vs NetworkSettings on Kong
+  const mismatchedContainers = [
+    makeContainer('auth', 'public.ecr.aws/supabase/gotrue:v2.197.0'),
+    makeContainer('db', 'public.ecr.aws/supabase/postgres:17.11.0.004'),
+    makeContainer('kong', 'public.ecr.aws/supabase/kong:2.8.1', {
+      '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55621' }],
+    }, {
+      '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55629' }], // Mismatched port
+    }),
+    makeContainer('inbucket', 'public.ecr.aws/supabase/mailpit:v1.31.3', {
+      '8025/tcp': [{ HostIp: '127.0.0.1', HostPort: '55624' }],
+    }, {
+      '8025/tcp': [{ HostIp: '127.0.0.1', HostPort: '55624' }],
+    }),
+  ];
+
+  assert.throws(
+    () => validateIsolatedLoopbackStack({ containers: mismatchedContainers, network, project }),
+    /Unexpected NetworkSettings port mapping on supabase_kong_tio-task06h-local-auth/
+  );
+});
+
+test('validateIsolatedLoopbackStack rejects published ports on internal Auth container in HostConfig or NetworkSettings', () => {
+  const project = 'tio-task06h-local-auth';
+  const network = `supabase_network_${project}`;
+
+  const makeContainer = (part, image, hostPorts = {}, netPorts = {}) => ({
+    Name: `/supabase_${part}_${project}`,
+    State: { Running: true },
+    Config: {
+      Image: image,
+      Labels: { 'com.docker.compose.project': project },
+    },
+    HostConfig: {
+      PortBindings: hostPorts,
+    },
+    NetworkSettings: {
+      Networks: { [network]: {} },
+      Ports: netPorts,
+    },
+  });
+
+  // Auth has published port in HostConfig
+  const authHostPortContainers = [
+    makeContainer('auth', 'public.ecr.aws/supabase/gotrue:v2.197.0', {
+      '9999/tcp': [{ HostIp: '127.0.0.1', HostPort: '55629' }],
+    }),
+    makeContainer('db', 'public.ecr.aws/supabase/postgres:17.11.0.004'),
+    makeContainer('kong', 'public.ecr.aws/supabase/kong:2.8.1', {
+      '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55621' }],
+    }, {
+      '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55621' }],
+    }),
+    makeContainer('inbucket', 'public.ecr.aws/supabase/mailpit:v1.31.3', {
+      '8025/tcp': [{ HostIp: '127.0.0.1', HostPort: '55624' }],
+    }, {
+      '8025/tcp': [{ HostIp: '127.0.0.1', HostPort: '55624' }],
+    }),
+  ];
+
+  assert.throws(
+    () => validateIsolatedLoopbackStack({ containers: authHostPortContainers, network, project }),
+    /Security violation: auth container must not have any published host ports/
+  );
+});
+
+test('validateIsolatedLoopbackStack rejects missing or mismatched HostConfig on Mailpit', () => {
+  const project = 'tio-task06h-local-auth';
+  const network = `supabase_network_${project}`;
+
+  const makeContainer = (part, image, hostPorts = {}, netPorts = {}) => ({
+    Name: `/supabase_${part}_${project}`,
+    State: { Running: true },
+    Config: {
+      Image: image,
+      Labels: { 'com.docker.compose.project': project },
+    },
+    HostConfig: {
+      PortBindings: hostPorts,
+    },
+    NetworkSettings: {
+      Networks: { [network]: {} },
+      Ports: netPorts,
+    },
+  });
+
+  // Missing HostConfig on Mailpit
+  const missingHostConfigContainers = [
+    makeContainer('auth', 'public.ecr.aws/supabase/gotrue:v2.197.0'),
+    makeContainer('db', 'public.ecr.aws/supabase/postgres:17.11.0.004'),
+    makeContainer('kong', 'public.ecr.aws/supabase/kong:2.8.1', {
+      '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55621' }],
+    }, {
+      '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55621' }],
+    }),
+    makeContainer('inbucket', 'public.ecr.aws/supabase/mailpit:v1.31.3', {}, {
+      '8025/tcp': [{ HostIp: '127.0.0.1', HostPort: '55624' }],
+    }),
+  ];
+
+  assert.throws(
+    () => validateIsolatedLoopbackStack({ containers: missingHostConfigContainers, network, project }),
+    /Missing HostConfig port bindings on supabase_inbucket_tio-task06h-local-auth/
+  );
+
+  // Mismatched HostConfig vs NetworkSettings on Mailpit
+  const mismatchedContainers = [
+    makeContainer('auth', 'public.ecr.aws/supabase/gotrue:v2.197.0'),
+    makeContainer('db', 'public.ecr.aws/supabase/postgres:17.11.0.004'),
+    makeContainer('kong', 'public.ecr.aws/supabase/kong:2.8.1', {
+      '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55621' }],
+    }, {
+      '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55621' }],
+    }),
+    makeContainer('inbucket', 'public.ecr.aws/supabase/mailpit:v1.31.3', {
+      '8025/tcp': [{ HostIp: '127.0.0.1', HostPort: '55624' }],
+    }, {
+      '8025/tcp': [{ HostIp: '127.0.0.1', HostPort: '55629' }], // Mismatched port
+    }),
+  ];
+
+  assert.throws(
+    () => validateIsolatedLoopbackStack({ containers: mismatchedContainers, network, project }),
+    /Unexpected NetworkSettings port mapping on supabase_inbucket_tio-task06h-local-auth/
+  );
+});
+
+test('validateIsolatedLoopbackStack rejects published ports on DB in HostConfig or NetworkSettings separately', () => {
+  const project = 'tio-task06h-local-auth';
+  const network = `supabase_network_${project}`;
+
+  const makeContainer = (part, image, hostPorts = {}, netPorts = {}) => ({
+    Name: `/supabase_${part}_${project}`,
+    State: { Running: true },
+    Config: {
+      Image: image,
+      Labels: { 'com.docker.compose.project': project },
+    },
+    HostConfig: {
+      PortBindings: hostPorts,
+    },
+    NetworkSettings: {
+      Networks: { [network]: {} },
+      Ports: netPorts,
+    },
+  });
+
+  // DB has port in HostConfig only
+  const dbHostPortContainers = [
+    makeContainer('auth', 'public.ecr.aws/supabase/gotrue:v2.197.0'),
+    makeContainer('db', 'public.ecr.aws/supabase/postgres:17.11.0.004', {
+      '5432/tcp': [{ HostIp: '127.0.0.1', HostPort: '55622' }],
+    }, {}),
+    makeContainer('kong', 'public.ecr.aws/supabase/kong:2.8.1', {
+      '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55621' }],
+    }, {
+      '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55621' }],
+    }),
+    makeContainer('inbucket', 'public.ecr.aws/supabase/mailpit:v1.31.3', {
+      '8025/tcp': [{ HostIp: '127.0.0.1', HostPort: '55624' }],
+    }, {
+      '8025/tcp': [{ HostIp: '127.0.0.1', HostPort: '55624' }],
+    }),
+  ];
+
+  assert.throws(
+    () => validateIsolatedLoopbackStack({ containers: dbHostPortContainers, network, project }),
+    /Security violation: db container must not have any published host ports/
+  );
+
+  // DB has port in NetworkSettings only
+  const dbNetPortContainers = [
+    makeContainer('auth', 'public.ecr.aws/supabase/gotrue:v2.197.0'),
+    makeContainer('db', 'public.ecr.aws/supabase/postgres:17.11.0.004', {}, {
+      '5432/tcp': [{ HostIp: '127.0.0.1', HostPort: '55622' }],
+    }),
+    makeContainer('kong', 'public.ecr.aws/supabase/kong:2.8.1', {
+      '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55621' }],
+    }, {
+      '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55621' }],
+    }),
+    makeContainer('inbucket', 'public.ecr.aws/supabase/mailpit:v1.31.3', {
+      '8025/tcp': [{ HostIp: '127.0.0.1', HostPort: '55624' }],
+    }, {
+      '8025/tcp': [{ HostIp: '127.0.0.1', HostPort: '55624' }],
+    }),
+  ];
+
+  assert.throws(
+    () => validateIsolatedLoopbackStack({ containers: dbNetPortContainers, network, project }),
+    /Security violation: db container must not have any published host ports/
+  );
 });
