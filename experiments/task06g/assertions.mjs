@@ -82,12 +82,24 @@ export function classifyConcurrent(results, expectedId, expectedEmail, probes = 
   return { ...common, result: 'INCONCLUSIVE' };
 }
 
-export function classifyReplay(first, second, id, email, firstProbe) {
+export function classifyReplay(first, second, id, email, firstProbe, secondProbe = null) {
   const firstEvidence = inspectSession(first, id, email, firstProbe);
-  const secondEvidence = inspectSession(second, id, email);
+  const secondEvidence = inspectSession(second, id, email, secondProbe);
+  // Identity failures are decisive before transport or incomplete-evidence short-circuits.
   if (firstEvidence.wrongIdentity || secondEvidence.wrongIdentity) return 'FAIL';
-  if (transportError(first) || transportError(second)) return 'ERROR';
+
+  const expectedOk = validUuid(id);
+  const firstAuthenticated = firstEvidence.validResponse || firstEvidence.probeValidated ||
+    (expectedOk && authenticatedBearer(first, firstProbe) && firstProbe.value.id === id);
+  const secondMatchingBearer = expectedOk && authenticatedBearer(second, secondProbe) &&
+    secondProbe.value.id === id;
+  // Access-only replay with a matching authenticated bearer is single-use FAIL (refresh optional).
+  if (firstAuthenticated && secondMatchingBearer) return 'FAIL';
+  // Two complete authentication responses remain FAIL even without second-probe input.
   if (firstEvidence.validResponse && secondEvidence.validResponse) return 'FAIL';
+
+  if (transportError(first) || transportError(second)) return 'ERROR';
+  // Strict PASS: validated first positive control + recognized second OTP rejection.
   if (firstEvidence.probeValidated && firstEvidence.sessionId && rejected(second)) return 'PASS';
   return 'INCONCLUSIVE';
 }

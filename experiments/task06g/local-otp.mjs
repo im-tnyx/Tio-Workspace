@@ -168,9 +168,13 @@ if (local) {
       const id = requireSession(first).user.id;
       const firstProbe = await probeUser(first);
       const second = await auth('/verify', { email: address, token: code, type: 'email' });
+      // Probe the replay access token independently; refresh is optional for FAIL evidence.
+      const secondProbe = await probeUser(second);
       row('OTP_FORMAT', /^\d{6}$/.test(code) ? 'PASS' : 'FAIL', 'Mailpit code shape checked; value redacted');
-      row('OTP_REPLAY', classifyReplay(first, second, id, address, firstProbe),
-        `verify=${describe(first, second)}; first_user_probe=${safeStatus(firstProbe)}; second_session=${Boolean(second.value?.access_token)}`);
+      row('OTP_REPLAY', classifyReplay(first, second, id, address, firstProbe, secondProbe),
+        `verify=${describe(first, second)}; first_user_probe=${safeStatus(firstProbe)}; ` +
+        `second_user_probe=${safeStatus(secondProbe)}; ` +
+        `second_session=${Boolean(second.value?.access_token)}`);
     });
     for (let attempt = 1; attempt <= 3; attempt++) {
       await runCase(`OTP_CONCURRENT_${attempt}`, async () => {

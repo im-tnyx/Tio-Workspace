@@ -27,6 +27,52 @@ test('one validated session and one explicit rejection passes', () => {
   assert.equal(classifyReplay(issued(), denied, id, email, probe()), 'PASS');
 });
 
+test('OTP replay bearer proof makes access-only second verify decisive', () => {
+  const accessOnly = (userId = id, sid = sid2) => ({
+    status: 200, value: { user: { id: userId, email }, access_token: jwt(userId, sid) },
+  });
+  const timeout = { kind: 'timeout', status: null, value: null };
+  const noTokens = { status: 200, value: { user: { id, email } } };
+
+  // Review 4609996529 matrix.
+  assert.equal(classifyReplay(issued(), denied, id, email, probe()), 'PASS',
+    'first complete + recognized rejection with first positive control');
+  assert.equal(classifyReplay(issued(), issued(sid2), id, email, probe()), 'FAIL',
+    'first complete + second complete');
+  assert.equal(classifyReplay(issued(), accessOnly(), id, email, probe(), probe()), 'FAIL',
+    'first complete + second access-only matching bearer');
+  assert.equal(classifyReplay(issued(), accessOnly(otherId), id, email, probe(), probe(otherId)),
+    'FAIL', 'first complete + second access-only different UUID');
+  assert.equal(classifyReplay(issued(), accessOnly(), id, email, probe(), denied), 'INCONCLUSIVE',
+    'rejected second bearer is not authentication success');
+  assert.equal(classifyReplay(issued(), accessOnly(), id, email, probe(), null), 'INCONCLUSIVE',
+    'unavailable second bearer probe');
+  assert.equal(classifyReplay(issued(), accessOnly(), id, email, probe(), timeout), 'INCONCLUSIVE',
+    'second probe transport without decisive auth evidence');
+  assert.equal(classifyReplay(issued(), noTokens, id, email, probe(), null), 'INCONCLUSIVE',
+    'HTTP 200 without usable tokens is not PASS');
+  assert.equal(classifyReplay(issued(), denied, id, email, null), 'INCONCLUSIVE',
+    'missing first positive control cannot claim single-use PASS');
+  assert.equal(classifyReplay(issued(), denied, id, email, { status: 503, value: {} }),
+    'INCONCLUSIVE', 'failed first probe cannot PASS');
+  // Decisive authenticated replay remains FAIL once second bearer is confirmed.
+  assert.equal(classifyReplay(issued(), accessOnly(), id, email, probe(), probe()), 'FAIL',
+    'confirmed authenticated replay remains FAIL');
+
+  assert.equal(classifyReplay(issued(), accessOnly(), 'not-a-uuid', email, probe(), probe()),
+    'INCONCLUSIVE', 'malformed expected UUID');
+  assert.equal(classifyReplay({
+    status: 200,
+    value: { user: { id: 'not-a-uuid', email }, access_token: jwt(), refresh_token: 'r' },
+  }, denied, id, email, probe()), 'INCONCLUSIVE', 'malformed first response UUID');
+  assert.equal(classifyReplay(issued(), timeout, id, email, probe()), 'ERROR',
+    'second verify transport timeout');
+  assert.equal(classifyReplay(issued(), { kind: 'invalid_json', status: 200, value: null },
+    id, email, probe()), 'ERROR', 'second invalid JSON');
+  assert.equal(classifyReplay(timeout, denied, id, email, null), 'ERROR',
+    'first verify transport timeout');
+});
+
 test('two complete 200 responses with independent user probes fail', () => {
   const result = classifyConcurrent([issued(sid1), issued(sid2)], id, email, [probe(), probe()]);
   assert.equal(result.result, 'FAIL');
