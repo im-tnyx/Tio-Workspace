@@ -209,9 +209,29 @@ export function classifyRecoveryControl(verifyResult, expectedId, expectedEmail,
   if (!validUuid(expectedId)) return 'INCONCLUSIVE';
   const evidence = inspectSession(verifyResult, expectedId, expectedEmail, probe);
   if (evidence.wrongIdentity) return 'FAIL';
-  if (evidence.state === 'ERROR') return 'ERROR';
+  if (evidence.state === 'ERROR' || (probe && transportError(probe))) return 'ERROR';
   if (evidence.validResponse && evidence.probeValidated) return 'PASS';
   return 'INCONCLUSIVE';
+}
+
+export function classifyRecoveryPurposeCrossing(wrongPurposeResult, recoveryResult,
+  expectedId, expectedEmail, recoveryProbe = null, wrongPurposeProbe = null) {
+  const crossing = classifyPurposeCrossing(wrongPurposeResult,
+    { expectedId, expectedEmail, probe: wrongPurposeProbe, positiveControlValidated: false });
+  if (crossing === 'FAIL') return { result: 'FAIL', finding: 'purpose_crossover' };
+  if (crossing === 'ERROR') return { result: 'ERROR', finding: 'purpose_transport' };
+  if (!rejected(wrongPurposeResult)) {
+    return { result: crossing === 'ERROR' ? 'ERROR' : 'INCONCLUSIVE',
+      finding: 'purpose_evidence_incomplete' };
+  }
+
+  const recovery = classifyRecoveryControl(recoveryResult, expectedId, expectedEmail, recoveryProbe);
+  if (recovery === 'FAIL') return { result: 'FAIL', finding: 'recovery_control_wrong_identity' };
+  if (recovery === 'PASS') {
+    return { result: 'PASS', finding: 'purpose_isolated' };
+  }
+  return { result: recovery === 'ERROR' ? 'ERROR' : 'INCONCLUSIVE',
+    finding: 'recovery_control_unavailable', recovery };
 }
 
 export function classifyOldCodeInvalidation(oldResult, newResult, id, email, options = {}) {

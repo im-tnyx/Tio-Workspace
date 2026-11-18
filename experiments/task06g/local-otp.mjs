@@ -5,7 +5,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { classifyReplay, classifyConcurrent, classifyNegative,
   classifyFiveWrong, classifyRecoveryControl, classifyOldCodeInvalidation, classifyInvalidCode,
-  classifyPurposeCrossing, classifyPasswordMutation, classifyOtpSessionControl,
+  classifyPurposeCrossing, classifyRecoveryPurposeCrossing, classifyPasswordMutation, classifyOtpSessionControl,
   planAuth17OtpControlAbort, classifyResendTiming, safeStatus } from './assertions.mjs';
 import {
   preflightFailureKind,
@@ -322,14 +322,12 @@ if (local) {
             return;
           }
           recoveryProbe = await probeUser(recoveryControl);
-          positiveControlValidated = recoveryControl.status === 200 &&
-            recoveryControl.value?.user?.id === id &&
-            Boolean(recoveryControl.value?.access_token && recoveryControl.value?.refresh_token) &&
-            recoveryProbe?.status === 200 && recoveryProbe.value?.id === id;
+          positiveControlValidated = classifyRecoveryControl(recoveryControl, id, address,
+            recoveryProbe) === 'PASS';
         }
-        const result = classifyPurposeCrossing(verified, {
-          expectedId: id, expectedEmail: address, probe, positiveControlValidated,
-        });
+        const classification = classifyRecoveryPurposeCrossing(verified, recoveryControl,
+          id, address, recoveryProbe, probe);
+        const result = classification.result;
         row(`RECOVERY_AS_${type.toUpperCase()}`, result,
           `verify=${safeStatus(verified)}; user_probe=${safeStatus(probe)}; ` +
           `session=${Boolean(session)}; same_uuid=${verified.value?.user?.id === id}; ` +
@@ -337,6 +335,7 @@ if (local) {
           `purpose_crossover=${Boolean(session || (probe?.status === 200 &&
             probe.value?.id === id && verified.value?.access_token))}; ` +
           `recovery_control=${safeStatus(recoveryControl)}; ` +
+          `recovery_control_identity=${classification.finding}; ` +
           `positive_control=${positiveControlValidated}`);
       });
     }

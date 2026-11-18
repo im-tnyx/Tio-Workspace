@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { classifyConcurrent, classifyReplay, classifyNegative, classifyFiveWrong,
   classifyRecoveryControl, classifyOldCodeInvalidation, classifyInvalidCode,
-  classifyPurposeCrossing, classifyPasswordMutation, classifyOtpSessionControl,
+  classifyPurposeCrossing, classifyRecoveryPurposeCrossing, classifyPasswordMutation, classifyOtpSessionControl,
   planAuth17OtpControlAbort, classifyResendTiming, safeStatus } from './assertions.mjs';
 
 const id = '11111111-1111-4111-8111-111111111111';
@@ -594,6 +594,34 @@ test('recovery purpose isolation requires rejection plus recovery positive contr
   assert.equal(classifyPurposeCrossing({ kind: 'invalid_json', status: 200, value: null }, {
     expectedId: id, expectedEmail: email, probe: timeout, positiveControlValidated: true,
   }), 'ERROR');
+});
+
+test('recovery purpose flow preserves positive-control identity and decisive evidence', () => {
+  const accessOnlyWrong = { status: 200,
+    value: { user: { id, email }, access_token: jwt() } };
+  const malformed = { status: 200, value: { user: { id: 'bad', email }, access_token: jwt(), refresh_token: 'r' } };
+  const timeout = { kind: 'timeout', status: null, value: null };
+  const cases = [
+    ['rejection and matching recovery', denied, issued(), probe(), 'PASS', 'purpose_isolated'],
+    ['rejection and wrong UUID complete session', denied, issued(sid2, otherId), probe(otherId), 'FAIL', 'recovery_control_wrong_identity'],
+    ['rejection and access-only wrong UUID bearer', denied, { status: 200, value: { user: { id: otherId, email }, access_token: jwt(otherId) } }, probe(otherId), 'FAIL', 'recovery_control_wrong_identity'],
+    ['expected verify UUID but bearer is another UUID', denied, issued(), probe(otherId), 'FAIL', 'recovery_control_wrong_identity'],
+    ['wrong-purpose authentication stands despite later timeout', issued(), timeout, timeout, 'FAIL', 'purpose_crossover'],
+    ['malformed recovery UUID remains inconclusive', denied, malformed, probe(), 'INCONCLUSIVE', 'recovery_control_unavailable'],
+    ['no recovery access token cannot authenticate', denied, { status: 200, value: { user: { id: otherId, email }, refresh_token: 'r' } }, probe(otherId), 'INCONCLUSIVE', 'recovery_control_unavailable'],
+    ['rejected recovery probe is inconclusive', denied, issued(), { status: 403, value: {} }, 'INCONCLUSIVE', 'recovery_control_unavailable'],
+    ['recovery probe timeout is error', denied, issued(), timeout, 'ERROR', 'recovery_control_unavailable'],
+    ['recovery invalid JSON is non-pass', denied, { status: 200, kind: 'invalid_json', value: null }, null, 'ERROR', 'recovery_control_unavailable'],
+    ['matching response without bearer probe is inconclusive', denied, issued(), null, 'INCONCLUSIVE', 'recovery_control_unavailable'],
+    ['wrong identity failure survives unrelated error', denied, issued(sid2, otherId), timeout, 'FAIL', 'recovery_control_wrong_identity'],
+  ];
+  for (const [name, crossing, control, controlProbe, expected, finding] of cases) {
+    const result = classifyRecoveryPurposeCrossing(crossing, control, id, email, controlProbe);
+    assert.equal(result.result, expected, name);
+    assert.equal(result.finding, finding, `${name}: diagnostic finding`);
+  }
+  assert.deepEqual(classifyRecoveryPurposeCrossing(accessOnlyWrong, timeout, id, email, probe(), probe()),
+    { result: 'FAIL', finding: 'purpose_crossover' });
 });
 
 test('old-code invalidation fails independently of new-code verification', () => {
