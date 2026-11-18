@@ -797,11 +797,18 @@ test('password-state evidence remains independent of OTP consumption', () => {
   const updated = { status: 200, value: {} };
   const mutation = { beforeGrant: issued(), beforeProbe: probe(), update: updated,
     oldGrant: generic, newGrant: issued(), id };
-  assert.equal(classifyPasswordMutation(mutation), 'FAIL');
-  assert.equal(classifyPasswordMutation({ ...mutation, beforeGrant: generic }), 'INCONCLUSIVE');
-  assert.equal(classifyPasswordMutation({ ...mutation, beforeProbe: probe(otherId) }), 'INCONCLUSIVE');
-  assert.equal(classifyPasswordMutation({ ...mutation, beforeGrant: { kind: 'timeout' } }), 'ERROR');
-  assert.equal(classifyPasswordMutation({ ...mutation, update: unavailable }), 'INCONCLUSIVE');
+  assert.equal(classifyPasswordMutation(mutation).result, 'FAIL');
+  assert.equal(classifyPasswordMutation(mutation).kind, 'password_mutation_bypass');
+  assert.equal(classifyPasswordMutation({ ...mutation, beforeGrant: generic }).result, 'INCONCLUSIVE');
+  assert.equal(classifyPasswordMutation({ ...mutation, beforeGrant: generic }).kind,
+    'inconclusive_control');
+  // Review 4610490579 defect reproduction: wrong baseline probe must FAIL, not INCONCLUSIVE.
+  const wrongProbe = classifyPasswordMutation({ ...mutation, beforeProbe: probe(otherId) });
+  assert.equal(wrongProbe.result, 'FAIL', 'baseline probe different UUID was previously INCONCLUSIVE');
+  assert.equal(wrongProbe.kind, 'identity_violation');
+  assert.equal(classifyPasswordMutation({ ...mutation, beforeGrant: { kind: 'timeout' } }).result,
+    'ERROR');
+  assert.equal(classifyPasswordMutation({ ...mutation, update: unavailable }).result, 'INCONCLUSIVE');
 });
 
 test('password grants for a different UUID fail as identity violations', () => {
@@ -810,17 +817,20 @@ test('password grants for a different UUID fail as identity violations', () => {
   // Review 4609372951: complete other-UUID grant is FAIL, not INCONCLUSIVE.
   assert.equal(classifyPasswordMutation({
     ...base, oldGrant: issued(sid1, otherId), newGrant: generic,
-  }), 'FAIL', 'old-grant wrong UUID');
+  }).result, 'FAIL', 'old-grant wrong UUID');
+  assert.equal(classifyPasswordMutation({
+    ...base, oldGrant: issued(sid1, otherId), newGrant: generic,
+  }).kind, 'identity_violation');
   assert.equal(classifyPasswordMutation({
     ...base, oldGrant: generic, newGrant: issued(sid2, otherId),
-  }), 'FAIL', 'new-grant wrong UUID');
+  }).result, 'FAIL', 'new-grant wrong UUID');
   // Later transport cannot mask decisive wrong-UUID grant evidence.
   assert.equal(classifyPasswordMutation({
     ...base,
     update: { kind: 'timeout', status: null, value: null },
     oldGrant: issued(sid1, otherId),
     newGrant: generic,
-  }), 'FAIL', 'wrong UUID before update transport error');
+  }).result, 'FAIL', 'wrong UUID before update transport error');
   // Malformed / missing identity is not confirmed cross-identity auth.
   assert.equal(classifyPasswordMutation({
     ...base,
@@ -828,22 +838,101 @@ test('password grants for a different UUID fail as identity violations', () => {
       user: { id: 'not-a-uuid', email }, access_token: jwt(), refresh_token: 'r',
     } },
     newGrant: generic,
-  }), 'INCONCLUSIVE', 'malformed grant UUID');
+  }).result, 'INCONCLUSIVE', 'malformed grant UUID');
   assert.equal(classifyPasswordMutation({
     ...base, oldGrant: generic, newGrant: generic, id: 'not-a-uuid',
-  }), 'INCONCLUSIVE', 'malformed expected UUID');
+  }).result, 'INCONCLUSIVE', 'malformed expected UUID');
   // Correct matching-UUID mutation path remains FAIL; PASS path preserved elsewhere.
   assert.equal(classifyPasswordMutation({
     ...base, oldGrant: generic, newGrant: issued(),
-  }), 'FAIL', 'matching-UUID mutation evidence');
+  }).result, 'FAIL', 'matching-UUID mutation evidence');
+  assert.equal(classifyPasswordMutation({
+    ...base, oldGrant: generic, newGrant: issued(),
+  }).kind, 'password_mutation_bypass');
   assert.equal(classifyPasswordMutation({
     ...base, oldGrant: { status: null, value: null }, newGrant: issued(),
-  }), 'INCONCLUSIVE', 'unavailable old grant');
+  }).result, 'INCONCLUSIVE', 'unavailable old grant');
   assert.equal(classifyPasswordMutation({
     ...base,
     oldGrant: { kind: 'timeout', status: null, value: null },
     newGrant: issued(),
-  }), 'ERROR', 'old-grant transport failure');
+  }).result, 'ERROR', 'old-grant transport failure');
+});
+
+test('AUTH-17 baseline identity violations fail before positive-control short-circuit', () => {
+  const updated = { status: 200, value: {} };
+  const timeout = { kind: 'timeout', status: null, value: null };
+  const accessOnly = (userId = id) => ({
+    status: 200, value: { user: { id: userId, email }, access_token: jwt(userId) },
+  });
+  const rest = { update: updated, oldGrant: generic, newGrant: issued(), id };
+
+  // Review 4610490579 matrix.
+  const grantOther = classifyPasswordMutation({
+    beforeGrant: issued(sid1, otherId), beforeProbe: probe(otherId), ...rest,
+  });
+  assert.equal(grantOther.result, 'FAIL', 'baseline grant different UUID');
+  assert.equal(grantOther.kind, 'identity_violation');
+
+  const probeOther = classifyPasswordMutation({
+    beforeGrant: issued(), beforeProbe: probe(otherId), ...rest,
+  });
+  assert.equal(probeOther.result, 'FAIL', 'grant expected UUID but bearer different UUID');
+  assert.equal(probeOther.kind, 'identity_violation');
+
+  const bothOther = classifyPasswordMutation({
+    beforeGrant: issued(sid2, otherId), beforeProbe: probe(otherId), ...rest,
+  });
+  assert.equal(bothOther.result, 'FAIL', 'grant and probe both different UUID');
+  assert.equal(bothOther.kind, 'identity_violation');
+
+  const accessWrong = classifyPasswordMutation({
+    beforeGrant: accessOnly(otherId), beforeProbe: probe(otherId), ...rest,
+  });
+  assert.equal(accessWrong.result, 'FAIL', 'access-only baseline wrong-UUID bearer');
+  assert.equal(accessWrong.kind, 'identity_violation');
+
+  const missing = classifyPasswordMutation({
+    beforeGrant: { status: 200, value: { user: { email }, access_token: jwt(), refresh_token: 'r' } },
+    beforeProbe: null, ...rest,
+  });
+  assert.equal(missing.result, 'INCONCLUSIVE', 'missing baseline UUID without bearer proof');
+  assert.equal(missing.kind, 'inconclusive_control');
+
+  const malformed = classifyPasswordMutation({
+    beforeGrant: {
+      status: 200,
+      value: { user: { id: 'not-a-uuid', email }, access_token: jwt(), refresh_token: 'r' },
+    },
+    beforeProbe: probe(), ...rest,
+  });
+  assert.equal(malformed.result, 'INCONCLUSIVE', 'malformed UUID is not identity_violation');
+  assert.equal(malformed.kind, 'inconclusive_control');
+
+  const probeTimeout = classifyPasswordMutation({
+    beforeGrant: issued(), beforeProbe: timeout, ...rest,
+  });
+  assert.equal(probeTimeout.result, 'ERROR', 'probe timeout without decisive wrong-identity');
+  assert.equal(probeTimeout.kind, 'transport');
+
+  // Wrong-identity survives later transport on mutation steps.
+  const preserved = classifyPasswordMutation({
+    beforeGrant: issued(sid1, otherId),
+    beforeProbe: probe(otherId),
+    update: timeout,
+    oldGrant: generic,
+    newGrant: issued(),
+    id,
+  });
+  assert.equal(preserved.result, 'FAIL');
+  assert.equal(preserved.kind, 'identity_violation');
+
+  // Matching baseline continues into normal AUTH-17 mutation classification.
+  const matching = classifyPasswordMutation({
+    beforeGrant: issued(), beforeProbe: probe(), ...rest,
+  });
+  assert.equal(matching.result, 'FAIL');
+  assert.equal(matching.kind, 'password_mutation_bypass');
 });
 
 test('AUTH-17 PASS requires documented current-password policy denial', () => {
@@ -859,31 +948,37 @@ test('AUTH-17 PASS requires documented current-password policy denial', () => {
       name: 'current_password_required with intact old password passes',
       update: { status: 400, value: { error_code: 'current_password_required' } },
       expected: 'PASS',
+      kind: 'current_password_enforced',
     },
     {
       name: 'current_password_invalid with intact old password passes',
       update: { status: 400, value: { error_code: 'current_password_invalid' } },
       expected: 'PASS',
+      kind: 'current_password_enforced',
     },
     {
       name: 'session_not_found denial is inconclusive',
       update: { status: 403, value: { error_code: 'session_not_found' } },
       expected: 'INCONCLUSIVE',
+      kind: 'inconclusive_control',
     },
     {
       name: 'validation_failed denial is inconclusive',
       update: { status: 400, value: { error_code: 'validation_failed' } },
       expected: 'INCONCLUSIVE',
+      kind: 'inconclusive_control',
     },
     {
       name: 'generic 401 with arbitrary error_code is inconclusive',
       update: { status: 401, value: { error_code: 'bad_jwt' } },
       expected: 'INCONCLUSIVE',
+      kind: 'inconclusive_control',
     },
     {
       name: 'rate-limited update is inconclusive',
       update: { status: 429, value: { error_code: 'over_request_rate_limit' } },
       expected: 'INCONCLUSIVE',
+      kind: 'inconclusive_control',
     },
     {
       name: 'confirmed mutation path remains FAIL',
@@ -891,15 +986,18 @@ test('AUTH-17 PASS requires documented current-password policy denial', () => {
       oldGrant: generic,
       newGrant: issued(),
       expected: 'FAIL',
+      kind: 'password_mutation_bypass',
     },
   ];
   for (const item of cases) {
-    assert.equal(classifyPasswordMutation({
+    const classified = classifyPasswordMutation({
       ...base,
       update: item.update,
       ...(item.oldGrant ? { oldGrant: item.oldGrant } : {}),
       ...(item.newGrant ? { newGrant: item.newGrant } : {}),
-    }), item.expected, item.name);
+    });
+    assert.equal(classified.result, item.expected, item.name);
+    assert.equal(classified.kind, item.kind, `${item.name} kind`);
   }
 });
 

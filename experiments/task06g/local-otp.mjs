@@ -394,13 +394,33 @@ if (local) {
       const beforeGrant = await auth('/token?grant_type=password',
         { email: address, password: oldPassword });
       const beforeProbe = await probeUser(beforeGrant);
+      // Classify baseline identity before any destructive OTP/password mutation probes.
+      const baseline = classifyPasswordMutation({
+        beforeGrant, beforeProbe,
+        update: { status: 400, value: { error_code: 'validation_failed' } },
+        oldGrant: { status: 400, value: { error_code: 'invalid_credentials' } },
+        newGrant: { status: 400, value: { error_code: 'invalid_credentials' } },
+        id,
+      });
+      if (baseline.kind === 'identity_violation') {
+        row('AUTH17_PASSWORD_MUTATION', 'FAIL',
+          `pre_grant=${safeStatus(beforeGrant)}; pre_user_probe=${safeStatus(beforeProbe)}; ` +
+          `kind=${baseline.kind}; pre_mutation_positive_control=false; mutation=NOT TESTED`);
+        return;
+      }
+      if (baseline.result === 'ERROR') {
+        row('AUTH17_PASSWORD_MUTATION', 'ERROR',
+          `pre_grant=${safeStatus(beforeGrant)}; pre_user_probe=${safeStatus(beforeProbe)}; ` +
+          `kind=${baseline.kind}; pre_mutation_positive_control=false; mutation=NOT TESTED`);
+        return;
+      }
       const beforeControl = beforeGrant.status === 200 && beforeGrant.value?.user?.id === id &&
         Boolean(beforeGrant.value?.access_token && beforeGrant.value?.refresh_token) &&
         beforeProbe?.status === 200 && beforeProbe.value?.id === id;
       if (!beforeControl) {
-        row('AUTH17_PASSWORD_MUTATION', beforeGrant.kind || beforeProbe?.kind ? 'ERROR' : 'INCONCLUSIVE',
+        row('AUTH17_PASSWORD_MUTATION', 'INCONCLUSIVE',
           `pre_grant=${safeStatus(beforeGrant)}; pre_user_probe=${safeStatus(beforeProbe)}; ` +
-          'pre_mutation_positive_control=false; mutation=NOT TESTED');
+          `kind=${baseline.kind}; pre_mutation_positive_control=false; mutation=NOT TESTED`);
         return;
       }
       const code = await issue(address, false);
@@ -416,10 +436,11 @@ if (local) {
       const update = await auth('/user', { password: newPassword }, { method: 'PUT', token: otp.access_token });
       const oldGrant = await auth('/token?grant_type=password', { email: address, password: oldPassword });
       const newGrant = await auth('/token?grant_type=password', { email: address, password: newPassword });
-      row('AUTH17_PASSWORD_MUTATION', classifyPasswordMutation({
-        beforeGrant, beforeProbe, update, oldGrant, newGrant, id }),
+      const classified = classifyPasswordMutation({
+        beforeGrant, beforeProbe, update, oldGrant, newGrant, id });
+      row('AUTH17_PASSWORD_MUTATION', classified.result,
         `pre_grant=${safeStatus(beforeGrant)}; pre_user_probe=${safeStatus(beforeProbe)}; ` +
-        `pre_mutation_positive_control=true; update=${safeStatus(update)}; ` +
+        `kind=${classified.kind}; pre_mutation_positive_control=true; update=${safeStatus(update)}; ` +
         `admin_header=false; current_password_supplied=false; ` +
         `old_grant=${safeStatus(oldGrant)}; new_grant=${safeStatus(newGrant)}; ` +
         `same_uuid=${newGrant.value?.user?.id === id}`);

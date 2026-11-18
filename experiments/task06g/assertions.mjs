@@ -252,27 +252,47 @@ function completeAuthForOtherUuid(grant, expectedId) {
     typeof grant.value?.refresh_token === 'string' && Boolean(grant.value.refresh_token);
 }
 
+function wrongUuidBearer(grant, probe, expectedId) {
+  // Access token + GET /user for a different valid UUID, even if grant body claims expectedId.
+  return validUuid(expectedId) && authenticatedBearer(grant, probe) && probe.value.id !== expectedId;
+}
+
 export function classifyPasswordMutation({ beforeGrant, beforeProbe, update, oldGrant, newGrant, id }) {
-  if ([beforeGrant, beforeProbe].some(r => r?.kind && transportError(r))) return 'ERROR';
-  // Cross-identity password grants fail before mutation/inconclusive short-circuits.
+  const out = (result, kind) => ({ result, kind });
+  // Baseline cross-identity evidence is decisive before "control unavailable" short-circuits.
+  if (completeAuthForOtherUuid(beforeGrant, id) || wrongUuidBearer(beforeGrant, beforeProbe, id)) {
+    return out('FAIL', 'identity_violation');
+  }
+  // Later password-grant cross-identity remains FAIL before mutation/transport masking.
   if (completeAuthForOtherUuid(oldGrant, id) || completeAuthForOtherUuid(newGrant, id)) {
-    return 'FAIL';
+    return out('FAIL', 'identity_violation');
+  }
+  if ([beforeGrant, beforeProbe].some(r => r?.kind && transportError(r))) {
+    return out('ERROR', 'transport');
   }
   if (beforeGrant?.status !== 200 || beforeGrant.value?.user?.id !== id ||
       !beforeGrant.value?.access_token || !beforeGrant.value?.refresh_token ||
-      beforeProbe?.status !== 200 || beforeProbe.value?.id !== id) return 'INCONCLUSIVE';
-  if ([update, oldGrant, newGrant].some(transportError)) return 'ERROR';
-  if ([update, oldGrant, newGrant].some(infrastructure)) return 'INCONCLUSIVE';
+      beforeProbe?.status !== 200 || beforeProbe.value?.id !== id) {
+    return out('INCONCLUSIVE', 'inconclusive_control');
+  }
+  if ([update, oldGrant, newGrant].some(transportError)) return out('ERROR', 'transport');
+  if ([update, oldGrant, newGrant].some(infrastructure)) {
+    return out('INCONCLUSIVE', 'inconclusive_control');
+  }
   if (update.status === 200 && oldGrant.status === 400 &&
       oldGrant.value?.error_code === 'invalid_credentials' &&
       newGrant.status === 200 && newGrant.value?.user?.id === id &&
-      newGrant.value?.access_token && newGrant.value?.refresh_token) return 'FAIL';
+      newGrant.value?.access_token && newGrant.value?.refresh_token) {
+    return out('FAIL', 'password_mutation_bypass');
+  }
   // Generic 4xx/session_not_found/validation_failed are not current-password enforcement.
   if (currentPasswordPolicyDenial(update) &&
       oldGrant.status === 200 && oldGrant.value?.user?.id === id &&
       oldGrant.value?.access_token && oldGrant.value?.refresh_token &&
-      newGrant.status === 400 && newGrant.value?.error_code === 'invalid_credentials') return 'PASS';
-  return 'INCONCLUSIVE';
+      newGrant.status === 400 && newGrant.value?.error_code === 'invalid_credentials') {
+    return out('PASS', 'current_password_enforced');
+  }
+  return out('INCONCLUSIVE', 'inconclusive_control');
 }
 
 export function classifyInvalidCode(wrongResult, correctResult, id, email, options = {}) {
