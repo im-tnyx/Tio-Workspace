@@ -6,6 +6,7 @@ import { readFileSync } from 'node:fs';
 import { classifyReplay, classifyConcurrent, classifyNegative,
   classifyFiveWrong, classifyOldCodeInvalidation, classifyInvalidCode,
   classifyPasswordMutation, classifyResendTiming, safeStatus } from './assertions.mjs';
+import { validateIsolatedLoopbackStack } from './loopback-preflight.mjs';
 
 const workdir = 'experiments/task06g';
 const project = 'tio-task06g-local-otp';
@@ -45,27 +46,23 @@ function localStack() {
   if (!local.PUBLISHABLE_KEY?.startsWith('sb_publishable_') || !local.SERVICE_ROLE_KEY) {
     throw new Error('Local API keys unavailable');
   }
-  for (const part of ['auth', 'db', 'kong', 'inbucket']) {
-    const name = `supabase_${part}_${project}`;
-    const found = JSON.parse(run('docker', ['inspect', name]))[0];
-    if (found.Name !== `/${name}` || !found.State.Running ||
-        Object.keys(found.NetworkSettings.Networks ?? {}).length !== 1 ||
-        !found.NetworkSettings.Networks?.[network]) {
-      throw new Error(`Unexpected local ${part} container/network`);
-    }
-    // CLI-published 0.0.0.0/[::] ports are unsafe for this evidence run.
-    if (Object.values(found.NetworkSettings.Ports ?? {}).flat().some(p =>
-      p && !['127.0.0.1', '::1'].includes(p.HostIp))) {
-      throw new Error('Local stack has a non-loopback published port');
-    }
-    if (part === 'auth' && found.Config.Image !== gotrueImage) {
-      throw new Error('Unexpected GoTrue image');
-    }
-    if (part === 'kong' && !Object.values(found.NetworkSettings.Ports ?? {}).flat()
-      .some(p => p?.HostPort === '55621')) throw new Error('Unexpected API port');
-    if (part === 'inbucket' && !Object.values(found.NetworkSettings.Ports ?? {}).flat()
-      .some(p => p?.HostPort === '55624')) throw new Error('Unexpected Mailpit port');
-  }
+  // Every container on the project network is in scope, including Studio/analytics.
+  const attached = Object.values(
+    JSON.parse(run('docker', ['network', 'inspect', network]))[0]?.Containers ?? {});
+  if (!attached.length) throw new Error('No containers attached to the project network');
+  const containers = attached.map(entry => {
+    const name = entry?.Name;
+    if (typeof name !== 'string' || !name) throw new Error('Project container name unavailable');
+    return JSON.parse(run('docker', ['inspect', name]))[0];
+  });
+  validateIsolatedLoopbackStack({
+    containers,
+    network,
+    project,
+    gotrueImage,
+    apiHostPort: '55621',
+    mailHostPort: '55624',
+  });
   return local;
 }
 

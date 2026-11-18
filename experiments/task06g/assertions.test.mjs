@@ -223,6 +223,23 @@ test('old-code invalidation fails independently of new-code verification', () =>
       options: { distinctCodes: true },
       expected: 'INCONCLUSIVE',
     },
+    {
+      name: 'complete old auth still fails when old probe times out',
+      old: issued(sid1),
+      next: denied,
+      options: { distinctCodes: true, oldProbe: { kind: 'timeout', status: null, value: null } },
+      expected: 'FAIL',
+    },
+    {
+      name: 'complete old auth still fails when new probe is invalid JSON',
+      old: issued(sid1),
+      next: denied,
+      options: {
+        distinctCodes: true,
+        newProbe: { kind: 'invalid_json', status: 200, value: null },
+      },
+      expected: 'FAIL',
+    },
   ];
   for (const item of cases) {
     assert.equal(
@@ -456,6 +473,20 @@ test('wrong OTP authentication fails independently of later correct verify', () 
       correct: unavailable,
       options: {},
       expected: 'INCONCLUSIVE',
+    },
+    {
+      name: 'complete wrong auth still fails when wrong probe times out',
+      wrong: issued(sid1),
+      correct: denied,
+      options: { wrongProbe: { kind: 'timeout', status: null, value: null } },
+      expected: 'FAIL',
+    },
+    {
+      name: 'complete wrong auth still fails when correct probe is invalid JSON',
+      wrong: issued(sid1),
+      correct: denied,
+      options: { correctProbe: { kind: 'invalid_json', status: 200, value: null } },
+      expected: 'FAIL',
     },
   ];
   for (const item of cases) {

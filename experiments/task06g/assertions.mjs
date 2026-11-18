@@ -118,10 +118,8 @@ export function classifyOldCodeInvalidation(oldResult, newResult, id, email, opt
   const { distinctCodes = false, oldProbe = null, newProbe = null } = options;
   // A new challenge must be accepted and codes confirmed distinct before judging invalidation.
   if (!distinctCodes) return 'INCONCLUSIVE';
-  if (transportError(oldResult) || transportError(newResult) ||
-      (oldProbe && transportError(oldProbe)) || (newProbe && transportError(newProbe))) {
-    return 'ERROR';
-  }
+  // Probe transport flakes must not hide a complete verify-body authentication FAIL.
+  if (transportError(oldResult) || transportError(newResult)) return 'ERROR';
   const oldEvidence = inspectSession(oldResult, id, email, oldProbe);
   const newEvidence = inspectSession(newResult, id, email, newProbe);
   if (oldEvidence.wrongIdentity || newEvidence.wrongIdentity) return 'FAIL';
@@ -170,11 +168,8 @@ export function classifyPasswordMutation({ beforeGrant, beforeProbe, update, old
 
 export function classifyInvalidCode(wrongResult, correctResult, id, email, options = {}) {
   const { wrongProbe = null, correctProbe = null } = options;
-  if (transportError(wrongResult) || transportError(correctResult) ||
-      (wrongProbe && transportError(wrongProbe)) ||
-      (correctProbe && transportError(correctProbe))) {
-    return 'ERROR';
-  }
+  // Probe transport flakes must not hide a complete verify-body authentication FAIL.
+  if (transportError(wrongResult) || transportError(correctResult)) return 'ERROR';
   const wrongEvidence = inspectSession(wrongResult, id, email, wrongProbe);
   const correctEvidence = inspectSession(correctResult, id, email, correctProbe);
   if (wrongEvidence.wrongIdentity || correctEvidence.wrongIdentity) return 'FAIL';
