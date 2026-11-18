@@ -5,7 +5,8 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { classifyReplay, classifyConcurrent, classifyNegative,
   classifyFiveWrong, classifyOldCodeInvalidation, classifyInvalidCode,
-  classifyPasswordMutation, classifyResendTiming, safeStatus } from './assertions.mjs';
+  classifyPurposeCrossing, classifyPasswordMutation, classifyResendTiming,
+  safeStatus } from './assertions.mjs';
 import { validateIsolatedLoopbackStack } from './loopback-preflight.mjs';
 
 const workdir = 'experiments/task06g';
@@ -225,15 +226,24 @@ if (local) {
       const address = email(), signupCode = await issue(address);
       const crossing = await auth('/verify', { email: address, token: signupCode, type: 'recovery' });
       const crossingProbe = await probeUser(crossing);
-      row('SIGNUP_AS_RECOVERY', classifyNegative(crossing),
-        `verify=${safeStatus(crossing)}; user_probe=${safeStatus(crossingProbe)}; ` +
-        `session=${Boolean(crossing.value?.access_token && crossing.value?.refresh_token)}; ` +
-        `same_uuid=${Boolean(crossing.value?.user?.id && crossing.value.user.id === crossingProbe?.value?.id)}`);
       const signup = await auth('/verify', { email: address, token: signupCode, type: 'email' });
       const signupProbe = await probeUser(signup);
-      row('SIGNUP_EXPECTED_EMAIL', signup.status === 200 && signup.value?.user?.email?.toLowerCase() === address &&
-        signup.value?.access_token && signup.value?.refresh_token && signupProbe?.status === 200 &&
-        signupProbe.value?.id === signup.value.user.id ? 'PASS' : 'INCONCLUSIVE',
+      const expectedId = signup.value?.user?.id || crossing.value?.user?.id ||
+        crossingProbe?.value?.id || '';
+      const signupOk = signup.status === 200 && signup.value?.user?.email?.toLowerCase() === address &&
+        Boolean(signup.value?.access_token && signup.value?.refresh_token) &&
+        signupProbe?.status === 200 && signupProbe.value?.id === signup.value.user.id;
+      row('SIGNUP_AS_RECOVERY', classifyPurposeCrossing(crossing, {
+        expectedId,
+        expectedEmail: address,
+        probe: crossingProbe,
+        positiveControlValidated: Boolean(signupOk),
+      }),
+        `verify=${safeStatus(crossing)}; user_probe=${safeStatus(crossingProbe)}; ` +
+        `session=${Boolean(crossing.value?.access_token && crossing.value?.refresh_token)}; ` +
+        `bearer_auth=${Boolean(crossingProbe?.status === 200 && crossingProbe.value?.id)}; ` +
+        `same_uuid=${Boolean(crossingProbe?.value?.id && crossingProbe.value.id === expectedId)}`);
+      row('SIGNUP_EXPECTED_EMAIL', signupOk ? 'PASS' : 'INCONCLUSIVE',
         `verify=${safeStatus(signup)}; user_probe=${safeStatus(signupProbe)}; ` +
         `same_email=${signup.value?.user?.email?.toLowerCase() === address}; ` +
         `same_uuid=${Boolean(signup.value?.user?.id && signupProbe?.value?.id === signup.value.user.id)}`);
@@ -250,11 +260,18 @@ if (local) {
           verified.value?.access_token && verified.value?.refresh_token &&
           probe?.status === 200 && probe.value?.id === id;
         const result = type === 'recovery' ? session ? 'PASS' : 'INCONCLUSIVE' :
-          session ? 'FAIL' : classifyNegative(verified);
+          classifyPurposeCrossing(verified, {
+            expectedId: id,
+            expectedEmail: address,
+            probe,
+            positiveControlValidated: false,
+          });
         row(`RECOVERY_AS_${type.toUpperCase()}`, result,
           `verify=${safeStatus(verified)}; user_probe=${safeStatus(probe)}; ` +
           `session=${Boolean(session)}; same_uuid=${verified.value?.user?.id === id}; ` +
-          `purpose_crossover=${type !== 'recovery' && Boolean(session)}`);
+          `bearer_auth=${Boolean(probe?.status === 200 && probe.value?.id === id)}; ` +
+          `purpose_crossover=${type !== 'recovery' && Boolean(session ||
+            (probe?.status === 200 && probe.value?.id === id && verified.value?.access_token))}`);
       });
     }
     row('APP_AUTHORIZATION', 'NOT TESTED', 'No Tio enrollment, Home, or server eligibility implementation');

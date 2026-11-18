@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { classifyConcurrent, classifyReplay, classifyNegative, classifyFiveWrong,
-  classifyOldCodeInvalidation, classifyInvalidCode, classifyPasswordMutation,
-  classifyResendTiming, safeStatus } from './assertions.mjs';
+  classifyOldCodeInvalidation, classifyInvalidCode, classifyPurposeCrossing,
+  classifyPasswordMutation, classifyResendTiming, safeStatus } from './assertions.mjs';
 
 const id = '11111111-1111-4111-8111-111111111111';
 const otherId = '22222222-2222-4222-8222-222222222222';
@@ -100,6 +100,74 @@ test('wrong and replay responses do not use generic errors as proof', () => {
   assert.equal(classifyNegative(generic), 'INCONCLUSIVE');
   assert.equal(classifyReplay(issued(), issued(sid2), id, email, probe()), 'FAIL');
   assert.equal(classifyFiveWrong(Array(5).fill(denied), issued(), id), 'FAIL');
+});
+
+test('wrong-purpose bearer proof is a decisive FAIL without refresh token', () => {
+  const accessOnly = { status: 200, value: { user: { id, email }, access_token: jwt() } };
+  const timeout = { kind: 'timeout', status: null, value: null };
+  const malformedProbe = { status: 200, value: { id: 'not-a-uuid' } };
+  const missingProbeId = { status: 200, value: {} };
+  // Review 4608876817 reproduction: access token + matching bearer probe, no refresh.
+  assert.equal(classifyNegative(accessOnly), 'INCONCLUSIVE');
+  assert.equal(classifyPurposeCrossing(accessOnly, {
+    expectedId: id, expectedEmail: email, probe: probe(),
+  }), 'FAIL', 'signup→recovery access-only bearer');
+  assert.equal(classifyPurposeCrossing(accessOnly, {
+    expectedId: id, expectedEmail: email, probe: probe(),
+  }), 'FAIL', 'recovery→email access-only bearer');
+  assert.equal(classifyPurposeCrossing(accessOnly, {
+    expectedId: id, expectedEmail: email, probe: probe(),
+  }), 'FAIL', 'recovery→magiclink access-only bearer');
+
+  assert.equal(classifyPurposeCrossing(denied, {
+    expectedId: id, expectedEmail: email, probe: null, positiveControlValidated: true,
+  }), 'PASS', 'explicit rejection with positive control');
+  assert.equal(classifyPurposeCrossing(denied, {
+    expectedId: id, expectedEmail: email, probe: null, positiveControlValidated: false,
+  }), 'INCONCLUSIVE', 'rejection without positive control');
+
+  assert.equal(classifyPurposeCrossing(accessOnly, {
+    expectedId: id, expectedEmail: email, probe: null,
+  }), 'INCONCLUSIVE', 'HTTP 200 without usable bearer evidence');
+  assert.equal(classifyPurposeCrossing(accessOnly, {
+    expectedId: id, expectedEmail: email, probe: missingProbeId,
+  }), 'INCONCLUSIVE', 'probe 200 missing UUID');
+  assert.equal(classifyPurposeCrossing(accessOnly, {
+    expectedId: id, expectedEmail: email, probe: malformedProbe,
+  }), 'INCONCLUSIVE', 'probe 200 malformed UUID');
+
+  assert.equal(classifyPurposeCrossing(accessOnly, {
+    expectedId: id, expectedEmail: email, probe: probe(otherId),
+  }), 'FAIL', 'authenticated bearer for a different UUID');
+  assert.equal(classifyPurposeCrossing({
+    status: 200,
+    value: { user: { id: otherId, email }, access_token: jwt(otherId), refresh_token: 'r' },
+  }, {
+    expectedId: id, expectedEmail: email, probe: probe(otherId),
+  }), 'FAIL', 'complete wrong-identity purpose crossing');
+
+  assert.equal(classifyPurposeCrossing(accessOnly, {
+    expectedId: id, expectedEmail: email, probe: probe(),
+    positiveControlValidated: false,
+  }), 'FAIL', 'confirmed auth before missing positive control');
+  // Confirmed authentication remains FAIL even when a later control times out.
+  assert.equal(classifyPurposeCrossing(accessOnly, {
+    expectedId: id, expectedEmail: email, probe: probe(),
+    positiveControlValidated: false,
+  }), 'FAIL');
+  assert.equal(classifyPurposeCrossing(issued(), {
+    expectedId: id, expectedEmail: email, probe: timeout,
+  }), 'FAIL', 'complete verify body still fails when probe times out');
+
+  assert.equal(classifyPurposeCrossing(accessOnly, {
+    expectedId: id, expectedEmail: email, probe: timeout,
+  }), 'ERROR', 'probe timeout without decisive authentication evidence');
+  assert.equal(classifyPurposeCrossing({ kind: 'invalid_json', status: 200, value: null }, {
+    expectedId: id, expectedEmail: email, probe: null, positiveControlValidated: true,
+  }), 'ERROR', 'malformed verify cannot PASS');
+  assert.equal(classifyPurposeCrossing(generic, {
+    expectedId: id, expectedEmail: email, probe: null, positiveControlValidated: true,
+  }), 'INCONCLUSIVE', 'generic 4xx is not a recognized OTP rejection PASS');
 });
 
 test('five-wrong cooldown requires five recognized OTP rejections', () => {

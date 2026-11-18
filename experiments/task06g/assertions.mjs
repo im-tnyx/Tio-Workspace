@@ -91,6 +91,33 @@ export function classifyNegative(result) {
     result.value?.access_token && result.value?.refresh_token ? 'FAIL' : 'INCONCLUSIVE';
 }
 
+export function classifyPurposeCrossing(verifyResult, options = {}) {
+  const {
+    expectedId = '',
+    expectedEmail = '',
+    probe = null,
+    positiveControlValidated = false,
+  } = options;
+  const id = validUuid(expectedId) ? expectedId : '';
+  const email = typeof expectedEmail === 'string' ? expectedEmail : '';
+
+  // Decisive wrong-purpose authentication cannot be hidden by later control/transport failures.
+  if (id && email) {
+    const evidence = inspectSession(verifyResult, id, email, probe);
+    if (evidence.wrongIdentity || evidence.validResponse || evidence.probeValidated) return 'FAIL';
+  }
+  if (completeAuthResponse(verifyResult, id || undefined)) return 'FAIL';
+  if (authenticatedBearer(verifyResult, probe)) {
+    // Matching or mismatched authenticated UUID are both purpose-isolation failures.
+    return 'FAIL';
+  }
+
+  if (transportError(verifyResult) || (probe && transportError(probe))) return 'ERROR';
+  if (infrastructure(verifyResult)) return 'INCONCLUSIVE';
+  if (rejected(verifyResult)) return positiveControlValidated ? 'PASS' : 'INCONCLUSIVE';
+  return 'INCONCLUSIVE';
+}
+
 function recognizedWrongOtp(r) {
   // Only an explicit GoTrue invalid/expired OTP rejection counts as a processed wrong attempt.
   return rejected(r);
