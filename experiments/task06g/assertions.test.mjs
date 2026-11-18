@@ -1,8 +1,9 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { classifyConcurrent, classifyReplay, classifyNegative, classifyFiveWrong,
-  classifyOldCodeInvalidation, classifyInvalidCode, classifyPurposeCrossing,
-  classifyPasswordMutation, classifyResendTiming, safeStatus } from './assertions.mjs';
+  classifyRecoveryControl, classifyOldCodeInvalidation, classifyInvalidCode,
+  classifyPurposeCrossing, classifyPasswordMutation, classifyResendTiming,
+  safeStatus } from './assertions.mjs';
 
 const id = '11111111-1111-4111-8111-111111111111';
 const otherId = '22222222-2222-4222-8222-222222222222';
@@ -214,6 +215,13 @@ test('five-wrong cooldown requires five recognized OTP rejections', () => {
       kind: 'unrecognized_wrong',
     },
     {
+      name: '429 among wrong then different-UUID complete session is wrong_identity',
+      wrong: [denied, denied, rateLimited, denied, denied],
+      correct: issued(sid2, otherId),
+      expected: 'FAIL',
+      kind: 'wrong_identity',
+    },
+    {
       name: '503 among five attempts is inconclusive',
       wrong: [denied, denied, denied, unavailable, denied],
       correct: issued(),
@@ -226,6 +234,13 @@ test('five-wrong cooldown requires five recognized OTP rejections', () => {
       correct: issued(),
       expected: 'INCONCLUSIVE',
       kind: 'unrecognized_wrong',
+    },
+    {
+      name: 'generic 4xx among wrong then different-UUID session is wrong_identity',
+      wrong: [denied, generic, denied, denied, denied],
+      correct: issued(sid2, otherId),
+      expected: 'FAIL',
+      kind: 'wrong_identity',
     },
     {
       name: 'missing wrong attempt is ERROR',
@@ -242,6 +257,13 @@ test('five-wrong cooldown requires five recognized OTP rejections', () => {
       kind: 'transport',
     },
     {
+      name: 'timeout among wrong then different-UUID session is wrong_identity',
+      wrong: [denied, denied, { kind: 'timeout', status: null, value: null }, denied, denied],
+      correct: issued(sid2, otherId),
+      expected: 'FAIL',
+      kind: 'wrong_identity',
+    },
+    {
       name: 'correct transport error is ERROR',
       wrong: Array(5).fill(denied),
       correct: { kind: 'timeout', status: null, value: null },
@@ -254,6 +276,22 @@ test('five-wrong cooldown requires five recognized OTP rejections', () => {
       correct: { status: 200, value: { user: { id, email }, access_token: jwt() } },
       expected: 'INCONCLUSIVE',
       kind: 'incomplete_correct',
+    },
+    {
+      name: 'matching-UUID incomplete auth evidence stays incomplete',
+      wrong: Array(5).fill(denied),
+      correct: { status: 200, value: { user: { id, email }, access_token: jwt() } },
+      expected: 'INCONCLUSIVE',
+      kind: 'incomplete_correct',
+      probe: null,
+    },
+    {
+      name: 'malformed expected UUID cannot prove wrong_identity',
+      wrong: Array(5).fill(denied),
+      correct: issued(sid2, otherId),
+      expected: 'INCONCLUSIVE',
+      kind: 'incomplete_correct',
+      expectedId: 'not-a-uuid',
     },
     {
       name: 'recognized wrong then locked correct remains inconclusive not PASS',
@@ -301,10 +339,83 @@ test('five-wrong cooldown requires five recognized OTP rejections', () => {
     },
   ];
   for (const item of cases) {
-    const classified = classifyFiveWrong(item.wrong, item.correct, id);
+    const expectedId = Object.hasOwn(item, 'expectedId') ? item.expectedId : id;
+    const options = Object.hasOwn(item, 'probe') ? { correctProbe: item.probe } : {};
+    const classified = classifyFiveWrong(item.wrong, item.correct, expectedId, options);
     assert.equal(classified.result, item.expected, item.name);
     assert.equal(classified.kind, item.kind, `${item.name} kind`);
   }
+});
+
+test('access-only correct bearer proves cooldown bypass or wrong_identity', () => {
+  const accessOnly = (userId = id) => ({
+    status: 200, value: { user: { id: userId, email }, access_token: jwt(userId) },
+  });
+  const rateLimited = { status: 429, value: { error_code: 'over_request_rate_limit' } };
+  const timeout = { kind: 'timeout', status: null, value: null };
+
+  // Review 4609116465: five recognized + access-only matching bearer = cooldown bypass.
+  const matching = classifyFiveWrong(Array(5).fill(denied), accessOnly(id), id, {
+    correctProbe: probe(id),
+  });
+  assert.equal(matching.result, 'FAIL', 'matching access-only bearer after five recognized');
+  assert.equal(matching.kind, 'cooldown_bypass');
+
+  // Access-only wrong UUID bearer is wrong_identity even without five recognized.
+  const crossed = classifyFiveWrong([denied, denied, rateLimited, denied, denied],
+    accessOnly(otherId), id, { correctProbe: probe(otherId) });
+  assert.equal(crossed.result, 'FAIL', 'wrong-UUID bearer before unrecognized short-circuit');
+  assert.equal(crossed.kind, 'wrong_identity');
+
+  const timedOutWrong = classifyFiveWrong(
+    [denied, denied, timeout, denied, denied], accessOnly(otherId), id,
+    { correctProbe: probe(otherId) });
+  assert.equal(timedOutWrong.result, 'FAIL', 'wrong-UUID bearer before transport short-circuit');
+  assert.equal(timedOutWrong.kind, 'wrong_identity');
+
+  // Missing/ambiguous probe evidence stays inconclusive (not a false cooldown FAIL).
+  const noProbe = classifyFiveWrong(Array(5).fill(denied), accessOnly(id), id);
+  assert.equal(noProbe.result, 'INCONCLUSIVE');
+  assert.equal(noProbe.kind, 'incomplete_correct');
+
+  const probeTimeout = classifyFiveWrong(Array(5).fill(denied), accessOnly(id), id, {
+    correctProbe: timeout,
+  });
+  assert.equal(probeTimeout.result, 'INCONCLUSIVE', 'probe transport is not a security violation');
+  assert.equal(probeTimeout.kind, 'incomplete_correct');
+
+  // Matching UUID after unrecognized wrong attempts is still not cooldown proof.
+  const unrecognizedMatching = classifyFiveWrong(
+    [denied, denied, rateLimited, denied, denied], accessOnly(id), id,
+    { correctProbe: probe(id) });
+  assert.equal(unrecognizedMatching.result, 'INCONCLUSIVE');
+  assert.equal(unrecognizedMatching.kind, 'unrecognized_wrong');
+});
+
+test('recovery same-purpose control fails on confirmed wrong UUID', () => {
+  const accessOnly = (userId = id) => ({
+    status: 200, value: { user: { id: userId, email }, access_token: jwt(userId) },
+  });
+  const timeout = { kind: 'timeout', status: null, value: null };
+  // Review 4609116473: complete wrong-UUID recovery session + bearer = FAIL.
+  assert.equal(classifyRecoveryControl(issued(sid2, otherId), id, email, probe(otherId)), 'FAIL',
+    'complete wrong-UUID recovery session');
+  assert.equal(classifyRecoveryControl(accessOnly(otherId), id, email, probe(otherId)), 'FAIL',
+    'access-only wrong-UUID bearer evidence');
+  assert.equal(classifyRecoveryControl(issued(), id, email, probe()), 'PASS',
+    'matching UUID with complete evidence');
+  assert.equal(classifyRecoveryControl(issued(sid2, otherId), 'not-a-uuid', email, probe(otherId)),
+    'INCONCLUSIVE', 'malformed expected UUID is not wrong_identity');
+  assert.equal(classifyRecoveryControl({
+    status: 200,
+    value: { user: { id: 'not-a-uuid', email }, access_token: jwt(), refresh_token: 'r' },
+  }, id, email, probe()), 'INCONCLUSIVE', 'malformed response UUID');
+  assert.equal(classifyRecoveryControl(issued(), id, email, null), 'INCONCLUSIVE',
+    'unavailable probe cannot PASS');
+  assert.equal(classifyRecoveryControl(accessOnly(id), id, email, probe()), 'INCONCLUSIVE',
+    'access-only matching UUID without refresh is incomplete control');
+  assert.equal(classifyRecoveryControl(timeout, id, email, null), 'ERROR',
+    'verify transport remains ERROR');
 });
 
 test('recovery purpose isolation requires rejection plus recovery positive control', () => {

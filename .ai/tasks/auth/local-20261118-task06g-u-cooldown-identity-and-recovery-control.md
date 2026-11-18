@@ -39,3 +39,15 @@
 ## Next owner step
 
 Authorize commit + push of these three experiment files (± this report) to PR #30 for independent re-review.
+
+## Publication addendum — 2026-11-18 (post-commit provenance)
+
+Historical notes above remain the pre-publication record and are not rewritten.
+
+| Fact | Value |
+|---|---|
+| Actual published commit for Task 06G-U | `9d57b7712b9e3d68f101e3e2e555ca1f4091f403` on branch `docs/task06g-local-auth-evidence` |
+| Existing PR | [#30](https://github.com/im-tnyx/Tio-Workspace/pull/30) — open; `CHANGES_REQUESTED` at publication time of later Task 06G-V; not merged |
+| Historical vs current publication | Report originally said commit/push **Not performed** / “FIXED locally (uncommitted)”; that was true when written. The same corrections were later published as `9d57b77` on PR #30 |
+| Prior Task 06G-T commit | `9e5eee1236b827e78c59241ecc962facab1efc80` |
+| Remaining security / review gates | Independent re-review of post-`9d57b77` findings (wrong-identity ordering, access-only cooldown bearer, recovery wrong-UUID control, provenance); formal approval + required attribution check; AUTH-12 / AUTH-17 / AUTH-22 **BLOCKED**; Production Auth **NO-GO**; merge needs separate owner authorization |

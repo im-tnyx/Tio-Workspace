@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { classifyReplay, classifyConcurrent, classifyNegative,
-  classifyFiveWrong, classifyOldCodeInvalidation, classifyInvalidCode,
+  classifyFiveWrong, classifyRecoveryControl, classifyOldCodeInvalidation, classifyInvalidCode,
   classifyPurposeCrossing, classifyPasswordMutation, classifyResendTiming,
   safeStatus } from './assertions.mjs';
 import { validateIsolatedLoopbackStack } from './loopback-preflight.mjs';
@@ -214,13 +214,16 @@ if (local) {
       for (let n = 0; n < 5; n++) wrong.push(await auth('/verify',
         { email: address, token: wrongCode(code), type: 'email' }));
       const valid = await auth('/verify', { email: address, token: code, type: 'email' });
-      const five = classifyFiveWrong(wrong, valid, id);
+      const validProbe = await probeUser(valid);
+      const five = classifyFiveWrong(wrong, valid, id, { correctProbe: validProbe });
       row('FIVE_WRONG_COOLDOWN', five.result,
         `wrong=${describe(...wrong)}; correct=${safeStatus(valid)}; ` +
+        `correct_user_probe=${safeStatus(validProbe)}; ` +
         `correct_session=${Boolean(valid.value?.access_token)}; kind=${five.kind}`);
       // Cooldown row only when matching-UUID auth proves non-enforcement — not identity mismatch.
       row('COOLDOWN_15_MIN', five.kind === 'cooldown_bypass' ? 'FAIL' : 'NOT TESTED',
         `correct_immediately_after_five=${safeStatus(valid)}; ` +
+        `correct_user_probe=${safeStatus(validProbe)}; ` +
         `session=${Boolean(valid.value?.access_token && valid.value?.refresh_token)}; ` +
         `kind=${five.kind}`);
     });
@@ -263,9 +266,11 @@ if (local) {
           verified.value?.access_token && verified.value?.refresh_token &&
           probe?.status === 200 && probe.value?.id === id;
         if (type === 'recovery') {
-          row('RECOVERY_AS_RECOVERY', session ? 'PASS' : 'INCONCLUSIVE',
+          const recoveryResult = classifyRecoveryControl(verified, id, address, probe);
+          row('RECOVERY_AS_RECOVERY', recoveryResult,
             `verify=${safeStatus(verified)}; user_probe=${safeStatus(probe)}; ` +
-            `session=${Boolean(session)}; same_uuid=${verified.value?.user?.id === id}`);
+            `session=${Boolean(session)}; same_uuid=${verified.value?.user?.id === id}; ` +
+            `wrong_identity=${recoveryResult === 'FAIL' && verified.value?.user?.id !== id}`);
           return;
         }
         // Decisive wrong-purpose authentication fails closed before any recovery control.

@@ -142,22 +142,46 @@ function authenticatedBearer(result, probe) {
     !transportError(probe) && probe.status === 200 && validUuid(probe.value?.id);
 }
 
-export function classifyFiveWrong(wrong, correct, id) {
+export function classifyFiveWrong(wrong, correct, id, options = {}) {
   const out = (result, kind) => ({ result, kind });
+  const { correctProbe = null } = options;
   if (!Array.isArray(wrong) || wrong.length !== 5) return out('ERROR', 'invalid_input');
   // A complete wrong-code authentication is decisive even if a later request fails.
   if (wrong.some(r => completeAuthResponseAny(r))) return out('FAIL', 'wrong_code_auth');
+
+  const expectedOk = validUuid(id);
+  const correctCompleteAny = completeAuthResponseAny(correct);
+  const correctBearer = authenticatedBearer(correct, correctProbe);
+  const responseId = correct?.value?.user?.id;
+  const probeId = correctProbe?.value?.id;
+
+  // Proven wrong-identity auth is independent of earlier wrong-attempt infrastructure errors.
+  if (expectedOk) {
+    if (correctCompleteAny && responseId !== id) return out('FAIL', 'wrong_identity');
+    if (correctBearer && validUuid(probeId) && probeId !== id) {
+      return out('FAIL', 'wrong_identity');
+    }
+  }
+
   if (wrong.some(transportError) || transportError(correct)) return out('ERROR', 'transport');
   // Cooldown verdict requires five recognized OTP rejections, not generic 4xx/429/5xx.
   if (!wrong.every(recognizedWrongOtp)) return out('INCONCLUSIVE', 'unrecognized_wrong');
   // Matching expected UUID + complete auth = cooldown non-enforcement.
-  if (validUuid(id) && completeAuthResponse(correct, id)) return out('FAIL', 'cooldown_bypass');
-  // Complete auth for a different valid UUID is an identity failure, not cooldown proof.
-  if (completeAuthResponseAny(correct) && validUuid(id) && correct.value.user.id !== id) {
-    return out('FAIL', 'wrong_identity');
-  }
+  if (expectedOk && completeAuthResponse(correct, id)) return out('FAIL', 'cooldown_bypass');
+  // Access-only correct response still proves cooldown bypass when bearer /user matches.
+  if (expectedOk && correctBearer && probeId === id) return out('FAIL', 'cooldown_bypass');
   // Missing/malformed UUID or incomplete tokens never confirm cooldown or wrong identity.
   return out('INCONCLUSIVE', 'incomplete_correct');
+}
+
+export function classifyRecoveryControl(verifyResult, expectedId, expectedEmail, probe = null) {
+  // Same-purpose recovery positive control: confirmed wrong UUID fails closed.
+  if (!validUuid(expectedId)) return 'INCONCLUSIVE';
+  const evidence = inspectSession(verifyResult, expectedId, expectedEmail, probe);
+  if (evidence.wrongIdentity) return 'FAIL';
+  if (evidence.state === 'ERROR') return 'ERROR';
+  if (evidence.validResponse && evidence.probeValidated) return 'PASS';
+  return 'INCONCLUSIVE';
 }
 
 export function classifyOldCodeInvalidation(oldResult, newResult, id, email, options = {}) {

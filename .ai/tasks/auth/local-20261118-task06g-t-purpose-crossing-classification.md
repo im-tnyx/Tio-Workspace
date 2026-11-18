@@ -50,3 +50,17 @@ Historical LOCAL ONLY GoTrue `v2.197.0` findings unchanged (7/9 dual redemption,
 ## Next owner decision
 
 Authorize commit + push of these three experiment files (and optionally this report) to PR #30 for independent re-review. Do not merge until formal approval, required checks, and thread policy are satisfied.
+
+## Publication addendum — 2026-11-18 (post-commit provenance)
+
+Historical notes above remain the pre-publication record and are not rewritten.
+
+| Fact | Value |
+|---|---|
+| Actual published commit for Task 06G-T code | `9e5eee1236b827e78c59241ecc962facab1efc80` on branch `docs/task06g-local-auth-evidence` |
+| Existing PR | [#30](https://github.com/im-tnyx/Tio-Workspace/pull/30) — open; not merged |
+| Historical vs current publication | Report originally said commit/push **Not performed** / “local, uncommitted”; that was true when written. The same report file and experiment fixes were later included in `9e5eee1` and remain on PR #30 |
+| Subsequent Task 06G-U commit | `9d57b7712b9e3d68f101e3e2e555ca1f4091f403` (cooldown wrong-identity kinds + recovery positive-control wiring) |
+| Remaining security / review gates | Formal GitHub approval still required; open review threads may remain unresolved for independent confirmation; required App-owned `Commit attribution guard` on final head; AUTH-12 / AUTH-17 / AUTH-22 **BLOCKED**; managed-hosted Auth **NOT VERIFIED**; Production Auth **NO-GO**; merge needs separate explicit owner authorization |
+
+Comment `4609020483` tracks this provenance reconciliation.
