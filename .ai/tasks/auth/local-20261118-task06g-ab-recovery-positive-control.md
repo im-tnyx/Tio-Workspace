@@ -37,3 +37,19 @@ The recovery correction is local evidence-classifier/harness work. It does not c
 ## Publication status
 
 The report and source changes are included in local commit `d2e4192` on the existing PR branch. The commit has **not been pushed** because the post-commit attribution, guard-integrity and base-freshness scripts could not start in this execution environment. PR #30 is unchanged; no thread reply or merge was performed.
+
+## Publication provenance addendum — 2026-11-18
+
+The preceding publication-status paragraph records the real intermediate pre-publication state when this report was first written. The local commit `d2e4192` was an unpublished intermediate and was amended before push so this report accurately described its then-current state. The resulting commit `4d1ccc2157903230eba9600c0271ec03decf7662` was pushed normally to the existing `docs/task06g-local-auth-evidence` branch and is included in open PR #30. No force-push or merge occurred.
+
+| Evidence source | Verified result |
+|---|---|
+| Owner-run Windows PowerShell 5.1 fixtures | Attribution **142/142 PASS**, guard integrity **14/14 PASS**, both exit codes 0; these owner-run results are distinct from agent execution. |
+| Owner-run post-commit checks | Attribution, guard integrity and base freshness **PASS** for `4d1ccc2`; run in the owner PowerShell session. |
+| Agent-run Node validation | Three syntax checks **PASS**; assertions **42/42 PASS**; loopback-preflight **6/6 PASS**. |
+| GitHub checks on published `4d1ccc2` | App-owned `Commit attribution guard`, attribution fixture tests, guard runner and Cursor Bugbot **SUCCESS** on read-back. |
+| Worktree whitespace / secret inspection | `git diff --check` and bounded secret scan **PASS**; synthetic test fixtures were the only credential-shaped literals. |
+
+At last review-state read, PR #30 remained **OPEN** and had no formal `APPROVED` review on the published head; earlier owner `CHANGES_REQUESTED` reviews and unresolved reviewer threads remain subject to independent re-review. The publication reconciliation finding `4612519515` identified the stale paragraph above; this dated addendum preserves that historical account and supersedes it for current publication status. The requested independent approval and thread disposition remain pending; no reviewer-owned thread was resolved here.
+
+Security gates are unchanged: AUTH-12, AUTH-17 and AUTH-22 **BLOCKED**; corrected Docker/Auth integration **NOT RUN**; managed Supabase Auth **NOT VERIFIED**; Production Auth **NO-GO**. Docker exposure finding `4609372956` remains **OWNER DECISION REQUIRED**. No hosted Auth request, Docker operation, production change or merge is claimed.
