@@ -50,23 +50,31 @@ export function inspectSession(r, expectedId, expectedEmail, getUser) {
 
 export function classifyConcurrent(results, expectedId, expectedEmail, probes = []) {
   const empty = { result: 'INCONCLUSIVE', validResponses: 0, probesValidated: 0,
-    sessionIdClaimComparison: 'unavailable', wrongIdentity: false };
+    bearersAuthenticated: 0, sessionIdClaimComparison: 'unavailable', wrongIdentity: false };
   if (!Array.isArray(results) || results.length !== 2 || !Array.isArray(probes)) return empty;
   const evidence = results.map((r, i) => inspectSession(r, expectedId, expectedEmail, probes[i]));
   const valid = evidence.filter(e => e.validResponse);
   const validated = evidence.filter(e => e.probeValidated);
-  // Compare decoded claims only after both bearer probes succeed. No database
-  // session row is inspected by this classifier.
+  // Matching-UUID bearer /user proofs count even when refresh is absent (access-only).
+  const bearersAuthenticated = results.reduce((count, r, i) => {
+    if (!validUuid(expectedId) || evidence[i].wrongIdentity) return count;
+    if (!authenticatedBearer(r, probes[i]) || probes[i].value.id !== expectedId) return count;
+    return count + 1;
+  }, 0);
+  // Compare decoded claims only after both complete+probe validations. No database
+  // session row is inspected by this classifier; JWT claims are diagnostics only.
   const sessionIdClaimComparison = validated.length !== 2 ||
     !validated.every(e => e.sessionId) ? 'unavailable' :
     validated[0].sessionId === validated[1].sessionId ? 'same' : 'different';
   const common = { validResponses: valid.length, probesValidated: validated.length,
-    sessionIdClaimComparison,
+    bearersAuthenticated, sessionIdClaimComparison,
     wrongIdentity: evidence.some(e => e.wrongIdentity) };
   if (common.wrongIdentity) return { ...common, result: 'FAIL' };
   if (results.some(transportError)) return { ...common, result: 'ERROR' };
   // Two complete authentication responses violate one-use even if session IDs coincide.
   if (valid.length === 2) return { ...common, result: 'FAIL' };
+  // Two independently authenticated bearers also violate single-use (refresh optional).
+  if (bearersAuthenticated === 2) return { ...common, result: 'FAIL' };
   if (valid.length === 1 && validated.length === 1 && validated[0].sessionId &&
       evidence.some(e => e.state === 'REJECTED')) {
     return { ...common, result: 'PASS' };
@@ -144,12 +152,22 @@ function authenticatedBearer(result, probe) {
 
 export function classifyFiveWrong(wrong, correct, id, options = {}) {
   const out = (result, kind) => ({ result, kind });
-  const { correctProbe = null } = options;
+  const { correctProbe = null, wrongProbes = [] } = options;
   if (!Array.isArray(wrong) || wrong.length !== 5) return out('ERROR', 'invalid_input');
+  const expectedOk = validUuid(id);
   // A complete wrong-code authentication is decisive even if a later request fails.
   if (wrong.some(r => completeAuthResponseAny(r))) return out('FAIL', 'wrong_code_auth');
+  // Access-only wrong-code bearers must be probed 1:1; confirmed auth fails closed.
+  if (Array.isArray(wrongProbes)) {
+    for (let i = 0; i < wrong.length; i++) {
+      const attempt = wrong[i];
+      const attemptProbe = wrongProbes[i];
+      if (!authenticatedBearer(attempt, attemptProbe)) continue;
+      if (expectedOk && attemptProbe.value.id !== id) return out('FAIL', 'wrong_identity');
+      return out('FAIL', 'wrong_code_auth');
+    }
+  }
 
-  const expectedOk = validUuid(id);
   const correctCompleteAny = completeAuthResponseAny(correct);
   const correctBearer = authenticatedBearer(correct, correctProbe);
   const responseId = correct?.value?.user?.id;
@@ -214,8 +232,20 @@ function currentPasswordPolicyDenial(update) {
       update.value?.error_code === 'current_password_invalid');
 }
 
+function completeAuthForOtherUuid(grant, expectedId) {
+  // Only a structurally complete session for a different valid UUID is cross-identity proof.
+  return grant?.status === 200 && validUuid(expectedId) && validUuid(grant.value?.user?.id) &&
+    grant.value.user.id !== expectedId &&
+    typeof grant.value?.access_token === 'string' && Boolean(grant.value.access_token) &&
+    typeof grant.value?.refresh_token === 'string' && Boolean(grant.value.refresh_token);
+}
+
 export function classifyPasswordMutation({ beforeGrant, beforeProbe, update, oldGrant, newGrant, id }) {
   if ([beforeGrant, beforeProbe].some(r => r?.kind && transportError(r))) return 'ERROR';
+  // Cross-identity password grants fail before mutation/inconclusive short-circuits.
+  if (completeAuthForOtherUuid(oldGrant, id) || completeAuthForOtherUuid(newGrant, id)) {
+    return 'FAIL';
+  }
   if (beforeGrant?.status !== 200 || beforeGrant.value?.user?.id !== id ||
       !beforeGrant.value?.access_token || !beforeGrant.value?.refresh_token ||
       beforeProbe?.status !== 200 || beforeProbe.value?.id !== id) return 'INCONCLUSIVE';

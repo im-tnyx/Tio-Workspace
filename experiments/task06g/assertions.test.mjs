@@ -39,6 +39,51 @@ test('two 200 responses with one missing session remain inconclusive', () => {
   assert.equal(classifyConcurrent([issued(), partial], id, email, [probe(), null]).result, 'INCONCLUSIVE');
 });
 
+test('concurrent dual bearer authentication fails even without refresh tokens', () => {
+  const accessOnly = (userId = id, sid = sid2) => ({
+    status: 200, value: { user: { id: userId, email }, access_token: jwt(userId, sid) },
+  });
+  // Review 4609380598: complete + access-only with matching /user probes = single-use FAIL.
+  const mixed = classifyConcurrent([issued(), accessOnly()], id, email, [probe(), probe()]);
+  assert.equal(mixed.result, 'FAIL', 'complete + access-only matching bearers');
+  assert.equal(mixed.bearersAuthenticated, 2);
+  assert.equal(mixed.validResponses, 1);
+
+  const bothAccess = classifyConcurrent(
+    [accessOnly(id, sid1), accessOnly(id, sid2)], id, email, [probe(), probe()]);
+  assert.equal(bothAccess.result, 'FAIL', 'two access-only matching bearers');
+  assert.equal(bothAccess.bearersAuthenticated, 2);
+  assert.equal(bothAccess.validResponses, 0);
+
+  // Same decoded session claim still fails when both bearers authenticate.
+  const sameClaim = classifyConcurrent(
+    [issued(sid1), accessOnly(id, sid1)], id, email, [probe(), probe()]);
+  assert.equal(sameClaim.result, 'FAIL');
+
+  // One bearer success + rejection keeps the stricter one-winner PASS path.
+  assert.equal(classifyConcurrent([issued(), denied], id, email, [probe(), null]).result, 'PASS');
+
+  // Rejected / unavailable probes must not be fabricated as successes.
+  assert.equal(classifyConcurrent([issued(), accessOnly()], id, email, [probe(), denied]).result,
+    'INCONCLUSIVE', 'rejected second probe');
+  assert.equal(classifyConcurrent([issued(), accessOnly()], id, email, [probe(), null]).result,
+    'INCONCLUSIVE', 'unavailable second probe');
+  assert.equal(classifyConcurrent(
+    [accessOnly(), accessOnly(id, sid1)], id, email, [null, probe()]).result,
+  'INCONCLUSIVE', 'one unavailable access-only probe');
+
+  // Different UUID remains a separate identity failure.
+  const crossed = classifyConcurrent(
+    [issued(), accessOnly(otherId)], id, email, [probe(), probe(otherId)]);
+  assert.equal(crossed.result, 'FAIL');
+  assert.equal(crossed.wrongIdentity, true);
+
+  // Partial response without usable bearer stays inconclusive beside one winner.
+  const partialNoToken = { status: 200, value: { user: { id, email } } };
+  assert.equal(classifyConcurrent([issued(), partialNoToken], id, email, [probe(), null]).result,
+    'INCONCLUSIVE');
+});
+
 test('wrong UUID with a complete response is a failure', () => {
   const result = classifyConcurrent([issued(), issued(sid2, otherId)], id, email, [probe(), probe(otherId)]);
   assert.equal(result.result, 'FAIL');
@@ -347,6 +392,64 @@ test('five-wrong cooldown requires five recognized OTP rejections', () => {
   }
 });
 
+test('wrong-code access-only bearer fails before cooldown short-circuits', () => {
+  const accessOnly = (userId = id) => ({
+    status: 200, value: { user: { id: userId, email }, access_token: jwt(userId) },
+  });
+  const rateLimited = { status: 429, value: { error_code: 'over_request_rate_limit' } };
+  const timeout = { kind: 'timeout', status: null, value: null };
+  const probes = Array(5).fill(null);
+
+  // Review 4609372937: access-only wrong-code + matching bearer = wrong_code_auth.
+  const wrongAuth = classifyFiveWrong(
+    [denied, denied, accessOnly(id), denied, denied],
+    issued(),
+    id,
+    { wrongProbes: [null, null, probe(id), null, null], correctProbe: probe() },
+  );
+  assert.equal(wrongAuth.result, 'FAIL', 'access-only wrong-code matching bearer');
+  assert.equal(wrongAuth.kind, 'wrong_code_auth');
+
+  const wrongIdentity = classifyFiveWrong(
+    [denied, accessOnly(otherId), denied, denied, denied],
+    { kind: 'timeout', status: null, value: null },
+    id,
+    { wrongProbes: [null, probe(otherId), null, null, null] },
+  );
+  assert.equal(wrongIdentity.result, 'FAIL', 'wrong-code wrong-UUID bearer before transport');
+  assert.equal(wrongIdentity.kind, 'wrong_identity');
+
+  // Partial tokens without probe stay inconclusive / transport as before.
+  const partialNoProbe = classifyFiveWrong(
+    [denied, denied, accessOnly(id), denied, denied],
+    issued(),
+    id,
+    { wrongProbes: probes, correctProbe: probe() },
+  );
+  assert.equal(partialNoProbe.result, 'INCONCLUSIVE');
+  assert.equal(partialNoProbe.kind, 'unrecognized_wrong');
+
+  // Later correct transport cannot hide earlier wrong-code bearer auth.
+  const hides = classifyFiveWrong(
+    [denied, denied, accessOnly(id), denied, denied],
+    timeout,
+    id,
+    { wrongProbes: [null, null, probe(id), null, null] },
+  );
+  assert.equal(hides.result, 'FAIL');
+  assert.equal(hides.kind, 'wrong_code_auth');
+
+  // 429/generic among wrong attempts still block cooldown_bypass without five recognized.
+  const unrecognized = classifyFiveWrong(
+    [denied, denied, rateLimited, denied, denied],
+    issued(),
+    id,
+    { wrongProbes: probes, correctProbe: probe() },
+  );
+  assert.equal(unrecognized.result, 'INCONCLUSIVE');
+  assert.equal(unrecognized.kind, 'unrecognized_wrong');
+});
+
 test('access-only correct bearer proves cooldown bypass or wrong_identity', () => {
   const accessOnly = (userId = id) => ({
     status: 200, value: { user: { id: userId, email }, access_token: jwt(userId) },
@@ -653,6 +756,48 @@ test('password-state evidence remains independent of OTP consumption', () => {
   assert.equal(classifyPasswordMutation({ ...mutation, beforeProbe: probe(otherId) }), 'INCONCLUSIVE');
   assert.equal(classifyPasswordMutation({ ...mutation, beforeGrant: { kind: 'timeout' } }), 'ERROR');
   assert.equal(classifyPasswordMutation({ ...mutation, update: unavailable }), 'INCONCLUSIVE');
+});
+
+test('password grants for a different UUID fail as identity violations', () => {
+  const updated = { status: 200, value: {} };
+  const base = { beforeGrant: issued(), beforeProbe: probe(), update: updated, id };
+  // Review 4609372951: complete other-UUID grant is FAIL, not INCONCLUSIVE.
+  assert.equal(classifyPasswordMutation({
+    ...base, oldGrant: issued(sid1, otherId), newGrant: generic,
+  }), 'FAIL', 'old-grant wrong UUID');
+  assert.equal(classifyPasswordMutation({
+    ...base, oldGrant: generic, newGrant: issued(sid2, otherId),
+  }), 'FAIL', 'new-grant wrong UUID');
+  // Later transport cannot mask decisive wrong-UUID grant evidence.
+  assert.equal(classifyPasswordMutation({
+    ...base,
+    update: { kind: 'timeout', status: null, value: null },
+    oldGrant: issued(sid1, otherId),
+    newGrant: generic,
+  }), 'FAIL', 'wrong UUID before update transport error');
+  // Malformed / missing identity is not confirmed cross-identity auth.
+  assert.equal(classifyPasswordMutation({
+    ...base,
+    oldGrant: { status: 200, value: {
+      user: { id: 'not-a-uuid', email }, access_token: jwt(), refresh_token: 'r',
+    } },
+    newGrant: generic,
+  }), 'INCONCLUSIVE', 'malformed grant UUID');
+  assert.equal(classifyPasswordMutation({
+    ...base, oldGrant: generic, newGrant: generic, id: 'not-a-uuid',
+  }), 'INCONCLUSIVE', 'malformed expected UUID');
+  // Correct matching-UUID mutation path remains FAIL; PASS path preserved elsewhere.
+  assert.equal(classifyPasswordMutation({
+    ...base, oldGrant: generic, newGrant: issued(),
+  }), 'FAIL', 'matching-UUID mutation evidence');
+  assert.equal(classifyPasswordMutation({
+    ...base, oldGrant: { status: null, value: null }, newGrant: issued(),
+  }), 'INCONCLUSIVE', 'unavailable old grant');
+  assert.equal(classifyPasswordMutation({
+    ...base,
+    oldGrant: { kind: 'timeout', status: null, value: null },
+    newGrant: issued(),
+  }), 'ERROR', 'old-grant transport failure');
 });
 
 test('AUTH-17 PASS requires documented current-password policy denial', () => {

@@ -2,6 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   nonLoopbackPublishedPorts,
+  preflightFailureKind,
+  preflightFailureObservation,
   validateIsolatedLoopbackStack,
 } from './loopback-preflight.mjs';
 
@@ -78,4 +80,31 @@ test('missing required auth container still fails closed', () => {
     project,
     gotrueImage,
   }), /Unexpected local auth/);
+});
+
+test('unsafe published-port rejection has a clear non-success diagnostic', () => {
+  const studio = container('studio', {
+    '3000/tcp': [{ HostIp: '0.0.0.0', HostPort: '55623' }],
+  });
+  let caught;
+  try {
+    validateIsolatedLoopbackStack({
+      containers: [...required, studio],
+      network,
+      project,
+      gotrueImage,
+    });
+  } catch (error) {
+    caught = error;
+  }
+  assert.ok(caught, 'unsafe stack must throw');
+  assert.equal(preflightFailureKind(caught), 'unsafe_published_port');
+  const observed = preflightFailureObservation('unsafe_published_port');
+  assert.match(observed, /UNSAFE_PUBLISHED_PORT/);
+  assert.match(observed, /OWNER DECISION REQUIRED/);
+  assert.doesNotMatch(observed, /\bPASS\b/);
+  assert.equal(preflightFailureKind(new Error('Unexpected GoTrue image')),
+    'mismatch_or_unavailable');
+  assert.match(preflightFailureObservation('mismatch_or_unavailable'),
+    /unavailable or mismatched/);
 });

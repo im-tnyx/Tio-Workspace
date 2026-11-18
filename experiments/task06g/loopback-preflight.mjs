@@ -1,9 +1,27 @@
 // Pure loopback-isolation checks for Task 06G local Auth evidence. No Docker I/O.
+// This module never starts, stops, resets, or recreates containers.
 const LOOPBACK = new Set(['127.0.0.1', '::1']);
 
 export function nonLoopbackPublishedPorts(ports) {
   return Object.values(ports ?? {}).flat().filter(binding =>
     binding && !LOOPBACK.has(binding.HostIp));
+}
+
+export function preflightFailureKind(error) {
+  const msg = String(error?.message ?? error ?? '');
+  if (/non-loopback published port/i.test(msg)) return 'unsafe_published_port';
+  if (/No project containers to validate/i.test(msg)) return 'no_containers';
+  if (/Unexpected local container/i.test(msg)) return 'unexpected_container';
+  return 'mismatch_or_unavailable';
+}
+
+export function preflightFailureObservation(kind) {
+  if (kind === 'unsafe_published_port') {
+    return 'UNSAFE_PUBLISHED_PORT: stack rejected; harness does not own startup/shutdown ' +
+      'and will not stop containers; OWNER DECISION REQUIRED to remediate LAN exposure ' +
+      'and guarantee loopback-only binding before stack startup';
+  }
+  return 'Expected isolated loopback-only local stack unavailable or mismatched';
 }
 
 function containerShortName(found) {

@@ -7,7 +7,11 @@ import { classifyReplay, classifyConcurrent, classifyNegative,
   classifyFiveWrong, classifyRecoveryControl, classifyOldCodeInvalidation, classifyInvalidCode,
   classifyPurposeCrossing, classifyPasswordMutation, classifyResendTiming,
   safeStatus } from './assertions.mjs';
-import { validateIsolatedLoopbackStack } from './loopback-preflight.mjs';
+import {
+  preflightFailureKind,
+  preflightFailureObservation,
+  validateIsolatedLoopbackStack,
+} from './loopback-preflight.mjs';
 
 const workdir = 'experiments/task06g';
 const project = 'tio-task06g-local-otp';
@@ -69,8 +73,11 @@ function localStack() {
 
 let local;
 try { local = localStack(); }
-catch { row('LOCAL_INTEGRATION', 'NOT TESTED',
-  'Expected isolated loopback-only local stack unavailable or mismatched'); }
+catch (error) {
+  // Harness never starts/stops Docker; unsafe LAN exposure needs owner remediation.
+  const kind = preflightFailureKind(error);
+  row('LOCAL_INTEGRATION', 'NOT TESTED', preflightFailureObservation(kind));
+}
 
 async function json(url, init = {}) {
   // Only fixed, preflight-checked loopback URLs are accepted; redirects fail closed.
@@ -186,10 +193,12 @@ if (local) {
         row(`OTP_CONCURRENT_${attempt}`, classified.result,
           `verify=${describe(...results)}; user_probes=${describe(...probes)}; ` +
           `valid_responses=${classified.validResponses}; probes_validated=${classified.probesValidated}; ` +
+          `bearers_authenticated=${classified.bearersAuthenticated}; ` +
           `session_id_claim_comparison=${classified.sessionIdClaimComparison}; ` +
           `server_session_records=NOT TESTED; wrong_identity=${classified.wrongIdentity}`,
           { responses: responseEvidence,
             sessionIdClaimComparison: classified.sessionIdClaimComparison,
+            bearersAuthenticated: classified.bearersAuthenticated,
             serverSessionRecords: 'NOT TESTED' });
       });
     }
@@ -211,14 +220,23 @@ if (local) {
       const address = email(), id = await localUser(address);
       const code = await issue(address, false);
       const wrong = [];
-      for (let n = 0; n < 5; n++) wrong.push(await auth('/verify',
-        { email: address, token: wrongCode(code), type: 'email' }));
+      const wrongProbes = [];
+      for (let n = 0; n < 5; n++) {
+        const attempt = await auth('/verify',
+          { email: address, token: wrongCode(code), type: 'email' });
+        wrong.push(attempt);
+        // Probe each wrong-code access token independently before cooldown judgment.
+        wrongProbes.push(await probeUser(attempt));
+      }
       const valid = await auth('/verify', { email: address, token: code, type: 'email' });
       const validProbe = await probeUser(valid);
-      const five = classifyFiveWrong(wrong, valid, id, { correctProbe: validProbe });
+      const five = classifyFiveWrong(wrong, valid, id, {
+        correctProbe: validProbe,
+        wrongProbes,
+      });
       row('FIVE_WRONG_COOLDOWN', five.result,
-        `wrong=${describe(...wrong)}; correct=${safeStatus(valid)}; ` +
-        `correct_user_probe=${safeStatus(validProbe)}; ` +
+        `wrong=${describe(...wrong)}; wrong_user_probes=${describe(...wrongProbes)}; ` +
+        `correct=${safeStatus(valid)}; correct_user_probe=${safeStatus(validProbe)}; ` +
         `correct_session=${Boolean(valid.value?.access_token)}; kind=${five.kind}`);
       // Cooldown row only when matching-UUID auth proves non-enforcement — not identity mismatch.
       row('COOLDOWN_15_MIN', five.kind === 'cooldown_bypass' ? 'FAIL' : 'NOT TESTED',
