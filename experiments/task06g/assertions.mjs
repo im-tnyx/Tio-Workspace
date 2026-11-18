@@ -97,16 +97,24 @@ function recognizedWrongOtp(r) {
 }
 
 function completeAuthResponse(r, id) {
-  return r?.status === 200 && r.value?.user?.id === id &&
+  return r?.status === 200 && validUuid(r.value?.user?.id) &&
+    (id === undefined || r.value.user.id === id) &&
     typeof r.value?.access_token === 'string' && Boolean(r.value.access_token) &&
     typeof r.value?.refresh_token === 'string' && Boolean(r.value.refresh_token);
 }
 
+function authenticatedBearer(result, probe) {
+  // The harness probes /user with this verify response's access token.
+  return !transportError(result) && result.status === 200 &&
+    typeof result.value?.access_token === 'string' && Boolean(result.value.access_token) &&
+    !transportError(probe) && probe.status === 200 && validUuid(probe.value?.id);
+}
+
 export function classifyFiveWrong(wrong, correct, id) {
-  if (!Array.isArray(wrong) || wrong.length !== 5 || wrong.some(transportError) ||
-      transportError(correct)) return 'ERROR';
-  // A wrong-code attempt that already issued session material is itself a security failure.
-  if (wrong.some(r => !noSession(r) || completeAuthResponse(r, id))) return 'FAIL';
+  if (!Array.isArray(wrong) || wrong.length !== 5) return 'ERROR';
+  // A complete wrong-code authentication is decisive even if a later request fails.
+  if (wrong.some(r => completeAuthResponse(r))) return 'FAIL';
+  if (wrong.some(transportError) || transportError(correct)) return 'ERROR';
   // Cooldown FAIL requires five recognized OTP rejections, not generic 4xx/429/5xx.
   if (!wrong.every(recognizedWrongOtp)) return 'INCONCLUSIVE';
   // Incomplete correct-code evidence never confirms cooldown non-enforcement.
@@ -118,22 +126,19 @@ export function classifyOldCodeInvalidation(oldResult, newResult, id, email, opt
   const { distinctCodes = false, oldProbe = null, newProbe = null } = options;
   // A new challenge must be accepted and codes confirmed distinct before judging invalidation.
   if (!distinctCodes) return 'INCONCLUSIVE';
-  // Probe transport flakes must not hide a complete verify-body authentication FAIL.
-  if (transportError(oldResult) || transportError(newResult)) return 'ERROR';
   const oldEvidence = inspectSession(oldResult, id, email, oldProbe);
   const newEvidence = inspectSession(newResult, id, email, newProbe);
   if (oldEvidence.wrongIdentity || newEvidence.wrongIdentity) return 'FAIL';
   // Successful old-code authentication is already an invalidation violation.
-  if (oldEvidence.validResponse || oldEvidence.probeValidated) return 'FAIL';
-  const oldAccess = typeof oldResult?.value?.access_token === 'string' &&
-    Boolean(oldResult.value.access_token);
-  if (oldAccess && oldProbe && !transportError(oldProbe) && oldProbe.status === 200 &&
-      validUuid(oldProbe.value?.id) && oldProbe.value.id === id) {
-    return 'FAIL';
-  }
+  if (completeAuthResponse(oldResult) || oldEvidence.validResponse ||
+      oldEvidence.probeValidated) return 'FAIL';
+  if (authenticatedBearer(oldResult, oldProbe)) return 'FAIL';
+  // Only unresolved evidence is affected by later transport or probe failures.
+  if ([oldResult, newResult].some(transportError) ||
+      [oldProbe, newProbe].some(probe => probe && transportError(probe))) return 'ERROR';
   // Recognized old-code rejection needs a usable new-code positive control for PASS.
   if (oldEvidence.state === 'REJECTED') {
-    if (newEvidence.validResponse || newEvidence.probeValidated) return 'PASS';
+    if (newEvidence.probeValidated) return 'PASS';
     return 'INCONCLUSIVE';
   }
   return 'INCONCLUSIVE';
@@ -168,22 +173,19 @@ export function classifyPasswordMutation({ beforeGrant, beforeProbe, update, old
 
 export function classifyInvalidCode(wrongResult, correctResult, id, email, options = {}) {
   const { wrongProbe = null, correctProbe = null } = options;
-  // Probe transport flakes must not hide a complete verify-body authentication FAIL.
-  if (transportError(wrongResult) || transportError(correctResult)) return 'ERROR';
   const wrongEvidence = inspectSession(wrongResult, id, email, wrongProbe);
   const correctEvidence = inspectSession(correctResult, id, email, correctProbe);
   if (wrongEvidence.wrongIdentity || correctEvidence.wrongIdentity) return 'FAIL';
   // Authenticated wrong OTP is already a security failure.
-  if (wrongEvidence.validResponse || wrongEvidence.probeValidated) return 'FAIL';
-  const wrongAccess = typeof wrongResult?.value?.access_token === 'string' &&
-    Boolean(wrongResult.value.access_token);
-  if (wrongAccess && wrongProbe && !transportError(wrongProbe) && wrongProbe.status === 200 &&
-      validUuid(wrongProbe.value?.id) && wrongProbe.value.id === id) {
-    return 'FAIL';
-  }
+  if (completeAuthResponse(wrongResult) || wrongEvidence.validResponse ||
+      wrongEvidence.probeValidated) return 'FAIL';
+  if (authenticatedBearer(wrongResult, wrongProbe)) return 'FAIL';
+  // A later failed request cannot erase decisive wrong-code authentication.
+  if ([wrongResult, correctResult].some(transportError) ||
+      [wrongProbe, correctProbe].some(probe => probe && transportError(probe))) return 'ERROR';
   // Recognized rejection needs a usable correct-code positive control for PASS.
   if (wrongEvidence.state === 'REJECTED') {
-    if (correctEvidence.validResponse || correctEvidence.probeValidated) return 'PASS';
+    if (correctEvidence.probeValidated) return 'PASS';
     return 'INCONCLUSIVE';
   }
   return 'INCONCLUSIVE';

@@ -216,8 +216,8 @@ if (local) {
       const fiveResult = classifyFiveWrong(wrong, valid, id);
       row('FIVE_WRONG_COOLDOWN', fiveResult,
         `wrong=${describe(...wrong)}; correct=${safeStatus(valid)}; correct_session=${Boolean(valid.value?.access_token)}`);
-      row('COOLDOWN_15_MIN', fiveResult === 'FAIL' && valid.value?.access_token &&
-        valid.value?.refresh_token ? 'FAIL' : 'NOT TESTED',
+      row('COOLDOWN_15_MIN', wrong.every(r => classifyNegative(r) === 'PASS') &&
+        fiveResult === 'FAIL' ? 'FAIL' : 'NOT TESTED',
         `correct_immediately_after_five=${safeStatus(valid)}; ` +
         `session=${Boolean(valid.value?.access_token && valid.value?.refresh_token)}`);
     });

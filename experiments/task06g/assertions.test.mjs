@@ -159,6 +159,32 @@ test('five-wrong cooldown requires five recognized OTP rejections', () => {
       correct: denied,
       expected: 'FAIL',
     },
+    {
+      name: 'complete wrong-code authentication survives later timeout',
+      wrong: [denied, denied, issued(), denied, denied],
+      correct: { kind: 'timeout', status: null, value: null },
+      expected: 'FAIL',
+    },
+    {
+      name: 'wrong-identity authentication is still decisive',
+      wrong: [denied, denied, issued(sid1, otherId), denied, denied],
+      correct: { kind: 'timeout', status: null, value: null },
+      expected: 'FAIL',
+    },
+    {
+      name: 'one token alone does not prove wrong-code authentication',
+      wrong: [denied, denied, { status: 200,
+        value: { user: { id, email }, access_token: jwt() } }, denied, denied],
+      correct: issued(),
+      expected: 'INCONCLUSIVE',
+    },
+    {
+      name: 'partial wrong response followed by timeout is ERROR',
+      wrong: [denied, denied, { status: 200,
+        value: { user: { id, email }, refresh_token: 'synthetic-refresh' } }, denied, denied],
+      correct: { kind: 'timeout', status: null, value: null },
+      expected: 'ERROR',
+    },
   ];
   for (const item of cases) {
     assert.equal(classifyFiveWrong(item.wrong, item.correct, id), item.expected, item.name);
@@ -496,6 +522,105 @@ test('wrong OTP authentication fails independently of later correct verify', () 
       item.name,
     );
   }
+});
+
+test('decisive wrong-code evidence precedes later transport failures', () => {
+  const timeout = { kind: 'timeout', status: null, value: null };
+  const malformed = { kind: 'invalid_json', status: 200, value: null };
+  const partial = { status: 200, value: { user: { id, email }, access_token: jwt() } };
+  const cases = [
+    ['complete auth, later timeout', issued(), timeout, {}, 'FAIL'],
+    ['complete auth, later malformed JSON', issued(), malformed, {}, 'FAIL'],
+    ['complete auth, wrong probe timeout', issued(), denied, { wrongProbe: timeout }, 'FAIL'],
+    ['partial auth, validated bearer, later timeout', partial, timeout,
+      { wrongProbe: probe() }, 'FAIL'],
+    ['partial auth, no bearer proof, later timeout', partial, timeout, {}, 'ERROR'],
+    ['partial auth, probe timeout', partial, denied, { wrongProbe: timeout }, 'ERROR'],
+    ['rejection, later timeout', denied, timeout, {}, 'ERROR'],
+    ['rejection, later malformed JSON', denied, malformed, {}, 'ERROR'],
+    ['rejection, correct probe timeout', denied, issued(),
+      { correctProbe: timeout }, 'ERROR'],
+    ['rejection, validated correct auth', denied, issued(),
+      { correctProbe: probe() }, 'PASS'],
+    ['rejection, unprobed correct auth', denied, issued(), {}, 'INCONCLUSIVE'],
+    ['rejection, incomplete correct auth', denied, partial, {}, 'INCONCLUSIVE'],
+    ['generic 4xx, validated correct auth', generic, issued(),
+      { correctProbe: probe() }, 'INCONCLUSIVE'],
+    ['authenticated wrong UUID, later timeout', issued(sid1, otherId), timeout, {}, 'FAIL'],
+    ['missing wrong UUID, no probe, later timeout',
+      { status: 200, value: { user: { email }, access_token: jwt(),
+        refresh_token: 'synthetic-refresh' } }, timeout, {}, 'ERROR'],
+    ['malformed wrong UUID, validated bearer, later timeout',
+      { status: 200, value: { user: { id: 'invalid', email }, access_token: jwt() } },
+      timeout, { wrongProbe: probe() }, 'FAIL'],
+  ];
+  for (const [name, wrong, correct, options, expected] of cases) {
+    assert.equal(classifyInvalidCode(wrong, correct, id, email, options), expected, name);
+  }
+  const bearerWithoutId = { status: 200,
+    value: { user: { email }, access_token: jwt() } };
+  assert.equal(classifyInvalidCode(bearerWithoutId, timeout, '', email,
+    { wrongProbe: probe() }), 'FAIL', 'caller fallback ID absent but bearer is authenticated');
+  assert.equal(classifyInvalidCode({ status: 200, value: {
+    user: { id: 'malformed', email }, access_token: jwt(),
+  } }, timeout, 'malformed', email, { wrongProbe: probe() }), 'FAIL',
+  'caller fallback ID malformed but bearer is authenticated');
+  assert.equal(classifyInvalidCode(denied, timeout, '', email,
+    { wrongProbe: probe() }), 'ERROR', 'rejected response cannot borrow an unrelated probe');
+  const malformedLaterId = { status: 200,
+    value: { user: { id: 'malformed', email } } };
+  assert.equal(classifyInvalidCode(issued(), malformedLaterId, 'malformed', email), 'FAIL',
+    'later malformed ID cannot hide complete wrong-code authentication');
+});
+
+test('decisive old-code evidence precedes later transport failures', () => {
+  const timeout = { kind: 'timeout', status: null, value: null };
+  const malformed = { kind: 'invalid_json', status: 200, value: null };
+  const partial = { status: 200, value: { user: { id, email }, access_token: jwt() } };
+  const cases = [
+    ['complete old auth, new timeout', issued(), timeout, {}, 'FAIL'],
+    ['complete old auth, new malformed JSON', issued(), malformed, {}, 'FAIL'],
+    ['complete old auth, old probe timeout', issued(), denied,
+      { oldProbe: timeout }, 'FAIL'],
+    ['partial old auth, bearer validated, new timeout', partial, timeout,
+      { oldProbe: probe() }, 'FAIL'],
+    ['partial old auth, new timeout', partial, timeout, {}, 'ERROR'],
+    ['old rejected, new timeout', denied, timeout, {}, 'ERROR'],
+    ['old rejected, new probe timeout', denied, issued(),
+      { newProbe: timeout }, 'ERROR'],
+    ['old rejected, new validated', denied, issued(),
+      { newProbe: probe() }, 'PASS'],
+    ['old rejected, new unprobed', denied, issued(), {}, 'INCONCLUSIVE'],
+    ['old rejected, new incomplete', denied, partial, {}, 'INCONCLUSIVE'],
+    ['generic old 4xx, new validated', generic, issued(),
+      { newProbe: probe() }, 'INCONCLUSIVE'],
+    ['wrong old UUID, new timeout', issued(sid1, otherId), timeout, {}, 'FAIL'],
+    ['missing old UUID, no bearer proof, new timeout',
+      { status: 200, value: { user: { email }, access_token: jwt(),
+        refresh_token: 'synthetic-refresh' } }, timeout, {}, 'ERROR'],
+    ['old rejected, wrong new identity', denied, issued(sid2, otherId), {}, 'FAIL'],
+  ];
+  for (const [name, old, next, options, expected] of cases) {
+    assert.equal(classifyOldCodeInvalidation(old, next, id, email,
+      { distinctCodes: true, ...options }), expected, name);
+  }
+  const bearerWithoutId = { status: 200,
+    value: { user: { email }, access_token: jwt() } };
+  assert.equal(classifyOldCodeInvalidation(bearerWithoutId, timeout, '', email,
+    { distinctCodes: true, oldProbe: probe() }), 'FAIL',
+  'caller fallback ID absent but old bearer is authenticated');
+  assert.equal(classifyOldCodeInvalidation({ status: 200, value: {
+    user: { id: 'malformed', email }, access_token: jwt(),
+  } }, timeout, 'malformed', email, { distinctCodes: true, oldProbe: probe() }), 'FAIL',
+  'caller fallback ID malformed but old bearer is authenticated');
+  assert.equal(classifyOldCodeInvalidation(denied, timeout, '', email,
+    { distinctCodes: true, oldProbe: probe() }), 'ERROR',
+  'rejected old response cannot borrow an unrelated probe');
+  const malformedLaterId = { status: 200,
+    value: { user: { id: 'malformed', email } } };
+  assert.equal(classifyOldCodeInvalidation(issued(), malformedLaterId, 'malformed', email,
+    { distinctCodes: true }), 'FAIL',
+  'later malformed ID cannot hide complete old-code authentication');
 });
 
 test('resend timing uses HTTP dispatch/receipt before mail processing', () => {
