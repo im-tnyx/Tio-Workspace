@@ -241,6 +241,113 @@ test('validateIsolatedLoopbackStack rejects missing or mismatched Compose projec
   );
 });
 
+test('validateIsolatedLoopbackStack rejects unauthorized extra localhost port on Kong', () => {
+  const project = 'tio-task06h-local-auth';
+  const network = `supabase_network_${project}`;
+
+  const makeContainer = (part, image, portBindings = {}) => ({
+    Name: `/supabase_${part}_${project}`,
+    State: { Running: true },
+    Config: {
+      Image: image,
+      Labels: { 'com.docker.compose.project': project },
+    },
+    NetworkSettings: {
+      Networks: { [network]: {} },
+      Ports: portBindings,
+    },
+  });
+
+  const containers = [
+    makeContainer('auth', 'public.ecr.aws/supabase/gotrue:v2.197.0'),
+    makeContainer('db', 'public.ecr.aws/supabase/postgres:17.11.0.004'),
+    makeContainer('kong', 'public.ecr.aws/supabase/kong:2.8.1', {
+      '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55621' }], // Approved port
+      '8443/tcp': [{ HostIp: '127.0.0.1', HostPort: '55629' }], // Unauthorized extra localhost port!
+    }),
+    makeContainer('inbucket', 'public.ecr.aws/supabase/mailpit:v1.31.3', {
+      '8025/tcp': [{ HostIp: '127.0.0.1', HostPort: '55624' }],
+    }),
+  ];
+
+  assert.throws(
+    () => validateIsolatedLoopbackStack({ containers, network, project }),
+    /Unauthorized port inventory on Kong: expected exactly 1 published mapping, found 2/
+  );
+});
+
+test('validateIsolatedLoopbackStack rejects unauthorized extra localhost port on Mailpit', () => {
+  const project = 'tio-task06h-local-auth';
+  const network = `supabase_network_${project}`;
+
+  const makeContainer = (part, image, portBindings = {}) => ({
+    Name: `/supabase_${part}_${project}`,
+    State: { Running: true },
+    Config: {
+      Image: image,
+      Labels: { 'com.docker.compose.project': project },
+    },
+    NetworkSettings: {
+      Networks: { [network]: {} },
+      Ports: portBindings,
+    },
+  });
+
+  const containers = [
+    makeContainer('auth', 'public.ecr.aws/supabase/gotrue:v2.197.0'),
+    makeContainer('db', 'public.ecr.aws/supabase/postgres:17.11.0.004'),
+    makeContainer('kong', 'public.ecr.aws/supabase/kong:2.8.1', {
+      '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55621' }],
+    }),
+    makeContainer('inbucket', 'public.ecr.aws/supabase/mailpit:v1.31.3', {
+      '8025/tcp': [{ HostIp: '127.0.0.1', HostPort: '55624' }], // Approved HTTP port
+      '1025/tcp': [{ HostIp: '127.0.0.1', HostPort: '55625' }], // Unauthorized SMTP port published on host!
+    }),
+  ];
+
+  assert.throws(
+    () => validateIsolatedLoopbackStack({ containers, network, project }),
+    /Unauthorized port inventory on Mailpit: expected exactly 1 published mapping, found 2/
+  );
+});
+
+test('validateIsolatedLoopbackStack rejects attachment of historical Task 06G volume', () => {
+  const project = 'tio-task06h-local-auth';
+  const network = `supabase_network_${project}`;
+
+  const makeContainer = (part, image, portBindings = {}, mounts = []) => ({
+    Name: `/supabase_${part}_${project}`,
+    State: { Running: true },
+    Config: {
+      Image: image,
+      Labels: { 'com.docker.compose.project': project },
+    },
+    Mounts: mounts,
+    NetworkSettings: {
+      Networks: { [network]: {} },
+      Ports: portBindings,
+    },
+  });
+
+  const containers = [
+    makeContainer('auth', 'public.ecr.aws/supabase/gotrue:v2.197.0'),
+    makeContainer('db', 'public.ecr.aws/supabase/postgres:17.11.0.004', {}, [
+      { Name: 'supabase_db_tio-task06g-local-otp' }, // Historical volume attached!
+    ]),
+    makeContainer('kong', 'public.ecr.aws/supabase/kong:2.8.1', {
+      '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55621' }],
+    }),
+    makeContainer('inbucket', 'public.ecr.aws/supabase/mailpit:v1.31.3', {
+      '8025/tcp': [{ HostIp: '127.0.0.1', HostPort: '55624' }],
+    }),
+  ];
+
+  assert.throws(
+    () => validateIsolatedLoopbackStack({ containers, network, project }),
+    /Historical Task 06G volume attached to container/
+  );
+});
+
 test('preflight failure classifications map correctly', () => {
   assert.equal(
     preflightFailureKind(new Error('UNSAFE_WINDOWS_LISTENER: 0.0.0.0')),

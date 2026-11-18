@@ -6,7 +6,9 @@ import {
   signLocalJwt,
   generateLocalKeys,
   getRequiredJwtSecret,
+  assertRuntimeStackIsolation,
   executeAuthIntegrationSuite,
+  _executeAuthIntegrationSuiteInternal,
   project,
   network,
   expected,
@@ -76,21 +78,7 @@ test('adapter defaults adhere to isolated Task 06H namespace', () => {
   assert.equal(expected.MAILPIT_URL, 'http://127.0.0.1:55624');
 });
 
-test('executeAuthIntegrationSuite fails closed if required stack credentials are missing', async () => {
-  await assert.rejects(
-    async () => executeAuthIntegrationSuite(null, { preflightValidator: async () => true }),
-    /Invalid or non-loopback stack URLs refused/
-  );
-  await assert.rejects(
-    async () => executeAuthIntegrationSuite(
-      { API_URL: 'http://127.0.0.1:55621', MAILPIT_URL: 'http://127.0.0.1:55624' },
-      { preflightValidator: async () => true }
-    ),
-    /Local stack configuration and credentials required to run integration suite/
-  );
-});
-
-test('executeAuthIntegrationSuite enforces mandatory preflight and prevents HTTP dispatch on failure', async () => {
+test('executeAuthIntegrationSuite public entrypoint unconditionally enforces real preflight and ignores bypass attempts', async () => {
   let fetchCalled = false;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
@@ -99,7 +87,8 @@ test('executeAuthIntegrationSuite enforces mandatory preflight and prevents HTTP
   };
 
   try {
-    // 1. Failed preflight aborts before any HTTP call
+    // Calling executeAuthIntegrationSuite with a caller-provided bypass MUST NOT bypass real preflight.
+    // It must invoke real assertRuntimeStackIsolation, which fails closed when Docker/Windows stack is not running.
     await assert.rejects(
       async () => executeAuthIntegrationSuite(
         {
@@ -108,26 +97,67 @@ test('executeAuthIntegrationSuite enforces mandatory preflight and prevents HTTP
           PUBLISHABLE_KEY: 'test-pub',
           SERVICE_ROLE_KEY: 'test-serv',
         },
+        // Attacker or rogue caller attempts to pass a mock preflight validator:
+        { preflightValidator: async () => true }
+      ),
+      /network .* not found|No containers attached to the project network|Host listener validation failed|MISSING_WINDOWS_LISTENER/
+    );
+    assert.equal(fetchCalled, false, 'No fetch request must be made when real preflight fails');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('_executeAuthIntegrationSuiteInternal enforces isolation checker and fails closed if credentials missing', async () => {
+  await assert.rejects(
+    async () => _executeAuthIntegrationSuiteInternal(null, async () => true),
+    /Invalid or non-loopback stack URLs refused/
+  );
+  await assert.rejects(
+    async () => _executeAuthIntegrationSuiteInternal(
+      { API_URL: 'http://127.0.0.1:55621', MAILPIT_URL: 'http://127.0.0.1:55624' },
+      async () => true
+    ),
+    /Local stack configuration and credentials required to run integration suite/
+  );
+});
+
+test('_executeAuthIntegrationSuiteInternal enforces isolation checker and prevents HTTP dispatch on failure', async () => {
+  let fetchCalled = false;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    fetchCalled = true;
+    throw new Error('fetch should not be called');
+  };
+
+  try {
+    // 1. Failed isolation check aborts before any HTTP call
+    await assert.rejects(
+      async () => _executeAuthIntegrationSuiteInternal(
         {
-          preflightValidator: async () => {
-            throw new Error('UNSAFE_WINDOWS_LISTENER: non-loopback detected');
-          },
+          API_URL: 'http://127.0.0.1:55621',
+          MAILPIT_URL: 'http://127.0.0.1:55624',
+          PUBLISHABLE_KEY: 'test-pub',
+          SERVICE_ROLE_KEY: 'test-serv',
+        },
+        async () => {
+          throw new Error('UNSAFE_WINDOWS_LISTENER: non-loopback detected');
         }
       ),
       /UNSAFE_WINDOWS_LISTENER: non-loopback detected/
     );
-    assert.equal(fetchCalled, false, 'No fetch request must be made when preflight fails');
+    assert.equal(fetchCalled, false, 'No fetch request must be made when isolation checker fails');
 
     // 2. Non-loopback URL rejected before HTTP call
     await assert.rejects(
-      async () => executeAuthIntegrationSuite(
+      async () => _executeAuthIntegrationSuiteInternal(
         {
           API_URL: 'http://192.168.1.100:55621',
           MAILPIT_URL: 'http://127.0.0.1:55624',
           PUBLISHABLE_KEY: 'test-pub',
           SERVICE_ROLE_KEY: 'test-serv',
         },
-        { preflightValidator: async () => true }
+        async () => true
       ),
       /Invalid or non-loopback stack URLs refused/
     );

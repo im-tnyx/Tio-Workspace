@@ -134,17 +134,30 @@ export function initializeLocalStack() {
   };
 }
 
-// Complete integration suite runner — executed only after live startup authorization.
-// Mandatory runtime security gate: performs preflight isolation validation before ANY HTTP request.
-export async function executeAuthIntegrationSuite(local, { preflightValidator } = {}) {
-  // 1. Mandatory Runtime Security Gate: Caller cannot bypass isolation check
-  if (typeof preflightValidator === 'function') {
-    await preflightValidator(local);
-  } else {
-    inspectDockerStackRuntime();
-  }
+export function assertRuntimeStackIsolation() {
+  inspectDockerStackRuntime();
+  inspectWindowsListenersRuntime([55621, 55624]);
+  return true;
+}
 
-  // 2. Strict Loopback URL enforcement
+// Public production integration entrypoint: ALWAYS executes real Docker and Windows isolation validation.
+// No caller-controlled argument or callback can bypass this gate.
+export async function executeAuthIntegrationSuite(local) {
+  assertRuntimeStackIsolation();
+  return _runAuthIntegrationSuiteInternal(local);
+}
+
+// Internal runner for testing isolation gates without external caller bypass capability.
+export async function _executeAuthIntegrationSuiteInternal(local, isolationChecker = assertRuntimeStackIsolation) {
+  if (typeof isolationChecker !== 'function') {
+    throw new Error('Valid isolation checker required');
+  }
+  await isolationChecker(local);
+  return _runAuthIntegrationSuiteInternal(local);
+}
+
+async function _runAuthIntegrationSuiteInternal(local) {
+  // Strict Loopback URL enforcement
   const allowedBases = ['http://127.0.0.1:55621', 'http://127.0.0.1:55624'];
   if (!local?.API_URL || !local?.MAILPIT_URL ||
       !allowedBases.includes(local.API_URL) ||

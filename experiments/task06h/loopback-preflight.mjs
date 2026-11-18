@@ -8,6 +8,25 @@ export function nonLoopbackPublishedPorts(ports) {
     binding && !LOOPBACK.has(binding.HostIp));
 }
 
+export function extractPublishedBindings(portsObj) {
+  if (!portsObj || typeof portsObj !== 'object') return [];
+  const result = [];
+  for (const [containerPort, bindings] of Object.entries(portsObj)) {
+    if (Array.isArray(bindings)) {
+      for (const b of bindings) {
+        if (b && (b.HostPort || b.HostIp)) {
+          result.push({
+            containerPort,
+            hostIp: String(b.HostIp ?? '').trim(),
+            hostPort: String(b.HostPort ?? '').trim(),
+          });
+        }
+      }
+    }
+  }
+  return result;
+}
+
 export function preflightFailureKind(error) {
   const msg = String(error?.message ?? error ?? '');
   if (/non-loopback published port/i.test(msg) || /UNSAFE_WINDOWS_LISTENER/i.test(msg)) {
@@ -142,25 +161,38 @@ export function validateIsolatedLoopbackStack({
 
     // Auth and DB must NOT have any host port bindings in either HostConfig or NetworkSettings
     if (['auth', 'db'].includes(part)) {
-      const hostBinds = Object.values(found.HostConfig?.PortBindings ?? {}).flat();
-      const netBinds = Object.values(found.NetworkSettings?.Ports ?? {}).flat();
+      const hostBinds = extractPublishedBindings(found.HostConfig?.PortBindings);
+      const netBinds = extractPublishedBindings(found.NetworkSettings?.Ports);
       if (hostBinds.length > 0 || netBinds.length > 0) {
         throw new Error(`Security violation: ${part} container must not have any published host ports`);
       }
     }
 
     if (part === 'kong') {
-      const bindings = Object.values(found.NetworkSettings?.Ports ?? {}).flat();
-      const hasPort = bindings.some(b => b?.HostPort === apiHostPort && LOOPBACK.has(b?.HostIp));
-      if (!hasPort) {
-        throw new Error('Unexpected API port or non-loopback binding on Kong');
+      const netBinds = extractPublishedBindings(found.NetworkSettings?.Ports);
+      const hostBinds = extractPublishedBindings(found.HostConfig?.PortBindings);
+
+      // Enforce exact 1-to-1 port inventory: reject unauthorized extra localhost or wildcard ports
+      if (netBinds.length !== 1 || (hostBinds.length > 0 && hostBinds.length !== 1)) {
+        throw new Error(`Unauthorized port inventory on Kong: expected exactly 1 published mapping, found ${netBinds.length}`);
+      }
+      const b = netBinds[0];
+      if (b.containerPort !== '8000/tcp' || b.hostPort !== apiHostPort || !LOOPBACK.has(b.hostIp)) {
+        throw new Error(`Unexpected API port mapping on Kong: expected 8000/tcp -> 127.0.0.1:${apiHostPort}, got ${b.containerPort} -> ${b.hostIp}:${b.hostPort}`);
       }
     }
+
     if (part === 'inbucket') {
-      const bindings = Object.values(found.NetworkSettings?.Ports ?? {}).flat();
-      const hasPort = bindings.some(b => b?.HostPort === mailHostPort && LOOPBACK.has(b?.HostIp));
-      if (!hasPort) {
-        throw new Error('Unexpected Mailpit port or non-loopback binding');
+      const netBinds = extractPublishedBindings(found.NetworkSettings?.Ports);
+      const hostBinds = extractPublishedBindings(found.HostConfig?.PortBindings);
+
+      // Enforce exact 1-to-1 port inventory: reject unauthorized extra localhost or wildcard ports
+      if (netBinds.length !== 1 || (hostBinds.length > 0 && hostBinds.length !== 1)) {
+        throw new Error(`Unauthorized port inventory on Mailpit: expected exactly 1 published mapping, found ${netBinds.length}`);
+      }
+      const b = netBinds[0];
+      if (b.containerPort !== '8025/tcp' || b.hostPort !== mailHostPort || !LOOPBACK.has(b.hostIp)) {
+        throw new Error(`Unexpected Mailpit port mapping: expected 8025/tcp -> 127.0.0.1:${mailHostPort}, got ${b.containerPort} -> ${b.hostIp}:${b.hostPort}`);
       }
     }
   }
