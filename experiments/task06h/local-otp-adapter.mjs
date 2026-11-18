@@ -24,6 +24,15 @@ export const expected = {
   MAILPIT_URL: process.env.MAILPIT_URL || 'http://127.0.0.1:55624',
 };
 
+// Requires a mandatory, untracked JWT secret without insecure fallbacks.
+export function getRequiredJwtSecret() {
+  const secret = process.env.JWT_SECRET;
+  if (!secret || typeof secret !== 'string' || secret.trim().length < 32) {
+    throw new Error('JWT_SECRET must be set via environment and be at least 32 characters long (no fallback permitted)');
+  }
+  return secret.trim();
+}
+
 // Generates valid local HS256 JWT tokens using the configured local test secret.
 export function signLocalJwt(payload, secret) {
   const header = { alg: 'HS256', typ: 'JWT' };
@@ -33,7 +42,10 @@ export function signLocalJwt(payload, secret) {
   return `${unsignedToken}.${signature}`;
 }
 
-export function generateLocalKeys(jwtSecret) {
+export function generateLocalKeys(jwtSecret = getRequiredJwtSecret()) {
+  if (!jwtSecret || typeof jwtSecret !== 'string' || jwtSecret.trim().length < 32) {
+    throw new Error('Valid JWT secret of at least 32 characters required');
+  }
   const now = Math.floor(Date.now() / 1000);
   const exp = now + 3600 * 24 * 365; // 1 year local test validity
   const publishablePayload = {
@@ -110,7 +122,7 @@ export function inspectDockerStackRuntime() {
 }
 
 export function initializeLocalStack() {
-  const jwtSecret = process.env.JWT_SECRET || 'super-secret-jwt-token-with-at-least-32-characters-long';
+  const jwtSecret = getRequiredJwtSecret();
   const keys = generateLocalKeys(jwtSecret);
 
   // Runtime container and listener inspection
@@ -123,8 +135,24 @@ export function initializeLocalStack() {
 }
 
 // Complete integration suite runner — executed only after live startup authorization.
-export async function executeAuthIntegrationSuite(local) {
-  if (!local?.API_URL || !local?.MAILPIT_URL || !local?.PUBLISHABLE_KEY || !local?.SERVICE_ROLE_KEY) {
+// Mandatory runtime security gate: performs preflight isolation validation before ANY HTTP request.
+export async function executeAuthIntegrationSuite(local, { preflightValidator } = {}) {
+  // 1. Mandatory Runtime Security Gate: Caller cannot bypass isolation check
+  if (typeof preflightValidator === 'function') {
+    await preflightValidator(local);
+  } else {
+    inspectDockerStackRuntime();
+  }
+
+  // 2. Strict Loopback URL enforcement
+  const allowedBases = ['http://127.0.0.1:55621', 'http://127.0.0.1:55624'];
+  if (!local?.API_URL || !local?.MAILPIT_URL ||
+      !allowedBases.includes(local.API_URL) ||
+      !allowedBases.includes(local.MAILPIT_URL)) {
+    throw new Error('Invalid or non-loopback stack URLs refused');
+  }
+
+  if (!local?.PUBLISHABLE_KEY || !local?.SERVICE_ROLE_KEY) {
     throw new Error('Local stack configuration and credentials required to run integration suite');
   }
 
@@ -210,31 +238,342 @@ export async function executeAuthIntegrationSuite(local) {
     return auth('/user', undefined, { method: 'GET', token: result.value.access_token });
   }
 
+  async function localUser(address, withPassword = false) {
+    const body = { email: address, email_confirm: true };
+    if (withPassword) body.password = password();
+    const created = await auth('/admin/users', body, { admin: true });
+    if (![200, 201].includes(created.status) || !created.value?.id) {
+      throw new Error('Synthetic local user creation unavailable');
+    }
+    return created.value.id;
+  }
+
+  const wrongCode = code => code === '000000' ? '111111' : '000000';
   async function runCase(id, fn) {
     try { await fn(); } catch { row(id, 'ERROR', 'Local case could not complete'); }
   }
 
-  // Baseline Mailpit check
+  // Case 1: Baseline Mailpit check
   await runCase('MAILPIT_BASELINE', async () => {
     (await messages()).forEach(item => usedMail.add(item.ID));
     row('MAILPIT_BASELINE', 'PASS', 'Existing mail IDs excluded');
   });
 
-  // OTP replay check
-  await runCase('OTP_FORMAT_REPLAY', async () => {
-    const address = email();
-    const code = await issue(address);
-    const first = await auth('/verify', { email: address, token: code, type: 'email' });
-    const id = requireSession(first).user.id;
-    const firstProbe = await probeUser(first);
-    const second = await auth('/verify', { email: address, token: code, type: 'email' });
-    const secondProbe = await probeUser(second);
-    row('OTP_FORMAT', /^\d{6}$/.test(code) ? 'PASS' : 'FAIL', 'Mailpit code shape checked; value redacted');
-    row('OTP_REPLAY', classifyReplay(first, second, id, address, firstProbe, secondProbe),
-      `verify=${describe(first, second)}; first_user_probe=${safeStatus(firstProbe)}; ` +
-      `second_user_probe=${safeStatus(secondProbe)}; ` +
-      `second_session=${Boolean(second.value?.access_token)}`);
-  });
+  if (rows.at(-1)?.result === 'PASS') {
+    // Case 2: OTP format & sequential replay check
+    await runCase('OTP_FORMAT_REPLAY', async () => {
+      const address = email();
+      const code = await issue(address);
+      const first = await auth('/verify', { email: address, token: code, type: 'email' });
+      const id = requireSession(first).user.id;
+      const firstProbe = await probeUser(first);
+      const second = await auth('/verify', { email: address, token: code, type: 'email' });
+      const secondProbe = await probeUser(second);
+      row('OTP_FORMAT', /^\d{6}$/.test(code) ? 'PASS' : 'FAIL', 'Mailpit code shape checked; value redacted');
+      row('OTP_REPLAY', classifyReplay(first, second, id, address, firstProbe, secondProbe),
+        `verify=${describe(first, second)}; first_user_probe=${safeStatus(firstProbe)}; ` +
+        `second_user_probe=${safeStatus(secondProbe)}; ` +
+        `second_session=${Boolean(second.value?.access_token)}`);
+    });
+
+    // Case 3: Concurrent OTP verification (3 pairs)
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      await runCase(`OTP_CONCURRENT_${attempt}`, async () => {
+        const address = email();
+        const id = await localUser(address);
+        const code = await issue(address, false);
+        const results = await Promise.all([
+          auth('/verify', { email: address, token: code, type: 'email' }),
+          auth('/verify', { email: address, token: code, type: 'email' }),
+        ]);
+        const probes = await Promise.all(results.map(probeUser));
+        const classified = classifyConcurrent(results, id, address, probes);
+        const responseEvidence = results.map((r, i) => ({
+          http: safeStatus(r),
+          expectedUuidMatch: r.value?.user?.id ? r.value.user.id === id : null,
+          accessTokenPresent: Boolean(r.value?.access_token),
+          refreshTokenPresent: Boolean(r.value?.refresh_token),
+          userProbeAccepted: probes[i]?.status === 200 && probes[i].value?.id === id,
+        }));
+        row(`OTP_CONCURRENT_${attempt}`, classified.result,
+          `verify=${describe(...results)}; user_probes=${describe(...probes)}; ` +
+          `valid_responses=${classified.validResponses}; probes_validated=${classified.probesValidated}; ` +
+          `bearers_authenticated=${classified.bearersAuthenticated}; ` +
+          `session_id_claim_comparison=${classified.sessionIdClaimComparison}; ` +
+          `server_session_records=NOT TESTED; wrong_identity=${classified.wrongIdentity}`,
+          {
+            responses: responseEvidence,
+            sessionIdClaimComparison: classified.sessionIdClaimComparison,
+            bearersAuthenticated: classified.bearersAuthenticated,
+            serverSessionRecords: 'NOT TESTED'
+          });
+      });
+    }
+
+    // Case 4: Invalid code rejection
+    await runCase('INVALID_CODE', async () => {
+      const address = email(), code = await issue(address);
+      const invalid = await auth('/verify', { email: address, token: wrongCode(code), type: 'email' });
+      const valid = await auth('/verify', { email: address, token: code, type: 'email' });
+      const expectedId = valid.value?.user?.id || invalid.value?.user?.id;
+      const invalidProbe = await probeUser(invalid);
+      const validProbe = await probeUser(valid);
+      row('INVALID_CODE', classifyInvalidCode(invalid, valid, expectedId || '', address, {
+        wrongProbe: invalidProbe,
+        correctProbe: validProbe,
+      }),
+        `wrong_then_valid=${describe(invalid, valid)}; ` +
+        `wrong_user_probe=${safeStatus(invalidProbe)}; valid_user_probe=${safeStatus(validProbe)}`);
+    });
+
+    // Case 5: Five-wrong attempts lock & 15-min cooldown
+    await runCase('FIVE_WRONG_COOLDOWN', async () => {
+      const address = email(), id = await localUser(address);
+      const code = await issue(address, false);
+      const wrong = [];
+      const wrongProbes = [];
+      for (let n = 0; n < 5; n++) {
+        const attempt = await auth('/verify',
+          { email: address, token: wrongCode(code), type: 'email' });
+        wrong.push(attempt);
+        wrongProbes.push(await probeUser(attempt));
+      }
+      const valid = await auth('/verify', { email: address, token: code, type: 'email' });
+      const validProbe = await probeUser(valid);
+      const five = classifyFiveWrong(wrong, valid, id, {
+        correctProbe: validProbe,
+        wrongProbes,
+      });
+      row('FIVE_WRONG_COOLDOWN', five.result,
+        `wrong=${describe(...wrong)}; wrong_user_probes=${describe(...wrongProbes)}; ` +
+        `correct=${safeStatus(valid)}; correct_user_probe=${safeStatus(validProbe)}; ` +
+        `correct_session=${Boolean(valid.value?.access_token)}; kind=${five.kind}`);
+      row('COOLDOWN_15_MIN', five.kind === 'cooldown_bypass' ? 'FAIL' : 'NOT TESTED',
+        `correct_immediately_after_five=${safeStatus(valid)}; ` +
+        `correct_user_probe=${safeStatus(validProbe)}; ` +
+        `session=${Boolean(valid.value?.access_token && valid.value?.refresh_token)}; ` +
+        `kind=${five.kind}`);
+    });
+
+    // Case 6: Purpose crossing (Signup code used as Recovery)
+    await runCase('SIGNUP_AS_RECOVERY', async () => {
+      const address = email(), signupCode = await issue(address);
+      const crossing = await auth('/verify', { email: address, token: signupCode, type: 'recovery' });
+      const crossingProbe = await probeUser(crossing);
+      const signup = await auth('/verify', { email: address, token: signupCode, type: 'email' });
+      const signupProbe = await probeUser(signup);
+      const expectedId = signup.value?.user?.id || crossing.value?.user?.id ||
+        crossingProbe?.value?.id || '';
+      const signupOk = signup.status === 200 && signup.value?.user?.email?.toLowerCase() === address &&
+        Boolean(signup.value?.access_token && signup.value?.refresh_token) &&
+        signupProbe?.status === 200 && signupProbe.value?.id === signup.value.user.id;
+      row('SIGNUP_AS_RECOVERY', classifyPurposeCrossing(crossing, {
+        expectedId,
+        expectedEmail: address,
+        probe: crossingProbe,
+        positiveControlValidated: Boolean(signupOk),
+      }),
+        `verify=${safeStatus(crossing)}; user_probe=${safeStatus(crossingProbe)}; ` +
+        `session=${Boolean(crossing.value?.access_token && crossing.value?.refresh_token)}; ` +
+        `bearer_auth=${Boolean(crossingProbe?.status === 200 && crossingProbe.value?.id)}; ` +
+        `same_uuid=${Boolean(crossingProbe?.value?.id && crossingProbe.value.id === expectedId)}`);
+      row('SIGNUP_EXPECTED_EMAIL', signupOk ? 'PASS' : 'INCONCLUSIVE',
+        `verify=${safeStatus(signup)}; user_probe=${safeStatus(signupProbe)}; ` +
+        `same_email=${signup.value?.user?.email?.toLowerCase() === address}; ` +
+        `same_uuid=${Boolean(signup.value?.user?.id && signupProbe?.value?.id === signup.value.user.id)}`);
+    });
+
+    // Case 7: Recovery code crossing (Recovery used as other purposes)
+    for (const type of ['email', 'signup', 'magiclink', 'recovery']) {
+      await runCase(`RECOVERY_AS_${type.toUpperCase()}`, async () => {
+        const address = email(), id = await localUser(address, true);
+        const sent = await auth('/recover', { email: address });
+        if (sent.status !== 200) throw new Error('Recovery issuance unavailable');
+        const code = await codeFor(address, 'local recovery');
+        const verified = await auth('/verify', { email: address, token: code, type });
+        const probe = await probeUser(verified);
+        const session = verified.status === 200 && verified.value?.user?.id === id &&
+          verified.value?.access_token && verified.value?.refresh_token &&
+          probe?.status === 200 && probe.value?.id === id;
+        if (type === 'recovery') {
+          const recoveryResult = classifyRecoveryControl(verified, id, address, probe);
+          row('RECOVERY_AS_RECOVERY', recoveryResult,
+            `verify=${safeStatus(verified)}; user_probe=${safeStatus(probe)}; ` +
+            `session=${Boolean(session)}; same_uuid=${verified.value?.user?.id === id}; ` +
+            `wrong_identity=${recoveryResult === 'FAIL' && verified.value?.user?.id !== id}`);
+          return;
+        }
+        const early = classifyPurposeCrossing(verified, {
+          expectedId: id, expectedEmail: address, probe, positiveControlValidated: false,
+        });
+        if (early === 'FAIL' || early === 'ERROR') {
+          row(`RECOVERY_AS_${type.toUpperCase()}`, early,
+            `verify=${safeStatus(verified)}; user_probe=${safeStatus(probe)}; ` +
+            `session=${Boolean(session)}; same_uuid=${verified.value?.user?.id === id}; ` +
+            `bearer_auth=${Boolean(probe?.status === 200 && probe.value?.id === id)}; ` +
+            `purpose_crossover=${Boolean(session || (probe?.status === 200 &&
+              probe.value?.id === id && verified.value?.access_token))}; ` +
+            `recovery_control=NOT_ATTEMPTED`);
+          return;
+        }
+        let recoveryControl = null, recoveryProbe = null, positiveControlValidated = false;
+        if (verified.status === 403 && verified.value?.error_code === 'otp_expired' &&
+            !verified.value?.access_token && !verified.value?.refresh_token) {
+          recoveryControl = await auth('/verify',
+            { email: address, token: code, type: 'recovery' });
+          if (recoveryControl.kind && ['network_error', 'timeout', 'invalid_json']
+              .includes(recoveryControl.kind)) {
+            row(`RECOVERY_AS_${type.toUpperCase()}`, 'ERROR',
+              `verify=${safeStatus(verified)}; user_probe=${safeStatus(probe)}; ` +
+              `recovery_control=${safeStatus(recoveryControl)}; positive_control=false`);
+            return;
+          }
+          recoveryProbe = await probeUser(recoveryControl);
+          positiveControlValidated = classifyRecoveryControl(recoveryControl, id, address,
+            recoveryProbe) === 'PASS';
+        }
+        const classification = classifyRecoveryPurposeCrossing(verified, recoveryControl,
+          id, address, recoveryProbe, probe);
+        const result = classification.result;
+        row(`RECOVERY_AS_${type.toUpperCase()}`, result,
+          `verify=${safeStatus(verified)}; user_probe=${safeStatus(probe)}; ` +
+          `session=${Boolean(session)}; same_uuid=${verified.value?.user?.id === id}; ` +
+          `bearer_auth=${Boolean(probe?.status === 200 && probe.value?.id === id)}; ` +
+          `purpose_crossover=${Boolean(session || (probe?.status === 200 &&
+            probe.value?.id === id && verified.value?.access_token))}; ` +
+          `recovery_control=${safeStatus(recoveryControl)}; ` +
+          `recovery_control_identity=${classification.finding}; ` +
+          `positive_control=${positiveControlValidated}`);
+      });
+    }
+
+    row('APP_AUTHORIZATION', 'NOT TESTED', 'No Tio enrollment, Home, or server eligibility implementation');
+
+    // Case 8: Resend interval and old code invalidation
+    await runCase('RESEND_OLD_CODE', async () => {
+      const address = email();
+      const first = await timedAuth('/otp', { email: address, create_user: true });
+      if (first.result.status !== 200) throw new Error('First local OTP send unavailable');
+      const oldCode = await codeFor(address, 'local signup');
+      const attempts = [await timedAuth('/otp', { email: address, create_user: true })];
+      const deadline = first.responseAt + 75000;
+      while (attempts.at(-1).result.status !== 200 && performance.now() < deadline) {
+        if (![429, 422].includes(attempts.at(-1).result.status)) break;
+        await delay(3000);
+        attempts.push(await timedAuth('/otp', { email: address, create_user: true }));
+      }
+      const timing = classifyResendTiming(first, attempts);
+      const accepted = attempts.find(a => a.result.status === 200);
+      const bounds = timing.lowerBoundMs === null ? 'unavailable' :
+        `${Math.floor(timing.lowerBoundMs / 1000)}..${Math.ceil(timing.upperBoundMs / 1000)}s`;
+      row('RESEND_INTERVAL_OBSERVED', timing.result,
+        `immediate=${safeStatus(attempts[0].result)}; accepted=${safeStatus(accepted?.result)}; ` +
+        `elapsed_bounds=${bounds}; immediate_rejected=${timing.immediateRejected}; ` +
+        `accepted_after_60=${timing.acceptedAfter60}`,
+        { lowerBoundMs: timing.lowerBoundMs, upperBoundMs: timing.upperBoundMs,
+          immediateRejected: timing.immediateRejected, acceptedAfter60: timing.acceptedAfter60 });
+      row('EXACT_60_SECOND_BOUNDARY', timing.exactBoundary,
+        'Server-side exact boundary not inferred from client timestamps');
+      if (!accepted) {
+        row('OLD_CODE_INVALIDATED', 'NOT TESTED', 'No accepted second challenge');
+        return;
+      }
+      const newCode = await codeFor(address, 'local signup');
+      const oldVerify = await auth('/verify', { email: address, token: oldCode, type: 'email' });
+      const newVerify = await auth('/verify', { email: address, token: newCode, type: 'email' });
+      const expectedId = newVerify.value?.user?.id || oldVerify.value?.user?.id;
+      const oldProbe = await probeUser(oldVerify);
+      const newProbe = await probeUser(newVerify);
+      row('OLD_CODE_INVALIDATED', classifyOldCodeInvalidation(oldVerify, newVerify,
+        expectedId || '', address, {
+          distinctCodes: oldCode !== newCode,
+          oldProbe,
+          newProbe,
+        }),
+        `old_then_new=${describe(oldVerify, newVerify)}; ` +
+        `old_user_probe=${safeStatus(oldProbe)}; new_user_probe=${safeStatus(newProbe)}; ` +
+        `distinct_codes=${oldCode !== newCode}`);
+    });
+
+    // Case 9: AUTH-17 unrevoked OTP password mutation
+    await runCase('AUTH17_PASSWORD_MUTATION', async () => {
+      const address = email(), oldPassword = password(), newPassword = password();
+      const created = await auth('/admin/users',
+        { email: address, password: oldPassword, email_confirm: true }, { admin: true });
+      if (created.status !== 200 && created.status !== 201) throw new Error('Local user creation unavailable');
+      const id = created.value.id;
+      const beforeGrant = await auth('/token?grant_type=password',
+        { email: address, password: oldPassword });
+      const beforeProbe = await probeUser(beforeGrant);
+      const baseline = classifyPasswordMutation({
+        beforeGrant, beforeProbe,
+        update: { status: 400, value: { error_code: 'validation_failed' } },
+        oldGrant: { status: 400, value: { error_code: 'invalid_credentials' } },
+        newGrant: { status: 400, value: { error_code: 'invalid_credentials' } },
+        id,
+      });
+      if (baseline.kind === 'identity_violation') {
+        row('AUTH17_PASSWORD_MUTATION', 'FAIL',
+          `pre_grant=${safeStatus(beforeGrant)}; pre_user_probe=${safeStatus(beforeProbe)}; ` +
+          `kind=${baseline.kind}; pre_mutation_positive_control=false; mutation=NOT TESTED`);
+        return;
+      }
+      if (baseline.result === 'ERROR') {
+        row('AUTH17_PASSWORD_MUTATION', 'ERROR',
+          `pre_grant=${safeStatus(beforeGrant)}; pre_user_probe=${safeStatus(beforeProbe)}; ` +
+          `kind=${baseline.kind}; pre_mutation_positive_control=false; mutation=NOT TESTED`);
+        return;
+      }
+      const beforeControl = beforeGrant.status === 200 && beforeGrant.value?.user?.id === id &&
+        Boolean(beforeGrant.value?.access_token && beforeGrant.value?.refresh_token) &&
+        beforeProbe?.status === 200 && beforeProbe.value?.id === id;
+      if (!beforeControl) {
+        row('AUTH17_PASSWORD_MUTATION', 'INCONCLUSIVE',
+          `pre_grant=${safeStatus(beforeGrant)}; pre_user_probe=${safeStatus(beforeProbe)}; ` +
+          `kind=${baseline.kind}; pre_mutation_positive_control=false; mutation=NOT TESTED`);
+        return;
+      }
+      const code = await issue(address, false);
+      const otpResult = await auth('/verify', { email: address, token: code, type: 'email' });
+      const otpProbe = await probeUser(otpResult);
+      const otpControl = classifyOtpSessionControl(otpResult, id, address, otpProbe);
+      const otpAbort = planAuth17OtpControlAbort(otpControl);
+      if (otpAbort) {
+        row('AUTH17_OTP_SESSION', otpAbort.otpSession.result,
+          `verify=${safeStatus(otpResult)}; user_probe=${safeStatus(otpProbe)}; ` +
+          `kind=${otpAbort.otpSession.kind}`);
+        row('AUTH17_PASSWORD_MUTATION', otpAbort.passwordMutation.result,
+          `otp_control=${otpAbort.passwordMutation.kind}; ` +
+          `mutation=${otpAbort.passwordMutation.mutation}`);
+        return;
+      }
+      row('AUTH17_OTP_SESSION', 'PASS',
+        `verify=${safeStatus(otpResult)}; user_probe=${safeStatus(otpProbe)}; same_uuid=true`);
+      const otp = requireSession(otpResult);
+      const update = await auth('/user', { password: newPassword }, { method: 'PUT', token: otp.access_token });
+      const oldGrant = await auth('/token?grant_type=password', { email: address, password: oldPassword });
+      const oldGrantProbe = await probeUser(oldGrant);
+      const newGrant = await auth('/token?grant_type=password', { email: address, password: newPassword });
+      const newGrantProbe = await probeUser(newGrant);
+      const classified = classifyPasswordMutation({
+        beforeGrant, beforeProbe, update, oldGrant, newGrant, id,
+        oldGrantProbe, newGrantProbe,
+      });
+      row('AUTH17_PASSWORD_MUTATION', classified.result,
+        `pre_grant=${safeStatus(beforeGrant)}; pre_user_probe=${safeStatus(beforeProbe)}; ` +
+        `kind=${classified.kind}; pre_mutation_positive_control=true; update=${safeStatus(update)}; ` +
+        `admin_header=false; current_password_supplied=false; ` +
+        `old_grant=${safeStatus(oldGrant)}; old_grant_user_probe=${safeStatus(oldGrantProbe)}; ` +
+        `new_grant=${safeStatus(newGrant)}; new_grant_user_probe=${safeStatus(newGrantProbe)}; ` +
+        `same_uuid=${newGrant.value?.user?.id === id}`);
+    });
+  }
+
+  // Cases 10-12: Diagnostic unverified platform boundaries
+  for (const id of ['OTP_EXPIRY_10_MIN', 'FIVE_SENDS_PER_HOUR',
+    'NO_UNINTENDED_IDENTITY', 'NO_AUTO_HOME', 'ONE_ACCOUNT_PER_INSTALL']) {
+    row(id, 'NOT TESTED', 'Requires elapsed-time, identity-ledger, or app-level evidence');
+  }
 
   return rows;
 }

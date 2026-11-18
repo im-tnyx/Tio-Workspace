@@ -103,10 +103,18 @@ export function validateIsolatedLoopbackStack({
       throw new Error(`Unexpected local container/network: ${sName || 'unknown'}`);
     }
 
-    // Verify Compose project label if present
+    // Mandatory Compose project label assertion: reject containers missing the label or having mismatch
     const composeProj = found.Config?.Labels?.['com.docker.compose.project'];
-    if (composeProj && composeProj !== project) {
-      throw new Error(`Unexpected Compose project identity on ${sName}: ${composeProj}`);
+    if (!composeProj || composeProj !== project) {
+      throw new Error(`Invalid or missing Compose project label on ${sName}: expected '${project}', got '${composeProj || 'none'}'`);
+    }
+
+    // Forbid attachment of historical Task 06G volumes
+    const mounts = found.Mounts ?? [];
+    for (const m of mounts) {
+      if (m.Name && /task06g/i.test(m.Name)) {
+        throw new Error(`Historical Task 06G volume attached to container ${sName}: ${m.Name}`);
+      }
     }
 
     // Inspect BOTH HostConfig.PortBindings and NetworkSettings.Ports for non-loopback exposure
@@ -132,7 +140,7 @@ export function validateIsolatedLoopbackStack({
       throw new Error('Unexpected Postgres image');
     }
 
-    // Auth and DB must NOT have any host port bindings
+    // Auth and DB must NOT have any host port bindings in either HostConfig or NetworkSettings
     if (['auth', 'db'].includes(part)) {
       const hostBinds = Object.values(found.HostConfig?.PortBindings ?? {}).flat();
       const netBinds = Object.values(found.NetworkSettings?.Ports ?? {}).flat();

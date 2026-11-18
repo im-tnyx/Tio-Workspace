@@ -70,7 +70,10 @@ test('validateIsolatedLoopbackStack validates compliant Compose containers', () 
   const makeContainer = (part, image, portBindings = {}) => ({
     Name: `/supabase_${part}_${project}`,
     State: { Running: true },
-    Config: { Image: image },
+    Config: {
+      Image: image,
+      Labels: { 'com.docker.compose.project': project },
+    },
     NetworkSettings: {
       Networks: { [network]: {} },
       Ports: portBindings,
@@ -106,7 +109,10 @@ test('validateIsolatedLoopbackStack fails on wildcard port exposure', () => {
     {
       Name: `/supabase_auth_${project}`,
       State: { Running: true },
-      Config: { Image: 'public.ecr.aws/supabase/gotrue:v2.197.0' },
+      Config: {
+        Image: 'public.ecr.aws/supabase/gotrue:v2.197.0',
+        Labels: { 'com.docker.compose.project': project },
+      },
       NetworkSettings: {
         Networks: { [network]: {} },
         Ports: {
@@ -129,7 +135,10 @@ test('validateIsolatedLoopbackStack rejects unexpected extra container', () => {
   const makeContainer = (part, image, portBindings = {}) => ({
     Name: `/supabase_${part}_${project}`,
     State: { Running: true },
-    Config: { Image: image },
+    Config: {
+      Image: image,
+      Labels: { 'com.docker.compose.project': project },
+    },
     NetworkSettings: {
       Networks: { [network]: {} },
       Ports: portBindings,
@@ -161,7 +170,10 @@ test('validateIsolatedLoopbackStack rejects published ports on internal DB conta
   const makeContainer = (part, image, portBindings = {}) => ({
     Name: `/supabase_${part}_${project}`,
     State: { Running: true },
-    Config: { Image: image },
+    Config: {
+      Image: image,
+      Labels: { 'com.docker.compose.project': project },
+    },
     NetworkSettings: {
       Networks: { [network]: {} },
       Ports: portBindings,
@@ -184,6 +196,48 @@ test('validateIsolatedLoopbackStack rejects published ports on internal DB conta
   assert.throws(
     () => validateIsolatedLoopbackStack({ containers, network, project }),
     /Security violation: db container must not have any published host ports/
+  );
+});
+
+test('validateIsolatedLoopbackStack rejects missing or mismatched Compose project label', () => {
+  const project = 'tio-task06h-local-auth';
+  const network = `supabase_network_${project}`;
+
+  const makeContainer = (part, image, labels = {}) => ({
+    Name: `/supabase_${part}_${project}`,
+    State: { Running: true },
+    Config: {
+      Image: image,
+      Labels: labels,
+    },
+    NetworkSettings: {
+      Networks: { [network]: {} },
+      Ports: {},
+    },
+  });
+
+  const missingLabelContainers = [
+    makeContainer('auth', 'public.ecr.aws/supabase/gotrue:v2.197.0', {}),
+    makeContainer('db', 'public.ecr.aws/supabase/postgres:17.11.0.004', {}),
+    makeContainer('kong', 'public.ecr.aws/supabase/kong:2.8.1', {}),
+    makeContainer('inbucket', 'public.ecr.aws/supabase/mailpit:v1.31.3', {}),
+  ];
+
+  assert.throws(
+    () => validateIsolatedLoopbackStack({ containers: missingLabelContainers, network, project }),
+    /Invalid or missing Compose project label/
+  );
+
+  const mismatchedLabelContainers = [
+    makeContainer('auth', 'public.ecr.aws/supabase/gotrue:v2.197.0', { 'com.docker.compose.project': 'wrong-project' }),
+    makeContainer('db', 'public.ecr.aws/supabase/postgres:17.11.0.004', { 'com.docker.compose.project': 'wrong-project' }),
+    makeContainer('kong', 'public.ecr.aws/supabase/kong:2.8.1', { 'com.docker.compose.project': 'wrong-project' }),
+    makeContainer('inbucket', 'public.ecr.aws/supabase/mailpit:v1.31.3', { 'com.docker.compose.project': 'wrong-project' }),
+  ];
+
+  assert.throws(
+    () => validateIsolatedLoopbackStack({ containers: mismatchedLabelContainers, network, project }),
+    /Invalid or missing Compose project label/
   );
 });
 

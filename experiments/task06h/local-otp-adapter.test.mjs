@@ -5,6 +5,8 @@ import { createHmac } from 'node:crypto';
 import {
   signLocalJwt,
   generateLocalKeys,
+  getRequiredJwtSecret,
+  executeAuthIntegrationSuite,
   project,
   network,
   expected,
@@ -31,7 +33,24 @@ test('signLocalJwt creates valid verifiable HS256 tokens', () => {
   assert.equal(signature, expectedSig, 'Signature must match HMAC-SHA256 calculation');
 });
 
-test('generateLocalKeys produces compliant anon and service_role tokens', () => {
+test('getRequiredJwtSecret enforces mandatory secret and rejects insecure fallbacks', () => {
+  const origSecret = process.env.JWT_SECRET;
+  try {
+    delete process.env.JWT_SECRET;
+    assert.throws(() => getRequiredJwtSecret(), /JWT_SECRET must be set via environment/);
+
+    process.env.JWT_SECRET = 'short';
+    assert.throws(() => getRequiredJwtSecret(), /at least 32 characters long/);
+
+    process.env.JWT_SECRET = '   valid-secret-with-at-least-32-characters-length   ';
+    assert.equal(getRequiredJwtSecret(), 'valid-secret-with-at-least-32-characters-length');
+  } finally {
+    if (origSecret !== undefined) process.env.JWT_SECRET = origSecret;
+    else delete process.env.JWT_SECRET;
+  }
+});
+
+test('generateLocalKeys produces compliant anon and service_role tokens with valid secret', () => {
   const secret = 'super-secret-jwt-token-with-at-least-32-characters-long';
   const keys = generateLocalKeys(secret);
 
@@ -58,13 +77,62 @@ test('adapter defaults adhere to isolated Task 06H namespace', () => {
 });
 
 test('executeAuthIntegrationSuite fails closed if required stack credentials are missing', async () => {
-  const { executeAuthIntegrationSuite } = await import('./local-otp-adapter.mjs');
   await assert.rejects(
-    async () => executeAuthIntegrationSuite(null),
-    /Local stack configuration and credentials required to run integration suite/
+    async () => executeAuthIntegrationSuite(null, { preflightValidator: async () => true }),
+    /Invalid or non-loopback stack URLs refused/
   );
   await assert.rejects(
-    async () => executeAuthIntegrationSuite({ API_URL: 'http://127.0.0.1:55621' }),
+    async () => executeAuthIntegrationSuite(
+      { API_URL: 'http://127.0.0.1:55621', MAILPIT_URL: 'http://127.0.0.1:55624' },
+      { preflightValidator: async () => true }
+    ),
     /Local stack configuration and credentials required to run integration suite/
   );
+});
+
+test('executeAuthIntegrationSuite enforces mandatory preflight and prevents HTTP dispatch on failure', async () => {
+  let fetchCalled = false;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    fetchCalled = true;
+    throw new Error('fetch should not be called');
+  };
+
+  try {
+    // 1. Failed preflight aborts before any HTTP call
+    await assert.rejects(
+      async () => executeAuthIntegrationSuite(
+        {
+          API_URL: 'http://127.0.0.1:55621',
+          MAILPIT_URL: 'http://127.0.0.1:55624',
+          PUBLISHABLE_KEY: 'test-pub',
+          SERVICE_ROLE_KEY: 'test-serv',
+        },
+        {
+          preflightValidator: async () => {
+            throw new Error('UNSAFE_WINDOWS_LISTENER: non-loopback detected');
+          },
+        }
+      ),
+      /UNSAFE_WINDOWS_LISTENER: non-loopback detected/
+    );
+    assert.equal(fetchCalled, false, 'No fetch request must be made when preflight fails');
+
+    // 2. Non-loopback URL rejected before HTTP call
+    await assert.rejects(
+      async () => executeAuthIntegrationSuite(
+        {
+          API_URL: 'http://192.168.1.100:55621',
+          MAILPIT_URL: 'http://127.0.0.1:55624',
+          PUBLISHABLE_KEY: 'test-pub',
+          SERVICE_ROLE_KEY: 'test-serv',
+        },
+        { preflightValidator: async () => true }
+      ),
+      /Invalid or non-loopback stack URLs refused/
+    );
+    assert.equal(fetchCalled, false, 'No fetch request must be made for non-loopback URL');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
