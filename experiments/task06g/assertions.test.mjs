@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { classifyConcurrent, classifyReplay, classifyNegative, classifyFiveWrong,
   classifyRecoveryControl, classifyOldCodeInvalidation, classifyInvalidCode,
-  classifyPurposeCrossing, classifyPasswordMutation, classifyResendTiming,
-  safeStatus } from './assertions.mjs';
+  classifyPurposeCrossing, classifyPasswordMutation, classifyOtpSessionControl,
+  classifyResendTiming, safeStatus } from './assertions.mjs';
 
 const id = '11111111-1111-4111-8111-111111111111';
 const otherId = '22222222-2222-4222-8222-222222222222';
@@ -999,6 +999,148 @@ test('AUTH-17 PASS requires documented current-password policy denial', () => {
     assert.equal(classified.result, item.expected, item.name);
     assert.equal(classified.kind, item.kind, `${item.name} kind`);
   }
+});
+
+test('AUTH-17 post-grant bearer probes prove mutation bypass or identity failure', () => {
+  const updated = { status: 200, value: {} };
+  const timeout = { kind: 'timeout', status: null, value: null };
+  const accessOnly = (userId = id) => ({
+    status: 200, value: { user: { id: userId, email }, access_token: jwt(userId) },
+  });
+  const base = { beforeGrant: issued(), beforeProbe: probe(), update: updated, id };
+
+  // Review 4610777923 defect: access-only newGrant without probe was INCONCLUSIVE.
+  const missingProbe = classifyPasswordMutation({
+    ...base, oldGrant: generic, newGrant: accessOnly(id),
+  });
+  assert.equal(missingProbe.result, 'INCONCLUSIVE', 'access-only without probe stays inconclusive');
+  assert.equal(missingProbe.kind, 'inconclusive_control');
+
+  const completeNew = classifyPasswordMutation({
+    ...base, oldGrant: generic, newGrant: issued(),
+  });
+  assert.equal(completeNew.result, 'FAIL', 'complete expected-UUID new grant');
+  assert.equal(completeNew.kind, 'password_mutation_bypass');
+
+  const accessNew = classifyPasswordMutation({
+    ...base, oldGrant: generic, newGrant: accessOnly(id), newGrantProbe: probe(id),
+  });
+  assert.equal(accessNew.result, 'FAIL', 'access-only new grant + matching bearer');
+  assert.equal(accessNew.kind, 'password_mutation_bypass');
+
+  const oldWrong = classifyPasswordMutation({
+    ...base, oldGrant: issued(sid1, otherId), newGrant: generic,
+  });
+  assert.equal(oldWrong.result, 'FAIL', 'old grant complete wrong UUID');
+  assert.equal(oldWrong.kind, 'identity_violation');
+
+  const newWrong = classifyPasswordMutation({
+    ...base, oldGrant: generic, newGrant: issued(sid2, otherId),
+  });
+  assert.equal(newWrong.result, 'FAIL', 'new grant complete wrong UUID');
+  assert.equal(newWrong.kind, 'identity_violation');
+
+  const oldAccessWrong = classifyPasswordMutation({
+    ...base, oldGrant: accessOnly(otherId), oldGrantProbe: probe(otherId), newGrant: generic,
+  });
+  assert.equal(oldAccessWrong.result, 'FAIL', 'old access-only wrong-UUID bearer');
+  assert.equal(oldAccessWrong.kind, 'identity_violation');
+
+  const newAccessWrong = classifyPasswordMutation({
+    ...base, oldGrant: generic, newGrant: accessOnly(otherId), newGrantProbe: probe(otherId),
+  });
+  assert.equal(newAccessWrong.result, 'FAIL', 'new access-only wrong-UUID bearer');
+  assert.equal(newAccessWrong.kind, 'identity_violation');
+
+  const grantExpectedProbeOther = classifyPasswordMutation({
+    ...base, oldGrant: generic, newGrant: issued(), newGrantProbe: probe(otherId),
+  });
+  assert.equal(grantExpectedProbeOther.result, 'FAIL',
+    'grant expected UUID but bearer different UUID');
+  assert.equal(grantExpectedProbeOther.kind, 'identity_violation');
+
+  assert.equal(classifyPasswordMutation({
+    ...base, oldGrant: generic, newGrant: accessOnly(id), newGrantProbe: denied,
+  }).result, 'INCONCLUSIVE', 'rejected new-grant bearer');
+  assert.equal(classifyPasswordMutation({
+    ...base, oldGrant: generic, newGrant: accessOnly(id), newGrantProbe: null,
+  }).result, 'INCONCLUSIVE', 'unavailable new-grant probe');
+  assert.equal(classifyPasswordMutation({
+    ...base,
+    oldGrant: generic,
+    newGrant: {
+      status: 200,
+      value: { user: { id: 'not-a-uuid', email }, access_token: jwt(), refresh_token: 'r' },
+    },
+  }).result, 'INCONCLUSIVE', 'malformed new-grant UUID');
+
+  const preserved = classifyPasswordMutation({
+    ...base,
+    update: timeout,
+    oldGrant: accessOnly(otherId),
+    oldGrantProbe: probe(otherId),
+    newGrant: generic,
+  });
+  assert.equal(preserved.result, 'FAIL', 'identity failure before update transport');
+  assert.equal(preserved.kind, 'identity_violation');
+
+  const enforced = classifyPasswordMutation({
+    beforeGrant: issued(),
+    beforeProbe: probe(),
+    update: { status: 400, value: { error_code: 'current_password_required' } },
+    oldGrant: accessOnly(id),
+    oldGrantProbe: probe(id),
+    newGrant: generic,
+    id,
+  });
+  assert.equal(enforced.result, 'PASS', 'current-password denial with access-only old control');
+  assert.equal(enforced.kind, 'current_password_enforced');
+});
+
+test('AUTH-17 OTP session control fails closed on wrong-identity evidence', () => {
+  const timeout = { kind: 'timeout', status: null, value: null };
+  const accessOnly = (userId = id) => ({
+    status: 200, value: { user: { id: userId, email }, access_token: jwt(userId) },
+  });
+
+  // Review 4610777930 matrix.
+  assert.equal(classifyOtpSessionControl(issued(), id, email, probe()).result, 'PASS',
+    'expected UUID complete + matching bearer');
+  assert.equal(classifyOtpSessionControl(issued(), id, email, probe()).kind, 'otp_control');
+
+  const wrongComplete = classifyOtpSessionControl(issued(sid2, otherId), id, email, probe(otherId));
+  assert.equal(wrongComplete.result, 'FAIL', 'complete different UUID');
+  assert.equal(wrongComplete.kind, 'identity_violation');
+
+  const probeOther = classifyOtpSessionControl(issued(), id, email, probe(otherId));
+  assert.equal(probeOther.result, 'FAIL', 'response expected UUID but /user different');
+  assert.equal(probeOther.kind, 'identity_violation');
+
+  const accessWrong = classifyOtpSessionControl(accessOnly(otherId), id, email, probe(otherId));
+  assert.equal(accessWrong.result, 'FAIL', 'access-only wrong-UUID bearer');
+  assert.equal(accessWrong.kind, 'identity_violation');
+
+  assert.equal(classifyOtpSessionControl({
+    status: 200, value: { user: { email }, access_token: jwt(), refresh_token: 'r' },
+  }, id, email, probe()).result, 'INCONCLUSIVE', 'missing OTP user UUID');
+  assert.equal(classifyOtpSessionControl({
+    status: 200,
+    value: { user: { id: 'not-a-uuid', email }, access_token: jwt(), refresh_token: 'r' },
+  }, id, email, probe()).result, 'INCONCLUSIVE', 'malformed OTP user UUID');
+  assert.equal(classifyOtpSessionControl(issued(), id, email, denied).result, 'INCONCLUSIVE',
+    'probe rejection without wrong-identity');
+  assert.equal(classifyOtpSessionControl(issued(), id, email, timeout).result, 'INCONCLUSIVE',
+    'probe timeout with complete matching response stays incomplete control');
+  assert.equal(classifyOtpSessionControl(timeout, id, email, null).result, 'ERROR',
+    'verify transport timeout');
+  assert.equal(classifyOtpSessionControl({ kind: 'invalid_json', status: 200, value: null },
+    id, email, null).result, 'ERROR', 'malformed JSON');
+
+  // Confirmed identity failure remains FAIL (no exception path in classifier).
+  assert.equal(classifyOtpSessionControl(issued(sid1, otherId), id, email, probe(otherId)).result,
+    'FAIL');
+  assert.equal(classifyOtpSessionControl(issued(), id, email, probe()).result, 'PASS',
+    'valid OTP control allows AUTH-17 sequence to proceed');
 });
 
 test('wrong OTP authentication fails independently of later correct verify', () => {

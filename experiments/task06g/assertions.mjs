@@ -257,14 +257,29 @@ function wrongUuidBearer(grant, probe, expectedId) {
   return validUuid(expectedId) && authenticatedBearer(grant, probe) && probe.value.id !== expectedId;
 }
 
-export function classifyPasswordMutation({ beforeGrant, beforeProbe, update, oldGrant, newGrant, id }) {
+function matchingPasswordAuth(grant, grantProbe, expectedId) {
+  // Complete session or access-only bearer authenticated as the expected UUID.
+  if (!validUuid(expectedId)) return false;
+  if (grant?.status === 200 && grant.value?.user?.id === expectedId &&
+      typeof grant.value?.access_token === 'string' && Boolean(grant.value.access_token) &&
+      typeof grant.value?.refresh_token === 'string' && Boolean(grant.value.refresh_token)) {
+    return true;
+  }
+  return authenticatedBearer(grant, grantProbe) && grantProbe.value.id === expectedId;
+}
+
+export function classifyPasswordMutation({
+  beforeGrant, beforeProbe, update, oldGrant, newGrant, id,
+  oldGrantProbe = null, newGrantProbe = null,
+}) {
   const out = (result, kind) => ({ result, kind });
   // Baseline cross-identity evidence is decisive before "control unavailable" short-circuits.
   if (completeAuthForOtherUuid(beforeGrant, id) || wrongUuidBearer(beforeGrant, beforeProbe, id)) {
     return out('FAIL', 'identity_violation');
   }
-  // Later password-grant cross-identity remains FAIL before mutation/transport masking.
-  if (completeAuthForOtherUuid(oldGrant, id) || completeAuthForOtherUuid(newGrant, id)) {
+  // Post-mutation grants: complete or access-only wrong-UUID bearer fails closed first.
+  if (completeAuthForOtherUuid(oldGrant, id) || completeAuthForOtherUuid(newGrant, id) ||
+      wrongUuidBearer(oldGrant, oldGrantProbe, id) || wrongUuidBearer(newGrant, newGrantProbe, id)) {
     return out('FAIL', 'identity_violation');
   }
   if ([beforeGrant, beforeProbe].some(r => r?.kind && transportError(r))) {
@@ -279,19 +294,32 @@ export function classifyPasswordMutation({ beforeGrant, beforeProbe, update, old
   if ([update, oldGrant, newGrant].some(infrastructure)) {
     return out('INCONCLUSIVE', 'inconclusive_control');
   }
-  if (update.status === 200 && oldGrant.status === 400 &&
-      oldGrant.value?.error_code === 'invalid_credentials' &&
-      newGrant.status === 200 && newGrant.value?.user?.id === id &&
-      newGrant.value?.access_token && newGrant.value?.refresh_token) {
+  const oldRejected = oldGrant?.status === 400 &&
+    oldGrant.value?.error_code === 'invalid_credentials';
+  if (update.status === 200 && oldRejected && matchingPasswordAuth(newGrant, newGrantProbe, id)) {
     return out('FAIL', 'password_mutation_bypass');
   }
   // Generic 4xx/session_not_found/validation_failed are not current-password enforcement.
   if (currentPasswordPolicyDenial(update) &&
-      oldGrant.status === 200 && oldGrant.value?.user?.id === id &&
-      oldGrant.value?.access_token && oldGrant.value?.refresh_token &&
+      matchingPasswordAuth(oldGrant, oldGrantProbe, id) &&
       newGrant.status === 400 && newGrant.value?.error_code === 'invalid_credentials') {
     return out('PASS', 'current_password_enforced');
   }
+  return out('INCONCLUSIVE', 'inconclusive_control');
+}
+
+export function classifyOtpSessionControl(verifyResult, expectedId, expectedEmail = '', probe = null) {
+  const out = (result, kind) => ({ result, kind });
+  if (!validUuid(expectedId)) return out('INCONCLUSIVE', 'inconclusive_control');
+  const email = typeof expectedEmail === 'string' ? expectedEmail : '';
+  const evidence = inspectSession(verifyResult, expectedId, email, probe);
+  // Confirmed wrong-UUID OTP authentication fails closed before requireSession/exceptions.
+  if (evidence.wrongIdentity || wrongUuidBearer(verifyResult, probe, expectedId)) {
+    return out('FAIL', 'identity_violation');
+  }
+  if (evidence.state === 'ERROR') return out('ERROR', 'transport');
+  if (probe && transportError(probe) && !evidence.validResponse) return out('ERROR', 'transport');
+  if (evidence.validResponse && evidence.probeValidated) return out('PASS', 'otp_control');
   return out('INCONCLUSIVE', 'inconclusive_control');
 }
 

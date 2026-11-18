@@ -5,8 +5,8 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { classifyReplay, classifyConcurrent, classifyNegative,
   classifyFiveWrong, classifyRecoveryControl, classifyOldCodeInvalidation, classifyInvalidCode,
-  classifyPurposeCrossing, classifyPasswordMutation, classifyResendTiming,
-  safeStatus } from './assertions.mjs';
+  classifyPurposeCrossing, classifyPasswordMutation, classifyOtpSessionControl,
+  classifyResendTiming, safeStatus } from './assertions.mjs';
 import {
   preflightFailureKind,
   preflightFailureObservation,
@@ -425,24 +425,43 @@ if (local) {
       }
       const code = await issue(address, false);
       const otpResult = await auth('/verify', { email: address, token: code, type: 'email' });
-      const otp = requireSession(otpResult);
-      if (otp.user.id !== id) throw new Error('Identity mismatch');
       const otpProbe = await probeUser(otpResult);
-      if (otpProbe?.status !== 200 || otpProbe.value?.id !== id) {
-        row('AUTH17_OTP_SESSION', 'INCONCLUSIVE', `user_probe=${safeStatus(otpProbe)}`);
+      const otpControl = classifyOtpSessionControl(otpResult, id, address, otpProbe);
+      if (otpControl.kind === 'identity_violation') {
+        row('AUTH17_OTP_SESSION', 'FAIL',
+          `verify=${safeStatus(otpResult)}; user_probe=${safeStatus(otpProbe)}; kind=${otpControl.kind}`);
+        row('AUTH17_PASSWORD_MUTATION', 'FAIL',
+          `otp_control=${otpControl.kind}; mutation=NOT TESTED`);
         return;
       }
-      row('AUTH17_OTP_SESSION', 'PASS', `verify=${safeStatus(otpResult)}; user_probe=${safeStatus(otpProbe)}; same_uuid=true`);
+      if (otpControl.result === 'ERROR') {
+        row('AUTH17_OTP_SESSION', 'ERROR',
+          `verify=${safeStatus(otpResult)}; user_probe=${safeStatus(otpProbe)}; kind=${otpControl.kind}`);
+        return;
+      }
+      if (otpControl.result !== 'PASS') {
+        row('AUTH17_OTP_SESSION', 'INCONCLUSIVE',
+          `verify=${safeStatus(otpResult)}; user_probe=${safeStatus(otpProbe)}; kind=${otpControl.kind}`);
+        return;
+      }
+      row('AUTH17_OTP_SESSION', 'PASS',
+        `verify=${safeStatus(otpResult)}; user_probe=${safeStatus(otpProbe)}; same_uuid=true`);
+      const otp = requireSession(otpResult);
       const update = await auth('/user', { password: newPassword }, { method: 'PUT', token: otp.access_token });
       const oldGrant = await auth('/token?grant_type=password', { email: address, password: oldPassword });
+      const oldGrantProbe = await probeUser(oldGrant);
       const newGrant = await auth('/token?grant_type=password', { email: address, password: newPassword });
+      const newGrantProbe = await probeUser(newGrant);
       const classified = classifyPasswordMutation({
-        beforeGrant, beforeProbe, update, oldGrant, newGrant, id });
+        beforeGrant, beforeProbe, update, oldGrant, newGrant, id,
+        oldGrantProbe, newGrantProbe,
+      });
       row('AUTH17_PASSWORD_MUTATION', classified.result,
         `pre_grant=${safeStatus(beforeGrant)}; pre_user_probe=${safeStatus(beforeProbe)}; ` +
         `kind=${classified.kind}; pre_mutation_positive_control=true; update=${safeStatus(update)}; ` +
         `admin_header=false; current_password_supplied=false; ` +
-        `old_grant=${safeStatus(oldGrant)}; new_grant=${safeStatus(newGrant)}; ` +
+        `old_grant=${safeStatus(oldGrant)}; old_grant_user_probe=${safeStatus(oldGrantProbe)}; ` +
+        `new_grant=${safeStatus(newGrant)}; new_grant_user_probe=${safeStatus(newGrantProbe)}; ` +
         `same_uuid=${newGrant.value?.user?.id === id}`);
     });
   }
