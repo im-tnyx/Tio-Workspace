@@ -290,14 +290,16 @@ export function classifyPasswordMutation({
       beforeProbe?.status !== 200 || beforeProbe.value?.id !== id) {
     return out('INCONCLUSIVE', 'inconclusive_control');
   }
-  if ([update, oldGrant, newGrant].some(transportError)) return out('ERROR', 'transport');
+  // Update transport without a usable update body cannot prove mutation.
+  if (transportError(update)) return out('ERROR', 'transport');
+  // Unauthorized mutation is proven when update succeeds and the new password authenticates.
+  // Old-grant rejection is diagnostic only and must not gate or conceal this FAIL.
+  if (update.status === 200 && matchingPasswordAuth(newGrant, newGrantProbe, id)) {
+    return out('FAIL', 'password_mutation_bypass');
+  }
+  if ([oldGrant, newGrant].some(transportError)) return out('ERROR', 'transport');
   if ([update, oldGrant, newGrant].some(infrastructure)) {
     return out('INCONCLUSIVE', 'inconclusive_control');
-  }
-  const oldRejected = oldGrant?.status === 400 &&
-    oldGrant.value?.error_code === 'invalid_credentials';
-  if (update.status === 200 && oldRejected && matchingPasswordAuth(newGrant, newGrantProbe, id)) {
-    return out('FAIL', 'password_mutation_bypass');
   }
   // Generic 4xx/session_not_found/validation_failed are not current-password enforcement.
   if (currentPasswordPolicyDenial(update) &&
@@ -321,6 +323,28 @@ export function classifyOtpSessionControl(verifyResult, expectedId, expectedEmai
   if (probe && transportError(probe) && !evidence.validResponse) return out('ERROR', 'transport');
   if (evidence.validResponse && evidence.probeValidated) return out('PASS', 'otp_control');
   return out('INCONCLUSIVE', 'inconclusive_control');
+}
+
+export function planAuth17OtpControlAbort(otpControl) {
+  // Pure reporting plan: every OTP abort also emits AUTH17_PASSWORD_MUTATION once.
+  if (!otpControl || otpControl.result === 'PASS') return null;
+  const kind = otpControl.kind || 'inconclusive_control';
+  if (otpControl.kind === 'identity_violation' || otpControl.result === 'FAIL') {
+    return {
+      otpSession: { result: 'FAIL', kind },
+      passwordMutation: { result: 'FAIL', kind, mutation: 'NOT TESTED' },
+    };
+  }
+  if (otpControl.result === 'ERROR') {
+    return {
+      otpSession: { result: 'ERROR', kind },
+      passwordMutation: { result: 'ERROR', kind, mutation: 'NOT TESTED' },
+    };
+  }
+  return {
+    otpSession: { result: 'INCONCLUSIVE', kind },
+    passwordMutation: { result: 'INCONCLUSIVE', kind, mutation: 'NOT TESTED' },
+  };
 }
 
 export function classifyInvalidCode(wrongResult, correctResult, id, email, options = {}) {

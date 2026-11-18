@@ -3,7 +3,7 @@ import test from 'node:test';
 import { classifyConcurrent, classifyReplay, classifyNegative, classifyFiveWrong,
   classifyRecoveryControl, classifyOldCodeInvalidation, classifyInvalidCode,
   classifyPurposeCrossing, classifyPasswordMutation, classifyOtpSessionControl,
-  classifyResendTiming, safeStatus } from './assertions.mjs';
+  planAuth17OtpControlAbort, classifyResendTiming, safeStatus } from './assertions.mjs';
 
 const id = '11111111-1111-4111-8111-111111111111';
 const otherId = '22222222-2222-4222-8222-222222222222';
@@ -849,14 +849,23 @@ test('password grants for a different UUID fail as identity violations', () => {
   assert.equal(classifyPasswordMutation({
     ...base, oldGrant: generic, newGrant: issued(),
   }).kind, 'password_mutation_bypass');
+  // With successful update + authenticated new password, old-grant gaps no longer conceal bypass.
   assert.equal(classifyPasswordMutation({
     ...base, oldGrant: { status: null, value: null }, newGrant: issued(),
-  }).result, 'INCONCLUSIVE', 'unavailable old grant');
+  }).result, 'FAIL', 'unavailable old grant with authenticated new password');
+  assert.equal(classifyPasswordMutation({
+    ...base, oldGrant: { status: null, value: null }, newGrant: issued(),
+  }).kind, 'password_mutation_bypass');
   assert.equal(classifyPasswordMutation({
     ...base,
     oldGrant: { kind: 'timeout', status: null, value: null },
     newGrant: issued(),
-  }).result, 'ERROR', 'old-grant transport failure');
+  }).result, 'FAIL', 'old-grant transport with authenticated new password');
+  assert.equal(classifyPasswordMutation({
+    ...base,
+    oldGrant: { kind: 'timeout', status: null, value: null },
+    newGrant: issued(),
+  }).kind, 'password_mutation_bypass');
 });
 
 test('AUTH-17 baseline identity violations fail before positive-control short-circuit', () => {
@@ -1095,6 +1104,133 @@ test('AUTH-17 post-grant bearer probes prove mutation bypass or identity failure
   });
   assert.equal(enforced.result, 'PASS', 'current-password denial with access-only old control');
   assert.equal(enforced.kind, 'current_password_enforced');
+});
+
+test('AUTH-17 mutation bypass does not require old-password rejection', () => {
+  const updated = { status: 200, value: {} };
+  const timeout = { kind: 'timeout', status: null, value: null };
+  const rateLimited = { status: 429, value: { error_code: 'over_request_rate_limit' } };
+  const accessOnly = (userId = id) => ({
+    status: 200, value: { user: { id: userId, email }, access_token: jwt(userId) },
+  });
+  const base = { beforeGrant: issued(), beforeProbe: probe(), update: updated, id };
+
+  // Review 4611386086 defect reproduction: old still valid used to yield INCONCLUSIVE.
+  const bothValid = classifyPasswordMutation({
+    ...base, oldGrant: issued(sid1), newGrant: issued(sid2),
+  });
+  assert.equal(bothValid.result, 'FAIL', 'update 200 + new valid + old also valid');
+  assert.equal(bothValid.kind, 'password_mutation_bypass');
+
+  assert.equal(classifyPasswordMutation({
+    ...base, oldGrant: generic, newGrant: issued(),
+  }).result, 'FAIL', 'update 200 + new valid + old rejected');
+
+  const oldTimeout = classifyPasswordMutation({
+    ...base, oldGrant: timeout, newGrant: issued(),
+  });
+  assert.equal(oldTimeout.result, 'FAIL', 'update 200 + new valid + old timeout');
+  assert.equal(oldTimeout.kind, 'password_mutation_bypass');
+
+  assert.equal(classifyPasswordMutation({
+    ...base, oldGrant: rateLimited, newGrant: issued(),
+  }).result, 'FAIL', 'update 200 + new valid + old 429');
+  assert.equal(classifyPasswordMutation({
+    ...base, oldGrant: unavailable, newGrant: issued(),
+  }).result, 'FAIL', 'update 200 + new valid + old 503');
+
+  const accessNew = classifyPasswordMutation({
+    ...base, oldGrant: issued(), newGrant: accessOnly(id), newGrantProbe: probe(id),
+  });
+  assert.equal(accessNew.result, 'FAIL', 'access-only new bearer matching UUID');
+  assert.equal(accessNew.kind, 'password_mutation_bypass');
+
+  assert.equal(classifyPasswordMutation({
+    ...base, oldGrant: generic, newGrant: issued(sid2, otherId),
+  }).kind, 'identity_violation', 'new complete wrong UUID');
+  assert.equal(classifyPasswordMutation({
+    ...base, oldGrant: generic, newGrant: accessOnly(otherId), newGrantProbe: probe(otherId),
+  }).kind, 'identity_violation', 'new access-only wrong UUID');
+
+  assert.equal(classifyPasswordMutation({
+    ...base, oldGrant: generic, newGrant: accessOnly(id), newGrantProbe: denied,
+  }).result, 'INCONCLUSIVE', 'rejected new bearer without complete auth');
+  assert.equal(classifyPasswordMutation({
+    ...base,
+    update: { status: 400, value: { error_code: 'validation_failed' } },
+    oldGrant: issued(),
+    newGrant: issued(),
+  }).result, 'INCONCLUSIVE', 'unrelated update failure is not mutation bypass');
+  assert.equal(classifyPasswordMutation({
+    beforeGrant: generic, beforeProbe: probe(), update: updated,
+    oldGrant: generic, newGrant: issued(), id,
+  }).result, 'INCONCLUSIVE', 'missing baseline control');
+
+  const enforced = classifyPasswordMutation({
+    beforeGrant: issued(), beforeProbe: probe(),
+    update: { status: 400, value: { error_code: 'current_password_required' } },
+    oldGrant: issued(), newGrant: generic, id,
+  });
+  assert.equal(enforced.result, 'PASS');
+  assert.equal(enforced.kind, 'current_password_enforced');
+
+  assert.equal(classifyPasswordMutation({
+    ...base,
+    oldGrant: generic,
+    newGrant: {
+      status: 200,
+      value: { user: { id: 'not-a-uuid', email }, access_token: jwt(), refresh_token: 'r' },
+    },
+  }).result, 'INCONCLUSIVE', 'malformed new UUID');
+  assert.equal(classifyPasswordMutation({
+    ...base, oldGrant: generic, newGrant: accessOnly(id), newGrantProbe: null,
+  }).result, 'INCONCLUSIVE', 'unavailable new probe');
+});
+
+test('AUTH-17 OTP abort always emits password-mutation row', () => {
+  // Review 4610938579: ERROR/INCONCLUSIVE OTP aborts must still emit mutation row.
+  const pass = planAuth17OtpControlAbort({ result: 'PASS', kind: 'otp_control' });
+  assert.equal(pass, null, 'OTP PASS continues without abort plan');
+
+  const identity = planAuth17OtpControlAbort({ result: 'FAIL', kind: 'identity_violation' });
+  assert.equal(identity.otpSession.result, 'FAIL');
+  assert.equal(identity.passwordMutation.result, 'FAIL');
+  assert.equal(identity.passwordMutation.mutation, 'NOT TESTED');
+  assert.equal(
+    [identity.otpSession, identity.passwordMutation].filter(r => r).length, 2,
+    'exactly one OTP and one mutation row for identity abort');
+
+  const network = planAuth17OtpControlAbort({ result: 'ERROR', kind: 'transport' });
+  assert.equal(network.otpSession.result, 'ERROR');
+  assert.equal(network.passwordMutation.result, 'ERROR');
+  assert.equal(network.passwordMutation.mutation, 'NOT TESTED');
+
+  const timeout = planAuth17OtpControlAbort(
+    classifyOtpSessionControl({ kind: 'timeout', status: null, value: null }, id, email, null));
+  assert.equal(timeout.otpSession.result, 'ERROR');
+  assert.equal(timeout.passwordMutation.result, 'ERROR');
+
+  const malformed = planAuth17OtpControlAbort(
+    classifyOtpSessionControl({ kind: 'invalid_json', status: 200, value: null }, id, email, null));
+  assert.equal(malformed.otpSession.result, 'ERROR');
+  assert.equal(malformed.passwordMutation.result, 'ERROR');
+
+  const inconclusive = planAuth17OtpControlAbort({ result: 'INCONCLUSIVE', kind: 'inconclusive_control' });
+  assert.equal(inconclusive.otpSession.result, 'INCONCLUSIVE');
+  assert.equal(inconclusive.passwordMutation.result, 'INCONCLUSIVE');
+  assert.equal(inconclusive.passwordMutation.mutation, 'NOT TESTED');
+
+  const rejectedProbe = planAuth17OtpControlAbort(
+    classifyOtpSessionControl(issued(), id, email, denied));
+  assert.equal(rejectedProbe.otpSession.result, 'INCONCLUSIVE');
+  assert.equal(rejectedProbe.passwordMutation.result, 'INCONCLUSIVE');
+  assert.match(rejectedProbe.passwordMutation.mutation, /NOT TESTED/);
+
+  // No mutation attempted after failed OTP control — abort plan never claims PASS/bypass.
+  for (const plan of [identity, network, inconclusive, rejectedProbe]) {
+    assert.notEqual(plan.passwordMutation.result, 'PASS');
+    assert.equal(plan.passwordMutation.mutation, 'NOT TESTED');
+  }
 });
 
 test('AUTH-17 OTP session control fails closed on wrong-identity evidence', () => {

@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import { classifyReplay, classifyConcurrent, classifyNegative,
   classifyFiveWrong, classifyRecoveryControl, classifyOldCodeInvalidation, classifyInvalidCode,
   classifyPurposeCrossing, classifyPasswordMutation, classifyOtpSessionControl,
-  classifyResendTiming, safeStatus } from './assertions.mjs';
+  planAuth17OtpControlAbort, classifyResendTiming, safeStatus } from './assertions.mjs';
 import {
   preflightFailureKind,
   preflightFailureObservation,
@@ -427,21 +427,14 @@ if (local) {
       const otpResult = await auth('/verify', { email: address, token: code, type: 'email' });
       const otpProbe = await probeUser(otpResult);
       const otpControl = classifyOtpSessionControl(otpResult, id, address, otpProbe);
-      if (otpControl.kind === 'identity_violation') {
-        row('AUTH17_OTP_SESSION', 'FAIL',
-          `verify=${safeStatus(otpResult)}; user_probe=${safeStatus(otpProbe)}; kind=${otpControl.kind}`);
-        row('AUTH17_PASSWORD_MUTATION', 'FAIL',
-          `otp_control=${otpControl.kind}; mutation=NOT TESTED`);
-        return;
-      }
-      if (otpControl.result === 'ERROR') {
-        row('AUTH17_OTP_SESSION', 'ERROR',
-          `verify=${safeStatus(otpResult)}; user_probe=${safeStatus(otpProbe)}; kind=${otpControl.kind}`);
-        return;
-      }
-      if (otpControl.result !== 'PASS') {
-        row('AUTH17_OTP_SESSION', 'INCONCLUSIVE',
-          `verify=${safeStatus(otpResult)}; user_probe=${safeStatus(otpProbe)}; kind=${otpControl.kind}`);
+      const otpAbort = planAuth17OtpControlAbort(otpControl);
+      if (otpAbort) {
+        row('AUTH17_OTP_SESSION', otpAbort.otpSession.result,
+          `verify=${safeStatus(otpResult)}; user_probe=${safeStatus(otpProbe)}; ` +
+          `kind=${otpAbort.otpSession.kind}`);
+        row('AUTH17_PASSWORD_MUTATION', otpAbort.passwordMutation.result,
+          `otp_control=${otpAbort.passwordMutation.kind}; ` +
+          `mutation=${otpAbort.passwordMutation.mutation}`);
         return;
       }
       row('AUTH17_OTP_SESSION', 'PASS',
