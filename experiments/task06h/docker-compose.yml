@@ -1,0 +1,90 @@
+name: tio-task06h-local-auth
+
+services:
+  db:
+    image: public.ecr.aws/supabase/postgres:17.11.0.004
+    container_name: supabase_db_tio-task06h-local-auth
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: postgres
+      POSTGRES_USER: supabase_admin
+      JWT_SECRET: ${JWT_SECRET:-super-secret-jwt-token-with-at-least-32-characters-long}
+      JWT_EXP: 3600
+    volumes:
+      - supabase_db_tio-task06h-local-auth-data:/var/lib/postgresql/data
+    networks:
+      - supabase_network_tio-task06h-local-auth
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U supabase_admin -h 127.0.0.1"]
+      interval: 2s
+      timeout: 5s
+      retries: 15
+
+  inbucket:
+    image: public.ecr.aws/supabase/mailpit:v1.31.3
+    container_name: supabase_inbucket_tio-task06h-local-auth
+    ports:
+      - "127.0.0.1:55624:8025"
+    networks:
+      - supabase_network_tio-task06h-local-auth
+
+  auth:
+    image: public.ecr.aws/supabase/gotrue:v2.197.0
+    container_name: supabase_auth_tio-task06h-local-auth
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      GOTRUE_DB_DRIVER: postgres
+      GOTRUE_DB_DATABASE_URL: postgres://supabase_auth_admin:${POSTGRES_PASSWORD:-postgres}@db:5432/postgres?sslmode=disable
+      GOTRUE_JWT_SECRET: ${JWT_SECRET:-super-secret-jwt-token-with-at-least-32-characters-long}
+      GOTRUE_JWT_EXP: 3600
+      GOTRUE_API_HOST: 0.0.0.0
+      GOTRUE_API_PORT: 9999
+      GOTRUE_SITE_URL: http://127.0.0.1:3000
+      GOTRUE_URI_ALLOW_LIST: http://127.0.0.1:3000,https://127.0.0.1:3000
+      GOTRUE_DISABLE_SIGNUP: "false"
+      GOTRUE_MAILER_AUTOCONFIRM: "false"
+      GOTRUE_SMTP_HOST: inbucket
+      GOTRUE_SMTP_PORT: 1025
+      GOTRUE_SMTP_ADMIN_EMAIL: admin@example.invalid
+      GOTRUE_SMTP_MAX_FREQUENCY: 60s
+      GOTRUE_RATE_LIMIT_EMAIL_SENT: 5
+      GOTRUE_RATE_LIMIT_OVER_EMAIL_SEND_RATE_LIMIT: 60
+      GOTRUE_MAILER_OTP_LENGTH: 6
+      GOTRUE_MAILER_OTP_EXP: 600
+    volumes:
+      - ./templates:/etc/gotrue/templates:ro
+    networks:
+      - supabase_network_tio-task06h-local-auth
+
+  kong:
+    image: public.ecr.aws/supabase/kong:2.8.1
+    container_name: supabase_kong_tio-task06h-local-auth
+    depends_on:
+      - auth
+    ports:
+      - "127.0.0.1:55621:8000"
+    volumes:
+      - ./kong.yml:/etc/kong/kong.yml:ro
+    environment:
+      KONG_DATABASE: "off"
+      KONG_DECLARATIVE_CONFIG: /etc/kong/kong.yml
+      KONG_DNS_ORDER: LAST,A,CNAME
+      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth
+      KONG_PROXY_ACCESS_LOG: /dev/stdout
+      KONG_ADMIN_ACCESS_LOG: /dev/stdout
+      KONG_PROXY_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_ERROR_LOG: /dev/stderr
+      KONG_ADMIN_LISTEN: "off"
+    networks:
+      - supabase_network_tio-task06h-local-auth
+
+networks:
+  supabase_network_tio-task06h-local-auth:
+    name: supabase_network_tio-task06h-local-auth
+    driver: bridge
+
+volumes:
+  supabase_db_tio-task06h-local-auth-data:
+    name: supabase_db_tio-task06h-local-auth-data
