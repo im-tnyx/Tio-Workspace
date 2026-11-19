@@ -139,6 +139,16 @@ export function inspectWindowsListenersRuntime(ports = [55621, 55624]) {
 }
 
 export function inspectDockerStackRuntime(expectedEmailQuota = 5) {
+  if (arguments.length > 1) {
+    throw new Error('inspectDockerStackRuntime accepts at most 1 argument (expectedEmailQuota)');
+  }
+  if (expectedEmailQuota !== undefined) {
+    if (!Number.isSafeInteger(expectedEmailQuota) || expectedEmailQuota < 5 || expectedEmailQuota > 100) {
+      throw new Error('expectedEmailQuota must be a safe integer between 5 and 100');
+    }
+  }
+  const quota = expectedEmailQuota ?? 5;
+
   const run = (file, args) => childProcess.execFileSync(file, args, {
     encoding: 'utf8',
     timeout: 15000,
@@ -180,19 +190,29 @@ export function inspectDockerStackRuntime(expectedEmailQuota = 5) {
     postgresImage,
     apiHostPort: '55621',
     mailHostPort: '55624',
-    expectedEmailQuota,
+    expectedEmailQuota: quota,
   });
 
   inspectWindowsListenersRuntime([55621, 55624]);
   return containers;
 }
 
-export function initializeLocalStack() {
+export function initializeLocalStack(expectedEmailQuota = 5) {
+  if (arguments.length > 1) {
+    throw new Error('initializeLocalStack accepts at most 1 argument (expectedEmailQuota)');
+  }
+  if (expectedEmailQuota !== undefined) {
+    if (!Number.isSafeInteger(expectedEmailQuota) || expectedEmailQuota < 5 || expectedEmailQuota > 100) {
+      throw new Error('expectedEmailQuota must be a safe integer between 5 and 100');
+    }
+  }
+  const quota = expectedEmailQuota ?? 5;
+
   const jwtSecret = getRequiredJwtSecret();
   const keys = generateLocalKeys(jwtSecret);
 
   // Runtime container and listener inspection
-  inspectDockerStackRuntime();
+  inspectDockerStackRuntime(quota);
 
   return {
     ...expected,
@@ -201,7 +221,16 @@ export function initializeLocalStack() {
 }
 
 export function assertRuntimeStackIsolation(expectedEmailQuota = 5) {
-  inspectDockerStackRuntime(expectedEmailQuota);
+  if (arguments.length > 1) {
+    throw new Error('assertRuntimeStackIsolation accepts at most 1 argument (expectedEmailQuota)');
+  }
+  if (expectedEmailQuota !== undefined) {
+    if (!Number.isSafeInteger(expectedEmailQuota) || expectedEmailQuota < 5 || expectedEmailQuota > 100) {
+      throw new Error('expectedEmailQuota must be a safe integer between 5 and 100');
+    }
+  }
+  const quota = expectedEmailQuota ?? 5;
+  inspectDockerStackRuntime(quota);
   inspectWindowsListenersRuntime([55621, 55624]);
   return true;
 }

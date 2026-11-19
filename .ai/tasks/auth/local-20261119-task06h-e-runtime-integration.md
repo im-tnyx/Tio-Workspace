@@ -146,16 +146,16 @@ Two distinct testing modes are established:
 - Resource Preservation:
   - Zero `-v` flags used. Dedicated volume `supabase_db_tio-task06h-local-auth-data` intact for diagnostic review.
   - Historical Task 06G volumes (`supabase_db_tio-task06g-local-otp`, `supabase_edge_runtime_tio-task06g-local-otp`, `supabase_storage_tio-task06g-local-otp`) and network (`supabase_network_tio-task06g-local-otp`) verified intact and untouched.
-- Offline Test Suite Verification: Executed `node --test experiments/task06h/*.test.mjs` -> **107 passed, 0 failed (100% pass rate)**.
+- Offline Test Suite Verification: Executed `node --test experiments/task06h/*.test.mjs` -> **115 passed, 0 failed (100% pass rate)**.
 
 ### Stage 7: Continuity & Handoff Contract
 - Task ID: Task 06H-E
 - Active Branch: `feat/task06h-e-runtime-integration`
 - Base Commit: `17964889363ddb96431d758088826136a300c914` (`main`)
 - Modified Files:
-  - `experiments/task06h/local-otp-adapter.mjs` (Added bounded `devModeEmailQuota` validation and preflight server-quota verification)
+  - `experiments/task06h/local-otp-adapter.mjs` (Added bounded `devModeEmailQuota` validation, `initializeLocalStack` quota forwarding, and preflight server-quota verification)
   - `experiments/task06h/loopback-preflight.mjs` (Added `extractGoTrueEmailQuota` and `validateGoTrueEmailQuota` with fail-closed server quota verification)
-  - `experiments/task06h/local-otp-adapter.test.mjs` (Added devModeEmailQuota boundary and server-quota regression tests)
+  - `experiments/task06h/local-otp-adapter.test.mjs` (Added devModeEmailQuota boundary, `initializeLocalStack`, and server-quota regression tests)
   - `experiments/task06h/loopback-preflight.test.mjs` (Added comprehensive server-quota matching, mismatching, missing, and malformed unit tests)
   - `.ai/tasks/auth/local-20261119-task06h-e-runtime-integration.md` (Canonical execution log)
   - `.ai/current.md` (Updated continuity pointer)
