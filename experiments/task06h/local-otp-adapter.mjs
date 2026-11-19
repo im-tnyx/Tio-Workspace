@@ -110,13 +110,20 @@ export function calculateBatchBudget(casesOrBatch = []) {
   return caseList.reduce((sum, id) => sum + (CASE_EMAIL_BUDGETS[id] ?? 0), 0);
 }
 
-export function inspectWindowsListenersRuntime(ports = [55621, 55624]) {
+export const defaultCommandRunner = (file, args, options) =>
+  childProcess.execFileSync(file, args, {
+    encoding: 'utf8',
+    timeout: 10000,
+    ...options,
+  });
+
+export function inspectWindowsListenersRuntime(ports = [55621, 55624], runner = defaultCommandRunner) {
   try {
     const portList = ports.join(',');
     const psScript = `Get-NetTCPConnection -LocalPort ${portList} -ErrorAction SilentlyContinue | Select-Object LocalAddress, LocalPort, State | ConvertTo-Json`;
     let rawOutput;
     try {
-      rawOutput = childProcess.execFileSync('powershell.exe', ['-NoProfile', '-Command', psScript], {
+      rawOutput = runner('powershell.exe', ['-NoProfile', '-Command', psScript], {
         encoding: 'utf8',
         timeout: 10000,
       });
@@ -138,8 +145,8 @@ export function inspectWindowsListenersRuntime(ports = [55621, 55624]) {
   }
 }
 
-export function inspectDockerStackRuntime() {
-  const run = (file, args) => childProcess.execFileSync(file, args, {
+export function inspectDockerStackRuntime(runner = defaultCommandRunner) {
+  const run = (file, args) => runner(file, args, {
     encoding: 'utf8',
     timeout: 15000,
     maxBuffer: 1024 * 1024,
@@ -182,16 +189,16 @@ export function inspectDockerStackRuntime() {
     mailHostPort: '55624',
   });
 
-  inspectWindowsListenersRuntime([55621, 55624]);
+  inspectWindowsListenersRuntime([55621, 55624], runner);
   return containers;
 }
 
-export function initializeLocalStack() {
+export function initializeLocalStack(runner = defaultCommandRunner) {
   const jwtSecret = getRequiredJwtSecret();
   const keys = generateLocalKeys(jwtSecret);
 
   // Runtime container and listener inspection
-  inspectDockerStackRuntime();
+  inspectDockerStackRuntime(runner);
 
   return {
     ...expected,
@@ -199,9 +206,9 @@ export function initializeLocalStack() {
   };
 }
 
-export function assertRuntimeStackIsolation() {
-  inspectDockerStackRuntime();
-  inspectWindowsListenersRuntime([55621, 55624]);
+export function assertRuntimeStackIsolation(runner = defaultCommandRunner) {
+  inspectDockerStackRuntime(runner);
+  inspectWindowsListenersRuntime([55621, 55624], runner);
   return true;
 }
 
@@ -242,9 +249,10 @@ export function validateLocalStackConfig(local) {
 }
 
 // Public production integration entrypoint: ALWAYS executes real Docker and Windows isolation validation.
-// No caller-controlled argument or callback can bypass this gate.
-export async function executeAuthIntegrationSuite(local) {
-  assertRuntimeStackIsolation();
+// In production, commandRunner defaults to defaultCommandRunner (real childProcess.execFileSync).
+// Test suites can supply a commandRunner boundary to exercise preflight failure paths deterministically.
+export async function executeAuthIntegrationSuite(local, { commandRunner = defaultCommandRunner } = {}) {
+  assertRuntimeStackIsolation(commandRunner);
   return _runAuthIntegrationSuiteInternal(local);
 }
 

@@ -70,9 +70,9 @@ The Task 06H adapter (`experiments/task06h/local-otp-adapter.mjs`) and preflight
 * **Fail-Closed Verification:** `docker compose -f experiments/task06h/docker-compose.yml config` without environment variables fails closed with required variable errors.
 * **Static Security Suite:** `experiments/task06h/compose-security.test.mjs` (13/13 PASS).
 * **Preflight & Listener Suite:** `experiments/task06h/loopback-preflight.test.mjs` (18/18 PASS).
-* **Adapter Unit Suite:** `experiments/task06h/local-otp-adapter.test.mjs` (19/19 PASS).
+* **Adapter Unit Suite:** `experiments/task06h/local-otp-adapter.test.mjs` (20/20 PASS).
 * **Assertion Classifier Suite:** `experiments/task06h/assertions.test.mjs` (42/42 PASS).
-* **Total Offline Test Suite:** **92 passed, 0 failed (100% pass rate)**.
+* **Total Offline Test Suite:** **93 passed, 0 failed (100% pass rate)**.
 
 ---
 
