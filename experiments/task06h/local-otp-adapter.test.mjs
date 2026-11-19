@@ -235,7 +235,10 @@ function setupDeterministicProcessMock({ kongHostIp = '127.0.0.1', windowsListen
     }),
   };
 
+  const executedCommands = [];
+
   childProcess.execFileSync = (file, args) => {
+    executedCommands.push({ file, args });
     if (file === 'docker') {
       if (args[0] === 'network' && args[1] === 'inspect') {
         return JSON.stringify([{
@@ -264,9 +267,11 @@ function setupDeterministicProcessMock({ kongHostIp = '127.0.0.1', windowsListen
     return '';
   };
 
-  return () => {
+  const restore = () => {
     childProcess.execFileSync = origExec;
   };
+  restore.executedCommands = executedCommands;
+  return restore;
 }
 
 test('executeAuthIntegrationSuite public entrypoint fails closed on wildcard host port binding', async () => {
@@ -322,13 +327,18 @@ test('executeAuthIntegrationSuite public entrypoint fails closed when Windows li
 });
 
 test('executeAuthIntegrationSuite defaults to real execution boundary when invoked with production signature', async () => {
-  // In production, executeAuthIntegrationSuite(local) calls real childProcess.execFileSync.
-  // When no local stack is running, it fails closed at real inspection.
   let fetchCalled = false;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
     fetchCalled = true;
     throw new Error('fetch must not be called');
+  };
+
+  const executedCommands = [];
+  const origExec = childProcess.execFileSync;
+  childProcess.execFileSync = (file, args, options) => {
+    executedCommands.push({ file, args });
+    throw new Error(`Simulated preflight failure on ${file} ${(args || []).join(' ')}`);
   };
 
   try {
@@ -339,10 +349,53 @@ test('executeAuthIntegrationSuite defaults to real execution boundary when invok
         PUBLISHABLE_KEY: 'test-pub',
         SERVICE_ROLE_KEY: 'test-serv',
       }),
-      /Docker network inspection failed|Host listener validation failed|network .* not found|MISSING_WINDOWS_LISTENER/
+      /Docker network inspection failed: Simulated preflight failure on docker network inspect supabase_network_tio-task06h-local-auth/
     );
-    assert.equal(fetchCalled, false, 'No network requests dispatched');
+    assert.equal(fetchCalled, false, 'No network requests dispatched on preflight rejection');
+    assert.ok(executedCommands.length >= 1, 'Production execution boundary must invoke real childProcess.execFileSync');
+    assert.equal(executedCommands[0].file, 'docker');
+    assert.deepEqual(executedCommands[0].args, ['network', 'inspect', 'supabase_network_tio-task06h-local-auth']);
   } finally {
+    childProcess.execFileSync = origExec;
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('executeAuthIntegrationSuite invokes both Docker inspection and Windows listener inspection during preflight', async () => {
+  const originalFetch = globalThis.fetch;
+  let fetchCalled = false;
+  globalThis.fetch = async (url) => {
+    fetchCalled = true;
+    if (url.includes('/api/v1/messages')) {
+      return { status: 200, json: async () => ({ messages: [] }) };
+    }
+    return { status: 404, json: async () => ({}) };
+  };
+
+  const restoreProc = setupDeterministicProcessMock();
+
+  try {
+    const results = await executeAuthIntegrationSuite({
+      API_URL: 'http://127.0.0.1:55621',
+      MAILPIT_URL: 'http://127.0.0.1:55624',
+      PUBLISHABLE_KEY: 'test-pub',
+      SERVICE_ROLE_KEY: 'test-serv',
+      selectedCases: ['MAILPIT_BASELINE'],
+    });
+
+    assert.equal(fetchCalled, true, 'Fetch called for baseline case under simulated healthy stack');
+    assert.equal(results.find(r => r.id === 'MAILPIT_BASELINE')?.result, 'PASS');
+
+    const cmds = restoreProc.executedCommands;
+    const dockerNetworkInspect = cmds.find(c => c.file === 'docker' && c.args?.[0] === 'network' && c.args?.[1] === 'inspect');
+    const dockerContainerInspect = cmds.find(c => c.file === 'docker' && c.args?.[0] === 'inspect');
+    const powershellListenerInspect = cmds.find(c => c.file === 'powershell.exe' && c.args?.some(a => String(a).includes('55621,55624')));
+
+    assert.ok(dockerNetworkInspect, 'Preflight must invoke docker network inspect');
+    assert.ok(dockerContainerInspect, 'Preflight must invoke docker container inspect');
+    assert.ok(powershellListenerInspect, 'Preflight must invoke Windows PowerShell listener inspect');
+  } finally {
+    restoreProc();
     globalThis.fetch = originalFetch;
   }
 });
@@ -362,29 +415,76 @@ test('executeAuthIntegrationSuite strictly rejects caller-provided runner option
     SERVICE_ROLE_KEY: 'test-serv',
   };
 
-  const fakeRunner = () => 'simulated_ok';
+  let fakeRunnerCalled = false;
+  const fakeRunner = () => {
+    fakeRunnerCalled = true;
+    return 'simulated_ok';
+  };
+
+  // 1. Extra argument (options object with commandRunner) is rejected immediately by arity check
+  await assert.rejects(
+    async () => executeAuthIntegrationSuite(validConfig, { commandRunner: fakeRunner }),
+    /executeAuthIntegrationSuite requires exactly 1 argument/
+  );
+  assert.equal(fakeRunnerCalled, false, 'Fake runner must not be called on extra argument');
+  assert.equal(fetchCalled, false, 'No fetch request must be made on extra argument rejection');
+
+  // 2. Caller embedding commandRunner inside config object does NOT bypass real preflight (failure path)
+  const origExec = childProcess.execFileSync;
+  let realExecCalls = [];
+  childProcess.execFileSync = (file, args, options) => {
+    realExecCalls.push({ file, args });
+    throw new Error('Deterministic host isolation preflight failure');
+  };
 
   try {
-    // 1. Extra argument (options object with commandRunner) is rejected immediately
-    await assert.rejects(
-      async () => executeAuthIntegrationSuite(validConfig, { commandRunner: fakeRunner }),
-      /executeAuthIntegrationSuite requires exactly 1 argument/
-    );
-
-    // 2. Caller embedding commandRunner inside config object does NOT bypass real preflight
     await assert.rejects(
       async () => executeAuthIntegrationSuite({ ...validConfig, commandRunner: fakeRunner }),
-      /Docker network inspection failed|Host listener validation failed|network .* not found|MISSING_WINDOWS_LISTENER/
+      /Docker network inspection failed: Deterministic host isolation preflight failure/
     );
+    assert.equal(fakeRunnerCalled, false, 'Embedded commandRunner must never be invoked on preflight failure');
+    assert.ok(realExecCalls.length >= 1, 'Real execution boundary must be invoked instead of caller-provided commandRunner');
 
+    realExecCalls = [];
     // 3. Caller embedding runner inside config object does NOT bypass real preflight
     await assert.rejects(
       async () => executeAuthIntegrationSuite({ ...validConfig, runner: fakeRunner }),
-      /Docker network inspection failed|Host listener validation failed|network .* not found|MISSING_WINDOWS_LISTENER/
+      /Docker network inspection failed: Deterministic host isolation preflight failure/
     );
+    assert.equal(fakeRunnerCalled, false, 'Embedded runner must never be invoked on preflight failure');
+    assert.ok(realExecCalls.length >= 1, 'Real execution boundary must be invoked instead of caller-provided runner');
 
     assert.equal(fetchCalled, false, 'No network requests dispatched on any bypass attempt');
   } finally {
+    childProcess.execFileSync = origExec;
+    globalThis.fetch = originalFetch;
+  }
+
+  // 4. Even under a simulated healthy stack, embedded runner is never invoked
+  const restoreProc = setupDeterministicProcessMock();
+  try {
+    let mockFetchCalled = false;
+    globalThis.fetch = async (url) => {
+      mockFetchCalled = true;
+      if (url.includes('/api/v1/messages')) {
+        return { status: 200, json: async () => ({ messages: [] }) };
+      }
+      return { status: 404, json: async () => ({}) };
+    };
+
+    fakeRunnerCalled = false;
+    const results = await executeAuthIntegrationSuite({
+      ...validConfig,
+      commandRunner: fakeRunner,
+      runner: fakeRunner,
+      selectedCases: ['MAILPIT_BASELINE'],
+    });
+
+    assert.equal(fakeRunnerCalled, false, 'Embedded runners must NEVER be invoked even when stack is healthy');
+    assert.equal(mockFetchCalled, true, 'Real runner proceeds to execution without invoking caller runner');
+    assert.equal(results.find(r => r.id === 'MAILPIT_BASELINE')?.result, 'PASS');
+  } finally {
+    restoreProc();
     globalThis.fetch = originalFetch;
   }
 });
