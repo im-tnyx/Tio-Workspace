@@ -223,8 +223,8 @@ export function validateLocalStackConfig(local) {
   }
 
   if (local.devModeEmailQuota !== undefined) {
-    if (typeof local.devModeEmailQuota !== 'number' || local.devModeEmailQuota < 5 || local.devModeEmailQuota > 100) {
-      throw new Error('devModeEmailQuota must be a number between 5 and 100');
+    if (!Number.isSafeInteger(local.devModeEmailQuota) || local.devModeEmailQuota < 5 || local.devModeEmailQuota > 100) {
+      throw new Error('devModeEmailQuota must be a safe integer between 5 and 100');
     }
   }
 
@@ -312,7 +312,9 @@ async function _runAuthIntegrationSuiteInternal(local) {
 
   let sendsInWindow = 0;
   let windowStart = Date.now();
-  const maxSendsPerWindow = local.devModeEmailQuota ?? 5;
+  const maxSendsPerWindow = Number.isSafeInteger(local?.devModeEmailQuota) && local.devModeEmailQuota >= 5 && local.devModeEmailQuota <= 100
+    ? local.devModeEmailQuota
+    : 5;
   const windowDurationMs = 3600000; // 1 hour (matches GoTrue GOTRUE_RATE_LIMIT_EMAIL_SENT hourly rate limit)
 
   async function paceEmailQuota() {

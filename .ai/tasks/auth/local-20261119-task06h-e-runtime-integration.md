@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **IN PROGRESS (STAGE 0 COMPLETED)** |
+| Status | **EXECUTION COMPLETED — SECURITY GATES FAILED — PR REVIEW PENDING** |
 | Objective | Controlled local startup and integration testing of isolated Task 06H Compose prototype; establish Mode A (5/hour security baseline) and Mode B (development quota) |
 | Authorization | Owner's Task 06H-E instruction: local-only controlled startup, synthetic OTP integration testing, Mailpit verification, safe shutdown; hosted Supabase project `bsfwzvgynwriswapxpsp` strictly OUT OF SCOPE |
 | Implementation owner | Agent / Codex Implementation, Task 06H-E slice |
@@ -86,18 +86,22 @@ Two distinct testing modes are established:
 ### Stage 3: Mode A Security Baseline (5 Emails/Hour) Integration Results
 - Timestamp: 2026-11-19T22:30:00+05:30
 - Active Configuration: `GOTRUE_RATE_LIMIT_EMAIL_SENT: 5`, Mailpit local capture on `127.0.0.1:55624`.
+- Network Isolation Evidence:
+  - Local host sockets confirmed restricted strictly to `127.0.0.1` (Kong `55621`, Mailpit `55624`); zero `0.0.0.0` or `[::]` sockets.
+  - All synthetic recipients addressed to RFC 2606 reserved `.invalid` top-level domain (`@example.invalid`), which is inherently non-routable on public networks.
+  - All issued OTP emails captured and verified exclusively in local Mailpit REST API (`http://127.0.0.1:55624/api/v1/messages`).
 - Batch Executed: `batch-1` (`MAILPIT_BASELINE`, `OTP_FORMAT_REPLAY`, `OTP_CONCURRENT`).
 - Observed Results:
   - `MAILPIT_BASELINE`: **PASS** (Mailpit REST API accessible, 0 initial messages, window accounting initialized).
   - `OTP_FORMAT`: **PASS** (6-digit numeric token format verified via Mailpit template capture; raw value redacted).
   - `OTP_REPLAY`: **PASS** (`first_verify=200/none, second_verify=403/otp_expired; first_user_probe=200/none; second_user_probe=not_probed; second_session=false`). Single sequential reuse strictly rejected.
-  - `OTP_CONCURRENT_1`: **FAIL** (`verify=200/none,200/none; user_probes=200/none,200/none; valid_responses=2; probes_validated=2; bearers_authenticated=2; session_id_claim_comparison=different`). Both concurrent verify requests succeeded and issued distinct sessions for a single OTP. Proves atomic single-use race condition in native GoTrue v2.197.0.
+  - `OTP_CONCURRENT_1`: **FAIL** (`verify=200/none,200/none; user_probes=200/none,200/none; valid_responses=2; probes_validated=2; bearers_authenticated=2; session_id_claim_comparison=different`). Both concurrent verify requests succeeded and issued distinct sessions for a single OTP. Reproducible local observation against pinned GoTrue v2.197.0: parallel redemption race condition confirmed.
   - Subsequent sends in the 1-hour window exhausted the remaining 5-send hourly quota:
     - `OTP_CONCURRENT_2`: **INCONCLUSIVE** (`EMAIL_QUOTA_EXHAUSTED`).
     - `OTP_CONCURRENT_3`: **INCONCLUSIVE** (`EMAIL_QUOTA_EXHAUSTED`).
   - Remaining test cases cleanly marked `SKIPPED` per batch isolation contract.
 - Security Invariant Status:
-  - **AUTH-12 (Atomic Single-Use):** **CONFIRMED BLOCKED (FAIL on concurrent execution)**. Native GoTrue does not provide serialized atomic single-use redemption across parallel requests.
+  - **AUTH-12 (Atomic Single-Use):** **CONFIRMED BLOCKED (FAIL on concurrent execution)**. Pinned GoTrue v2.197.0 in this Compose configuration does not provide serialized atomic single-use redemption across parallel requests.
   - **AUTH-17 & AUTH-22:** Retained **BLOCKED**.
 - Checkpoint: Mode A baseline completed and preserved. Quota exhausted for the 1-hour window. Proceeding to Stage 4 (Higher-Quota Development Mode).
 
@@ -105,19 +109,19 @@ Two distinct testing modes are established:
 - Timestamp: 2026-11-19T22:31:00+05:30
 - Development Profile: Created explicit override `experiments/task06h/docker-compose.dev.yml` setting `GOTRUE_RATE_LIMIT_EMAIL_SENT: 30`.
 - Baseline Preservation: Committed `experiments/task06h/docker-compose.yml` remains strictly untouched at `GOTRUE_RATE_LIMIT_EMAIL_SENT: 5`.
-- Harness Support: Added optional `devModeEmailQuota` (bounded between 5 and 100) to `validateLocalStackConfig` and `_runAuthIntegrationSuiteInternal`. If omitted, client accounting defaults strictly to the 5-send hourly limit.
-- Regression Coverage: Added unit tests in `local-otp-adapter.test.mjs`; all 95 offline unit and security tests pass.
+- Harness Support: Added optional `devModeEmailQuota` (strictly validated safe integer bounded between 5 and 100) to `validateLocalStackConfig` and `_runAuthIntegrationSuiteInternal`. If omitted or invalid, client accounting defaults strictly to the 5-send hourly limit.
+- Regression Coverage: Added unit tests in `local-otp-adapter.test.mjs` verifying rejection of non-integer, NaN, Infinity, fractional, negative, and out-of-bound values; all 95 offline unit and security tests pass.
 - Container Update: Recreated `supabase_auth_tio-task06h-local-auth` under dev profile; verified `GOTRUE_RATE_LIMIT_EMAIL_SENT=30` in container environment.
 - Isolation Verification: All 4 containers verified; ports 55621 and 55624 verified on `127.0.0.1`.
 
 ### Stage 5: Functional OTP Integration Test Results (Mode B)
 - Timestamp: 2026-11-19T22:33:00+05:30
 - Batches Executed: `batch-2`, `batch-3`, `batch-4`.
-- Total Synthetic Emails Captured in Mailpit: 14 messages (zero external network dispatch).
-- Case-by-Case Empirical Findings:
+- Total Synthetic Emails Captured in Mailpit: 14 messages (all verified in local Mailpit; zero external network leakage).
+- Case-by-Case Empirical Findings (reproducible observations against pinned GoTrue v2.197.0):
   1. `INVALID_CODE`: **PASS** (`wrong_then_valid=403/otp_expired,200/none`). Invalid OTP is rejected; subsequent valid OTP succeeds.
   2. `FIVE_WRONG_COOLDOWN`: **FAIL** (`wrong=5x 403/otp_expired; correct=200/none; correct_session=true; kind=cooldown_bypass`). Five consecutive invalid OTP attempts do NOT trigger lockout or cooldown; entering the correct code immediately afterwards succeeds.
-  3. `COOLDOWN_15_MIN`: **FAIL** (`correct_immediately_after_five=200/none; session=true; kind=cooldown_bypass`). Proves native GoTrue does not enforce the 15-minute lockout requirement.
+  3. `COOLDOWN_15_MIN`: **FAIL** (`correct_immediately_after_five=200/none; session=true; kind=cooldown_bypass`). Confirms pinned GoTrue v2.197.0 does not enforce the 15-minute lockout requirement locally.
   4. `SIGNUP_AS_RECOVERY`: **PASS** (`verify=403/otp_expired; session=false`). A signup OTP token cannot be redeemed as `type: 'recovery'`.
   5. `SIGNUP_EXPECTED_EMAIL`: **PASS** (`verify=200/none; same_email=true; same_uuid=true`). Verified identity matches synthetic user.
   6. `RECOVERY_AS_EMAIL`: **FAIL** (`verify=200/none; session=true; purpose_crossover=true`). A recovery OTP CAN be redeemed as `type: 'email'`.
@@ -130,7 +134,7 @@ Two distinct testing modes are established:
   13. `AUTH17_OTP_SESSION`: **PASS** (`verify=200/none; same_uuid=true`).
   14. `AUTH17_PASSWORD_MUTATION`: **FAIL** (`pre_grant=200/none; kind=password_mutation_bypass; update=200/none; old_grant=400/invalid_credentials; new_grant=200/none`). An OTP bearer session can directly mutate the user's password via `PUT /user` without supplying the current password.
 - Core Security Boundary Status:
-  - **AUTH-12 (Atomic Single-Use):** **BLOCKED (FAIL)** — Concurrent parallel redemption issues multiple sessions.
+  - **AUTH-12 (Atomic Single-Use):** **BLOCKED (FAIL)** — Concurrent parallel redemption issues multiple sessions in pinned GoTrue v2.197.0.
   - **AUTH-17 (Direct Password Mutation):** **BLOCKED (FAIL)** — Password mutation bypass observed.
   - **AUTH-22 (Five-Wrong Cooldown):** **BLOCKED (FAIL)** — Cooldown bypass observed.
 

@@ -629,21 +629,38 @@ test('validateLocalStackConfig validates loopback URLs, credentials, and batch o
     selectedCases: ['OTP_FORMAT_REPLAY', 'INVALID_CODE'], // 1 + 1 = 2 sends (valid)
   }), true);
 
-  assert.throws(() => validateLocalStackConfig({
-    API_URL: 'http://127.0.0.1:55621',
-    MAILPIT_URL: 'http://127.0.0.1:55624',
-    PUBLISHABLE_KEY: 'test-pub',
-    SERVICE_ROLE_KEY: 'test-serv',
-    devModeEmailQuota: 3, // must be between 5 and 100
-  }), /devModeEmailQuota must be a number between 5 and 100/);
+  // Exhaustive devModeEmailQuota validation: requires safe integer in range 5..100
+  const invalidDevQuotas = [
+    3, 4, 0, -1, -5, 101, 105, 1000,
+    NaN, Infinity, -Infinity,
+    5.5, 30.2, 99.9,
+    '30', '5', 'dev', true, false, null, {}, [30]
+  ];
+  for (const invalidVal of invalidDevQuotas) {
+    assert.throws(() => validateLocalStackConfig({
+      API_URL: 'http://127.0.0.1:55621',
+      MAILPIT_URL: 'http://127.0.0.1:55624',
+      PUBLISHABLE_KEY: 'test-pub',
+      SERVICE_ROLE_KEY: 'test-serv',
+      devModeEmailQuota: invalidVal,
+    }), /devModeEmailQuota must be a safe integer between 5 and 100/);
+  }
 
-  assert.throws(() => validateLocalStackConfig({
+  assert.equal(validateLocalStackConfig({
     API_URL: 'http://127.0.0.1:55621',
     MAILPIT_URL: 'http://127.0.0.1:55624',
     PUBLISHABLE_KEY: 'test-pub',
     SERVICE_ROLE_KEY: 'test-serv',
-    devModeEmailQuota: 105, // exceeds 100
-  }), /devModeEmailQuota must be a number between 5 and 100/);
+    devModeEmailQuota: 5, // minimum boundary
+  }), true);
+
+  assert.equal(validateLocalStackConfig({
+    API_URL: 'http://127.0.0.1:55621',
+    MAILPIT_URL: 'http://127.0.0.1:55624',
+    PUBLISHABLE_KEY: 'test-pub',
+    SERVICE_ROLE_KEY: 'test-serv',
+    devModeEmailQuota: 100, // maximum boundary
+  }), true);
 
   assert.equal(validateLocalStackConfig({
     API_URL: 'http://127.0.0.1:55621',
