@@ -203,17 +203,18 @@ test('executeAuthIntegrationSuite public entrypoint fails closed on malformed Do
   }
 });
 
-function setupDeterministicProcessMock({ kongHostIp = '127.0.0.1', windowsListeners = true } = {}) {
+function setupDeterministicProcessMock({ kongHostIp = '127.0.0.1', windowsListeners = true, gotrueQuota = 5 } = {}) {
   const origExec = childProcess.execFileSync;
   const project = 'tio-task06h-local-auth';
   const network = `supabase_network_${project}`;
 
-  const makeContainer = (part, image, portBindings = {}) => ({
+  const makeContainer = (part, image, portBindings = {}, env = undefined) => ({
     Name: `/supabase_${part}_${project}`,
     State: { Running: true },
     Config: {
       Image: image,
       Labels: { 'com.docker.compose.project': project },
+      Env: env ?? (part === 'auth' ? (gotrueQuota !== undefined ? [`GOTRUE_RATE_LIMIT_EMAIL_SENT=${gotrueQuota}`] : []) : []),
     },
     HostConfig: {
       PortBindings: portBindings,
@@ -394,6 +395,62 @@ test('executeAuthIntegrationSuite invokes both Docker inspection and Windows lis
     assert.ok(dockerNetworkInspect, 'Preflight must invoke docker network inspect');
     assert.ok(dockerContainerInspect, 'Preflight must invoke docker container inspect');
     assert.ok(powershellListenerInspect, 'Preflight must invoke Windows PowerShell listener inspect');
+  } finally {
+    restoreProc();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('executeAuthIntegrationSuite with devModeEmailQuota: 30 fails closed during preflight when GoTrue container has default quota 5', async () => {
+  let fetchCalled = false;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    fetchCalled = true;
+    throw new Error('fetch should not be called');
+  };
+  const restoreProc = setupDeterministicProcessMock({ gotrueQuota: 5 });
+
+  try {
+    await assert.rejects(
+      async () => executeAuthIntegrationSuite({
+        API_URL: 'http://127.0.0.1:55621',
+        MAILPIT_URL: 'http://127.0.0.1:55624',
+        PUBLISHABLE_KEY: 'test-pub',
+        SERVICE_ROLE_KEY: 'test-serv',
+        devModeEmailQuota: 30,
+      }),
+      /MISMATCHED_GOTRUE_EMAIL_QUOTA: client quota \(30\) does not match GoTrue container GOTRUE_RATE_LIMIT_EMAIL_SENT \(5\)/
+    );
+    assert.equal(fetchCalled, false, 'No fetch request must be made when GoTrue container email quota mismatches client dev quota');
+  } finally {
+    restoreProc();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('executeAuthIntegrationSuite with devModeEmailQuota: 30 succeeds during preflight when GoTrue container matches quota 30', async () => {
+  let fetchCalled = false;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    fetchCalled = true;
+    if (url.includes('/api/v1/messages')) {
+      return { status: 200, json: async () => ({ messages: [] }) };
+    }
+    return { status: 404, json: async () => ({}) };
+  };
+  const restoreProc = setupDeterministicProcessMock({ gotrueQuota: 30 });
+
+  try {
+    const results = await executeAuthIntegrationSuite({
+      API_URL: 'http://127.0.0.1:55621',
+      MAILPIT_URL: 'http://127.0.0.1:55624',
+      PUBLISHABLE_KEY: 'test-pub',
+      SERVICE_ROLE_KEY: 'test-serv',
+      devModeEmailQuota: 30,
+      selectedCases: ['MAILPIT_BASELINE'],
+    });
+    assert.equal(fetchCalled, true);
+    assert.equal(results.find(r => r.id === 'MAILPIT_BASELINE')?.result, 'PASS');
   } finally {
     restoreProc();
     globalThis.fetch = originalFetch;

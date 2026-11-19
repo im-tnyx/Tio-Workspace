@@ -8,6 +8,8 @@ import {
   validateWindowsListeners,
   validateIsolatedLoopbackStack,
   assertExactPortBinding,
+  extractGoTrueEmailQuota,
+  validateGoTrueEmailQuota,
 } from './loopback-preflight.mjs';
 
 test('nonLoopbackPublishedPorts flags empty, wildcard and non-loopback IPs', () => {
@@ -74,6 +76,7 @@ test('validateIsolatedLoopbackStack validates compliant Compose containers', () 
     Config: {
       Image: image,
       Labels: { 'com.docker.compose.project': project },
+      Env: part === 'auth' ? ['GOTRUE_RATE_LIMIT_EMAIL_SENT=5'] : [],
     },
     HostConfig: {
       PortBindings: portBindings,
@@ -142,6 +145,7 @@ test('validateIsolatedLoopbackStack rejects unexpected extra container', () => {
     Config: {
       Image: image,
       Labels: { 'com.docker.compose.project': project },
+      Env: part === 'auth' ? ['GOTRUE_RATE_LIMIT_EMAIL_SENT=5'] : [],
     },
     HostConfig: {
       PortBindings: portBindings,
@@ -180,6 +184,7 @@ test('validateIsolatedLoopbackStack rejects published ports on internal DB conta
     Config: {
       Image: image,
       Labels: { 'com.docker.compose.project': project },
+      Env: part === 'auth' ? ['GOTRUE_RATE_LIMIT_EMAIL_SENT=5'] : [],
     },
     HostConfig: {
       PortBindings: portBindings,
@@ -264,6 +269,7 @@ test('validateIsolatedLoopbackStack rejects unauthorized extra localhost port on
     Config: {
       Image: image,
       Labels: { 'com.docker.compose.project': project },
+      Env: part === 'auth' ? ['GOTRUE_RATE_LIMIT_EMAIL_SENT=5'] : [],
     },
     HostConfig: {
       PortBindings: portBindings,
@@ -302,6 +308,7 @@ test('validateIsolatedLoopbackStack rejects unauthorized extra localhost port on
     Config: {
       Image: image,
       Labels: { 'com.docker.compose.project': project },
+      Env: part === 'auth' ? ['GOTRUE_RATE_LIMIT_EMAIL_SENT=5'] : [],
     },
     HostConfig: {
       PortBindings: portBindings,
@@ -340,6 +347,7 @@ test('validateIsolatedLoopbackStack rejects attachment of historical Task 06G vo
     Config: {
       Image: image,
       Labels: { 'com.docker.compose.project': project },
+      Env: part === 'auth' ? ['GOTRUE_RATE_LIMIT_EMAIL_SENT=5'] : [],
     },
     HostConfig: {
       PortBindings: portBindings,
@@ -527,6 +535,7 @@ test('validateIsolatedLoopbackStack rejects missing or mismatched HostConfig on 
     Config: {
       Image: image,
       Labels: { 'com.docker.compose.project': project },
+      Env: part === 'auth' ? ['GOTRUE_RATE_LIMIT_EMAIL_SENT=5'] : [],
     },
     HostConfig: {
       PortBindings: hostPorts,
@@ -588,6 +597,7 @@ test('validateIsolatedLoopbackStack rejects published ports on internal Auth con
     Config: {
       Image: image,
       Labels: { 'com.docker.compose.project': project },
+      Env: part === 'auth' ? ['GOTRUE_RATE_LIMIT_EMAIL_SENT=5'] : [],
     },
     HostConfig: {
       PortBindings: hostPorts,
@@ -632,6 +642,7 @@ test('validateIsolatedLoopbackStack rejects missing or mismatched HostConfig on 
     Config: {
       Image: image,
       Labels: { 'com.docker.compose.project': project },
+      Env: part === 'auth' ? ['GOTRUE_RATE_LIMIT_EMAIL_SENT=5'] : [],
     },
     HostConfig: {
       PortBindings: hostPorts,
@@ -693,6 +704,7 @@ test('validateIsolatedLoopbackStack rejects published ports on DB in HostConfig 
     Config: {
       Image: image,
       Labels: { 'com.docker.compose.project': project },
+      Env: part === 'auth' ? ['GOTRUE_RATE_LIMIT_EMAIL_SENT=5'] : [],
     },
     HostConfig: {
       PortBindings: hostPorts,
@@ -747,5 +759,179 @@ test('validateIsolatedLoopbackStack rejects published ports on DB in HostConfig 
   assert.throws(
     () => validateIsolatedLoopbackStack({ containers: dbNetPortContainers, network, project }),
     /Security violation: db container must not have any published host ports/
+  );
+});
+
+test('validateGoTrueEmailQuota succeeds when container quota matches baseline 5', () => {
+  const container = {
+    Config: {
+      Env: ['GOTRUE_RATE_LIMIT_EMAIL_SENT=5'],
+    },
+  };
+  assert.equal(validateGoTrueEmailQuota(container, 5), 5);
+  assert.equal(validateGoTrueEmailQuota(container), 5); // default expectedEmailQuota = 5
+});
+
+test('validateGoTrueEmailQuota succeeds when container quota matches dev quota 30', () => {
+  const container = {
+    Config: {
+      Env: ['GOTRUE_RATE_LIMIT_EMAIL_SENT=30'],
+    },
+  };
+  assert.equal(validateGoTrueEmailQuota(container, 30), 30);
+});
+
+test('validateGoTrueEmailQuota fails closed on quota mismatch (server=5, expected=30)', () => {
+  const container = {
+    Config: {
+      Env: ['GOTRUE_RATE_LIMIT_EMAIL_SENT=5'],
+    },
+  };
+  assert.throws(
+    () => validateGoTrueEmailQuota(container, 30),
+    /MISMATCHED_GOTRUE_EMAIL_QUOTA: client quota \(30\) does not match GoTrue container GOTRUE_RATE_LIMIT_EMAIL_SENT \(5\)/
+  );
+});
+
+test('validateGoTrueEmailQuota fails closed on quota mismatch (server=30, expected=5)', () => {
+  const container = {
+    Config: {
+      Env: ['GOTRUE_RATE_LIMIT_EMAIL_SENT=30'],
+    },
+  };
+  assert.throws(
+    () => validateGoTrueEmailQuota(container, 5),
+    /MISMATCHED_GOTRUE_EMAIL_QUOTA: client quota \(5\) does not match GoTrue container GOTRUE_RATE_LIMIT_EMAIL_SENT \(30\)/
+  );
+});
+
+test('validateGoTrueEmailQuota fails closed when environment is missing or non-array', () => {
+  assert.throws(
+    () => validateGoTrueEmailQuota({}, 5),
+    /MISSING_GOTRUE_EMAIL_QUOTA: GoTrue container missing environment configuration/
+  );
+  assert.throws(
+    () => validateGoTrueEmailQuota({ Config: {} }, 5),
+    /MISSING_GOTRUE_EMAIL_QUOTA: GoTrue container missing environment configuration/
+  );
+  assert.throws(
+    () => validateGoTrueEmailQuota({ Config: { Env: 'invalid' } }, 5),
+    /MISSING_GOTRUE_EMAIL_QUOTA: GoTrue container missing environment configuration/
+  );
+});
+
+test('validateGoTrueEmailQuota fails closed when GOTRUE_RATE_LIMIT_EMAIL_SENT variable is missing', () => {
+  const container = {
+    Config: {
+      Env: ['GOTRUE_API_HOST=0.0.0.0', 'GOTRUE_SITE_URL=http://localhost:3000'],
+    },
+  };
+  assert.throws(
+    () => validateGoTrueEmailQuota(container, 5),
+    /MISSING_GOTRUE_EMAIL_QUOTA: GoTrue container missing GOTRUE_RATE_LIMIT_EMAIL_SENT environment variable/
+  );
+});
+
+test('validateGoTrueEmailQuota fails closed when GOTRUE_RATE_LIMIT_EMAIL_SENT is ambiguous (duplicate definitions)', () => {
+  const container = {
+    Config: {
+      Env: ['GOTRUE_RATE_LIMIT_EMAIL_SENT=5', 'GOTRUE_RATE_LIMIT_EMAIL_SENT=30'],
+    },
+  };
+  assert.throws(
+    () => validateGoTrueEmailQuota(container, 5),
+    /AMBIGUOUS_GOTRUE_EMAIL_QUOTA: GoTrue container has multiple GOTRUE_RATE_LIMIT_EMAIL_SENT definitions/
+  );
+});
+
+test('validateGoTrueEmailQuota fails closed on non-integer or float value', () => {
+  assert.throws(
+    () => validateGoTrueEmailQuota({ Config: { Env: ['GOTRUE_RATE_LIMIT_EMAIL_SENT=thirty'] } }, 5),
+    /MALFORMED_GOTRUE_EMAIL_QUOTA: GoTrue container has non-integer GOTRUE_RATE_LIMIT_EMAIL_SENT: 'thirty'/
+  );
+  assert.throws(
+    () => validateGoTrueEmailQuota({ Config: { Env: ['GOTRUE_RATE_LIMIT_EMAIL_SENT=5.5'] } }, 5),
+    /MALFORMED_GOTRUE_EMAIL_QUOTA: GoTrue container has non-integer GOTRUE_RATE_LIMIT_EMAIL_SENT: '5.5'/
+  );
+  assert.throws(
+    () => validateGoTrueEmailQuota({ Config: { Env: ['GOTRUE_RATE_LIMIT_EMAIL_SENT='] } }, 5),
+    /MALFORMED_GOTRUE_EMAIL_QUOTA: GoTrue container has non-integer GOTRUE_RATE_LIMIT_EMAIL_SENT: ''/
+  );
+});
+
+test('validateGoTrueEmailQuota fails closed on out-of-range integer (< 5 or > 100)', () => {
+  assert.throws(
+    () => validateGoTrueEmailQuota({ Config: { Env: ['GOTRUE_RATE_LIMIT_EMAIL_SENT=4'] } }, 4),
+    /Invalid expectedEmailQuota/
+  );
+  assert.throws(
+    () => validateGoTrueEmailQuota({ Config: { Env: ['GOTRUE_RATE_LIMIT_EMAIL_SENT=4'] } }, 5),
+    /MALFORMED_GOTRUE_EMAIL_QUOTA: GoTrue container GOTRUE_RATE_LIMIT_EMAIL_SENT out of approved bounds \(5\.\.100\): 4/
+  );
+  assert.throws(
+    () => validateGoTrueEmailQuota({ Config: { Env: ['GOTRUE_RATE_LIMIT_EMAIL_SENT=101'] } }, 101),
+    /Invalid expectedEmailQuota/
+  );
+  assert.throws(
+    () => validateGoTrueEmailQuota({ Config: { Env: ['GOTRUE_RATE_LIMIT_EMAIL_SENT=101'] } }, 5),
+    /MALFORMED_GOTRUE_EMAIL_QUOTA: GoTrue container GOTRUE_RATE_LIMIT_EMAIL_SENT out of approved bounds \(5\.\.100\): 101/
+  );
+});
+
+test('validateIsolatedLoopbackStack enforces matching expectedEmailQuota against GoTrue container', () => {
+  const project = 'tio-task06h-local-auth';
+  const network = `supabase_network_${project}`;
+
+  const makeContainerWithQuota = (part, image, quota = 5) => ({
+    Name: `/supabase_${part}_${project}`,
+    State: { Running: true },
+    Config: {
+      Image: image,
+      Labels: { 'com.docker.compose.project': project },
+      Env: part === 'auth' ? [`GOTRUE_RATE_LIMIT_EMAIL_SENT=${quota}`] : [],
+    },
+    HostConfig: {
+      PortBindings: part === 'kong'
+        ? { '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55621' }] }
+        : (part === 'inbucket' ? { '8025/tcp': [{ HostIp: '127.0.0.1', HostPort: '55624' }] } : {}),
+    },
+    NetworkSettings: {
+      Networks: { [network]: {} },
+      Ports: part === 'kong'
+        ? { '8000/tcp': [{ HostIp: '127.0.0.1', HostPort: '55621' }] }
+        : (part === 'inbucket' ? { '8025/tcp': [{ HostIp: '127.0.0.1', HostPort: '55624' }] } : {}),
+    },
+  });
+
+  const containers5 = [
+    makeContainerWithQuota('auth', 'public.ecr.aws/supabase/gotrue:v2.197.0', 5),
+    makeContainerWithQuota('db', 'public.ecr.aws/supabase/postgres:17.11.0.004'),
+    makeContainerWithQuota('kong', 'public.ecr.aws/supabase/kong:2.8.1'),
+    makeContainerWithQuota('inbucket', 'public.ecr.aws/supabase/mailpit:v1.31.3'),
+  ];
+
+  const containers30 = [
+    makeContainerWithQuota('auth', 'public.ecr.aws/supabase/gotrue:v2.197.0', 30),
+    makeContainerWithQuota('db', 'public.ecr.aws/supabase/postgres:17.11.0.004'),
+    makeContainerWithQuota('kong', 'public.ecr.aws/supabase/kong:2.8.1'),
+    makeContainerWithQuota('inbucket', 'public.ecr.aws/supabase/mailpit:v1.31.3'),
+  ];
+
+  // Match 5
+  assert.equal(validateIsolatedLoopbackStack({ containers: containers5, network, project, expectedEmailQuota: 5 }), true);
+
+  // Match 30
+  assert.equal(validateIsolatedLoopbackStack({ containers: containers30, network, project, expectedEmailQuota: 30 }), true);
+
+  // Mismatch: expected 30, server has 5
+  assert.throws(
+    () => validateIsolatedLoopbackStack({ containers: containers5, network, project, expectedEmailQuota: 30 }),
+    /MISMATCHED_GOTRUE_EMAIL_QUOTA: client quota \(30\) does not match GoTrue container GOTRUE_RATE_LIMIT_EMAIL_SENT \(5\)/
+  );
+
+  // Mismatch: expected 5, server has 30
+  assert.throws(
+    () => validateIsolatedLoopbackStack({ containers: containers30, network, project, expectedEmailQuota: 5 }),
+    /MISMATCHED_GOTRUE_EMAIL_QUOTA: client quota \(5\) does not match GoTrue container GOTRUE_RATE_LIMIT_EMAIL_SENT \(30\)/
   );
 });

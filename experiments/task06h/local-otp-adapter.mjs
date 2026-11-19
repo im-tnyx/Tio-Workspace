@@ -138,7 +138,7 @@ export function inspectWindowsListenersRuntime(ports = [55621, 55624]) {
   }
 }
 
-export function inspectDockerStackRuntime() {
+export function inspectDockerStackRuntime(expectedEmailQuota = 5) {
   const run = (file, args) => childProcess.execFileSync(file, args, {
     encoding: 'utf8',
     timeout: 15000,
@@ -180,6 +180,7 @@ export function inspectDockerStackRuntime() {
     postgresImage,
     apiHostPort: '55621',
     mailHostPort: '55624',
+    expectedEmailQuota,
   });
 
   inspectWindowsListenersRuntime([55621, 55624]);
@@ -199,8 +200,8 @@ export function initializeLocalStack() {
   };
 }
 
-export function assertRuntimeStackIsolation() {
-  inspectDockerStackRuntime();
+export function assertRuntimeStackIsolation(expectedEmailQuota = 5) {
+  inspectDockerStackRuntime(expectedEmailQuota);
   inspectWindowsListenersRuntime([55621, 55624]);
   return true;
 }
@@ -254,7 +255,9 @@ export async function executeAuthIntegrationSuite(local) {
   if (arguments.length !== 1 || !local || typeof local !== 'object') {
     throw new Error('executeAuthIntegrationSuite requires exactly 1 argument (local config object)');
   }
-  assertRuntimeStackIsolation();
+  validateLocalStackConfig(local);
+  const effectiveQuota = local.devModeEmailQuota ?? 5;
+  assertRuntimeStackIsolation(effectiveQuota);
   return _runAuthIntegrationSuiteInternal(local);
 }
 

@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **EXECUTION COMPLETED — SECURITY GATES FAILED — PR REVIEW PENDING** |
+| Status | **REVIEW CORRECTIONS COMPLETED — APPROVAL PENDING** |
 | Objective | Controlled local startup and integration testing of isolated Task 06H Compose prototype; establish Mode A (5/hour security baseline) and Mode B (development quota) |
 | Authorization | Owner's Task 06H-E instruction: local-only controlled startup, synthetic OTP integration testing, Mailpit verification, safe shutdown; hosted Supabase project `bsfwzvgynwriswapxpsp` strictly OUT OF SCOPE |
 | Implementation owner | Agent / Codex Implementation, Task 06H-E slice |
@@ -109,15 +109,15 @@ Two distinct testing modes are established:
 - Timestamp: 2026-11-19T22:31:00+05:30
 - Development Profile: Created explicit override `experiments/task06h/docker-compose.dev.yml` setting `GOTRUE_RATE_LIMIT_EMAIL_SENT: 30`.
 - Baseline Preservation: Committed `experiments/task06h/docker-compose.yml` remains strictly untouched at `GOTRUE_RATE_LIMIT_EMAIL_SENT: 5`.
-- Harness Support: Added optional `devModeEmailQuota` (strictly validated safe integer bounded between 5 and 100) to `validateLocalStackConfig` and `_runAuthIntegrationSuiteInternal`. If omitted or invalid, client accounting defaults strictly to the 5-send hourly limit.
-- Regression Coverage: Added unit tests in `local-otp-adapter.test.mjs` verifying rejection of non-integer, NaN, Infinity, fractional, negative, and out-of-bound values; all 95 offline unit and security tests pass.
+- Harness Support: Added optional `devModeEmailQuota` (strictly validated safe integer bounded between 5 and 100) to `validateLocalStackConfig` and `_runAuthIntegrationSuiteInternal`. When omitted, client accounting defaults strictly to the 5-send hourly limit. Explicit invalid values strictly throw validation errors (never silently fall back). In addition, preflight verifies that the running GoTrue container's `GOTRUE_RATE_LIMIT_EMAIL_SENT` matches the effective client quota.
+- Regression Coverage: Added unit tests in `local-otp-adapter.test.mjs` and `loopback-preflight.test.mjs` verifying rejection of non-integer, NaN, Infinity, fractional, negative, and out-of-bound values, as well as GoTrue container quota match/mismatch verification; all 107 offline unit and security tests pass.
 - Container Update: Recreated `supabase_auth_tio-task06h-local-auth` under dev profile; verified `GOTRUE_RATE_LIMIT_EMAIL_SENT=30` in container environment.
 - Isolation Verification: All 4 containers verified; ports 55621 and 55624 verified on `127.0.0.1`.
 
 ### Stage 5: Functional OTP Integration Test Results (Mode B)
 - Timestamp: 2026-11-19T22:33:00+05:30
 - Batches Executed: `batch-2`, `batch-3`, `batch-4`.
-- Total Synthetic Emails Captured in Mailpit: 14 messages (all verified in local Mailpit; zero external network leakage).
+- Total Synthetic Emails Captured in Mailpit: 14 messages (all 14 verified captured in local Mailpit at `http://127.0.0.1:55624`; all recipients used RFC 2606 non-routable `@example.invalid` domain; loopback sockets confirmed. Note: network-wide absence of external egress, DNS queries or background traffic is unverified as packet capture / network egress monitoring was not run).
 - Case-by-Case Empirical Findings (reproducible observations against pinned GoTrue v2.197.0):
   1. `INVALID_CODE`: **PASS** (`wrong_then_valid=403/otp_expired,200/none`). Invalid OTP is rejected; subsequent valid OTP succeeds.
   2. `FIVE_WRONG_COOLDOWN`: **FAIL** (`wrong=5x 403/otp_expired; correct=200/none; correct_session=true; kind=cooldown_bypass`). Five consecutive invalid OTP attempts do NOT trigger lockout or cooldown; entering the correct code immediately afterwards succeeds.
@@ -146,15 +146,17 @@ Two distinct testing modes are established:
 - Resource Preservation:
   - Zero `-v` flags used. Dedicated volume `supabase_db_tio-task06h-local-auth-data` intact for diagnostic review.
   - Historical Task 06G volumes (`supabase_db_tio-task06g-local-otp`, `supabase_edge_runtime_tio-task06g-local-otp`, `supabase_storage_tio-task06g-local-otp`) and network (`supabase_network_tio-task06g-local-otp`) verified intact and untouched.
-- Offline Test Suite Verification: Executed `node --test experiments/task06h/*.test.mjs` -> **95 passed, 0 failed (100% pass rate)**.
+- Offline Test Suite Verification: Executed `node --test experiments/task06h/*.test.mjs` -> **107 passed, 0 failed (100% pass rate)**.
 
 ### Stage 7: Continuity & Handoff Contract
 - Task ID: Task 06H-E
 - Active Branch: `feat/task06h-e-runtime-integration`
 - Base Commit: `17964889363ddb96431d758088826136a300c914` (`main`)
 - Modified Files:
-  - `experiments/task06h/local-otp-adapter.mjs` (Added bounded `devModeEmailQuota` support with default fallback to 5)
-  - `experiments/task06h/local-otp-adapter.test.mjs` (Added devModeEmailQuota boundary regression tests)
+  - `experiments/task06h/local-otp-adapter.mjs` (Added bounded `devModeEmailQuota` validation and preflight server-quota verification)
+  - `experiments/task06h/loopback-preflight.mjs` (Added `extractGoTrueEmailQuota` and `validateGoTrueEmailQuota` with fail-closed server quota verification)
+  - `experiments/task06h/local-otp-adapter.test.mjs` (Added devModeEmailQuota boundary and server-quota regression tests)
+  - `experiments/task06h/loopback-preflight.test.mjs` (Added comprehensive server-quota matching, mismatching, missing, and malformed unit tests)
   - `.ai/tasks/auth/local-20261119-task06h-e-runtime-integration.md` (Canonical execution log)
   - `.ai/current.md` (Updated continuity pointer)
 - Stack Status: **STOPPED**
