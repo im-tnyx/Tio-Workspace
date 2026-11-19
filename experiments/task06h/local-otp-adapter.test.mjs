@@ -629,6 +629,31 @@ test('validateLocalStackConfig validates loopback URLs, credentials, and batch o
     selectedCases: ['OTP_FORMAT_REPLAY', 'INVALID_CODE'], // 1 + 1 = 2 sends (valid)
   }), true);
 
+  assert.throws(() => validateLocalStackConfig({
+    API_URL: 'http://127.0.0.1:55621',
+    MAILPIT_URL: 'http://127.0.0.1:55624',
+    PUBLISHABLE_KEY: 'test-pub',
+    SERVICE_ROLE_KEY: 'test-serv',
+    devModeEmailQuota: 3, // must be between 5 and 100
+  }), /devModeEmailQuota must be a number between 5 and 100/);
+
+  assert.throws(() => validateLocalStackConfig({
+    API_URL: 'http://127.0.0.1:55621',
+    MAILPIT_URL: 'http://127.0.0.1:55624',
+    PUBLISHABLE_KEY: 'test-pub',
+    SERVICE_ROLE_KEY: 'test-serv',
+    devModeEmailQuota: 105, // exceeds 100
+  }), /devModeEmailQuota must be a number between 5 and 100/);
+
+  assert.equal(validateLocalStackConfig({
+    API_URL: 'http://127.0.0.1:55621',
+    MAILPIT_URL: 'http://127.0.0.1:55624',
+    PUBLISHABLE_KEY: 'test-pub',
+    SERVICE_ROLE_KEY: 'test-serv',
+    devModeEmailQuota: 30,
+    selectedCases: ['OTP_CONCURRENT', 'RECOVERY_FLOW'], // 3 + 4 = 7 sends (allowed with devModeEmailQuota: 30)
+  }), true);
+
   assert.equal(validateLocalStackConfig({
     API_URL: 'http://127.0.0.1:55621',
     MAILPIT_URL: 'http://127.0.0.1:55624',

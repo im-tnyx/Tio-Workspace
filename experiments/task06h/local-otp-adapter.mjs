@@ -222,6 +222,12 @@ export function validateLocalStackConfig(local) {
     throw new Error(`Invalid selectedBatch: ${local.selectedBatch}. Allowed batches: ${Object.keys(NAMED_BATCHES).join(', ')}`);
   }
 
+  if (local.devModeEmailQuota !== undefined) {
+    if (typeof local.devModeEmailQuota !== 'number' || local.devModeEmailQuota < 5 || local.devModeEmailQuota > 100) {
+      throw new Error('devModeEmailQuota must be a number between 5 and 100');
+    }
+  }
+
   if (local.selectedCases !== undefined) {
     if (!Array.isArray(local.selectedCases) || local.selectedCases.some(c => typeof c !== 'string')) {
       throw new Error('selectedCases must be an array of case ID strings');
@@ -232,9 +238,10 @@ export function validateLocalStackConfig(local) {
         throw new Error(`Invalid case ID in selectedCases: ${c}. Allowed cases: ${NAMED_BATCHES.all.join(', ')}`);
       }
     }
+    const maxBudget = local.devModeEmailQuota ?? 5;
     const budget = calculateBatchBudget(local.selectedCases);
-    if (budget > 5) {
-      throw new Error(`selectedCases budget (${budget} emails) exceeds 5-send hourly quota. Select a batch or subset with budget <= 5.`);
+    if (budget > maxBudget) {
+      throw new Error(`selectedCases budget (${budget} emails) exceeds ${maxBudget}-send hourly quota. Select a batch or subset with budget <= ${maxBudget}.`);
     }
   }
 
@@ -305,7 +312,7 @@ async function _runAuthIntegrationSuiteInternal(local) {
 
   let sendsInWindow = 0;
   let windowStart = Date.now();
-  const maxSendsPerWindow = 5;
+  const maxSendsPerWindow = local.devModeEmailQuota ?? 5;
   const windowDurationMs = 3600000; // 1 hour (matches GoTrue GOTRUE_RATE_LIMIT_EMAIL_SENT hourly rate limit)
 
   async function paceEmailQuota() {
