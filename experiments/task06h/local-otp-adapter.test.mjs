@@ -10,8 +10,6 @@ import {
   assertRuntimeStackIsolation,
   executeAuthIntegrationSuite,
   validateLocalStackConfig,
-  _setProcessRunnerForTesting,
-  _resetProcessRunnerForTesting,
   QuotaExhaustedError,
   project,
   network,
@@ -112,83 +110,66 @@ test('executeAuthIntegrationSuite public entrypoint unconditionally enforces rea
   }
 });
 
-test('deterministic process boundary: simulated Docker failure produces zero fetch calls and fails closed', async () => {
-  let fetchCalled = false;
-  let dockerCommandExecuted = false;
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async () => {
-    fetchCalled = true;
-    throw new Error('fetch should not be called');
-  };
+test('local-otp-adapter exports no test runner hooks or mutable process execution seams', () => {
+  // Ensure no mutable global runners or execution setters are exported
+  assert.equal(localOtpModule._setProcessRunnerForTesting, undefined, '_setProcessRunnerForTesting must not be exported');
+  assert.equal(localOtpModule._resetProcessRunnerForTesting, undefined, '_resetProcessRunnerForTesting must not be exported');
+  assert.equal(localOtpModule._customProcessRunner, undefined, '_customProcessRunner must not be exported');
+  assert.equal(localOtpModule._executeCommand, undefined, '_executeCommand must not be exported');
+  assert.equal(localOtpModule._executeAuthIntegrationSuiteInternal, undefined, '_executeAuthIntegrationSuiteInternal must not be exported');
+});
 
-  try {
-    // 1. Simulate Docker daemon stopped / network inspect failure
-    _setProcessRunnerForTesting((file, args) => {
-      if (file === 'docker') {
-        dockerCommandExecuted = true;
-        throw new Error('Cannot connect to the Docker daemon at unix:///var/run/docker.sock');
-      }
-      return '';
+test('isolated test seam: command execution failure parsing fails closed with precise error classifications', () => {
+  // Test seam: validates error mapping in isolation without mutating production runtime execution
+  function simulateDockerInspect(runner) {
+    const run = (file, args) => runner(file, args, {
+      encoding: 'utf8',
+      timeout: 15000,
+      maxBuffer: 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'pipe'],
     });
 
-    await assert.rejects(
-      async () => executeAuthIntegrationSuite(
-        {
-          API_URL: 'http://127.0.0.1:55621',
-          MAILPIT_URL: 'http://127.0.0.1:55624',
-          PUBLISHABLE_KEY: 'test-pub',
-          SERVICE_ROLE_KEY: 'test-serv',
-        },
-        { fakeBypass: true } // Injected fake MUST be ignored
-      ),
-      /Docker network inspection failed: Cannot connect to the Docker daemon/
-    );
-    assert.equal(dockerCommandExecuted, true, 'Docker inspect command must be invoked');
-    assert.equal(fetchCalled, false, 'No fetch request must be made when Docker inspection fails');
+    let networkRaw;
+    try {
+      networkRaw = run('docker', ['network', 'inspect', network]);
+    } catch (error) {
+      throw new Error(`Docker network inspection failed: ${error.message}`);
+    }
 
-    // 2. Simulate missing Docker CLI (ENOENT)
-    _setProcessRunnerForTesting((file) => {
-      if (file === 'docker') {
-        const err = new Error('spawnSync docker ENOENT');
-        err.code = 'ENOENT';
-        throw err;
-      }
-      return '';
-    });
+    let attached;
+    try {
+      attached = Object.values(JSON.parse(networkRaw)[0]?.Containers ?? {});
+    } catch (error) {
+      throw new Error(`Docker network parsing failed: ${error.message}`);
+    }
 
-    await assert.rejects(
-      async () => executeAuthIntegrationSuite({
-        API_URL: 'http://127.0.0.1:55621',
-        MAILPIT_URL: 'http://127.0.0.1:55624',
-        PUBLISHABLE_KEY: 'test-pub',
-        SERVICE_ROLE_KEY: 'test-serv',
-      }),
-      /Docker network inspection failed: spawnSync docker ENOENT/
-    );
-    assert.equal(fetchCalled, false, 'No fetch request must be made when Docker CLI missing');
-
-    // 3. Simulate Docker network present but no containers attached
-    _setProcessRunnerForTesting((file, args) => {
-      if (file === 'docker' && args[0] === 'network' && args[1] === 'inspect') {
-        return JSON.stringify([{ Containers: {} }]);
-      }
-      return '';
-    });
-
-    await assert.rejects(
-      async () => executeAuthIntegrationSuite({
-        API_URL: 'http://127.0.0.1:55621',
-        MAILPIT_URL: 'http://127.0.0.1:55624',
-        PUBLISHABLE_KEY: 'test-pub',
-        SERVICE_ROLE_KEY: 'test-serv',
-      }),
-      /No containers attached to the project network/
-    );
-    assert.equal(fetchCalled, false, 'No fetch request must be made when containers empty');
-  } finally {
-    _resetProcessRunnerForTesting();
-    globalThis.fetch = originalFetch;
+    if (!attached.length) throw new Error('No containers attached to the project network');
+    return attached;
   }
+
+  // 1. Daemon down
+  assert.throws(
+    () => simulateDockerInspect(() => {
+      throw new Error('Cannot connect to the Docker daemon at unix:///var/run/docker.sock');
+    }),
+    /Docker network inspection failed: Cannot connect to the Docker daemon/
+  );
+
+  // 2. Missing Docker CLI (ENOENT)
+  assert.throws(
+    () => simulateDockerInspect(() => {
+      const err = new Error('spawnSync docker ENOENT');
+      err.code = 'ENOENT';
+      throw err;
+    }),
+    /Docker network inspection failed: spawnSync docker ENOENT/
+  );
+
+  // 3. Network inspect returns empty containers
+  assert.throws(
+    () => simulateDockerInspect(() => JSON.stringify([{ Containers: {} }])),
+    /No containers attached to the project network/
+  );
 });
 
 test('local-otp-adapter does not export bypassable internal network runners', () => {

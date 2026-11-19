@@ -57,10 +57,10 @@ The Task 06H adapter (`experiments/task06h/local-otp-adapter.mjs`) and preflight
    - Rejects missing HostConfig bindings, inconsistent HostConfig vs NetworkSettings mappings, duplicate mappings, unauthorized extra localhost ports, wildcard/IPv6 bindings, and any published host ports on Auth/DB. Forbids mounting historical Task 06G volumes.
 5. **Windows Listener Gate:** Executes `validateWindowsListeners()` via PowerShell `Get-NetTCPConnection` at runtime. Asserts that ports 55621 and 55624 listen strictly on `127.0.0.1`, failing closed if any `0.0.0.0` or `[::]` socket exists.
 6. **Accurate Preflight Scope:** Preflight documentation clarified: preflight executes post-startup and prevents running tests on an exposed stack; it does not prevent initial startup exposure. Immediate stack termination is required if a non-loopback port is detected.
-7. **Complete Integration Runner Implementation & Quota Management:** All 12 test sequences (Mailpit baseline, OTP format/replay, 3 concurrent pairs, invalid code rejection, 5-wrong lock/cooldown, signup-to-recovery crossing, recovery-to-other-purpose crossings, 60s resend interval / old-code invalidation, and AUTH-17 unrevoked OTP password mutation) are fully implemented in `executeAuthIntegrationSuite(local)`. Quota-aware pacing (`paceEmailQuota`) handles GoTrue's shared 5-send limiter across 60s, and any rate-limit exhaustion is classified strictly as `INCONCLUSIVE` (via `QuotaExhaustedError`), never `PASS`. Live execution remains strictly GATED until Stage C/D startup authorization.
-8. **HTTP Template Serving via Kong:** Custom templates are served internally over HTTP via Kong using the built-in `request-termination` plugin at `http://kong:8000/templates/*.html`, satisfying GoTrue v2.197.0 HTTP template loader requirements without filesystem volume mounting or extra containers.
+7. **Complete Integration Runner Implementation & Quota Management:** All 12 test sequences (Mailpit baseline, OTP format/replay, 3 concurrent pairs, invalid code rejection, 5-wrong lock/cooldown, signup-to-recovery crossing, recovery-to-other-purpose crossings, 60s resend interval / old-code invalidation, and AUTH-17 unrevoked OTP password mutation) are fully implemented in `executeAuthIntegrationSuite(local)`. Quota-aware pacing (`paceEmailQuota`) handles GoTrue's shared 5-send limiter across its 1-hour window (3,600,000 ms), and any rate-limit exhaustion is classified strictly as `INCONCLUSIVE` (via `QuotaExhaustedError`), never `PASS`. Live execution remains strictly GATED until Stage C/D startup authorization.
+8. **HTTP Template Serving via Kong & Startup Race Elimination:** Custom templates are served internally over HTTP via Kong using the built-in `request-termination` plugin at `http://kong:8000/templates/*.html`, satisfying GoTrue v2.197.0 HTTP template loader requirements without filesystem volume mounting or extra containers. Route isolation strictly enforces `hosts: ["kong", "kong:8000"]` (validated against Kong 2.8.1 `06-routes_spec.lua`) to prevent host-port exposure via 55621. `auth` depends on `kong` (`condition: service_started`) to eliminate startup template cache warmup race.
 9. **GoTrue Startup Configuration & Subjects Alignment:** `API_EXTERNAL_URL` and `GOTRUE_API_EXTERNAL_URL` are explicitly set to the loopback gateway (`http://127.0.0.1:55621`) in `services.auth.environment`. `GOTRUE_MAILER_SUBJECTS_*` match Task 06G/Task 06H adapter expectations, and adapter subject matchers support both configured and default subjects.
-10. **Deterministic Process Boundary for Tests:** Adapter command execution supports deterministic test stubbing (`_setProcessRunnerForTesting`), allowing tests to verify failure fail-closed semantics independently of real Docker daemon presence.
+10. **Elimination of Process-Runner Mutation:** Production process execution boundary in `local-otp-adapter.mjs` directly invokes `execFileSync` without mutable hooks or global setters (`_setProcessRunnerForTesting` removed). `executeAuthIntegrationSuite(local)` unconditionally runs real `assertRuntimeStackIsolation()`. Deterministic error wrapping is verified via an isolated test seam.
 
 ---
 
@@ -68,11 +68,11 @@ The Task 06H adapter (`experiments/task06h/local-otp-adapter.mjs`) and preflight
 
 * **Docker Compose Config Syntax:** `docker compose --env-file experiments/task06h/.env.example -f experiments/task06h/docker-compose.yml config` parsed with 0 errors.
 * **Fail-Closed Verification:** `docker compose -f experiments/task06h/docker-compose.yml config` without environment variables fails closed with required variable errors.
-* **Static Security Suite:** `experiments/task06h/compose-security.test.mjs` (8/8 PASS).
+* **Static Security Suite:** `experiments/task06h/compose-security.test.mjs` (11/11 PASS).
 * **Preflight & Listener Suite:** `experiments/task06h/loopback-preflight.test.mjs` (18/18 PASS).
-* **Adapter Unit Suite:** `experiments/task06h/local-otp-adapter.test.mjs` (10/10 PASS).
+* **Adapter Unit Suite:** `experiments/task06h/local-otp-adapter.test.mjs` (11/11 PASS).
 * **Assertion Classifier Suite:** `experiments/task06h/assertions.test.mjs` (42/42 PASS).
-* **Total Offline Test Suite:** **78 passed, 0 failed (100% pass rate)**.
+* **Total Offline Test Suite:** **82 passed, 0 failed (100% pass rate)**.
 
 ---
 

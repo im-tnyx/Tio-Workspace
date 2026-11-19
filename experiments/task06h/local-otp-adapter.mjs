@@ -73,30 +73,13 @@ export class QuotaExhaustedError extends Error {
   }
 }
 
-let _customProcessRunner = null;
-
-export function _setProcessRunnerForTesting(runner) {
-  _customProcessRunner = runner;
-}
-
-export function _resetProcessRunnerForTesting() {
-  _customProcessRunner = null;
-}
-
-function _executeCommand(file, args, options = {}) {
-  if (typeof _customProcessRunner === 'function') {
-    return _customProcessRunner(file, args, options);
-  }
-  return execFileSync(file, args, options);
-}
-
 export function inspectWindowsListenersRuntime(ports = [55621, 55624]) {
   try {
     const portList = ports.join(',');
     const psScript = `Get-NetTCPConnection -LocalPort ${portList} -ErrorAction SilentlyContinue | Select-Object LocalAddress, LocalPort, State | ConvertTo-Json`;
     let rawOutput;
     try {
-      rawOutput = _executeCommand('powershell.exe', ['-NoProfile', '-Command', psScript], {
+      rawOutput = execFileSync('powershell.exe', ['-NoProfile', '-Command', psScript], {
         encoding: 'utf8',
         timeout: 10000,
       });
@@ -119,7 +102,7 @@ export function inspectWindowsListenersRuntime(ports = [55621, 55624]) {
 }
 
 export function inspectDockerStackRuntime() {
-  const run = (file, args) => _executeCommand(file, args, {
+  const run = (file, args) => execFileSync(file, args, {
     encoding: 'utf8',
     timeout: 15000,
     maxBuffer: 1024 * 1024,
