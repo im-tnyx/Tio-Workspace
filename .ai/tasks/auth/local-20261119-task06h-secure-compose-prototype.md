@@ -8,7 +8,7 @@
 | Implementation owner | Agent / Codex Implementation, Task 06H slice |
 | Baseline commit | `9980dde9978871db113d2a926f192048f04ae2a5` (`main`) |
 | Worktree branch | `feat/task06h-secure-compose-prototype` |
-| Verified GitHub HEAD | Reconciled across PR #32 commits up to Task 06H-D-AC |
+| Verified GitHub HEAD | Reconciled across PR #32 commits up to Task 06H-D-AD |
 | Security Invariants | AUTH-12/17/22 **BLOCKED**; Corrected local Auth integration **NOT RUN**; Managed Auth **NOT VERIFIED**; Production Auth **NO-GO** |
 
 ---
@@ -61,6 +61,7 @@ The Task 06H adapter (`experiments/task06h/local-otp-adapter.mjs`) and preflight
 8. **HTTP Template Serving via Kong & Verified Image Readiness Probe:** Custom templates are served internally over HTTP via Kong using the built-in `request-termination` plugin at `http://kong:8000/templates/*.html`, satisfying GoTrue v2.197.0 HTTP template loader requirements without filesystem volume mounting or extra containers. Route isolation strictly enforces `hosts: ["kong", "kong:8000"]` (validated against Kong 2.8.1 `06-routes_spec.lua`) to prevent host-port exposure via 55621. Forensic image layer analysis of `public.ecr.aws/supabase/kong:2.8.1` confirmed that `curl` was removed during build (`apk del .build-deps`), but `/usr/bin/wget` and `/bin/grep` (from base BusyBox) are permanently available in PATH. The readiness probe uses `wget -q -O - --header='Host: kong:8000' http://127.0.0.1:8000/templates/confirmation.html | grep -q 'verification code' || exit 1` to verify both route reachability and expected body content without missing binaries. `auth` depends on `kong` with `condition: service_healthy`, eliminating the template cache warmup race.
 9. **GoTrue Startup Configuration & Subjects Alignment:** `API_EXTERNAL_URL` and `GOTRUE_API_EXTERNAL_URL` are explicitly set to the loopback gateway (`http://127.0.0.1:55621`) in `services.auth.environment`. `GOTRUE_MAILER_SUBJECTS_*` match Task 06G/Task 06H adapter expectations, and adapter subject matchers support both configured and default subjects.
 10. **Non-Bypassable Public Entrypoint & Machine-State-Independent Deterministic Test Isolation (Task 06H-D-AB / Task 06H-D-AC):** The public entrypoint `executeAuthIntegrationSuite(local)` strictly enforces single-argument invocation (`arguments.length === 1`), rejecting any caller-provided options or runners. All inspection helpers (`assertRuntimeStackIsolation`, `inspectDockerStackRuntime`, `initializeLocalStack`, `inspectWindowsListenersRuntime`) accept zero runner parameters and invoke real `childProcess.execFileSync` unconditionally. `defaultCommandRunner` and mutable runner seams have been completely eliminated from the production runtime module. The offline test suite deterministically exercises the actual public entrypoint using test-only mocks strictly confined to `local-otp-adapter.test.mjs`, verified against Docker daemon unreachable, missing CLI (ENOENT), malformed network JSON, wildcard host port binding, missing Windows listeners, and proves that caller-provided runner options cannot bypass real host isolation. In every preflight rejection, zero HTTP traffic is dispatched (`fetch` called is false). All tests are strictly machine-state-independent and pass identically whether Docker Desktop is stopped, running, or not installed.
+11. **Independent Offline CI Evidence Gate (Task 06H-D-AD):** A dedicated, read-only GitHub Actions workflow (`.github/workflows/task06h-offline-evidence.yml`) runs on standard Ubuntu runners with Node.js 22. It checks out the exact PR HEAD commit, executes all 95 offline unit and security tests, performs JS syntax checks (`node --check`), validates Docker Compose syntax with synthetic local variables (`docker compose config --quiet`), and executes a negative test confirming Compose strictly fails closed without untracked secrets. All checks are strictly offline (zero container start/stop, zero network/volume mutations, zero secret leakage).
 
 ---
 
@@ -73,6 +74,7 @@ The Task 06H adapter (`experiments/task06h/local-otp-adapter.mjs`) and preflight
 * **Adapter Unit Suite:** `experiments/task06h/local-otp-adapter.test.mjs` (22/22 PASS).
 * **Assertion Classifier Suite:** `experiments/task06h/assertions.test.mjs` (42/42 PASS).
 * **Total Offline Test Suite:** **95 passed, 0 failed (100% pass rate)**.
+* **Independent GitHub Actions Evidence:** `.github/workflows/task06h-offline-evidence.yml` publishes verifiable run logs and step summary on exact PR HEAD.
 
 ---
 
