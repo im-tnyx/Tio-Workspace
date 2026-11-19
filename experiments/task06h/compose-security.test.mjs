@@ -88,3 +88,18 @@ test('Compose file enforces mandatory secrets and rejects insecure fallback defa
   assert.doesNotMatch(composeText, /\$\{POSTGRES_PASSWORD:-/);
   assert.doesNotMatch(composeText, /\$\{JWT_SECRET:-/);
 });
+
+test('Compose file configures GoTrue API_EXTERNAL_URL and mailer subjects', () => {
+  assert.match(composeText, /API_EXTERNAL_URL:\s*["']?http:\/\/127\.0\.0\.1:55621["']?/);
+  assert.match(composeText, /GOTRUE_MAILER_SUBJECTS_CONFIRMATION:\s*["']?Your local signup code["']?/);
+  assert.match(composeText, /GOTRUE_MAILER_SUBJECTS_MAGIC_LINK:\s*["']?Your local signup code["']?/);
+  assert.match(composeText, /GOTRUE_MAILER_SUBJECTS_RECOVERY:\s*["']?Your local recovery code["']?/);
+});
+
+test('Compose file uses HTTP-served email templates via Kong and request-termination plugin', () => {
+  assert.match(composeText, /GOTRUE_MAILER_TEMPLATES_CONFIRMATION:\s*["']?http:\/\/kong:8000\/templates\/confirmation\.html["']?/);
+  assert.match(composeText, /GOTRUE_MAILER_TEMPLATES_MAGIC_LINK:\s*["']?http:\/\/kong:8000\/templates\/confirmation\.html["']?/);
+  assert.match(composeText, /GOTRUE_MAILER_TEMPLATES_RECOVERY:\s*["']?http:\/\/kong:8000\/templates\/recovery\.html["']?/);
+  assert.doesNotMatch(composeText, /GOTRUE_MAILER_TEMPLATES_[A-Z_]+:\s*\/etc\/gotrue/);
+  assert.match(composeText, /KONG_PLUGINS:.*request-termination/);
+});

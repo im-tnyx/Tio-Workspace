@@ -25,7 +25,7 @@ Zero Docker containers were started, zero networks or volumes were created, and 
 
 ## 2. Component & Image Compatibility Matrix
 
-All images are strictly pinned to cached local digests and versions without `:latest` tags:
+All images are strictly pinned to stable version tags without `:latest` tags (immutable SHA256 digest pinning remains a future hardening gap):
 
 | Service | Container Name | Pinned Image | Host Port Binding | Internal Ports | Role & Configuration |
 |---|---|---|---|---|---|
@@ -57,7 +57,10 @@ The Task 06H adapter (`experiments/task06h/local-otp-adapter.mjs`) and preflight
    - Rejects missing HostConfig bindings, inconsistent HostConfig vs NetworkSettings mappings, duplicate mappings, unauthorized extra localhost ports, wildcard/IPv6 bindings, and any published host ports on Auth/DB. Forbids mounting historical Task 06G volumes.
 5. **Windows Listener Gate:** Executes `validateWindowsListeners()` via PowerShell `Get-NetTCPConnection` at runtime. Asserts that ports 55621 and 55624 listen strictly on `127.0.0.1`, failing closed if any `0.0.0.0` or `[::]` socket exists.
 6. **Accurate Preflight Scope:** Preflight documentation clarified: preflight executes post-startup and prevents running tests on an exposed stack; it does not prevent initial startup exposure. Immediate stack termination is required if a non-loopback port is detected.
-7. **Complete Integration Runner Implementation:** All 12 test sequences (Mailpit baseline, OTP format/replay, 3 concurrent pairs, invalid code rejection, 5-wrong lock/cooldown, signup-to-recovery crossing, recovery-to-other-purpose crossings, 60s resend interval / old-code invalidation, and AUTH-17 unrevoked OTP password mutation) are fully implemented in `executeAuthIntegrationSuite(local)`. Live execution remains strictly GATED until Stage C/D startup authorization.
+7. **Complete Integration Runner Implementation & Quota Management:** All 12 test sequences (Mailpit baseline, OTP format/replay, 3 concurrent pairs, invalid code rejection, 5-wrong lock/cooldown, signup-to-recovery crossing, recovery-to-other-purpose crossings, 60s resend interval / old-code invalidation, and AUTH-17 unrevoked OTP password mutation) are fully implemented in `executeAuthIntegrationSuite(local)`. Quota-aware pacing (`paceEmailQuota`) handles GoTrue's shared 5-send limiter across 60s, and any rate-limit exhaustion is classified strictly as `INCONCLUSIVE` (via `QuotaExhaustedError`), never `PASS`. Live execution remains strictly GATED until Stage C/D startup authorization.
+8. **HTTP Template Serving via Kong:** Custom templates are served internally over HTTP via Kong using the built-in `request-termination` plugin at `http://kong:8000/templates/*.html`, satisfying GoTrue v2.197.0 HTTP template loader requirements without filesystem volume mounting or extra containers.
+9. **GoTrue Startup Configuration & Subjects Alignment:** `API_EXTERNAL_URL` and `GOTRUE_API_EXTERNAL_URL` are explicitly set to the loopback gateway (`http://127.0.0.1:55621`) in `services.auth.environment`. `GOTRUE_MAILER_SUBJECTS_*` match Task 06G/Task 06H adapter expectations, and adapter subject matchers support both configured and default subjects.
+10. **Deterministic Process Boundary for Tests:** Adapter command execution supports deterministic test stubbing (`_setProcessRunnerForTesting`), allowing tests to verify failure fail-closed semantics independently of real Docker daemon presence.
 
 ---
 
@@ -65,11 +68,11 @@ The Task 06H adapter (`experiments/task06h/local-otp-adapter.mjs`) and preflight
 
 * **Docker Compose Config Syntax:** `docker compose --env-file experiments/task06h/.env.example -f experiments/task06h/docker-compose.yml config` parsed with 0 errors.
 * **Fail-Closed Verification:** `docker compose -f experiments/task06h/docker-compose.yml config` without environment variables fails closed with required variable errors.
-* **Static Security Suite:** `experiments/task06h/compose-security.test.mjs` (6/6 PASS).
+* **Static Security Suite:** `experiments/task06h/compose-security.test.mjs` (8/8 PASS).
 * **Preflight & Listener Suite:** `experiments/task06h/loopback-preflight.test.mjs` (18/18 PASS).
-* **Adapter Unit Suite:** `experiments/task06h/local-otp-adapter.test.mjs` (7/7 PASS).
+* **Adapter Unit Suite:** `experiments/task06h/local-otp-adapter.test.mjs` (10/10 PASS).
 * **Assertion Classifier Suite:** `experiments/task06h/assertions.test.mjs` (42/42 PASS).
-* **Total Offline Test Suite:** **73 passed, 0 failed (100% pass rate)**.
+* **Total Offline Test Suite:** **78 passed, 0 failed (100% pass rate)**.
 
 ---
 
@@ -78,7 +81,7 @@ The Task 06H adapter (`experiments/task06h/local-otp-adapter.mjs`) and preflight
 The following aspects cannot be proven offline and are explicitly marked **NOT VERIFIED** until separately authorized Task 06H-E startup:
 
 1. **Gap 1 (Database Bootstrap):** Whether `supabase/postgres:17.11.0.004` startup triggers GoTrue auto-migrations for `auth` schema roles without Supabase CLI initialization hooks.
-2. **Gap 2 (Kong Declarative Proxying):** Live Kong routing of `/auth/v1/health` and `/auth/v1/otp` to GoTrue upstream on the internal bridge network.
+2. **Gap 2 (Kong Declarative Proxying & Template Serving):** Live Kong routing of `/auth/v1/health` and `/auth/v1/otp` to GoTrue upstream, and live HTTP serving of email templates via `request-termination`.
 3. **Gap 3 (Mailpit SMTP Relay):** Live SMTP packet delivery from GoTrue to Mailpit on internal port 1025.
 4. **Gap 4 (API Key Semantic Evaluation):** Whether Kong/GoTrue strictly evaluates legacy HS256 anon JWT vs modern `sb_publishable_` key format in local standalone mode.
 5. **Gap 5 (Live Integration Suite Execution):** Live execution of the 12 implemented security assertions against the running stack.

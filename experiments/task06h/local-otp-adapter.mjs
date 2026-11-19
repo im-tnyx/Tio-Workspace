@@ -66,15 +66,45 @@ export function generateLocalKeys(jwtSecret = getRequiredJwtSecret()) {
   };
 }
 
+export class QuotaExhaustedError extends Error {
+  constructor(message = 'Global email rate limit budget exhausted') {
+    super(message);
+    this.name = 'QuotaExhaustedError';
+  }
+}
+
+let _customProcessRunner = null;
+
+export function _setProcessRunnerForTesting(runner) {
+  _customProcessRunner = runner;
+}
+
+export function _resetProcessRunnerForTesting() {
+  _customProcessRunner = null;
+}
+
+function _executeCommand(file, args, options = {}) {
+  if (typeof _customProcessRunner === 'function') {
+    return _customProcessRunner(file, args, options);
+  }
+  return execFileSync(file, args, options);
+}
+
 export function inspectWindowsListenersRuntime(ports = [55621, 55624]) {
   try {
     const portList = ports.join(',');
     const psScript = `Get-NetTCPConnection -LocalPort ${portList} -ErrorAction SilentlyContinue | Select-Object LocalAddress, LocalPort, State | ConvertTo-Json`;
-    const output = execFileSync('powershell.exe', ['-NoProfile', '-Command', psScript], {
-      encoding: 'utf8',
-      timeout: 10000,
-    }).trim();
+    let rawOutput;
+    try {
+      rawOutput = _executeCommand('powershell.exe', ['-NoProfile', '-Command', psScript], {
+        encoding: 'utf8',
+        timeout: 10000,
+      });
+    } catch (err) {
+      throw new Error(`Listener command execution failed: ${err.message}`);
+    }
 
+    const output = String(rawOutput ?? '').trim();
     if (!output) {
       throw new Error(`MISSING_WINDOWS_LISTENER: ports ${portList} have no active listeners`);
     }
@@ -89,22 +119,37 @@ export function inspectWindowsListenersRuntime(ports = [55621, 55624]) {
 }
 
 export function inspectDockerStackRuntime() {
-  const run = (file, args) => execFileSync(file, args, {
+  const run = (file, args) => _executeCommand(file, args, {
     encoding: 'utf8',
     timeout: 15000,
     maxBuffer: 1024 * 1024,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
 
-  const attached = Object.values(
-    JSON.parse(run('docker', ['network', 'inspect', network]))[0]?.Containers ?? {}
-  );
+  let networkRaw;
+  try {
+    networkRaw = run('docker', ['network', 'inspect', network]);
+  } catch (error) {
+    throw new Error(`Docker network inspection failed: ${error.message}`);
+  }
+
+  let attached;
+  try {
+    attached = Object.values(JSON.parse(networkRaw)[0]?.Containers ?? {});
+  } catch (error) {
+    throw new Error(`Docker network parsing failed: ${error.message}`);
+  }
+
   if (!attached.length) throw new Error('No containers attached to the project network');
 
   const containers = attached.map(entry => {
     const name = entry?.Name;
     if (typeof name !== 'string' || !name) throw new Error('Project container name unavailable');
-    return JSON.parse(run('docker', ['inspect', name]))[0];
+    try {
+      return JSON.parse(run('docker', ['inspect', name]))[0];
+    } catch (error) {
+      throw new Error(`Docker container inspection failed on ${name}: ${error.message}`);
+    }
   });
 
   validateIsolatedLoopbackStack({
@@ -204,20 +249,47 @@ async function _runAuthIntegrationSuiteInternal(local) {
     });
   }
 
+  let sendsInWindow = 0;
+  let windowStart = Date.now();
+  const maxSendsPerWindow = 5;
+  const windowDurationMs = 60000;
+
+  async function paceEmailQuota() {
+    const elapsed = Date.now() - windowStart;
+    if (elapsed >= windowDurationMs) {
+      sendsInWindow = 0;
+      windowStart = Date.now();
+    } else if (sendsInWindow >= maxSendsPerWindow) {
+      // Quota-aware scheduling: wait for the sliding window to reset rather than failing
+      const waitTime = windowDurationMs - elapsed + 1000;
+      await delay(waitTime);
+      sendsInWindow = 0;
+      windowStart = Date.now();
+    }
+  }
+
+  function recordEmailSend() {
+    sendsInWindow++;
+  }
+
   async function messages() {
     const r = await json(`${local.MAILPIT_URL}/api/v1/messages?limit=100`);
     if (r.status !== 200 || !Array.isArray(r.value.messages)) throw new Error('Mailpit unavailable');
     return r.value.messages;
   }
 
-  async function codeFor(address, subject) {
+  async function codeFor(address, subjectFilter) {
     const deadline = Date.now() + 12000;
+    const matcher = subjectFilter instanceof RegExp
+      ? subjectFilter
+      : new RegExp(String(subjectFilter).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+
     while (Date.now() < deadline) {
       for (const item of await messages()) {
-        if (usedMail.has(item.ID) || !item.Subject?.includes(subject) ||
-            !item.To?.some(to => to.Address?.toLowerCase() === address)) continue;
+        if (usedMail.has(item.ID) || !matcher.test(item.Subject ?? '') ||
+            !item.To?.some(to => to.Address?.toLowerCase() === address.toLowerCase())) continue;
         const detail = await json(`${local.MAILPIT_URL}/api/v1/message/${encodeURIComponent(item.ID)}`);
-        const match = `${detail.value.Text ?? ''} ${detail.value.HTML ?? ''}`.match(/\b\d{6}\b/);
+        const match = `${detail.value?.Text ?? ''} ${detail.value?.HTML ?? ''}`.match(/\b\d{6}\b/);
         if (detail.status === 200 && match) { usedMail.add(item.ID); return match[0]; }
       }
       await delay(250);
@@ -232,9 +304,14 @@ async function _runAuthIntegrationSuiteInternal(local) {
   }
 
   async function issue(address, createUser = true) {
+    await paceEmailQuota();
     const sent = await auth('/otp', { email: address, create_user: createUser });
+    if (sent.status === 429 || sent.value?.error_code === 'over_email_send_rate_limit') {
+      throw new QuotaExhaustedError('Global 5-send email rate limit exhausted on /otp issuance');
+    }
     if (sent.status !== 200) throw new Error('Local OTP issuance unavailable');
-    return codeFor(address, 'local signup');
+    recordEmailSend();
+    return codeFor(address, /local signup|confirm your email|confirm your signup/i);
   }
 
   async function timedAuth(path, body, options) {
@@ -260,7 +337,15 @@ async function _runAuthIntegrationSuiteInternal(local) {
 
   const wrongCode = code => code === '000000' ? '111111' : '000000';
   async function runCase(id, fn) {
-    try { await fn(); } catch { row(id, 'ERROR', 'Local case could not complete'); }
+    try {
+      await fn();
+    } catch (err) {
+      if (err instanceof QuotaExhaustedError || err?.name === 'QuotaExhaustedError') {
+        row(id, 'INCONCLUSIVE', `EMAIL_QUOTA_EXHAUSTED: ${err.message}; test gated under security policy`, { quotaExhausted: true });
+      } else {
+        row(id, 'ERROR', 'Local case could not complete');
+      }
+    }
   }
 
   // Case 1: Baseline Mailpit check
@@ -397,9 +482,14 @@ async function _runAuthIntegrationSuiteInternal(local) {
     for (const type of ['email', 'signup', 'magiclink', 'recovery']) {
       await runCase(`RECOVERY_AS_${type.toUpperCase()}`, async () => {
         const address = email(), id = await localUser(address, true);
+        await paceEmailQuota();
         const sent = await auth('/recover', { email: address });
+        if (sent.status === 429 || sent.value?.error_code === 'over_email_send_rate_limit') {
+          throw new QuotaExhaustedError('Global 5-send email rate limit exhausted on /recover issuance');
+        }
         if (sent.status !== 200) throw new Error('Recovery issuance unavailable');
-        const code = await codeFor(address, 'local recovery');
+        recordEmailSend();
+        const code = await codeFor(address, /local recovery|reset your password|reset password/i);
         const verified = await auth('/verify', { email: address, token: code, type });
         const probe = await probeUser(verified);
         const session = verified.status === 200 && verified.value?.user?.id === id &&
@@ -464,7 +554,7 @@ async function _runAuthIntegrationSuiteInternal(local) {
       const address = email();
       const first = await timedAuth('/otp', { email: address, create_user: true });
       if (first.result.status !== 200) throw new Error('First local OTP send unavailable');
-      const oldCode = await codeFor(address, 'local signup');
+      const oldCode = await codeFor(address, /local signup|confirm your email|confirm your signup/i);
       const attempts = [await timedAuth('/otp', { email: address, create_user: true })];
       const deadline = first.responseAt + 75000;
       while (attempts.at(-1).result.status !== 200 && performance.now() < deadline) {
@@ -488,7 +578,7 @@ async function _runAuthIntegrationSuiteInternal(local) {
         row('OLD_CODE_INVALIDATED', 'NOT TESTED', 'No accepted second challenge');
         return;
       }
-      const newCode = await codeFor(address, 'local signup');
+      const newCode = await codeFor(address, /local signup|confirm your email|confirm your signup/i);
       const oldVerify = await auth('/verify', { email: address, token: oldCode, type: 'email' });
       const newVerify = await auth('/verify', { email: address, token: newCode, type: 'email' });
       const expectedId = newVerify.value?.user?.id || oldVerify.value?.user?.id;

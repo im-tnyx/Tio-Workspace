@@ -10,6 +10,9 @@ import {
   assertRuntimeStackIsolation,
   executeAuthIntegrationSuite,
   validateLocalStackConfig,
+  _setProcessRunnerForTesting,
+  _resetProcessRunnerForTesting,
+  QuotaExhaustedError,
   project,
   network,
   expected,
@@ -101,10 +104,89 @@ test('executeAuthIntegrationSuite public entrypoint unconditionally enforces rea
         // Attacker or rogue caller attempts to pass a mock preflight validator:
         { preflightValidator: async () => true }
       ),
-      /network .* not found|No containers attached to the project network|Host listener validation failed|MISSING_WINDOWS_LISTENER/
+      /Docker network inspection failed|Docker stack inspection failed|Host listener validation failed|network .* not found|No containers attached to the project network|MISSING_WINDOWS_LISTENER/
     );
     assert.equal(fetchCalled, false, 'No fetch request must be made when real preflight fails');
   } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('deterministic process boundary: simulated Docker failure produces zero fetch calls and fails closed', async () => {
+  let fetchCalled = false;
+  let dockerCommandExecuted = false;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    fetchCalled = true;
+    throw new Error('fetch should not be called');
+  };
+
+  try {
+    // 1. Simulate Docker daemon stopped / network inspect failure
+    _setProcessRunnerForTesting((file, args) => {
+      if (file === 'docker') {
+        dockerCommandExecuted = true;
+        throw new Error('Cannot connect to the Docker daemon at unix:///var/run/docker.sock');
+      }
+      return '';
+    });
+
+    await assert.rejects(
+      async () => executeAuthIntegrationSuite(
+        {
+          API_URL: 'http://127.0.0.1:55621',
+          MAILPIT_URL: 'http://127.0.0.1:55624',
+          PUBLISHABLE_KEY: 'test-pub',
+          SERVICE_ROLE_KEY: 'test-serv',
+        },
+        { fakeBypass: true } // Injected fake MUST be ignored
+      ),
+      /Docker network inspection failed: Cannot connect to the Docker daemon/
+    );
+    assert.equal(dockerCommandExecuted, true, 'Docker inspect command must be invoked');
+    assert.equal(fetchCalled, false, 'No fetch request must be made when Docker inspection fails');
+
+    // 2. Simulate missing Docker CLI (ENOENT)
+    _setProcessRunnerForTesting((file) => {
+      if (file === 'docker') {
+        const err = new Error('spawnSync docker ENOENT');
+        err.code = 'ENOENT';
+        throw err;
+      }
+      return '';
+    });
+
+    await assert.rejects(
+      async () => executeAuthIntegrationSuite({
+        API_URL: 'http://127.0.0.1:55621',
+        MAILPIT_URL: 'http://127.0.0.1:55624',
+        PUBLISHABLE_KEY: 'test-pub',
+        SERVICE_ROLE_KEY: 'test-serv',
+      }),
+      /Docker network inspection failed: spawnSync docker ENOENT/
+    );
+    assert.equal(fetchCalled, false, 'No fetch request must be made when Docker CLI missing');
+
+    // 3. Simulate Docker network present but no containers attached
+    _setProcessRunnerForTesting((file, args) => {
+      if (file === 'docker' && args[0] === 'network' && args[1] === 'inspect') {
+        return JSON.stringify([{ Containers: {} }]);
+      }
+      return '';
+    });
+
+    await assert.rejects(
+      async () => executeAuthIntegrationSuite({
+        API_URL: 'http://127.0.0.1:55621',
+        MAILPIT_URL: 'http://127.0.0.1:55624',
+        PUBLISHABLE_KEY: 'test-pub',
+        SERVICE_ROLE_KEY: 'test-serv',
+      }),
+      /No containers attached to the project network/
+    );
+    assert.equal(fetchCalled, false, 'No fetch request must be made when containers empty');
+  } finally {
+    _resetProcessRunnerForTesting();
     globalThis.fetch = originalFetch;
   }
 });
@@ -182,4 +264,30 @@ test('validateLocalStackConfig validates loopback URLs and credentials purely of
     }),
     true
   );
+});
+
+test('QuotaExhaustedError is a distinct error type preserving rate limit policy', () => {
+  const err = new QuotaExhaustedError('5-send budget reached');
+  assert.equal(err.name, 'QuotaExhaustedError');
+  assert.equal(err.message, '5-send budget reached');
+  assert.ok(err instanceof Error);
+});
+
+test('Mailpit subject matchers cover both configured Task 06G/06H subjects and GoTrue defaults', () => {
+  const signupMatcher = /local signup|confirm your email|confirm your signup/i;
+  const recoveryMatcher = /local recovery|reset your password|reset password/i;
+
+  // Configured Task 06G / Task 06H subjects
+  assert.equal(signupMatcher.test('Your local signup code'), true);
+  assert.equal(recoveryMatcher.test('Your local recovery code'), true);
+
+  // GoTrue upstream default subjects
+  assert.equal(signupMatcher.test('Confirm your email address'), true);
+  assert.equal(signupMatcher.test('Confirm Your Signup'), true);
+  assert.equal(recoveryMatcher.test('Reset your password'), true);
+  assert.equal(recoveryMatcher.test('Reset Password'), true);
+
+  // Negative checks: unrelated emails must not match
+  assert.equal(signupMatcher.test('Your account invoice'), false);
+  assert.equal(recoveryMatcher.test('Welcome to our newsletter'), false);
 });

@@ -41,6 +41,8 @@ services:
       GOTRUE_JWT_EXP: 3600
       GOTRUE_API_HOST: 0.0.0.0
       GOTRUE_API_PORT: 9999
+      API_EXTERNAL_URL: "http://127.0.0.1:55621"
+      GOTRUE_API_EXTERNAL_URL: "http://127.0.0.1:55621"
       GOTRUE_SITE_URL: http://127.0.0.1:3000
       GOTRUE_URI_ALLOW_LIST: http://127.0.0.1:3000,https://127.0.0.1:3000
       GOTRUE_DISABLE_SIGNUP: "false"
@@ -53,11 +55,12 @@ services:
       GOTRUE_RATE_LIMIT_OVER_EMAIL_SEND_RATE_LIMIT: 60
       GOTRUE_MAILER_OTP_LENGTH: 6
       GOTRUE_MAILER_OTP_EXP: 600
-      GOTRUE_MAILER_TEMPLATES_CONFIRMATION: /etc/gotrue/templates/magic_link.html
-      GOTRUE_MAILER_TEMPLATES_RECOVERY: /etc/gotrue/templates/recovery.html
-      GOTRUE_MAILER_TEMPLATES_MAGIC_LINK: /etc/gotrue/templates/magic_link.html
-    volumes:
-      - ./templates:/etc/gotrue/templates:ro
+      GOTRUE_MAILER_SUBJECTS_CONFIRMATION: "Your local signup code"
+      GOTRUE_MAILER_SUBJECTS_MAGIC_LINK: "Your local signup code"
+      GOTRUE_MAILER_SUBJECTS_RECOVERY: "Your local recovery code"
+      GOTRUE_MAILER_TEMPLATES_CONFIRMATION: "http://kong:8000/templates/confirmation.html"
+      GOTRUE_MAILER_TEMPLATES_MAGIC_LINK: "http://kong:8000/templates/confirmation.html"
+      GOTRUE_MAILER_TEMPLATES_RECOVERY: "http://kong:8000/templates/recovery.html"
     networks:
       - supabase_network_tio-task06h-local-auth
 
@@ -74,7 +77,7 @@ services:
       KONG_DATABASE: "off"
       KONG_DECLARATIVE_CONFIG: /etc/kong/kong.yml
       KONG_DNS_ORDER: LAST,A,CNAME
-      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth
+      KONG_PLUGINS: request-transformer,cors,key-auth,acl,basic-auth,request-termination
       KONG_PROXY_ACCESS_LOG: /dev/stdout
       KONG_ADMIN_ACCESS_LOG: /dev/stdout
       KONG_PROXY_ERROR_LOG: /dev/stderr

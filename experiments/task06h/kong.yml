@@ -10,3 +10,25 @@ services:
         paths:
           - /auth/v1/
           - /auth/v1
+
+  - name: templates
+    url: http://localhost:8001/
+    routes:
+      - name: template-confirmation
+        paths:
+          - /templates/confirmation.html
+        plugins:
+          - name: request-termination
+            config:
+              status_code: 200
+              content_type: "text/html; charset=utf-8"
+              body: "<p>Your local Tio verification code: {{ .Token }}</p>"
+      - name: template-recovery
+        paths:
+          - /templates/recovery.html
+        plugins:
+          - name: request-termination
+            config:
+              status_code: 200
+              content_type: "text/html; charset=utf-8"
+              body: "<p>Your local Tio recovery code: {{ .Token }}</p>"
