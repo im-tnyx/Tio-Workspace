@@ -226,6 +226,16 @@ export function validateLocalStackConfig(local) {
     if (!Array.isArray(local.selectedCases) || local.selectedCases.some(c => typeof c !== 'string')) {
       throw new Error('selectedCases must be an array of case ID strings');
     }
+    const validCaseIds = new Set(NAMED_BATCHES.all);
+    for (const c of local.selectedCases) {
+      if (!validCaseIds.has(c)) {
+        throw new Error(`Invalid case ID in selectedCases: ${c}. Allowed cases: ${NAMED_BATCHES.all.join(', ')}`);
+      }
+    }
+    const budget = calculateBatchBudget(local.selectedCases);
+    if (budget > 5) {
+      throw new Error(`selectedCases budget (${budget} emails) exceeds 5-send hourly quota. Select a batch or subset with budget <= 5.`);
+    }
   }
 
   return true;

@@ -429,6 +429,30 @@ test('validateLocalStackConfig validates loopback URLs, credentials, and batch o
     selectedCases: 'not-an-array',
   }), /selectedCases must be an array/);
 
+  assert.throws(() => validateLocalStackConfig({
+    API_URL: 'http://127.0.0.1:55621',
+    MAILPIT_URL: 'http://127.0.0.1:55624',
+    PUBLISHABLE_KEY: 'test-pub',
+    SERVICE_ROLE_KEY: 'test-serv',
+    selectedCases: ['NONEXISTENT_CASE'],
+  }), /Invalid case ID in selectedCases: NONEXISTENT_CASE/);
+
+  assert.throws(() => validateLocalStackConfig({
+    API_URL: 'http://127.0.0.1:55621',
+    MAILPIT_URL: 'http://127.0.0.1:55624',
+    PUBLISHABLE_KEY: 'test-pub',
+    SERVICE_ROLE_KEY: 'test-serv',
+    selectedCases: ['OTP_CONCURRENT', 'RECOVERY_FLOW'], // 3 + 4 = 7 sends (exceeds 5)
+  }), /exceeds 5-send hourly quota/);
+
+  assert.equal(validateLocalStackConfig({
+    API_URL: 'http://127.0.0.1:55621',
+    MAILPIT_URL: 'http://127.0.0.1:55624',
+    PUBLISHABLE_KEY: 'test-pub',
+    SERVICE_ROLE_KEY: 'test-serv',
+    selectedCases: ['OTP_FORMAT_REPLAY', 'INVALID_CODE'], // 1 + 1 = 2 sends (valid)
+  }), true);
+
   assert.equal(validateLocalStackConfig({
     API_URL: 'http://127.0.0.1:55621',
     MAILPIT_URL: 'http://127.0.0.1:55624',

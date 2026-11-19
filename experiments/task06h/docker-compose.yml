@@ -83,7 +83,7 @@ services:
       KONG_ADMIN_ERROR_LOG: /dev/stderr
       KONG_ADMIN_LISTEN: "off"
     healthcheck:
-      test: ["CMD-SHELL", "curl -f -s -H 'Host: kong:8000' http://127.0.0.1:8000/templates/confirmation.html || exit 1"]
+      test: ["CMD-SHELL", "wget -q -O - --header='Host: kong:8000' http://127.0.0.1:8000/templates/confirmation.html | grep -q 'verification code' || exit 1"]
       interval: 2s
       timeout: 3s
       retries: 15

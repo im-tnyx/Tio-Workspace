@@ -123,9 +123,29 @@ test('Auth service depends on Kong service_healthy to eliminate template-cache w
   assert.doesNotMatch(composeText, /auth:[\s\S]*?depends_on:[\s\S]*?kong:\s*\n\s*condition:\s*service_started/);
 });
 
-test('Kong service defines readiness probe verifying template endpoint reachability with internal Host header', () => {
+test('Kong service defines readiness probe verifying template endpoint reachability with internal Host header and content match via wget', () => {
+  // Probe must use verified runtime command (wget + grep), send Host: kong:8000, and assert verification code text
   assert.match(
     composeText,
-    /kong:[\s\S]*?healthcheck:[\s\S]*?curl\s+-f\s+-s\s+-H\s+['"]Host:\s*kong:8000['"]\s+http:\/\/127\.0\.0\.1:8000\/templates\/confirmation\.html/
+    /kong:[\s\S]*?healthcheck:[\s\S]*?wget\s+-q\s+-O\s+-\s+--header=['"]Host:\s*kong:8000['"]\s+http:\/\/127\.0\.0\.1:8000\/templates\/confirmation\.html\s*\|\s*grep\s+-q\s+['"]verification code['"]/
   );
+
+  // Probe must not invoke missing curl binary
+  const kongHealthcheck = composeText.match(/kong:[\s\S]*?healthcheck:[\s\S]*?(?:networks|$)/)?.[0] ?? '';
+  assert.doesNotMatch(kongHealthcheck, /\bcurl\b/, 'Kong healthcheck must not invoke missing curl utility');
+});
+
+test('Kong readiness probe fails closed on simulated non-200 or missing template content', () => {
+  // Offline regex assertion testing: simulates probe output matching logic
+  const validOutput = '<p>Your local Tio verification code: 123456</p>';
+  const notFoundOutput = '{"message":"no Route matched with those values"}';
+  const serverErrorOutput = '{"message":"An unexpected error occurred"}';
+  const emptyOutput = '';
+
+  const probePattern = /verification code/;
+
+  assert.equal(probePattern.test(validOutput), true, 'Valid template body matches probe requirement');
+  assert.equal(probePattern.test(notFoundOutput), false, '404 route-not-found body fails probe requirement');
+  assert.equal(probePattern.test(serverErrorOutput), false, '500 error body fails probe requirement');
+  assert.equal(probePattern.test(emptyOutput), false, 'Empty body on connection failure fails probe requirement');
 });
