@@ -35,7 +35,7 @@ services:
       db:
         condition: service_healthy
       kong:
-        condition: service_started
+        condition: service_healthy
     environment:
       GOTRUE_DB_DRIVER: postgres
       GOTRUE_DB_DATABASE_URL: "postgres://supabase_auth_admin:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/postgres?sslmode=disable"
@@ -82,6 +82,11 @@ services:
       KONG_PROXY_ERROR_LOG: /dev/stderr
       KONG_ADMIN_ERROR_LOG: /dev/stderr
       KONG_ADMIN_LISTEN: "off"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f -s -H 'Host: kong:8000' http://127.0.0.1:8000/templates/confirmation.html || exit 1"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
     networks:
       - supabase_network_tio-task06h-local-auth
 

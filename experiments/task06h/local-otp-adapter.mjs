@@ -1,7 +1,7 @@
 // Task 06H-D: Isolated Compose Auth test harness adapter.
 // Never prints OTPs, passwords, session tokens, or private secrets.
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
-import { execFileSync } from 'node:child_process';
+import childProcess from 'node:child_process';
 import {
   classifyReplay, classifyConcurrent, classifyNegative,
   classifyFiveWrong, classifyRecoveryControl, classifyOldCodeInvalidation, classifyInvalidCode,
@@ -73,13 +73,50 @@ export class QuotaExhaustedError extends Error {
   }
 }
 
+export const CASE_EMAIL_BUDGETS = {
+  MAILPIT_BASELINE: 0,
+  OTP_FORMAT_REPLAY: 1,
+  OTP_CONCURRENT: 3,
+  INVALID_CODE: 1,
+  FIVE_WRONG_COOLDOWN: 1,
+  SIGNUP_AS_RECOVERY: 1,
+  RECOVERY_FLOW: 4,
+  RESEND_OLD_CODE: 2,
+  AUTH17_PASSWORD_MUTATION: 1,
+};
+
+export const NAMED_BATCHES = {
+  'batch-1': ['MAILPIT_BASELINE', 'OTP_FORMAT_REPLAY', 'OTP_CONCURRENT'],
+  'batch-2': ['MAILPIT_BASELINE', 'INVALID_CODE', 'FIVE_WRONG_COOLDOWN', 'SIGNUP_AS_RECOVERY'],
+  'batch-3': ['MAILPIT_BASELINE', 'RECOVERY_FLOW'],
+  'batch-4': ['MAILPIT_BASELINE', 'RESEND_OLD_CODE', 'AUTH17_PASSWORD_MUTATION'],
+  'all': [
+    'MAILPIT_BASELINE',
+    'OTP_FORMAT_REPLAY',
+    'OTP_CONCURRENT',
+    'INVALID_CODE',
+    'FIVE_WRONG_COOLDOWN',
+    'SIGNUP_AS_RECOVERY',
+    'RECOVERY_FLOW',
+    'RESEND_OLD_CODE',
+    'AUTH17_PASSWORD_MUTATION',
+  ],
+};
+
+export function calculateBatchBudget(casesOrBatch = []) {
+  const caseList = typeof casesOrBatch === 'string'
+    ? (NAMED_BATCHES[casesOrBatch] ?? [])
+    : (Array.isArray(casesOrBatch) ? casesOrBatch : []);
+  return caseList.reduce((sum, id) => sum + (CASE_EMAIL_BUDGETS[id] ?? 0), 0);
+}
+
 export function inspectWindowsListenersRuntime(ports = [55621, 55624]) {
   try {
     const portList = ports.join(',');
     const psScript = `Get-NetTCPConnection -LocalPort ${portList} -ErrorAction SilentlyContinue | Select-Object LocalAddress, LocalPort, State | ConvertTo-Json`;
     let rawOutput;
     try {
-      rawOutput = execFileSync('powershell.exe', ['-NoProfile', '-Command', psScript], {
+      rawOutput = childProcess.execFileSync('powershell.exe', ['-NoProfile', '-Command', psScript], {
         encoding: 'utf8',
         timeout: 10000,
       });
@@ -102,7 +139,7 @@ export function inspectWindowsListenersRuntime(ports = [55621, 55624]) {
 }
 
 export function inspectDockerStackRuntime() {
-  const run = (file, args) => execFileSync(file, args, {
+  const run = (file, args) => childProcess.execFileSync(file, args, {
     encoding: 'utf8',
     timeout: 15000,
     maxBuffer: 1024 * 1024,
@@ -181,6 +218,16 @@ export function validateLocalStackConfig(local) {
     throw new Error('Local stack configuration and credentials required to run integration suite');
   }
 
+  if (local.selectedBatch !== undefined && !Object.prototype.hasOwnProperty.call(NAMED_BATCHES, local.selectedBatch)) {
+    throw new Error(`Invalid selectedBatch: ${local.selectedBatch}. Allowed batches: ${Object.keys(NAMED_BATCHES).join(', ')}`);
+  }
+
+  if (local.selectedCases !== undefined) {
+    if (!Array.isArray(local.selectedCases) || local.selectedCases.some(c => typeof c !== 'string')) {
+      throw new Error('selectedCases must be an array of case ID strings');
+    }
+  }
+
   return true;
 }
 
@@ -193,6 +240,17 @@ export async function executeAuthIntegrationSuite(local) {
 
 async function _runAuthIntegrationSuiteInternal(local) {
   validateLocalStackConfig(local);
+
+  const selectedBatchName = local?.selectedBatch;
+  let activeCases;
+  if (local?.selectedCases) {
+    activeCases = new Set(local.selectedCases);
+  } else if (selectedBatchName && NAMED_BATCHES[selectedBatchName]) {
+    activeCases = new Set(NAMED_BATCHES[selectedBatchName]);
+  } else {
+    activeCases = new Set(NAMED_BATCHES['all']);
+  }
+  const isCaseActive = id => activeCases.has('all') || activeCases.has(id);
 
   const rows = [];
   const usedMail = new Set();
@@ -331,328 +389,378 @@ async function _runAuthIntegrationSuiteInternal(local) {
 
   // Case 1: Baseline Mailpit check
   await runCase('MAILPIT_BASELINE', async () => {
-    (await messages()).forEach(item => usedMail.add(item.ID));
-    row('MAILPIT_BASELINE', 'PASS', 'Existing mail IDs excluded');
+    const allMsgs = await messages();
+    allMsgs.forEach(item => usedMail.add(item.ID));
+    const oneHourAgo = Date.now() - windowDurationMs;
+    const recentMessages = allMsgs.filter(item => {
+      if (!item.Created) return false;
+      const t = new Date(item.Created).getTime();
+      return !Number.isNaN(t) && t >= oneHourAgo;
+    });
+    sendsInWindow = Math.max(sendsInWindow, recentMessages.length);
+    row('MAILPIT_BASELINE', 'PASS', `Existing mail IDs excluded; recent_window_sends=${sendsInWindow}`);
   });
 
   if (rows.at(-1)?.result === 'PASS') {
     // Case 2: OTP format & sequential replay check
-    await runCase('OTP_FORMAT_REPLAY', async () => {
-      const address = email();
-      const code = await issue(address);
-      const first = await auth('/verify', { email: address, token: code, type: 'email' });
-      const id = requireSession(first).user.id;
-      const firstProbe = await probeUser(first);
-      const second = await auth('/verify', { email: address, token: code, type: 'email' });
-      const secondProbe = await probeUser(second);
-      row('OTP_FORMAT', /^\d{6}$/.test(code) ? 'PASS' : 'FAIL', 'Mailpit code shape checked; value redacted');
-      row('OTP_REPLAY', classifyReplay(first, second, id, address, firstProbe, secondProbe),
-        `verify=${describe(first, second)}; first_user_probe=${safeStatus(firstProbe)}; ` +
-        `second_user_probe=${safeStatus(secondProbe)}; ` +
-        `second_session=${Boolean(second.value?.access_token)}`);
-    });
+    if (isCaseActive('OTP_FORMAT_REPLAY')) {
+      await runCase('OTP_FORMAT_REPLAY', async () => {
+        const address = email();
+        const code = await issue(address);
+        const first = await auth('/verify', { email: address, token: code, type: 'email' });
+        const id = requireSession(first).user.id;
+        const firstProbe = await probeUser(first);
+        const second = await auth('/verify', { email: address, token: code, type: 'email' });
+        const secondProbe = await probeUser(second);
+        row('OTP_FORMAT', /^\d{6}$/.test(code) ? 'PASS' : 'FAIL', 'Mailpit code shape checked; value redacted');
+        row('OTP_REPLAY', classifyReplay(first, second, id, address, firstProbe, secondProbe),
+          `verify=${describe(first, second)}; first_user_probe=${safeStatus(firstProbe)}; ` +
+          `second_user_probe=${safeStatus(secondProbe)}; ` +
+          `second_session=${Boolean(second.value?.access_token)}`);
+      });
+    } else {
+      row('OTP_FORMAT', 'SKIPPED', 'Excluded by selected batch configuration; quota preserved', { skippedByBatch: true });
+      row('OTP_REPLAY', 'SKIPPED', 'Excluded by selected batch configuration; quota preserved', { skippedByBatch: true });
+    }
 
     // Case 3: Concurrent OTP verification (3 pairs)
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      await runCase(`OTP_CONCURRENT_${attempt}`, async () => {
-        const address = email();
-        const id = await localUser(address);
-        const code = await issue(address, false);
-        const results = await Promise.all([
-          auth('/verify', { email: address, token: code, type: 'email' }),
-          auth('/verify', { email: address, token: code, type: 'email' }),
-        ]);
-        const probes = await Promise.all(results.map(probeUser));
-        const classified = classifyConcurrent(results, id, address, probes);
-        const responseEvidence = results.map((r, i) => ({
-          http: safeStatus(r),
-          expectedUuidMatch: r.value?.user?.id ? r.value.user.id === id : null,
-          accessTokenPresent: Boolean(r.value?.access_token),
-          refreshTokenPresent: Boolean(r.value?.refresh_token),
-          userProbeAccepted: probes[i]?.status === 200 && probes[i].value?.id === id,
-        }));
-        row(`OTP_CONCURRENT_${attempt}`, classified.result,
-          `verify=${describe(...results)}; user_probes=${describe(...probes)}; ` +
-          `valid_responses=${classified.validResponses}; probes_validated=${classified.probesValidated}; ` +
-          `bearers_authenticated=${classified.bearersAuthenticated}; ` +
-          `session_id_claim_comparison=${classified.sessionIdClaimComparison}; ` +
-          `server_session_records=NOT TESTED; wrong_identity=${classified.wrongIdentity}`,
-          {
-            responses: responseEvidence,
-            sessionIdClaimComparison: classified.sessionIdClaimComparison,
-            bearersAuthenticated: classified.bearersAuthenticated,
-            serverSessionRecords: 'NOT TESTED'
-          });
-      });
+    if (isCaseActive('OTP_CONCURRENT')) {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        await runCase(`OTP_CONCURRENT_${attempt}`, async () => {
+          const address = email();
+          const id = await localUser(address);
+          const code = await issue(address, false);
+          const results = await Promise.all([
+            auth('/verify', { email: address, token: code, type: 'email' }),
+            auth('/verify', { email: address, token: code, type: 'email' }),
+          ]);
+          const probes = await Promise.all(results.map(probeUser));
+          const classified = classifyConcurrent(results, id, address, probes);
+          const responseEvidence = results.map((r, i) => ({
+            http: safeStatus(r),
+            expectedUuidMatch: r.value?.user?.id ? r.value.user.id === id : null,
+            accessTokenPresent: Boolean(r.value?.access_token),
+            refreshTokenPresent: Boolean(r.value?.refresh_token),
+            userProbeAccepted: probes[i]?.status === 200 && probes[i].value?.id === id,
+          }));
+          row(`OTP_CONCURRENT_${attempt}`, classified.result,
+            `verify=${describe(...results)}; user_probes=${describe(...probes)}; ` +
+            `valid_responses=${classified.validResponses}; probes_validated=${classified.probesValidated}; ` +
+            `bearers_authenticated=${classified.bearersAuthenticated}; ` +
+            `session_id_claim_comparison=${classified.sessionIdClaimComparison}; ` +
+            `server_session_records=NOT TESTED; wrong_identity=${classified.wrongIdentity}`,
+            {
+              responses: responseEvidence,
+              sessionIdClaimComparison: classified.sessionIdClaimComparison,
+              bearersAuthenticated: classified.bearersAuthenticated,
+              serverSessionRecords: 'NOT TESTED'
+            });
+        });
+      }
+    } else {
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        row(`OTP_CONCURRENT_${attempt}`, 'SKIPPED', 'Excluded by selected batch configuration; quota preserved', { skippedByBatch: true });
+      }
     }
 
     // Case 4: Invalid code rejection
-    await runCase('INVALID_CODE', async () => {
-      const address = email(), code = await issue(address);
-      const invalid = await auth('/verify', { email: address, token: wrongCode(code), type: 'email' });
-      const valid = await auth('/verify', { email: address, token: code, type: 'email' });
-      const expectedId = valid.value?.user?.id || invalid.value?.user?.id;
-      const invalidProbe = await probeUser(invalid);
-      const validProbe = await probeUser(valid);
-      row('INVALID_CODE', classifyInvalidCode(invalid, valid, expectedId || '', address, {
-        wrongProbe: invalidProbe,
-        correctProbe: validProbe,
-      }),
-        `wrong_then_valid=${describe(invalid, valid)}; ` +
-        `wrong_user_probe=${safeStatus(invalidProbe)}; valid_user_probe=${safeStatus(validProbe)}`);
-    });
+    if (isCaseActive('INVALID_CODE')) {
+      await runCase('INVALID_CODE', async () => {
+        const address = email(), code = await issue(address);
+        const invalid = await auth('/verify', { email: address, token: wrongCode(code), type: 'email' });
+        const valid = await auth('/verify', { email: address, token: code, type: 'email' });
+        const expectedId = valid.value?.user?.id || invalid.value?.user?.id;
+        const invalidProbe = await probeUser(invalid);
+        const validProbe = await probeUser(valid);
+        row('INVALID_CODE', classifyInvalidCode(invalid, valid, expectedId || '', address, {
+          wrongProbe: invalidProbe,
+          correctProbe: validProbe,
+        }),
+          `wrong_then_valid=${describe(invalid, valid)}; ` +
+          `wrong_user_probe=${safeStatus(invalidProbe)}; valid_user_probe=${safeStatus(validProbe)}`);
+      });
+    } else {
+      row('INVALID_CODE', 'SKIPPED', 'Excluded by selected batch configuration; quota preserved', { skippedByBatch: true });
+    }
 
     // Case 5: Five-wrong attempts lock & 15-min cooldown
-    await runCase('FIVE_WRONG_COOLDOWN', async () => {
-      const address = email(), id = await localUser(address);
-      const code = await issue(address, false);
-      const wrong = [];
-      const wrongProbes = [];
-      for (let n = 0; n < 5; n++) {
-        const attempt = await auth('/verify',
-          { email: address, token: wrongCode(code), type: 'email' });
-        wrong.push(attempt);
-        wrongProbes.push(await probeUser(attempt));
-      }
-      const valid = await auth('/verify', { email: address, token: code, type: 'email' });
-      const validProbe = await probeUser(valid);
-      const five = classifyFiveWrong(wrong, valid, id, {
-        correctProbe: validProbe,
-        wrongProbes,
+    if (isCaseActive('FIVE_WRONG_COOLDOWN')) {
+      await runCase('FIVE_WRONG_COOLDOWN', async () => {
+        const address = email(), id = await localUser(address);
+        const code = await issue(address, false);
+        const wrong = [];
+        const wrongProbes = [];
+        for (let n = 0; n < 5; n++) {
+          const attempt = await auth('/verify',
+            { email: address, token: wrongCode(code), type: 'email' });
+          wrong.push(attempt);
+          wrongProbes.push(await probeUser(attempt));
+        }
+        const valid = await auth('/verify', { email: address, token: code, type: 'email' });
+        const validProbe = await probeUser(valid);
+        const five = classifyFiveWrong(wrong, valid, id, {
+          correctProbe: validProbe,
+          wrongProbes,
+        });
+        row('FIVE_WRONG_COOLDOWN', five.result,
+          `wrong=${describe(...wrong)}; wrong_user_probes=${describe(...wrongProbes)}; ` +
+          `correct=${safeStatus(valid)}; correct_user_probe=${safeStatus(validProbe)}; ` +
+          `correct_session=${Boolean(valid.value?.access_token)}; kind=${five.kind}`);
+        row('COOLDOWN_15_MIN', five.kind === 'cooldown_bypass' ? 'FAIL' : 'NOT TESTED',
+          `correct_immediately_after_five=${safeStatus(valid)}; ` +
+          `correct_user_probe=${safeStatus(validProbe)}; ` +
+          `session=${Boolean(valid.value?.access_token && valid.value?.refresh_token)}; ` +
+          `kind=${five.kind}`);
       });
-      row('FIVE_WRONG_COOLDOWN', five.result,
-        `wrong=${describe(...wrong)}; wrong_user_probes=${describe(...wrongProbes)}; ` +
-        `correct=${safeStatus(valid)}; correct_user_probe=${safeStatus(validProbe)}; ` +
-        `correct_session=${Boolean(valid.value?.access_token)}; kind=${five.kind}`);
-      row('COOLDOWN_15_MIN', five.kind === 'cooldown_bypass' ? 'FAIL' : 'NOT TESTED',
-        `correct_immediately_after_five=${safeStatus(valid)}; ` +
-        `correct_user_probe=${safeStatus(validProbe)}; ` +
-        `session=${Boolean(valid.value?.access_token && valid.value?.refresh_token)}; ` +
-        `kind=${five.kind}`);
-    });
+    } else {
+      row('FIVE_WRONG_COOLDOWN', 'SKIPPED', 'Excluded by selected batch configuration; quota preserved', { skippedByBatch: true });
+      row('COOLDOWN_15_MIN', 'SKIPPED', 'Excluded by selected batch configuration; quota preserved', { skippedByBatch: true });
+    }
 
     // Case 6: Purpose crossing (Signup code used as Recovery)
-    await runCase('SIGNUP_AS_RECOVERY', async () => {
-      const address = email(), signupCode = await issue(address);
-      const crossing = await auth('/verify', { email: address, token: signupCode, type: 'recovery' });
-      const crossingProbe = await probeUser(crossing);
-      const signup = await auth('/verify', { email: address, token: signupCode, type: 'email' });
-      const signupProbe = await probeUser(signup);
-      const expectedId = signup.value?.user?.id || crossing.value?.user?.id ||
-        crossingProbe?.value?.id || '';
-      const signupOk = signup.status === 200 && signup.value?.user?.email?.toLowerCase() === address &&
-        Boolean(signup.value?.access_token && signup.value?.refresh_token) &&
-        signupProbe?.status === 200 && signupProbe.value?.id === signup.value.user.id;
-      row('SIGNUP_AS_RECOVERY', classifyPurposeCrossing(crossing, {
-        expectedId,
-        expectedEmail: address,
-        probe: crossingProbe,
-        positiveControlValidated: Boolean(signupOk),
-      }),
-        `verify=${safeStatus(crossing)}; user_probe=${safeStatus(crossingProbe)}; ` +
-        `session=${Boolean(crossing.value?.access_token && crossing.value?.refresh_token)}; ` +
-        `bearer_auth=${Boolean(crossingProbe?.status === 200 && crossingProbe.value?.id)}; ` +
-        `same_uuid=${Boolean(crossingProbe?.value?.id && crossingProbe.value.id === expectedId)}`);
-      row('SIGNUP_EXPECTED_EMAIL', signupOk ? 'PASS' : 'INCONCLUSIVE',
-        `verify=${safeStatus(signup)}; user_probe=${safeStatus(signupProbe)}; ` +
-        `same_email=${signup.value?.user?.email?.toLowerCase() === address}; ` +
-        `same_uuid=${Boolean(signup.value?.user?.id && signupProbe?.value?.id === signup.value.user.id)}`);
-    });
+    if (isCaseActive('SIGNUP_AS_RECOVERY')) {
+      await runCase('SIGNUP_AS_RECOVERY', async () => {
+        const address = email(), signupCode = await issue(address);
+        const crossing = await auth('/verify', { email: address, token: signupCode, type: 'recovery' });
+        const crossingProbe = await probeUser(crossing);
+        const signup = await auth('/verify', { email: address, token: signupCode, type: 'email' });
+        const signupProbe = await probeUser(signup);
+        const expectedId = signup.value?.user?.id || crossing.value?.user?.id ||
+          crossingProbe?.value?.id || '';
+        const signupOk = signup.status === 200 && signup.value?.user?.email?.toLowerCase() === address &&
+          Boolean(signup.value?.access_token && signup.value?.refresh_token) &&
+          signupProbe?.status === 200 && signupProbe.value?.id === signup.value.user.id;
+        row('SIGNUP_AS_RECOVERY', classifyPurposeCrossing(crossing, {
+          expectedId,
+          expectedEmail: address,
+          probe: crossingProbe,
+          positiveControlValidated: Boolean(signupOk),
+        }),
+          `verify=${safeStatus(crossing)}; user_probe=${safeStatus(crossingProbe)}; ` +
+          `session=${Boolean(crossing.value?.access_token && crossing.value?.refresh_token)}; ` +
+          `bearer_auth=${Boolean(crossingProbe?.status === 200 && crossingProbe.value?.id)}; ` +
+          `same_uuid=${Boolean(crossingProbe?.value?.id && crossingProbe.value.id === expectedId)}`);
+        row('SIGNUP_EXPECTED_EMAIL', signupOk ? 'PASS' : 'INCONCLUSIVE',
+          `verify=${safeStatus(signup)}; user_probe=${safeStatus(signupProbe)}; ` +
+          `same_email=${signup.value?.user?.email?.toLowerCase() === address}; ` +
+          `same_uuid=${Boolean(signup.value?.user?.id && signupProbe?.value?.id === signup.value.user.id)}`);
+      });
+    } else {
+      row('SIGNUP_AS_RECOVERY', 'SKIPPED', 'Excluded by selected batch configuration; quota preserved', { skippedByBatch: true });
+      row('SIGNUP_EXPECTED_EMAIL', 'SKIPPED', 'Excluded by selected batch configuration; quota preserved', { skippedByBatch: true });
+    }
 
     // Case 7: Recovery code crossing (Recovery used as other purposes)
-    for (const type of ['email', 'signup', 'magiclink', 'recovery']) {
-      await runCase(`RECOVERY_AS_${type.toUpperCase()}`, async () => {
-        const address = email(), id = await localUser(address, true);
-        await paceEmailQuota();
-        const sent = await auth('/recover', { email: address });
-        if (sent.status === 429 || sent.value?.error_code === 'over_email_send_rate_limit') {
-          throw new QuotaExhaustedError('Global 5-send email rate limit exhausted on /recover issuance');
-        }
-        if (sent.status !== 200) throw new Error('Recovery issuance unavailable');
-        recordEmailSend();
-        const code = await codeFor(address, /local recovery|reset your password|reset password/i);
-        const verified = await auth('/verify', { email: address, token: code, type });
-        const probe = await probeUser(verified);
-        const session = verified.status === 200 && verified.value?.user?.id === id &&
-          verified.value?.access_token && verified.value?.refresh_token &&
-          probe?.status === 200 && probe.value?.id === id;
-        if (type === 'recovery') {
-          const recoveryResult = classifyRecoveryControl(verified, id, address, probe);
-          row('RECOVERY_AS_RECOVERY', recoveryResult,
-            `verify=${safeStatus(verified)}; user_probe=${safeStatus(probe)}; ` +
-            `session=${Boolean(session)}; same_uuid=${verified.value?.user?.id === id}; ` +
-            `wrong_identity=${recoveryResult === 'FAIL' && verified.value?.user?.id !== id}`);
-          return;
-        }
-        const early = classifyPurposeCrossing(verified, {
-          expectedId: id, expectedEmail: address, probe, positiveControlValidated: false,
-        });
-        if (early === 'FAIL' || early === 'ERROR') {
-          row(`RECOVERY_AS_${type.toUpperCase()}`, early,
+    if (isCaseActive('RECOVERY_FLOW')) {
+      for (const type of ['email', 'signup', 'magiclink', 'recovery']) {
+        await runCase(`RECOVERY_AS_${type.toUpperCase()}`, async () => {
+          const address = email(), id = await localUser(address, true);
+          await paceEmailQuota();
+          const sent = await auth('/recover', { email: address });
+          if (sent.status === 429 || sent.value?.error_code === 'over_email_send_rate_limit') {
+            throw new QuotaExhaustedError('Global 5-send email rate limit exhausted on /recover issuance');
+          }
+          if (sent.status !== 200) throw new Error('Recovery issuance unavailable');
+          recordEmailSend();
+          const code = await codeFor(address, /local recovery|reset your password|reset password/i);
+          const verified = await auth('/verify', { email: address, token: code, type });
+          const probe = await probeUser(verified);
+          const session = verified.status === 200 && verified.value?.user?.id === id &&
+            verified.value?.access_token && verified.value?.refresh_token &&
+            probe?.status === 200 && probe.value?.id === id;
+          if (type === 'recovery') {
+            const recoveryResult = classifyRecoveryControl(verified, id, address, probe);
+            row('RECOVERY_AS_RECOVERY', recoveryResult,
+              `verify=${safeStatus(verified)}; user_probe=${safeStatus(probe)}; ` +
+              `session=${Boolean(session)}; same_uuid=${verified.value?.user?.id === id}; ` +
+              `wrong_identity=${recoveryResult === 'FAIL' && verified.value?.user?.id !== id}`);
+            return;
+          }
+          const early = classifyPurposeCrossing(verified, {
+            expectedId: id, expectedEmail: address, probe, positiveControlValidated: false,
+          });
+          if (early === 'FAIL' || early === 'ERROR') {
+            row(`RECOVERY_AS_${type.toUpperCase()}`, early,
+              `verify=${safeStatus(verified)}; user_probe=${safeStatus(probe)}; ` +
+              `session=${Boolean(session)}; same_uuid=${verified.value?.user?.id === id}; ` +
+              `bearer_auth=${Boolean(probe?.status === 200 && probe.value?.id === id)}; ` +
+              `purpose_crossover=${Boolean(session || (probe?.status === 200 &&
+                probe.value?.id === id && verified.value?.access_token))}; ` +
+              `recovery_control=NOT_ATTEMPTED`);
+            return;
+          }
+          let recoveryControl = null, recoveryProbe = null, positiveControlValidated = false;
+          if (verified.status === 403 && verified.value?.error_code === 'otp_expired' &&
+              !verified.value?.access_token && !verified.value?.refresh_token) {
+            recoveryControl = await auth('/verify',
+              { email: address, token: code, type: 'recovery' });
+            if (recoveryControl.kind && ['network_error', 'timeout', 'invalid_json']
+                .includes(recoveryControl.kind)) {
+              row(`RECOVERY_AS_${type.toUpperCase()}`, 'ERROR',
+                `verify=${safeStatus(verified)}; user_probe=${safeStatus(probe)}; ` +
+                `recovery_control=${safeStatus(recoveryControl)}; positive_control=false`);
+              return;
+            }
+            recoveryProbe = await probeUser(recoveryControl);
+            positiveControlValidated = classifyRecoveryControl(recoveryControl, id, address,
+              recoveryProbe) === 'PASS';
+          }
+          const classification = classifyRecoveryPurposeCrossing(verified, recoveryControl,
+            id, address, recoveryProbe, probe);
+          const result = classification.result;
+          row(`RECOVERY_AS_${type.toUpperCase()}`, result,
             `verify=${safeStatus(verified)}; user_probe=${safeStatus(probe)}; ` +
             `session=${Boolean(session)}; same_uuid=${verified.value?.user?.id === id}; ` +
             `bearer_auth=${Boolean(probe?.status === 200 && probe.value?.id === id)}; ` +
             `purpose_crossover=${Boolean(session || (probe?.status === 200 &&
               probe.value?.id === id && verified.value?.access_token))}; ` +
-            `recovery_control=NOT_ATTEMPTED`);
-          return;
-        }
-        let recoveryControl = null, recoveryProbe = null, positiveControlValidated = false;
-        if (verified.status === 403 && verified.value?.error_code === 'otp_expired' &&
-            !verified.value?.access_token && !verified.value?.refresh_token) {
-          recoveryControl = await auth('/verify',
-            { email: address, token: code, type: 'recovery' });
-          if (recoveryControl.kind && ['network_error', 'timeout', 'invalid_json']
-              .includes(recoveryControl.kind)) {
-            row(`RECOVERY_AS_${type.toUpperCase()}`, 'ERROR',
-              `verify=${safeStatus(verified)}; user_probe=${safeStatus(probe)}; ` +
-              `recovery_control=${safeStatus(recoveryControl)}; positive_control=false`);
-            return;
-          }
-          recoveryProbe = await probeUser(recoveryControl);
-          positiveControlValidated = classifyRecoveryControl(recoveryControl, id, address,
-            recoveryProbe) === 'PASS';
-        }
-        const classification = classifyRecoveryPurposeCrossing(verified, recoveryControl,
-          id, address, recoveryProbe, probe);
-        const result = classification.result;
-        row(`RECOVERY_AS_${type.toUpperCase()}`, result,
-          `verify=${safeStatus(verified)}; user_probe=${safeStatus(probe)}; ` +
-          `session=${Boolean(session)}; same_uuid=${verified.value?.user?.id === id}; ` +
-          `bearer_auth=${Boolean(probe?.status === 200 && probe.value?.id === id)}; ` +
-          `purpose_crossover=${Boolean(session || (probe?.status === 200 &&
-            probe.value?.id === id && verified.value?.access_token))}; ` +
-          `recovery_control=${safeStatus(recoveryControl)}; ` +
-          `recovery_control_identity=${classification.finding}; ` +
-          `positive_control=${positiveControlValidated}`);
-      });
+            `recovery_control=${safeStatus(recoveryControl)}; ` +
+            `recovery_control_identity=${classification.finding}; ` +
+            `positive_control=${positiveControlValidated}`);
+        });
+      }
+    } else {
+      for (const type of ['email', 'signup', 'magiclink', 'recovery']) {
+        row(`RECOVERY_AS_${type.toUpperCase()}`, 'SKIPPED', 'Excluded by selected batch configuration; quota preserved', { skippedByBatch: true });
+      }
     }
 
     row('APP_AUTHORIZATION', 'NOT TESTED', 'No Tio enrollment, Home, or server eligibility implementation');
 
     // Case 8: Resend interval and old code invalidation
-    await runCase('RESEND_OLD_CODE', async () => {
-      await paceEmailQuota();
-      const address = email();
-      const first = await timedAuth('/otp', { email: address, create_user: true });
-      if (first.result.status === 429 || first.result.value?.error_code === 'over_email_send_rate_limit') {
-        throw new QuotaExhaustedError('Global 5-send email rate limit exhausted on /otp issuance');
-      }
-      if (first.result.status !== 200) throw new Error('First local OTP send unavailable');
-      recordEmailSend();
-      const oldCode = await codeFor(address, /local signup|confirm your email|confirm your signup/i);
-      const attempts = [await timedAuth('/otp', { email: address, create_user: true })];
-      const deadline = first.responseAt + 75000;
-      while (attempts.at(-1).result.status !== 200 && performance.now() < deadline) {
-        if (![429, 422].includes(attempts.at(-1).result.status)) break;
-        await delay(3000);
-        attempts.push(await timedAuth('/otp', { email: address, create_user: true }));
-      }
-      const timing = classifyResendTiming(first, attempts);
-      const accepted = attempts.find(a => a.result.status === 200);
-      const bounds = timing.lowerBoundMs === null ? 'unavailable' :
-        `${Math.floor(timing.lowerBoundMs / 1000)}..${Math.ceil(timing.upperBoundMs / 1000)}s`;
-      row('RESEND_INTERVAL_OBSERVED', timing.result,
-        `immediate=${safeStatus(attempts[0].result)}; accepted=${safeStatus(accepted?.result)}; ` +
-        `elapsed_bounds=${bounds}; immediate_rejected=${timing.immediateRejected}; ` +
-        `accepted_after_60=${timing.acceptedAfter60}`,
-        { lowerBoundMs: timing.lowerBoundMs, upperBoundMs: timing.upperBoundMs,
-          immediateRejected: timing.immediateRejected, acceptedAfter60: timing.acceptedAfter60 });
-      row('EXACT_60_SECOND_BOUNDARY', timing.exactBoundary,
-        'Server-side exact boundary not inferred from client timestamps');
-      if (!accepted) {
-        row('OLD_CODE_INVALIDATED', 'NOT TESTED', 'No accepted second challenge');
-        return;
-      }
-      const newCode = await codeFor(address, /local signup|confirm your email|confirm your signup/i);
-      const oldVerify = await auth('/verify', { email: address, token: oldCode, type: 'email' });
-      const newVerify = await auth('/verify', { email: address, token: newCode, type: 'email' });
-      const expectedId = newVerify.value?.user?.id || oldVerify.value?.user?.id;
-      const oldProbe = await probeUser(oldVerify);
-      const newProbe = await probeUser(newVerify);
-      row('OLD_CODE_INVALIDATED', classifyOldCodeInvalidation(oldVerify, newVerify,
-        expectedId || '', address, {
-          distinctCodes: oldCode !== newCode,
-          oldProbe,
-          newProbe,
-        }),
-        `old_then_new=${describe(oldVerify, newVerify)}; ` +
-        `old_user_probe=${safeStatus(oldProbe)}; new_user_probe=${safeStatus(newProbe)}; ` +
-        `distinct_codes=${oldCode !== newCode}`);
-    });
+    if (isCaseActive('RESEND_OLD_CODE')) {
+      await runCase('RESEND_OLD_CODE', async () => {
+        await paceEmailQuota();
+        const address = email();
+        const first = await timedAuth('/otp', { email: address, create_user: true });
+        if (first.result.status === 429 || first.result.value?.error_code === 'over_email_send_rate_limit') {
+          throw new QuotaExhaustedError('Global 5-send email rate limit exhausted on /otp issuance');
+        }
+        if (first.result.status !== 200) throw new Error('First local OTP send unavailable');
+        recordEmailSend();
+        const oldCode = await codeFor(address, /local signup|confirm your email|confirm your signup/i);
+        const attempts = [await timedAuth('/otp', { email: address, create_user: true })];
+        const deadline = first.responseAt + 75000;
+        while (attempts.at(-1).result.status !== 200 && performance.now() < deadline) {
+          if (![429, 422].includes(attempts.at(-1).result.status)) break;
+          await delay(3000);
+          attempts.push(await timedAuth('/otp', { email: address, create_user: true }));
+        }
+        const timing = classifyResendTiming(first, attempts);
+        const accepted = attempts.find(a => a.result.status === 200);
+        const bounds = timing.lowerBoundMs === null ? 'unavailable' :
+          `${Math.floor(timing.lowerBoundMs / 1000)}..${Math.ceil(timing.upperBoundMs / 1000)}s`;
+        row('RESEND_INTERVAL_OBSERVED', timing.result,
+          `immediate=${safeStatus(attempts[0].result)}; accepted=${safeStatus(accepted?.result)}; ` +
+          `elapsed_bounds=${bounds}; immediate_rejected=${timing.immediateRejected}; ` +
+          `accepted_after_60=${timing.acceptedAfter60}`,
+          { lowerBoundMs: timing.lowerBoundMs, upperBoundMs: timing.upperBoundMs,
+            immediateRejected: timing.immediateRejected, acceptedAfter60: timing.acceptedAfter60 });
+        row('EXACT_60_SECOND_BOUNDARY', timing.exactBoundary,
+          'Server-side exact boundary not inferred from client timestamps');
+        if (!accepted) {
+          row('OLD_CODE_INVALIDATED', 'NOT TESTED', 'No accepted second challenge');
+          return;
+        }
+        const newCode = await codeFor(address, /local signup|confirm your email|confirm your signup/i);
+        const oldVerify = await auth('/verify', { email: address, token: oldCode, type: 'email' });
+        const newVerify = await auth('/verify', { email: address, token: newCode, type: 'email' });
+        const expectedId = newVerify.value?.user?.id || oldVerify.value?.user?.id;
+        const oldProbe = await probeUser(oldVerify);
+        const newProbe = await probeUser(newVerify);
+        row('OLD_CODE_INVALIDATED', classifyOldCodeInvalidation(oldVerify, newVerify,
+          expectedId || '', address, {
+            distinctCodes: oldCode !== newCode,
+            oldProbe,
+            newProbe,
+          }),
+          `old_then_new=${describe(oldVerify, newVerify)}; ` +
+          `old_user_probe=${safeStatus(oldProbe)}; new_user_probe=${safeStatus(newProbe)}; ` +
+          `distinct_codes=${oldCode !== newCode}`);
+      });
+    } else {
+      row('RESEND_INTERVAL_OBSERVED', 'SKIPPED', 'Excluded by selected batch configuration; quota preserved', { skippedByBatch: true });
+      row('EXACT_60_SECOND_BOUNDARY', 'SKIPPED', 'Excluded by selected batch configuration; quota preserved', { skippedByBatch: true });
+      row('OLD_CODE_INVALIDATED', 'SKIPPED', 'Excluded by selected batch configuration; quota preserved', { skippedByBatch: true });
+    }
 
     // Case 9: AUTH-17 unrevoked OTP password mutation
-    await runCase('AUTH17_PASSWORD_MUTATION', async () => {
-      const address = email(), oldPassword = password(), newPassword = password();
-      const created = await auth('/admin/users',
-        { email: address, password: oldPassword, email_confirm: true }, { admin: true });
-      if (created.status !== 200 && created.status !== 201) throw new Error('Local user creation unavailable');
-      const id = created.value.id;
-      const beforeGrant = await auth('/token?grant_type=password',
-        { email: address, password: oldPassword });
-      const beforeProbe = await probeUser(beforeGrant);
-      const baseline = classifyPasswordMutation({
-        beforeGrant, beforeProbe,
-        update: { status: 400, value: { error_code: 'validation_failed' } },
-        oldGrant: { status: 400, value: { error_code: 'invalid_credentials' } },
-        newGrant: { status: 400, value: { error_code: 'invalid_credentials' } },
-        id,
+    if (isCaseActive('AUTH17_PASSWORD_MUTATION')) {
+      await runCase('AUTH17_PASSWORD_MUTATION', async () => {
+        const address = email(), oldPassword = password(), newPassword = password();
+        const created = await auth('/admin/users',
+          { email: address, password: oldPassword, email_confirm: true }, { admin: true });
+        if (created.status !== 200 && created.status !== 201) throw new Error('Local user creation unavailable');
+        const id = created.value.id;
+        const beforeGrant = await auth('/token?grant_type=password',
+          { email: address, password: oldPassword });
+        const beforeProbe = await probeUser(beforeGrant);
+        const baseline = classifyPasswordMutation({
+          beforeGrant, beforeProbe,
+          update: { status: 400, value: { error_code: 'validation_failed' } },
+          oldGrant: { status: 400, value: { error_code: 'invalid_credentials' } },
+          newGrant: { status: 400, value: { error_code: 'invalid_credentials' } },
+          id,
+        });
+        if (baseline.kind === 'identity_violation') {
+          row('AUTH17_PASSWORD_MUTATION', 'FAIL',
+            `pre_grant=${safeStatus(beforeGrant)}; pre_user_probe=${safeStatus(beforeProbe)}; ` +
+            `kind=${baseline.kind}; pre_mutation_positive_control=false; mutation=NOT TESTED`);
+          return;
+        }
+        if (baseline.result === 'ERROR') {
+          row('AUTH17_PASSWORD_MUTATION', 'ERROR',
+            `pre_grant=${safeStatus(beforeGrant)}; pre_user_probe=${safeStatus(beforeProbe)}; ` +
+            `kind=${baseline.kind}; pre_mutation_positive_control=false; mutation=NOT TESTED`);
+          return;
+        }
+        const beforeControl = beforeGrant.status === 200 && beforeGrant.value?.user?.id === id &&
+          Boolean(beforeGrant.value?.access_token && beforeGrant.value?.refresh_token) &&
+          beforeProbe?.status === 200 && beforeProbe.value?.id === id;
+        if (!beforeControl) {
+          row('AUTH17_PASSWORD_MUTATION', 'INCONCLUSIVE',
+            `pre_grant=${safeStatus(beforeGrant)}; pre_user_probe=${safeStatus(beforeProbe)}; ` +
+            `kind=${baseline.kind}; pre_mutation_positive_control=false; mutation=NOT TESTED`);
+          return;
+        }
+        const code = await issue(address, false);
+        const otpResult = await auth('/verify', { email: address, token: code, type: 'email' });
+        const otpProbe = await probeUser(otpResult);
+        const otpControl = classifyOtpSessionControl(otpResult, id, address, otpProbe);
+        const otpAbort = planAuth17OtpControlAbort(otpControl);
+        if (otpAbort) {
+          row('AUTH17_OTP_SESSION', otpAbort.otpSession.result,
+            `verify=${safeStatus(otpResult)}; user_probe=${safeStatus(otpProbe)}; ` +
+            `kind=${otpAbort.otpSession.kind}`);
+          row('AUTH17_PASSWORD_MUTATION', otpAbort.passwordMutation.result,
+            `otp_control=${otpAbort.passwordMutation.kind}; ` +
+            `mutation=${otpAbort.passwordMutation.mutation}`);
+          return;
+        }
+        row('AUTH17_OTP_SESSION', 'PASS',
+          `verify=${safeStatus(otpResult)}; user_probe=${safeStatus(otpProbe)}; same_uuid=true`);
+        const otp = requireSession(otpResult);
+        const update = await auth('/user', { password: newPassword }, { method: 'PUT', token: otp.access_token });
+        const oldGrant = await auth('/token?grant_type=password', { email: address, password: oldPassword });
+        const oldGrantProbe = await probeUser(oldGrant);
+        const newGrant = await auth('/token?grant_type=password', { email: address, password: newPassword });
+        const newGrantProbe = await probeUser(newGrant);
+        const classified = classifyPasswordMutation({
+          beforeGrant, beforeProbe, update, oldGrant, newGrant, id,
+          oldGrantProbe, newGrantProbe,
+        });
+        row('AUTH17_PASSWORD_MUTATION', classified.result,
+          `pre_grant=${safeStatus(beforeGrant)}; pre_user_probe=${safeStatus(beforeProbe)}; ` +
+          `kind=${classified.kind}; pre_mutation_positive_control=true; update=${safeStatus(update)}; ` +
+          `admin_header=false; current_password_supplied=false; ` +
+          `old_grant=${safeStatus(oldGrant)}; old_grant_user_probe=${safeStatus(oldGrantProbe)}; ` +
+          `new_grant=${safeStatus(newGrant)}; new_grant_user_probe=${safeStatus(newGrantProbe)}; ` +
+          `same_uuid=${newGrant.value?.user?.id === id}`);
       });
-      if (baseline.kind === 'identity_violation') {
-        row('AUTH17_PASSWORD_MUTATION', 'FAIL',
-          `pre_grant=${safeStatus(beforeGrant)}; pre_user_probe=${safeStatus(beforeProbe)}; ` +
-          `kind=${baseline.kind}; pre_mutation_positive_control=false; mutation=NOT TESTED`);
-        return;
-      }
-      if (baseline.result === 'ERROR') {
-        row('AUTH17_PASSWORD_MUTATION', 'ERROR',
-          `pre_grant=${safeStatus(beforeGrant)}; pre_user_probe=${safeStatus(beforeProbe)}; ` +
-          `kind=${baseline.kind}; pre_mutation_positive_control=false; mutation=NOT TESTED`);
-        return;
-      }
-      const beforeControl = beforeGrant.status === 200 && beforeGrant.value?.user?.id === id &&
-        Boolean(beforeGrant.value?.access_token && beforeGrant.value?.refresh_token) &&
-        beforeProbe?.status === 200 && beforeProbe.value?.id === id;
-      if (!beforeControl) {
-        row('AUTH17_PASSWORD_MUTATION', 'INCONCLUSIVE',
-          `pre_grant=${safeStatus(beforeGrant)}; pre_user_probe=${safeStatus(beforeProbe)}; ` +
-          `kind=${baseline.kind}; pre_mutation_positive_control=false; mutation=NOT TESTED`);
-        return;
-      }
-      const code = await issue(address, false);
-      const otpResult = await auth('/verify', { email: address, token: code, type: 'email' });
-      const otpProbe = await probeUser(otpResult);
-      const otpControl = classifyOtpSessionControl(otpResult, id, address, otpProbe);
-      const otpAbort = planAuth17OtpControlAbort(otpControl);
-      if (otpAbort) {
-        row('AUTH17_OTP_SESSION', otpAbort.otpSession.result,
-          `verify=${safeStatus(otpResult)}; user_probe=${safeStatus(otpProbe)}; ` +
-          `kind=${otpAbort.otpSession.kind}`);
-        row('AUTH17_PASSWORD_MUTATION', otpAbort.passwordMutation.result,
-          `otp_control=${otpAbort.passwordMutation.kind}; ` +
-          `mutation=${otpAbort.passwordMutation.mutation}`);
-        return;
-      }
-      row('AUTH17_OTP_SESSION', 'PASS',
-        `verify=${safeStatus(otpResult)}; user_probe=${safeStatus(otpProbe)}; same_uuid=true`);
-      const otp = requireSession(otpResult);
-      const update = await auth('/user', { password: newPassword }, { method: 'PUT', token: otp.access_token });
-      const oldGrant = await auth('/token?grant_type=password', { email: address, password: oldPassword });
-      const oldGrantProbe = await probeUser(oldGrant);
-      const newGrant = await auth('/token?grant_type=password', { email: address, password: newPassword });
-      const newGrantProbe = await probeUser(newGrant);
-      const classified = classifyPasswordMutation({
-        beforeGrant, beforeProbe, update, oldGrant, newGrant, id,
-        oldGrantProbe, newGrantProbe,
-      });
-      row('AUTH17_PASSWORD_MUTATION', classified.result,
-        `pre_grant=${safeStatus(beforeGrant)}; pre_user_probe=${safeStatus(beforeProbe)}; ` +
-        `kind=${classified.kind}; pre_mutation_positive_control=true; update=${safeStatus(update)}; ` +
-        `admin_header=false; current_password_supplied=false; ` +
-        `old_grant=${safeStatus(oldGrant)}; old_grant_user_probe=${safeStatus(oldGrantProbe)}; ` +
-        `new_grant=${safeStatus(newGrant)}; new_grant_user_probe=${safeStatus(newGrantProbe)}; ` +
-        `same_uuid=${newGrant.value?.user?.id === id}`);
-    });
+    } else {
+      row('AUTH17_OTP_SESSION', 'SKIPPED', 'Excluded by selected batch configuration; quota preserved', { skippedByBatch: true });
+      row('AUTH17_PASSWORD_MUTATION', 'SKIPPED', 'Excluded by selected batch configuration; quota preserved', { skippedByBatch: true });
+    }
   }
 
   // Cases 10-12: Diagnostic unverified platform boundaries

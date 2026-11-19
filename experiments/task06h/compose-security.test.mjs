@@ -118,6 +118,14 @@ test('Compose file enforces hourly email rate limit without unsupported settings
   assert.doesNotMatch(composeText, /GOTRUE_RATE_LIMIT_OVER_EMAIL_SEND_RATE_LIMIT/);
 });
 
-test('Auth service depends on Kong to eliminate template-cache warmup startup race', () => {
-  assert.match(composeText, /auth:[\s\S]*?depends_on:[\s\S]*?kong:\s*\n\s*condition:\s*service_started/);
+test('Auth service depends on Kong service_healthy to eliminate template-cache warmup startup race', () => {
+  assert.match(composeText, /auth:[\s\S]*?depends_on:[\s\S]*?kong:\s*\n\s*condition:\s*service_healthy/);
+  assert.doesNotMatch(composeText, /auth:[\s\S]*?depends_on:[\s\S]*?kong:\s*\n\s*condition:\s*service_started/);
+});
+
+test('Kong service defines readiness probe verifying template endpoint reachability with internal Host header', () => {
+  assert.match(
+    composeText,
+    /kong:[\s\S]*?healthcheck:[\s\S]*?curl\s+-f\s+-s\s+-H\s+['"]Host:\s*kong:8000['"]\s+http:\/\/127\.0\.0\.1:8000\/templates\/confirmation\.html/
+  );
 });

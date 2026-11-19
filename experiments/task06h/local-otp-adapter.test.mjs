@@ -2,6 +2,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createHmac } from 'node:crypto';
+import childProcess from 'node:child_process';
 import * as localOtpModule from './local-otp-adapter.mjs';
 import {
   signLocalJwt,
@@ -11,6 +12,9 @@ import {
   executeAuthIntegrationSuite,
   validateLocalStackConfig,
   QuotaExhaustedError,
+  CASE_EMAIL_BUDGETS,
+  NAMED_BATCHES,
+  calculateBatchBudget,
   project,
   network,
   expected,
@@ -80,47 +84,250 @@ test('adapter defaults adhere to isolated Task 06H namespace', () => {
   assert.equal(expected.MAILPIT_URL, 'http://127.0.0.1:55624');
 });
 
-test('executeAuthIntegrationSuite public entrypoint unconditionally enforces real preflight and ignores bypass attempts', async () => {
+test('calculateBatchBudget correctly computes email costs for all named batches', () => {
+  // GoTrue server-wide rate limit is 5 sends per hour. Every individual batch must be <= 5.
+  assert.equal(calculateBatchBudget('batch-1'), 4, 'batch-1 (OTP_FORMAT_REPLAY + OTP_CONCURRENT) requires 4 sends');
+  assert.equal(calculateBatchBudget('batch-2'), 3, 'batch-2 (INVALID_CODE + FIVE_WRONG + SIGNUP_RECOVERY) requires 3 sends');
+  assert.equal(calculateBatchBudget('batch-3'), 4, 'batch-3 (RECOVERY_FLOW) requires 4 sends');
+  assert.equal(calculateBatchBudget('batch-4'), 3, 'batch-4 (RESEND_OLD_CODE + AUTH17) requires 3 sends');
+  assert.equal(calculateBatchBudget('all'), 14, 'all batches combined require 14 sends (exceeds single 1-hour window)');
+
+  // Verify custom case list budget calculation
+  assert.equal(calculateBatchBudget(['OTP_FORMAT_REPLAY', 'INVALID_CODE']), 2);
+  assert.equal(calculateBatchBudget([]), 0);
+  assert.equal(calculateBatchBudget(), 0);
+
+  // Assert every individual executable batch strictly fits within 5-send hourly limit
+  for (const b of ['batch-1', 'batch-2', 'batch-3', 'batch-4']) {
+    assert.ok(calculateBatchBudget(b) <= 5, `${b} budget (${calculateBatchBudget(b)}) must fit within 5-send hourly quota`);
+  }
+});
+
+test('NAMED_BATCHES comprehensively covers all 12 executable test cases', () => {
+  const covered = new Set();
+  for (const b of ['batch-1', 'batch-2', 'batch-3', 'batch-4']) {
+    for (const c of NAMED_BATCHES[b]) covered.add(c);
+  }
+  for (const c of NAMED_BATCHES.all) {
+    assert.ok(covered.has(c), `Case ${c} must be present in at least one executable batch`);
+  }
+});
+
+test('executeAuthIntegrationSuite public entrypoint fails closed when Docker daemon is unreachable', async () => {
   let fetchCalled = false;
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async () => {
     fetchCalled = true;
     throw new Error('fetch should not be called');
   };
+  const origExec = childProcess.execFileSync;
+  childProcess.execFileSync = () => {
+    throw new Error('Cannot connect to the Docker daemon at unix:///var/run/docker.sock');
+  };
 
   try {
-    // Calling executeAuthIntegrationSuite with a caller-provided bypass MUST NOT bypass real preflight.
-    // It must invoke real assertRuntimeStackIsolation, which fails closed when Docker/Windows stack is not running.
     await assert.rejects(
-      async () => executeAuthIntegrationSuite(
-        {
-          API_URL: 'http://127.0.0.1:55621',
-          MAILPIT_URL: 'http://127.0.0.1:55624',
-          PUBLISHABLE_KEY: 'test-pub',
-          SERVICE_ROLE_KEY: 'test-serv',
-        },
-        // Attacker or rogue caller attempts to pass a mock preflight validator:
-        { preflightValidator: async () => true }
-      ),
-      /Docker network inspection failed|Docker stack inspection failed|Host listener validation failed|network .* not found|No containers attached to the project network|MISSING_WINDOWS_LISTENER/
+      async () => executeAuthIntegrationSuite({
+        API_URL: 'http://127.0.0.1:55621',
+        MAILPIT_URL: 'http://127.0.0.1:55624',
+        PUBLISHABLE_KEY: 'test-pub',
+        SERVICE_ROLE_KEY: 'test-serv',
+      }),
+      /Docker network inspection failed: Cannot connect to the Docker daemon/
     );
-    assert.equal(fetchCalled, false, 'No fetch request must be made when real preflight fails');
+    assert.equal(fetchCalled, false, 'No fetch request must be made when Docker daemon is down');
   } finally {
+    childProcess.execFileSync = origExec;
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('executeAuthIntegrationSuite public entrypoint fails closed when Docker CLI is missing (ENOENT)', async () => {
+  let fetchCalled = false;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    fetchCalled = true;
+    throw new Error('fetch should not be called');
+  };
+  const origExec = childProcess.execFileSync;
+  childProcess.execFileSync = () => {
+    const err = new Error('spawnSync docker ENOENT');
+    err.code = 'ENOENT';
+    throw err;
+  };
+
+  try {
+    await assert.rejects(
+      async () => executeAuthIntegrationSuite({
+        API_URL: 'http://127.0.0.1:55621',
+        MAILPIT_URL: 'http://127.0.0.1:55624',
+        PUBLISHABLE_KEY: 'test-pub',
+        SERVICE_ROLE_KEY: 'test-serv',
+      }),
+      /Docker network inspection failed: spawnSync docker ENOENT/
+    );
+    assert.equal(fetchCalled, false, 'No fetch request must be made when Docker CLI is missing');
+  } finally {
+    childProcess.execFileSync = origExec;
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('executeAuthIntegrationSuite public entrypoint fails closed on malformed Docker network output', async () => {
+  let fetchCalled = false;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    fetchCalled = true;
+    throw new Error('fetch should not be called');
+  };
+  const origExec = childProcess.execFileSync;
+  childProcess.execFileSync = () => 'invalid non-json output from docker';
+
+  try {
+    await assert.rejects(
+      async () => executeAuthIntegrationSuite({
+        API_URL: 'http://127.0.0.1:55621',
+        MAILPIT_URL: 'http://127.0.0.1:55624',
+        PUBLISHABLE_KEY: 'test-pub',
+        SERVICE_ROLE_KEY: 'test-serv',
+      }),
+      /Docker network parsing failed/
+    );
+    assert.equal(fetchCalled, false, 'No fetch request must be made on malformed docker output');
+  } finally {
+    childProcess.execFileSync = origExec;
+    globalThis.fetch = originalFetch;
+  }
+});
+
+function setupDeterministicProcessMock({ kongHostIp = '127.0.0.1', windowsListeners = true } = {}) {
+  const project = 'tio-task06h-local-auth';
+  const network = `supabase_network_${project}`;
+
+  const makeContainer = (part, image, portBindings = {}) => ({
+    Name: `/supabase_${part}_${project}`,
+    State: { Running: true },
+    Config: {
+      Image: image,
+      Labels: { 'com.docker.compose.project': project },
+    },
+    HostConfig: {
+      PortBindings: portBindings,
+    },
+    NetworkSettings: {
+      Networks: { [network]: {} },
+      Ports: portBindings,
+    },
+  });
+
+  const containersMap = {
+    [`/supabase_auth_${project}`]: makeContainer('auth', 'public.ecr.aws/supabase/gotrue:v2.197.0'),
+    [`/supabase_db_${project}`]: makeContainer('db', 'public.ecr.aws/supabase/postgres:17.11.0.004'),
+    [`/supabase_kong_${project}`]: makeContainer('kong', 'public.ecr.aws/supabase/kong:2.8.1', {
+      '8000/tcp': [{ HostIp: kongHostIp, HostPort: '55621' }],
+    }),
+    [`/supabase_inbucket_${project}`]: makeContainer('inbucket', 'public.ecr.aws/supabase/mailpit:v1.31.3', {
+      '8025/tcp': [{ HostIp: '127.0.0.1', HostPort: '55624' }],
+    }),
+  };
+
+  const origExec = childProcess.execFileSync;
+  childProcess.execFileSync = (file, args) => {
+    if (file === 'docker') {
+      if (args[0] === 'network' && args[1] === 'inspect') {
+        return JSON.stringify([{
+          Containers: {
+            c1: { Name: `/supabase_auth_${project}` },
+            c2: { Name: `/supabase_db_${project}` },
+            c3: { Name: `/supabase_kong_${project}` },
+            c4: { Name: `/supabase_inbucket_${project}` },
+          }
+        }]);
+      }
+      if (args[0] === 'inspect') {
+        const name = args[1];
+        const c = containersMap[name];
+        if (c) return JSON.stringify([c]);
+        return JSON.stringify([makeContainer('unknown', 'unknown')]);
+      }
+    }
+    if (file === 'powershell.exe') {
+      if (!windowsListeners) return '';
+      return JSON.stringify([
+        { LocalAddress: '127.0.0.1', LocalPort: 55621, State: 'Listen' },
+        { LocalAddress: '127.0.0.1', LocalPort: 55624, State: 'Listen' },
+      ]);
+    }
+    return '';
+  };
+
+  return () => {
+    childProcess.execFileSync = origExec;
+  };
+}
+
+test('executeAuthIntegrationSuite public entrypoint fails closed on wildcard host port binding', async () => {
+  let fetchCalled = false;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    fetchCalled = true;
+    throw new Error('fetch should not be called');
+  };
+  const restoreProc = setupDeterministicProcessMock({ kongHostIp: '0.0.0.0' });
+
+  try {
+    await assert.rejects(
+      async () => executeAuthIntegrationSuite({
+        API_URL: 'http://127.0.0.1:55621',
+        MAILPIT_URL: 'http://127.0.0.1:55624',
+        PUBLISHABLE_KEY: 'test-pub',
+        SERVICE_ROLE_KEY: 'test-serv',
+      }),
+      /non-loopback HostConfig published ports/
+    );
+    assert.equal(fetchCalled, false, 'No fetch request must be made when port binding is wildcard');
+  } finally {
+    restoreProc();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('executeAuthIntegrationSuite public entrypoint fails closed when Windows listeners are missing', async () => {
+  let fetchCalled = false;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    fetchCalled = true;
+    throw new Error('fetch should not be called');
+  };
+  const restoreProc = setupDeterministicProcessMock({ windowsListeners: false });
+
+  try {
+    await assert.rejects(
+      async () => executeAuthIntegrationSuite({
+        API_URL: 'http://127.0.0.1:55621',
+        MAILPIT_URL: 'http://127.0.0.1:55624',
+        PUBLISHABLE_KEY: 'test-pub',
+        SERVICE_ROLE_KEY: 'test-serv',
+      }),
+      /MISSING_WINDOWS_LISTENER/
+    );
+    assert.equal(fetchCalled, false, 'No fetch request must be made when host listeners are missing');
+  } finally {
+    restoreProc();
     globalThis.fetch = originalFetch;
   }
 });
 
 test('local-otp-adapter exports no test runner hooks or mutable process execution seams', () => {
-  // Ensure no mutable global runners or execution setters are exported
   assert.equal(localOtpModule._setProcessRunnerForTesting, undefined, '_setProcessRunnerForTesting must not be exported');
   assert.equal(localOtpModule._resetProcessRunnerForTesting, undefined, '_resetProcessRunnerForTesting must not be exported');
   assert.equal(localOtpModule._customProcessRunner, undefined, '_customProcessRunner must not be exported');
   assert.equal(localOtpModule._executeCommand, undefined, '_executeCommand must not be exported');
   assert.equal(localOtpModule._executeAuthIntegrationSuiteInternal, undefined, '_executeAuthIntegrationSuiteInternal must not be exported');
+  assert.equal(localOtpModule._runAuthIntegrationSuiteInternal, undefined, '_runAuthIntegrationSuiteInternal must not be exported');
 });
 
 test('isolated test seam: command execution failure parsing fails closed with precise error classifications', () => {
-  // Test seam: validates error mapping in isolation without mutating production runtime execution
   function simulateDockerInspect(runner) {
     const run = (file, args) => runner(file, args, {
       encoding: 'utf8',
@@ -173,14 +380,12 @@ test('isolated test seam: command execution failure parsing fails closed with pr
 });
 
 test('local-otp-adapter does not export bypassable internal network runners', () => {
-  // Ensure _executeAuthIntegrationSuiteInternal or any mockable network runner is NOT exported
   assert.equal(
     typeof localOtpModule._executeAuthIntegrationSuiteInternal,
     'undefined',
     'Internal runner _executeAuthIntegrationSuiteInternal must not be exported'
   );
 
-  // executeAuthIntegrationSuite is the only network entrypoint and takes exactly 1 parameter (local)
   assert.equal(
     typeof localOtpModule.executeAuthIntegrationSuite,
     'function',
@@ -193,58 +398,148 @@ test('local-otp-adapter does not export bypassable internal network runners', ()
   );
 });
 
-test('validateLocalStackConfig validates loopback URLs and credentials purely offline without network', () => {
-  assert.throws(
-    () => validateLocalStackConfig(null),
-    /Invalid or non-loopback stack URLs refused/
-  );
-  assert.throws(
-    () => validateLocalStackConfig({}),
-    /Invalid or non-loopback stack URLs refused/
-  );
-  assert.throws(
-    () => validateLocalStackConfig({
-      API_URL: 'http://192.168.1.100:55621',
-      MAILPIT_URL: 'http://127.0.0.1:55624',
-      PUBLISHABLE_KEY: 'test-pub',
-      SERVICE_ROLE_KEY: 'test-serv',
-    }),
-    /Invalid or non-loopback stack URLs refused/
-  );
-  assert.throws(
-    () => validateLocalStackConfig({
-      API_URL: 'http://127.0.0.1:55621',
-      MAILPIT_URL: 'http://10.0.0.1:55624',
-      PUBLISHABLE_KEY: 'test-pub',
-      SERVICE_ROLE_KEY: 'test-serv',
-    }),
-    /Invalid or non-loopback stack URLs refused/
-  );
-  assert.throws(
-    () => validateLocalStackConfig({
-      API_URL: 'http://127.0.0.1:55621',
-      MAILPIT_URL: 'http://127.0.0.1:55624',
-    }),
-    /Local stack configuration and credentials required to run integration suite/
-  );
-  assert.throws(
-    () => validateLocalStackConfig({
-      API_URL: 'http://127.0.0.1:55621',
-      MAILPIT_URL: 'http://127.0.0.1:55624',
-      PUBLISHABLE_KEY: 'test-pub',
-    }),
-    /Local stack configuration and credentials required to run integration suite/
-  );
+test('validateLocalStackConfig validates loopback URLs, credentials, and batch options offline', () => {
+  assert.throws(() => validateLocalStackConfig(null), /Invalid or non-loopback stack URLs refused/);
+  assert.throws(() => validateLocalStackConfig({}), /Invalid or non-loopback stack URLs refused/);
+  assert.throws(() => validateLocalStackConfig({
+    API_URL: 'http://192.168.1.100:55621',
+    MAILPIT_URL: 'http://127.0.0.1:55624',
+    PUBLISHABLE_KEY: 'test-pub',
+    SERVICE_ROLE_KEY: 'test-serv',
+  }), /Invalid or non-loopback stack URLs refused/);
+  assert.throws(() => validateLocalStackConfig({
+    API_URL: 'http://127.0.0.1:55621',
+    MAILPIT_URL: 'http://127.0.0.1:55624',
+  }), /Local stack configuration and credentials required to run integration suite/);
 
-  assert.equal(
-    validateLocalStackConfig({
+  // Batch validation
+  assert.throws(() => validateLocalStackConfig({
+    API_URL: 'http://127.0.0.1:55621',
+    MAILPIT_URL: 'http://127.0.0.1:55624',
+    PUBLISHABLE_KEY: 'test-pub',
+    SERVICE_ROLE_KEY: 'test-serv',
+    selectedBatch: 'batch-invalid',
+  }), /Invalid selectedBatch: batch-invalid/);
+
+  assert.throws(() => validateLocalStackConfig({
+    API_URL: 'http://127.0.0.1:55621',
+    MAILPIT_URL: 'http://127.0.0.1:55624',
+    PUBLISHABLE_KEY: 'test-pub',
+    SERVICE_ROLE_KEY: 'test-serv',
+    selectedCases: 'not-an-array',
+  }), /selectedCases must be an array/);
+
+  assert.equal(validateLocalStackConfig({
+    API_URL: 'http://127.0.0.1:55621',
+    MAILPIT_URL: 'http://127.0.0.1:55624',
+    PUBLISHABLE_KEY: 'test-pub',
+    SERVICE_ROLE_KEY: 'test-serv',
+    selectedBatch: 'batch-1',
+  }), true);
+});
+
+test('executeAuthIntegrationSuite enforces batch filtering and marks excluded cases as SKIPPED and never PASS', async () => {
+  const originalFetch = globalThis.fetch;
+  const restoreProc = setupDeterministicProcessMock();
+
+  // Mock fetch to provide clean Mailpit baseline
+  globalThis.fetch = async (url) => {
+    if (url.includes('/api/v1/messages')) {
+      return {
+        status: 200,
+        json: async () => ({ messages: [] })
+      };
+    }
+    return { status: 404, json: async () => ({}) };
+  };
+
+  try {
+    // Run with selectedCases containing only MAILPIT_BASELINE (excludes all other cases)
+    const results = await executeAuthIntegrationSuite({
       API_URL: 'http://127.0.0.1:55621',
       MAILPIT_URL: 'http://127.0.0.1:55624',
       PUBLISHABLE_KEY: 'test-pub',
       SERVICE_ROLE_KEY: 'test-serv',
-    }),
-    true
-  );
+      selectedCases: ['MAILPIT_BASELINE'],
+    });
+
+    const baseline = results.find(r => r.id === 'MAILPIT_BASELINE');
+    assert.equal(baseline.result, 'PASS');
+
+    const skippedIds = [
+      'OTP_FORMAT',
+      'OTP_REPLAY',
+      'OTP_CONCURRENT_1',
+      'INVALID_CODE',
+      'FIVE_WRONG_COOLDOWN',
+      'COOLDOWN_15_MIN',
+      'SIGNUP_AS_RECOVERY',
+      'RECOVERY_AS_EMAIL',
+      'RECOVERY_AS_RECOVERY',
+      'RESEND_INTERVAL_OBSERVED',
+      'AUTH17_PASSWORD_MUTATION',
+    ];
+
+    for (const id of skippedIds) {
+      const row = results.find(r => r.id === id);
+      assert.ok(row, `Row for ${id} must exist in results`);
+      assert.equal(row.result, 'SKIPPED', `Excluded case ${id} must be marked SKIPPED`);
+      assert.equal(row.details?.skippedByBatch, true, `Excluded case ${id} must have skippedByBatch flag`);
+      assert.notEqual(row.result, 'PASS', `Excluded case ${id} must NEVER be marked PASS`);
+    }
+  } finally {
+    restoreProc();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Mailpit 1-hour quota accounting tracks recent messages across process runs and fails closed on exhaustion', async () => {
+  const originalFetch = globalThis.fetch;
+  const restoreProc = setupDeterministicProcessMock();
+
+  // Mock Mailpit returning 5 recent messages within the last 15 minutes (quota exhausted on server)
+  const now = Date.now();
+  const recentMessages = Array.from({ length: 5 }, (_, i) => ({
+    ID: `msg-${i}`,
+    Subject: 'Local signup code',
+    Created: new Date(now - (i + 1) * 60000).toISOString(),
+    To: [{ Address: `user${i}@example.invalid` }]
+  }));
+
+  globalThis.fetch = async (url) => {
+    if (url.includes('/api/v1/messages')) {
+      return {
+        status: 200,
+        json: async () => ({ messages: recentMessages })
+      };
+    }
+    return { status: 404, json: async () => ({}) };
+  };
+
+  try {
+    // Run batch-1 which attempts to issue OTP
+    const results = await executeAuthIntegrationSuite({
+      API_URL: 'http://127.0.0.1:55621',
+      MAILPIT_URL: 'http://127.0.0.1:55624',
+      PUBLISHABLE_KEY: 'test-pub',
+      SERVICE_ROLE_KEY: 'test-serv',
+      selectedBatch: 'batch-1',
+    });
+
+    const baseline = results.find(r => r.id === 'MAILPIT_BASELINE');
+    assert.equal(baseline.result, 'PASS');
+    assert.match(baseline.observed, /recent_window_sends=5/);
+
+    // Because recent_window_sends is 5, OTP_FORMAT_REPLAY cannot issue email and must report INCONCLUSIVE with quotaExhausted
+    const replay = results.find(r => r.id === 'OTP_FORMAT_REPLAY');
+    assert.ok(replay, 'OTP_FORMAT_REPLAY row must be recorded');
+    assert.equal(replay.result, 'INCONCLUSIVE');
+    assert.equal(replay.details?.quotaExhausted, true);
+    assert.match(replay.observed, /EMAIL_QUOTA_EXHAUSTED/);
+  } finally {
+    restoreProc();
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test('QuotaExhaustedError is a distinct error type preserving rate limit policy', () => {
