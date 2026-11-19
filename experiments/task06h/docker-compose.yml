@@ -34,6 +34,8 @@ services:
     depends_on:
       db:
         condition: service_healthy
+      kong:
+        condition: service_started
     environment:
       GOTRUE_DB_DRIVER: postgres
       GOTRUE_DB_DATABASE_URL: "postgres://supabase_auth_admin:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}@db:5432/postgres?sslmode=disable"
@@ -66,8 +68,6 @@ services:
   kong:
     image: public.ecr.aws/supabase/kong:2.8.1
     container_name: supabase_kong_tio-task06h-local-auth
-    depends_on:
-      - auth
     ports:
       - "127.0.0.1:55621:8000"
     volumes:

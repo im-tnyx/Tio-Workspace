@@ -117,3 +117,7 @@ test('Compose file enforces hourly email rate limit without unsupported settings
   assert.match(composeText, /GOTRUE_RATE_LIMIT_EMAIL_SENT:\s*5/);
   assert.doesNotMatch(composeText, /GOTRUE_RATE_LIMIT_OVER_EMAIL_SEND_RATE_LIMIT/);
 });
+
+test('Auth service depends on Kong to eliminate template-cache warmup startup race', () => {
+  assert.match(composeText, /auth:[\s\S]*?depends_on:[\s\S]*?kong:\s*\n\s*condition:\s*service_started/);
+});
