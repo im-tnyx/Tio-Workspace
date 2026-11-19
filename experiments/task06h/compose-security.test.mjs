@@ -103,3 +103,17 @@ test('Compose file uses HTTP-served email templates via Kong and request-termina
   assert.doesNotMatch(composeText, /GOTRUE_MAILER_TEMPLATES_[A-Z_]+:\s*\/etc\/gotrue/);
   assert.match(composeText, /KONG_PLUGINS:.*request-termination/);
 });
+
+test('Kong configuration restricts email template routes to internal container hostnames', () => {
+  const kongPath = 'experiments/task06h/kong.yml';
+  const kongText = readFileSync(kongPath, 'utf8');
+
+  // Both template routes must restrict hosts to kong / kong:8000 to prevent external exposure via 55621
+  assert.match(kongText, /name:\s*template-confirmation[\s\S]*?hosts:\s*\n\s*-\s*kong\s*\n\s*-\s*kong:8000/);
+  assert.match(kongText, /name:\s*template-recovery[\s\S]*?hosts:\s*\n\s*-\s*kong\s*\n\s*-\s*kong:8000/);
+});
+
+test('Compose file enforces hourly email rate limit without unsupported settings', () => {
+  assert.match(composeText, /GOTRUE_RATE_LIMIT_EMAIL_SENT:\s*5/);
+  assert.doesNotMatch(composeText, /GOTRUE_RATE_LIMIT_OVER_EMAIL_SEND_RATE_LIMIT/);
+});

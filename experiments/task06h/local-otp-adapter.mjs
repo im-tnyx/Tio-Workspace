@@ -252,7 +252,7 @@ async function _runAuthIntegrationSuiteInternal(local) {
   let sendsInWindow = 0;
   let windowStart = Date.now();
   const maxSendsPerWindow = 5;
-  const windowDurationMs = 60000;
+  const windowDurationMs = 3600000; // 1 hour (matches GoTrue GOTRUE_RATE_LIMIT_EMAIL_SENT hourly rate limit)
 
   async function paceEmailQuota() {
     const elapsed = Date.now() - windowStart;
@@ -260,11 +260,9 @@ async function _runAuthIntegrationSuiteInternal(local) {
       sendsInWindow = 0;
       windowStart = Date.now();
     } else if (sendsInWindow >= maxSendsPerWindow) {
-      // Quota-aware scheduling: wait for the sliding window to reset rather than failing
-      const waitTime = windowDurationMs - elapsed + 1000;
-      await delay(waitTime);
-      sendsInWindow = 0;
-      windowStart = Date.now();
+      throw new QuotaExhaustedError(
+        `Global ${maxSendsPerWindow}-send email rate limit exhausted for 1-hour window (${Math.max(1, Math.round((windowDurationMs - elapsed) / 60000))}m remaining)`
+      );
     }
   }
 
@@ -551,9 +549,14 @@ async function _runAuthIntegrationSuiteInternal(local) {
 
     // Case 8: Resend interval and old code invalidation
     await runCase('RESEND_OLD_CODE', async () => {
+      await paceEmailQuota();
       const address = email();
       const first = await timedAuth('/otp', { email: address, create_user: true });
+      if (first.result.status === 429 || first.result.value?.error_code === 'over_email_send_rate_limit') {
+        throw new QuotaExhaustedError('Global 5-send email rate limit exhausted on /otp issuance');
+      }
       if (first.result.status !== 200) throw new Error('First local OTP send unavailable');
+      recordEmailSend();
       const oldCode = await codeFor(address, /local signup|confirm your email|confirm your signup/i);
       const attempts = [await timedAuth('/otp', { email: address, create_user: true })];
       const deadline = first.responseAt + 75000;
