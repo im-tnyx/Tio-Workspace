@@ -74,7 +74,7 @@ The Task 06H adapter (`experiments/task06h/local-otp-adapter.mjs`) and preflight
 * **Adapter Unit Suite:** `experiments/task06h/local-otp-adapter.test.mjs` (22/22 PASS).
 * **Assertion Classifier Suite:** `experiments/task06h/assertions.test.mjs` (42/42 PASS).
 * **Total Offline Test Suite:** **95 passed, 0 failed (100% pass rate)**.
-* **Independent GitHub Actions Evidence:** `.github/workflows/task06h-offline-evidence.yml` publishes verifiable run logs and step summary on exact PR HEAD.
+* **Independent GitHub Actions Evidence:** Verified in GitHub Actions [Run #44562647190](https://github.com/im-tnyx/Tio-Workspace/actions/runs/44562647190) (Job: 135695812286). Workflow file deferred to `main` post-merge to preserve the repository's protected guard integrity policy (`scripts/check_guard_integrity.sh`).
 
 ---
 
