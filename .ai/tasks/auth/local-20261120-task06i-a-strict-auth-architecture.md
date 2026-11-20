@@ -2,10 +2,10 @@
 
 | Field | Value |
 |---|---|
-| **Task ID** | Task 06I-A (Revision R1 — Architecture Evidence Integrity & Transaction Safety Review) |
+| **Task ID** | Task 06I-A (Revision R2 — Admin Idempotency, JWT Cutover & Final Architecture Hardening) |
 | **Status** | **ARCHITECTURE PROPOSED — OWNER DECISION REQUIRED** |
-| **Objective** | Design an enforceable server-side Auth architecture that preserves owner-approved UX while strictly resolving empirical security failures (AUTH-12, AUTH-17, AUTH-22, purpose crossover) demonstrated in Task 06H-E; correct unsupported proof classifications and cross-service transactional assumptions |
-| **Execution Mode** | READ-ONLY SECURITY RESEARCH + SCOPED DOCUMENTATION (No app code, migrations, or hosted changes) |
+| **Objective** | Independently verify and harden server-side Auth architecture: resolve GoTrue Admin API idempotency limits via a server-owned operation ledger, define multi-consumer JWT cutover semantics, audit challenge state-machine concurrency, and refine Task 06I-B1/B2 gates |
+| **Execution Mode** | OFFLINE RESEARCH + DOCUMENTATION-ONLY SECURITY HARDENING (No app code, migrations, or hosted mutations) |
 | **Authorization** | Owner instruction: follow `AGENTS.md`, `.ai/current.md`, Supabase skill; production project `bsfwzvgynwriswapxpsp` strictly READ-ONLY |
 | **Implementation Owner** | Security Architecture & Research Agent |
 | **Baseline Main Commit** | `317b4d4793368e6a9a2907d504044e876acfaab0` (PR #33 merged) |
@@ -40,12 +40,13 @@ To maintain absolute evidence integrity, all claims in this document adhere to t
   - Native password recovery emails are intercepted via a Send Email Hook, and native token issuance for recovery/OTP is blocked via a Custom Access Token Hook.
   - All OTP generation, rate limiting, and verification are moved into trusted, server-owned Supabase Edge Functions backed by a transactional PostgreSQL schema (`auth_challenges`) utilizing atomic conditional updates and row-level locks.
   - Supabase Auth is utilized strictly as a **Password Identity Provider** (`signInWithPassword`) and Admin API target (`admin.createUser`, `admin.updateUserById`).
-  - *Critical Transactional Nuance:* A PostgreSQL database transaction cannot roll back an independent GoTrue Admin HTTP call. Option B therefore requires an explicit two-phase challenge state machine (`ISSUED` -> `PENDING_PROVISIONING` -> `CONSUMED` / `FAILED`) with idempotent reconciliation.
+  - *Critical GoTrue Idempotency Verdict:* GoTrue source review (`supabase/auth`) confirms GoTrue Admin API does NOT implement an `Idempotency-Key` header. Safe execution requires a server-owned, durable operation ledger (`admin_operation_ledger`) in PostgreSQL with worker lease claims and pre-flight state reconciliation.
+  - *Multi-Consumer JWT Cutover Nuance:* Deleting sessions in `auth.sessions` immediately invalidates Auth `/user` (403), but stateless non-Auth JWT consumers (PostgREST Data API, Storage) will accept signed JWTs until their `exp` timestamp. Cutover must account for this lingering window or rotate signing secrets.
 - **Contingency Fallback: Option D1 (Self-Hosted Supabase GoTrue Behind an Exclusive Reverse Proxy / API Gateway)**.
   - *Status:* **PROPOSED FALLBACK (NOT TESTED)**.
   - If managed Supabase controls fail to close native GoTrue public routes on a disposable hosted instance, GoTrue must be self-hosted in a private network where native `/otp`, `/verify`, `/recover`, `/signup`, and direct `/user` are physically unreachable from the public internet.
 
-**Final Verdict:** Production Auth remains **NO-GO**. A tightly bounded two-stage proof-of-concept on a disposable managed project (**Task 06I-B1 / 06I-B2**) is required before any implementation or production activation.
+**Final Verdict:** Production Auth remains **NO-GO**. A tightly bounded two-stage proof-of-concept on a disposable managed project (**Task 06I-B1 / 06I-B2**) is required before any implementation or production activation. Stage 06I-B1 failure triggers an owner decision on Option D1, not automatic self-hosted deployment.
 
 ---
 
@@ -162,28 +163,51 @@ RETURNING c.id, c.user_id, c.provisioning_grant_id;
   - Operates as a single atomic write lock. Request A updates the row and returns `c.id` and `c.provisioning_grant_id`.
   - Request B's `UPDATE` affects 0 rows. Request B detects 0 rows returned and rejects the attempt.
 
-#### The Cross-Service Distributed Transaction Problem & State-Machine Resolution
-A fundamental architectural constraint must be recognized: **a PostgreSQL database transaction cannot roll back an independent outbound HTTP call to Supabase GoTrue Admin API**.
+#### The Cross-Service Distributed Transaction Problem & GoTrue Admin Idempotency Verdict
+A critical architectural reality must be acknowledged: **a PostgreSQL database transaction cannot roll back an independent outbound HTTP call to Supabase GoTrue Admin API**.
 
-Holding an open PostgreSQL transaction during an outbound HTTP call to `supabase.auth.admin.createUser` or `updateUserById` introduces:
+Furthermore, source review of Supabase Auth (`supabase/auth` / GoTrue) confirms that **GoTrue does NOT implement or recognize an `Idempotency-Key` HTTP header** on `/admin/users`, `PUT /admin/users/{user_id}`, or any other endpoint. Merely sending an `Idempotency-Key` header provides zero native idempotency or duplicate-request prevention.
+
+Holding an open PostgreSQL transaction during an outbound HTTP call to GoTrue introduces:
 1. Connection pool exhaustion and elevated database latency under slow network conditions.
-2. Dangerous partial failures: if the GoTrue Admin API call succeeds in creating the user or updating the password, but the subsequent database commit times out or aborts, PostgreSQL rolls back challenge consumption while GoTrue persists the user state, creating severe desynchronization.
-3. If GoTrue Admin API fails or times out while actually succeeding on the server, a naive rollback leaves ambiguous state.
+2. Dangerous partial failure states: if GoTrue creates the user or updates the password, but the subsequent database commit times out or aborts, PostgreSQL rolls back the challenge state while GoTrue persists the user state, creating severe identity desynchronization.
+3. If GoTrue Admin API times out while actually succeeding on the GoTrue server, a naive retry could cause unexpected duplicate creation errors or race conditions.
 
-**Two-Phase Challenge State Machine & Idempotent Reconciliation:**
-Instead of assuming impossible cross-service rollback, Option B employs an explicit two-phase challenge state machine:
-- **Challenge Status Lifecycle:**
-  `issued` -> `pending_provisioning` -> `consumed` (or `provisioning_failed_retryable`)
-- **Phase 1 (Atomic Verification):**
-  - Edge Function verifies OTP atomically in PostgreSQL.
-  - If valid: sets `status = 'pending_provisioning'`, sets `verified_at = clock_timestamp()`, generates single-use `provisioning_grant_id`, and **commits the PostgreSQL transaction immediately**. Row lock is released in milliseconds.
-  - If invalid: increments `failed_attempts`, sets `cooldown_until` if count reaches 5, and commits.
-- **Phase 2 (Idempotent Admin Provisioning):**
-  - Edge Function invokes GoTrue Admin API (`admin.createUser` or `admin.updateUserById`) passing an `Idempotency-Key: <provisioning_grant_id>`.
-  - On HTTP 200/201 success: Edge Function executes a fast DB update:
-    `UPDATE private_auth.auth_challenges SET status = 'consumed', consumed_at = clock_timestamp() WHERE provisioning_grant_id = $1`.
-  - On retryable failure (network timeout / 5xx): Challenge remains `pending_provisioning`. Client retrying with `provisioning_grant_id` is recognized by the server as already verified, allowing safe idempotent re-invocation of GoTrue Admin API without prompting a new OTP or burning quota.
-  - On permanent failure (e.g. GoTrue rejected password rules): Challenge marked `provisioning_failed_terminal` with audit log, prompting client to submit a valid password under controlled retry rules.
+#### Server-Owned Durable Operation Ledger & State-Machine Resolution
+*(Status: PROPOSED DESIGN — NOT TESTED)*
+To resolve cross-service coordination without impossible distributed transactions or non-existent provider headers, Option B implements an explicit **Server-Owned Durable Operation Ledger** (`private_auth.admin_operation_ledger`) coupled with a two-phase challenge state machine:
+
+1. **Challenge Status Lifecycle:**
+   `issued` -> `verifying` -> `pending_provisioning` -> `consumed` (or `provisioning_failed_retryable`, `failed_terminal`, `superseded`)
+2. **Phase 1: Atomic In-Database Verification:**
+   - Edge Function verifies OTP atomically in PostgreSQL under row-level lock.
+   - If code is invalid: increments `failed_attempts`, sets `cooldown_until` if count reaches 5, and commits.
+   - If code is valid: transitions challenge `status = 'pending_provisioning'`, sets `verified_at = clock_timestamp()`, generates a single-use `provisioning_grant_id = gen_random_uuid()` with bounded lease expiry (`grant_expires_at = clock_timestamp() + INTERVAL '5 minutes'`), and **commits the PostgreSQL transaction immediately**. Row lock is released in milliseconds.
+3. **Phase 2: Atomic Operation Lease Claim:**
+   - Before calling GoTrue, the Edge Function attempts to atomically claim an execution lease in `private_auth.admin_operation_ledger`:
+     ```sql
+     INSERT INTO private_auth.admin_operation_ledger (
+         challenge_id, normalized_email, target_user_id, operation_type,
+         status, worker_lease_id, lease_expires_at, idempotency_payload_hash
+     ) VALUES (
+         $1, $2, $3, $4, 'executing', $worker_lease_id,
+         clock_timestamp() + INTERVAL '30 seconds', $payload_hash
+     )
+     ON CONFLICT (challenge_id) DO NOTHING
+     RETURNING operation_id;
+     ```
+   - **Concurrency Barrier:** The `UNIQUE (challenge_id)` constraint guarantees that exactly **one** operation record can ever be claimed for a given verified challenge. Concurrent retry workers detect a conflict and query the ledger. If `status = 'executing'` and `clock_timestamp() < lease_expires_at`, parallel workers return `409 Conflict / retry_in_progress` without firing duplicate Admin API calls to GoTrue.
+4. **Phase 3: Outbound Admin Call & Pre-Flight State Reconciliation:**
+   - The lease-holding worker executes the GoTrue Admin API call (`admin.createUser` or `admin.updateUserById`).
+   - **Ambiguous Timeout Reconciliation:** If the outbound call to GoTrue times out or returns an ambiguous network error, the reconciling worker **does NOT blindly re-issue the mutating call**. Instead, it executes an authoritative pre-flight state query:
+     - *For initial creation:* Queries GoTrue (`admin.listUsers` by email). If a user with this normalized email exists and was created within the operation window, the timed-out call actually succeeded. The worker reconciles the ledger: sets `target_user_id = user.id, status = 'completed'`. If the user does not exist, it safely re-attempts `admin.createUser`.
+     - *For initial enrollment / password recovery:* Queries `admin.getUserById(target_user_id)`. Checks `user.updated_at` and session deletion. If postconditions match, marks ledger `status = 'completed'`.
+     - *Terminal Fail-Closed Barrier:* If GoTrue remains unreachable or pre-flight state reconciliation cannot definitively confirm user/password state, the operation fails closed: marks ledger `status = 'failed_terminal'`, logs a safe audit error, and prompts the client to request a fresh challenge under strict rate limits.
+5. **Phase 4: Finalization & Single-Use Enforcement:**
+   - Once GoTrue operation is verified complete, the Edge Function finalizes the challenge:
+     `UPDATE private_auth.auth_challenges SET status = 'consumed', consumed_at = clock_timestamp() WHERE challenge_id = $1`.
+   - **Replay Invalidation:** A completed recovery grant is permanently consumed. Any subsequent request presenting that `provisioning_grant_id` or `challenge_id` is rejected. It is structurally impossible for a recovery grant to mutate a password a second time.
+   - **Untrusted Client Protection:** Client-supplied grant IDs or operation tokens are never accepted as standalone authorization; the operation is strictly validated against the server-stored `(challenge_id, normalized_email, purpose, provisioning_grant_id, grant_expires_at)`.
 
 #### Token Cryptography & Storage
 - Six-digit numeric OTP generated via cryptographically secure pseudo-random number generator (`crypto.randomInt(100000, 1000000)`).
@@ -203,11 +227,48 @@ Task 06B, 06D, and 06H-E proved that any session bearing `amr: ['otp']` can call
 3. **Session Revocation on Password Mutation:**
    - GoTrue's Admin API `updateUserById(userId, { password })` automatically deletes all existing active sessions from `auth.sessions` for that user.
    - Any outstanding access tokens fail subsequent `GET/PUT /auth/v1/user` calls with `403/session_not_found` (verified locally on GoTrue v2.197.0 in Task 06F).
-   - *Limitation & Non-Auth Consumers:* Session row deletion invalidates Auth `/user`. However, external JWT consumers (e.g. PostgREST / Data API) that only verify cryptographic signatures without checking `auth.sessions` may continue to accept existing JWTs until `exp`. Complete cutover safety requires coupling session deletion with a short `jwt_exp` (e.g. 5 minutes) and testing PostgREST behavior.
 4. **Enforcing `Require Current Password` on Normal Sessions:**
    - Normal users sign in via `signInWithPassword`. Their session has `amr: ['password']`.
    - For `amr: ['password']`, GoTrue's `session.IsRecovery()` is `false`.
    - Therefore, `security_update_password_require_current_password = true` is fully enforced: direct `PUT /auth/v1/user` without `current_password` is rejected with `400/invalid_request`.
+
+#### 4.2.1. JWT Lifecycle, Consumer Discrepancies & Safe Cutover
+*(Status: PROPOSED SPECIFICATION — HOSTED NOT VERIFIED)*
+To prevent false assumptions regarding token invalidation, the architectural behavior of Supabase JWTs across different platform consumers must be strictly differentiated:
+
+1. **`auth.sessions` Row Deletion:**
+   - GoTrue persists active session metadata in `auth.sessions`. The access token JWT contains a `session_id` UUID claim.
+   - Calling `POST /logout` or executing an Admin password update deletes the corresponding row from `auth.sessions`.
+2. **Auth `/user` Validation (Stateful Session Check):**
+   - Calls to `GET /auth/v1/user` and `PUT /auth/v1/user` validate the cryptographic signature **and** actively query `auth.sessions` for `session_id`.
+   - When the session row is deleted, Auth `/user` returns `403 Forbidden` (`session_not_found`) immediately (empirically confirmed on GoTrue v2.197.0 in Task 06F).
+3. **Data API / PostgREST Authorization (Stateless Signature Verification):**
+   - PostgREST validates access JWTs **statelessly** using the shared `JWT_SECRET` (symmetric HMAC) or public key (asymmetric).
+   - By default, PostgREST verifies signature, `exp`, and `nbf`, then executes queries under RLS. PostgREST does **NOT** query `auth.sessions` on every request.
+   - **Security Consequence:** An unrevoked access token issued prior to cutover or password change will **continue to be accepted by PostgREST** for Data API reads/writes until its `exp` timestamp elapses, even if its session row in `auth.sessions` was deleted!
+4. **Storage API & Edge Functions:**
+   - Storage API operates similarly to PostgREST (stateless signature validation).
+   - Edge Functions calling `supabase.auth.getUser(token)` contact GoTrue and fail immediately on deleted sessions (403). Edge Functions decoding JWTs locally accept them until `exp`.
+5. **Existing vs. New JWT Expiry Limits:**
+   - Updating `jwt_exp` in project settings (e.g. reducing expiry to 300 seconds) applies **only to newly minted JWTs**.
+   - Previously issued tokens have their `exp` claim immutably signed in their payload (typically 3600 seconds = 1 hour). Changing settings does not modify existing tokens.
+
+#### Comprehensive Safe Cutover Procedure
+To eliminate residual access tokens during cutover to Option B, the deployment plan must follow an explicit fail-closed sequence:
+1. **Freeze Public Registration:** Enable `disable_signup = true` in Supabase Auth config.
+2. **Disable Native OTP & MagicLink:** Apply `EXTERNAL_EMAIL_MAGIC_LINK_DISABLED = true` (or verified provider setting).
+3. **Shorten Future JWT Lifetime:** Set `jwt_exp = 300` (5 minutes) for all future sessions.
+4. **Delete Active Sessions:** Execute database session cleanup (`DELETE FROM auth.sessions;`) or trigger per-user Admin password reset.
+5. **Address the Stateless Consumer Linger Window (PostgREST / Storage):**
+   - *Option Cutover-A (Drain Window):* Wait out the maximum lingering lifetime of any pre-cutover token (e.g. 1 hour) before enabling live production data access.
+   - *Option Cutover-B (Signing Secret Rotation):* Rotate the project's `JWT_SECRET`. This instantly breaks cryptographic validation for 100% of outstanding JWTs across PostgREST, Storage, and Auth simultaneously (requires all legitimate users to re-authenticate with password).
+6. **Preserve Offline Local SQLite Safety:** On-device workout storage is account-bound to immutable `user_id` and decrypted with the device OS-protected key; it never reads remote PostgREST or relies on JWTs for offline CRUD.
+
+#### Required Acceptance Tests for Cutover Verification
+- **Test CUT-01 (Auth /user):** Verify previously issued OTP access token returns `403/session_not_found` after session deletion.
+- **Test CUT-02 (PostgREST Data API):** Probe PostgREST endpoint with previously issued access token after session deletion; document whether request is rejected immediately or accepted until `exp`.
+- **Test CUT-03 (Storage API):** Probe private storage bucket with previously issued access token after session deletion; verify rejection or document lingering window.
+- **Test CUT-04 (Edge Functions):** Probe Edge Function utilizing `auth.getUser()`; verify immediate 403 rejection.
 
 ---
 
@@ -260,9 +321,51 @@ Native GoTrue does not enforce a challenge-level failure budget. Task 06H-E prov
     5. On confirmed success: update row `status = 'sent'`.
     6. On permanent provider error: update row `status = 'failed'` (releasing quota).
     7. On provider timeout / ambiguous outcome: row remains `status = 'reserved'` (fail-closed, prevents quota bypass or email flood).
-- **Anti-Enumeration Parity:**
-  - Public endpoints return identical status `200 OK` and identical JSON schema (`{ success: true, message: "If eligible, an email has been sent" }`) regardless of whether the email is unverified, provisional, password-complete, or non-existent.
-  - Constant-time processing / artificial delay equalization applied in the Edge Function to mitigate timing side-channels.
+- **Anti-Enumeration & Public Response Policy:**
+  - For `/auth-request-otp`: Public responses return identical status `200 OK` and identical schema (`{ success: true, message: "If eligible, an email has been sent" }`) regardless of whether the email is unverified, provisional, password-complete, or non-existent.
+  - For `/auth-verify-and-enroll` and `/auth-verify-and-recover`:
+    - Public responses return a **uniform HTTP 400 Bad Request** with generic error taxonomy (`{ error: "invalid_grant", message: "Verification failed. Please try again or request a new code." }`) for invalid code, expired challenge, or cooldown lockout. Returning distinct status codes (such as HTTP 423 Locked) is explicitly avoided on public endpoints to prevent attackers from inferring account cooldown or existence via status code sniffing.
+    - Constant-time processing: The Edge Function utilizes `crypto.timingSafeEqual()` for HMAC digest comparisons. Artificial delay equalization is to be measured and benchmarked in Task 06I-B2 (unmeasured constant-time claims are avoided).
+
+#### 4.3.1. Challenge State Machine & Concurrency Audit (11 Failure & Race Scenarios)
+*(Status: PROPOSED SPECIFICATION — NOT TESTED)*
+The two-phase challenge state machine (`private_auth.auth_challenges`) and operation ledger (`private_auth.admin_operation_ledger`) are audited against 11 critical edge cases:
+
+1. **Two Simultaneous Valid OTP Submissions:**
+   - Both requests query `auth_challenges` with the valid OTP.
+   - The first request executes `UPDATE private_auth.auth_challenges SET status = 'pending_provisioning' ... WHERE status = 'issued' RETURNING ...`. Row lock is acquired.
+   - The parallel request blocks. Upon unblocking, it finds `status` is already `'pending_provisioning'`.
+   - Result: Exactly 1 transaction succeeds; parallel request finds 0 rows and returns generic failure (`invalid_grant`).
+2. **Five Concurrent Incorrect OTP Submissions:**
+   - Five threads simultaneously submit wrong codes.
+   - Each attempt serializes under row lock, atomically incrementing `failed_attempts = failed_attempts + 1`.
+   - The 5th increment sets `cooldown_until = clock_timestamp() + INTERVAL '15 minutes'`.
+   - Result: All subsequent attempts within 15 minutes immediately fail closed under the cooldown check.
+3. **Expired Challenges:**
+   - Candidate verification enforces `expires_at >= clock_timestamp()`.
+   - Challenges older than 10 minutes return 0 rows and fail closed with generic verification failure.
+4. **Resend and Generation Races:**
+   - Requesting a new OTP via `auth-request-otp` atomically marks any existing unconsumed challenges for that email/purpose as `status = 'superseded'`.
+   - Result: The previous OTP cannot be redeemed after a resend is issued, matching the Task 06H-E `OLD_CODE_INVALIDATED` empirical invariant.
+5. **Password-Complete Accounts Attempting Re-Enrollment:**
+   - Pre-flight validation against `user_lifecycle_state` checks whether the account is `PASSWORD_COMPLETE_PROFILE_PENDING` or `SERVER_ELIGIBLE`.
+   - Result: Re-enrollment via signup OTP is rejected before challenge issuance or password update; returns generic message.
+6. **Duplicate Admin Creation:**
+   - Prevented by the `UNIQUE (challenge_id)` constraint in `private_auth.admin_operation_ledger`. At most one operation claim can ever be inserted per challenge.
+7. **Concurrent Retry Workers:**
+   - A client retrying during an in-flight operation triggers a second worker.
+   - The second worker queries `admin_operation_ledger`. Because `status = 'executing'` and `clock_timestamp() < lease_expires_at`, the worker returns `409 Conflict / retry_in_progress` without invoking GoTrue.
+8. **Partial Admin Success & Database Failure:**
+   - If GoTrue creates the user but the Edge Function database connection drops before updating the challenge to `consumed`:
+   - The challenge remains `pending_provisioning`. On worker lease expiry, the next reconciling worker queries GoTrue state (`admin.getUserById` / `admin.listUsers`), discovers the user was created, reconciles the ledger, and finalizes the challenge.
+9. **Crash After Admin Success but Before Finalization:**
+   - Reconciled identically via pre-flight state query when the 30-second lease expires. No duplicate creation or orphaned state.
+10. **Recovery Grant Replay:**
+    - A recovery grant transitions to `status = 'consumed'` with immutable `consumed_at`.
+    - Any subsequent presentation of that `provisioning_grant_id` is rejected. A single recovery grant can mutate a password exactly once.
+11. **Privileged Operation Attempted After Grant Expiry:**
+    - Each grant carries `grant_expires_at = verified_at + INTERVAL '5 minutes'`.
+    - If a client delays submitting the new password beyond 5 minutes, the grant expires and fails closed, requiring a fresh challenge.
 
 ---
 
@@ -378,7 +481,8 @@ flowchart TB
 
     subgraph Database_Layer["Authoritative Database (PostgreSQL 17)"]
         T_Chal["auth_challenges (Challenge Ledger & Locks)"]
-        T_Limits["email_send_rate_limits (Hourly Quotas)"]
+        T_Ledger["admin_operation_ledger (Durable Worker Leases)"]
+        T_Limits["email_send_log (Sliding-Window Quotas)"]
         T_Lifecycle["user_lifecycle_state (Server-Owned Status)"]
         Hook_Email["Send Email Hook (Fail-Closed Neutralizer)"]
         Hook_Token["Custom Access Token Hook (Native Block)"]
@@ -397,16 +501,20 @@ flowchart TB
     SDK -->|Persist Session| SS
 
     %% Edge Gateway Logic
-    F_ReqOTP -->|Check Quota & Record Challenge| T_Limits
+    F_ReqOTP -->|Check Quota & Reserve Send| T_Limits
     F_ReqOTP -->|Insert Hashed OTP| T_Chal
     F_ReqOTP -->|Dispatch Email| EmailClient
 
-    F_VerEnroll -->|Atomic Lock & Consume| T_Chal
-    F_VerEnroll -->|Create / Update User| AdminSDK
+    F_VerEnroll -->|Phase 1: Atomic Verify & Lock| T_Chal
+    F_VerEnroll -->|Phase 2: Claim Worker Lease| T_Ledger
+    F_VerEnroll -->|Phase 3: Outbound Admin Call| AdminSDK
+    F_VerEnroll -->|Phase 4: Finalize Challenge| T_Chal
     F_VerEnroll -->|Record Server Eligibility| T_Lifecycle
 
-    F_VerRec -->|Atomic Lock & Consume| T_Chal
-    F_VerRec -->|Update Password & Revoke Sessions| AdminSDK
+    F_VerRec -->|Phase 1: Atomic Verify & Lock| T_Chal
+    F_VerRec -->|Phase 2: Claim Worker Lease| T_Ledger
+    F_VerRec -->|Phase 3: Update Password| AdminSDK
+    F_VerRec -->|Phase 4: Finalize Challenge| T_Chal
 
     AdminSDK -->|Privileged Operations| GoTrue_Monolith
 
@@ -421,14 +529,14 @@ flowchart TB
 
 ### 8.2. End-to-End Sequence Workflows
 
-#### A. New User / Sign Up Workflow (with Two-Phase Reconciliation & Provisional UUID Reuse)
+#### A. New User / Sign Up Workflow (with Durable Operation Ledger & Pre-Flight Reconciliation)
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor User as User (Expo Mobile App)
     participant Edge as Edge Function (auth-request-otp / auth-verify-and-enroll)
-    participant DB as PostgreSQL (auth_challenges / send_log / lifecycle)
+    participant DB as PostgreSQL (auth_challenges / send_log / ledger / lifecycle)
     participant Email as Email Provider
     participant Admin as Supabase Auth (Admin API)
 
@@ -448,23 +556,31 @@ sequenceDiagram
     Edge->>DB: Phase 1: Atomic verify & row lock (check hash, attempts, cooldown, expiry)
     alt OTP Invalid, Expired, or 5th Failure Lockout
         DB-->>Edge: 0 rows returned (or cooldown updated)
-        Edge-->>User: 400 Bad Request / 423 Locked
+        Edge-->>User: 400 Bad Request { error: "invalid_grant", message: "Verification failed. Please try again or request a new code." }
     else OTP Successfully Verified
         DB-->>Edge: Phase 1 Success: status = 'pending_provisioning', grant_id generated (Commit DB lock)
-        Note over Edge: Phase 2: Idempotent Admin API Provisioning
+        Edge->>DB: Phase 2: Claim atomic worker lease in admin_operation_ledger (30s lease)
+        DB-->>Edge: Lease Claimed (worker_lease_id)
+        Note over Edge: Phase 3: Outbound Admin Call & Pre-Flight Verification
         alt Surviving Provisional UUID Exists
-            Edge->>Admin: admin.updateUserById(provisional_uuid, { password }) [Idempotency-Key: grant_id]
+            Edge->>Admin: admin.updateUserById(provisional_uuid, { password })
         else New Identity
-            Edge->>Admin: admin.createUser({ email, password, email_confirm: true }) [Idempotency-Key: grant_id]
+            Edge->>Admin: admin.createUser({ email, password, email_confirm: true })
         end
         alt Admin API Succeeded (200/201)
             Admin-->>Edge: User Provisioned (user_id: UUID)
-            Edge->>DB: Phase 3: UPDATE auth_challenges SET status = 'consumed', consumed_at = NOW(); INSERT lifecycle
+            Edge->>DB: Phase 4: UPDATE ledger status = 'completed'; UPDATE challenges status = 'consumed'; INSERT lifecycle
             Edge-->>User: 200 OK { success: true, user_id: UUID }
             Note over User: User proceeds to Cloud Profile Setup (Username req, Mobile opt)
-        else Admin API Timed Out / 5xx Error
-            Edge-->>User: 503 Service Unavailable { retryable: true, grant_id }
-            Note over User: Client retries with grant_id; server checks status and safely reconciles
+        else Admin API Timed Out / 5xx Network Ambiguity
+            Note over Edge: Ambiguous Timeout: Worker queries GoTrue state (admin.getUserById / listUsers)
+            alt Pre-flight confirms user was created
+                Edge->>DB: Reconcile ledger status = 'completed'; UPDATE challenges status = 'consumed'
+                Edge-->>User: 200 OK { success: true, user_id: UUID }
+            else User does not exist (Safe Retry Available)
+                Edge-->>User: 503 Service Unavailable { retryable: true, grant_id }
+                Note over User: Client retries with grant_id; server detects valid lease/grant and safely retries
+            end
         end
     end
 ```
@@ -496,14 +612,14 @@ sequenceDiagram
     end
 ```
 
-#### C. Forgot Password / Recovery Workflow (with Session Deletion & Sign-In Redirect)
+#### C. Forgot Password / Recovery Workflow (with Durable Ledger & Sign-In Redirect)
 
 ```mermaid
 sequenceDiagram
     autonumber
     actor User as User (Expo Mobile App)
     participant Edge as Edge Function (auth-request-otp / auth-verify-and-recover)
-    participant DB as PostgreSQL (auth_challenges / send_log)
+    participant DB as PostgreSQL (auth_challenges / send_log / ledger)
     participant Email as Email Provider
     participant Admin as Supabase Auth (Admin API)
 
@@ -523,22 +639,34 @@ sequenceDiagram
     Edge->>DB: Phase 1: Atomic verify & row lock WHERE purpose = 'recovery_password_reset'
     alt Verification Failed
         DB-->>Edge: 0 rows / Lockout updated
-        Edge-->>User: 400 Bad Request / 423 Locked
+        Edge-->>User: 400 Bad Request { error: "invalid_grant", message: "Verification failed. Please try again or request a new code." }
     else Atomic Verification Succeeded
         DB-->>Edge: Phase 1 Success: status = 'pending_provisioning', grant_id generated (Commit DB lock)
-        Edge->>Admin: admin.updateUserById(user_id, { password: new_password }) [Idempotency-Key: grant_id]
+        Edge->>DB: Phase 2: Claim atomic worker lease in admin_operation_ledger (30s lease)
+        Edge->>Admin: admin.updateUserById(user_id, { password: new_password })
         Note over Admin: GoTrue automatically deletes all active sessions for user_id from auth.sessions
-        Admin-->>Edge: 200 OK (Password Updated & Sessions Revoked)
-        Edge->>DB: Phase 3: UPDATE auth_challenges SET status = 'consumed', consumed_at = NOW()
-        Edge-->>User: 200 OK { success: true }
-        Note over User: Zero ambient session issued; redirect to Sign In with Email prefilled
-        User->>User: Explicit signInWithPassword using New Password
+        alt Admin API Succeeded (200 OK)
+            Admin-->>Edge: 200 OK (Password Updated & Sessions Revoked)
+            Edge->>DB: Phase 4: UPDATE ledger status = 'completed'; UPDATE challenges status = 'consumed'
+            Edge-->>User: 200 OK { success: true }
+            Note over User: Zero ambient session issued; redirect to Sign In with Email prefilled
+            User->>User: Explicit signInWithPassword using New Password
+        else Admin API Timed Out / Network Ambiguity
+            Note over Edge: Reconciling worker queries admin.getUserById(user_id); verifies updated_at / sessions
+            alt Password mutation confirmed
+                Edge->>DB: Reconcile ledger status = 'completed'; UPDATE challenges status = 'consumed'
+                Edge-->>User: 200 OK { success: true }
+            else Ambiguous / Unverifiable
+                Edge->>DB: Mark ledger status = 'failed_terminal'
+                Edge-->>User: 500 Internal Server Error { message: "Recovery coordination error. Please request a new code." }
+            end
+        end
     end
 ```
 
 ---
 
-### 8.3. Database Schema Proposal (`auth_challenges` & `email_send_log`)
+### 8.3. Database Schema Proposal (`auth_challenges`, `admin_operation_ledger` & `email_send_log`)
 
 ```sql
 -- PostgreSQL Migration (Draft Specification — Proposed Design, Not Yet Implemented)
@@ -553,6 +681,22 @@ CREATE TYPE private_auth.challenge_status AS ENUM (
     'issued',
     'pending_provisioning',
     'consumed',
+    'provisioning_failed_retryable',
+    'failed_terminal',
+    'superseded'
+);
+
+CREATE TYPE private_auth.operation_type AS ENUM (
+    'create_provisional_user',
+    'enroll_initial_password',
+    'recovery_password_reset'
+);
+
+CREATE TYPE private_auth.operation_status AS ENUM (
+    'claimed',
+    'executing',
+    'reconciling',
+    'completed',
     'failed_retryable',
     'failed_terminal'
 );
@@ -569,6 +713,7 @@ CREATE TABLE private_auth.auth_challenges (
     provisioning_grant_id UUID UNIQUE,
     issued_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
     verified_at TIMESTAMPTZ,
+    grant_expires_at TIMESTAMPTZ,
     expires_at TIMESTAMPTZ NOT NULL DEFAULT (clock_timestamp() + INTERVAL '10 minutes'),
     cooldown_until TIMESTAMPTZ,
     consumed_at TIMESTAMPTZ,
@@ -578,6 +723,26 @@ CREATE TABLE private_auth.auth_challenges (
 CREATE INDEX idx_auth_challenges_lookup
 ON private_auth.auth_challenges (challenge_id, normalized_email, purpose)
 WHERE status = 'issued' AND consumed_at IS NULL;
+
+CREATE TABLE private_auth.admin_operation_ledger (
+    operation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    challenge_id UUID UNIQUE NOT NULL REFERENCES private_auth.auth_challenges(challenge_id) ON DELETE CASCADE,
+    normalized_email TEXT NOT NULL,
+    target_user_id UUID,
+    operation_type private_auth.operation_type NOT NULL,
+    status private_auth.operation_status NOT NULL DEFAULT 'claimed',
+    worker_lease_id UUID NOT NULL,
+    lease_expires_at TIMESTAMPTZ NOT NULL DEFAULT (clock_timestamp() + INTERVAL '30 seconds'),
+    attempt_count INT NOT NULL DEFAULT 1,
+    idempotency_payload_hash TEXT NOT NULL,
+    error_log TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+    completed_at TIMESTAMPTZ
+);
+
+CREATE INDEX idx_admin_operation_ledger_active
+ON private_auth.admin_operation_ledger (challenge_id, status)
+WHERE status IN ('claimed', 'executing', 'reconciling');
 
 CREATE TABLE private_auth.email_send_log (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -598,8 +763,10 @@ ON private_auth.email_send_log (normalized_email, created_at DESC);
 The owner is requested to consider a future, bounded two-stage proof-of-concept (**Task 06I-B1 / 06I-B2**) on a **disposable managed Supabase project**.
 
 > [!IMPORTANT]
-> **Prerequisites & Cost Safeguard:**
-> Supabase Free tier enforces account quotas (typically a maximum of 2 active Free projects). Account project limits must be verified prior to provisioning. No disposable project may be created, funded, or configured without explicit owner authorization. Production project `bsfwzvgynwriswapxpsp` remains strictly out of scope.
+> **Prerequisites & Authority Principle:**
+> 1. **Account Quota Prerequisite:** Supabase accounts typically enforce a maximum of 2 active Free-tier projects. Active account limits must be verified prior to provisioning.
+> 2. **Explicit Authorization Gate:** No disposable project may be created, funded, or configured without explicit owner authorization. Production project `bsfwzvgynwriswapxpsp` remains strictly out of scope.
+> 3. **Provider Proof Failure Rule:** If Stage 06I-B1 fails the provider boundary, work stops immediately; it triggers an **owner decision** on whether to fund Option D1 research. It does **NOT** automatically authorize self-hosted deployment. Stage 06I-B2 is separately gated and cannot begin automatically.
 
 ### Stage 06I-B1: Managed Provider Feasibility & Bypass Spike
 **Goal:** Verify whether managed Supabase Cloud provider controls can completely neutralize native GoTrue attack routes without breaking password sign-in.
@@ -612,13 +779,14 @@ The owner is requested to consider a future, bounded two-stage proof-of-concept 
 3. **Hook Boundary Verification:**
    - Deploy Send Email Hook: verify it intercepts `POST /auth/v1/recover` and suppresses email delivery.
    - Deploy Custom Access Token Hook: verify it rejects direct `POST /auth/v1/verify` for any OTP or recovery token issuance.
-4. **Session & JWT Cutover Verification:**
+4. **Session & Multi-Consumer JWT Cutover Verification:**
    - Mint a test password session.
    - Execute Admin API password reset (`admin.updateUserById`).
    - Probe `GET /auth/v1/user` and `PUT /auth/v1/user` -> Must return `403/session_not_found`.
    - Probe Data API (PostgREST) with the old JWT -> Document whether PostgREST immediately rejects the revoked session or accepts it until `exp`.
+   - Probe Storage API with the old JWT -> Document whether Storage immediately rejects or accepts until `exp`.
 5. **Strict STOP Condition:**
-   - If `EXTERNAL_EMAIL_MAGIC_LINK_DISABLED` cannot be applied, if direct `/otp` remains open, or if Send Email Hook / Custom Access Token Hook fails to block recovery token issuance -> **STOP IMMEDIATELY**. Report failure and fall back to Option D1 (Self-Hosted Exclusive Gateway).
+   - If `EXTERNAL_EMAIL_MAGIC_LINK_DISABLED` cannot be applied, if direct `/otp` remains open, or if Send Email Hook / Custom Access Token Hook fails to block recovery token issuance -> **STOP IMMEDIATELY**. Report failure to the owner for an architecture decision on Option D1 (Self-Hosted Exclusive Gateway).
 
 ---
 
@@ -626,14 +794,14 @@ The owner is requested to consider a future, bounded two-stage proof-of-concept 
 **Goal:** Implement and test the proposed PostgreSQL challenge ledger, rate-limiting, and two-phase Admin API reconciliation.
 *(Triggered ONLY after Stage 06I-B1 achieves verified pass and owner issues separate written approval).*
 1. **Deploy Schema & Functions:**
-   - Deploy `private_auth.auth_challenges` and `private_auth.email_send_log`.
+   - Deploy `private_auth.auth_challenges`, `private_auth.admin_operation_ledger`, and `private_auth.email_send_log`.
    - Deploy Edge Functions: `auth-request-otp`, `auth-verify-and-enroll`, `auth-verify-and-recover`.
 2. **Automated Negative & Concurrency Suite:**
-   - Run concurrency harness with 10 simultaneous parallel verification requests using the exact same OTP -> Expect exactly 1 successful winner (`pending_provisioning`), 9 rejections (`already_consumed`), and zero duplicate grants.
+   - Run concurrency harness with 10 simultaneous parallel verification requests using the exact same OTP -> Expect exactly 1 successful winner (`pending_provisioning`), 9 rejections (`invalid_grant`), and zero duplicate grants.
    - Run 5 consecutive invalid OTP submissions -> Expect challenge transition to locked state (`cooldown_until = clock_timestamp() + INTERVAL '15 minutes'`).
    - Run rapid resend flood -> Verify 60-second minimum interval rejection and 5-send hourly sliding-window rejection.
    - Run cross-purpose verification (recovery code against signup endpoint) -> Expect rejection.
-   - Simulate Edge Function network timeout during GoTrue Admin API call -> Verify idempotent client retry using `provisioning_grant_id` successfully reconciles without re-verifying OTP or burning quota.
+   - Simulate Edge Function network timeout during GoTrue Admin API call -> Verify worker lease coordination in `admin_operation_ledger` and pre-flight state reconciliation successfully recover without re-verifying OTP or burning quota.
 3. **UUID Lifecycle Assertion:**
    - Test provisional UUID reuse for interrupted signups.
    - Test rejection of initial enrollment against an already password-complete UUID.
@@ -644,7 +812,7 @@ The owner is requested to consider a future, bounded two-stage proof-of-concept 
 
 | Deliverable | Location | Status |
 |---|---|---|
-| Canonical Research Document | `.ai/tasks/auth/local-20261120-task06i-a-strict-auth-architecture.md` | **COMPLETE (Revision R1)** |
+| Canonical Research Document | `.ai/tasks/auth/local-20261120-task06i-a-strict-auth-architecture.md` | **COMPLETE (Revision R2)** |
 | Active Continuity Pointer | `.ai/current.md` | **UPDATED** |
 | Research Worktree Branch | `docs/task06i-a-strict-auth-architecture` | **READY FOR REVIEW** |
 | Final Architecture Verdict | **ARCHITECTURE PROPOSED — OWNER DECISION REQUIRED** | **PRODUCTION AUTH NO-GO** |
