@@ -943,13 +943,13 @@ BEGIN
               -- Case 3: Superseded challenge
               (c.status = 'superseded')
               OR
-              -- Case 4: Terminal failure challenge
-              (c.status = 'failed_terminal' AND (o.status IS NULL OR o.status = 'failed_terminal'))
+              -- Case 4: Terminal failure challenge (reconciled by operator as completed or failed_terminal, or abandoned) (PRRT_kwDOVtCmZc659s0e)
+              (c.status = 'failed_terminal' AND (o.status IN ('completed', 'failed_terminal') OR o.status IS NULL))
               OR
-              -- Case 5: Verified challenge abandoned before or after claim with expired grant (PRRT_kwDOVtCmZc659g81)
+              -- Case 5: Verified challenge abandoned before or after claim with expired grant (PRRT_kwDOVtCmZc659g81, PRRT_kwDOVtCmZc659s0e)
               (c.status IN ('pending_provisioning', 'provisioning_failed_retryable')
                AND c.grant_expires_at < v_cutoff
-               AND (o.status IS NULL OR o.status = 'failed_terminal'))
+               AND (o.status IN ('completed', 'failed_terminal') OR o.status IS NULL))
           )
           -- CRITICAL EXCLUSION: Never touch any challenge whose operation is active or quarantined!
           AND (o.status IS NULL OR o.status NOT IN ('claimed', 'executing', 'reconciling', 'quarantined_indeterminate'))
@@ -1762,11 +1762,11 @@ BEGIN
               OR
               (c.status = 'superseded')
               OR
-              (c.status = 'failed_terminal' AND (o.status IS NULL OR o.status = 'failed_terminal'))
+              (c.status = 'failed_terminal' AND (o.status IN ('completed', 'failed_terminal') OR o.status IS NULL))
               OR
               (c.status IN ('pending_provisioning', 'provisioning_failed_retryable')
                AND c.grant_expires_at < v_cutoff
-               AND (o.status IS NULL OR o.status = 'failed_terminal'))
+               AND (o.status IN ('completed', 'failed_terminal') OR o.status IS NULL))
           )
           AND (o.status IS NULL OR o.status NOT IN ('claimed', 'executing', 'reconciling', 'quarantined_indeterminate'))
         FOR UPDATE OF c SKIP LOCKED
@@ -2052,6 +2052,6 @@ The owner is requested to consider a future, bounded two-stage proof-of-concept 
   - **P1 (Decouple Durable Identity Ledger from Short-Lived Challenges):** Resolved `im-tio` P1 finding on PR #34. In earlier drafts, `admin_operation_ledger.challenge_id` had `REFERENCES auth_challenges(challenge_id) ON DELETE CASCADE`. This violated core security invariants because routine cleanup of ephemeral 10-minute OTP challenges ($> 24$h) would silently cascade-delete `admin_operation_ledger` entries, erasing completed initial-enrollment uniqueness guards (`uq_admin_ledger_single_enrollment_*`), active worker fences, indeterminate quarantine locks (`quarantined_indeterminate`), and audit evidence.
   - **Decoupled Architecture (Option B):** Decoupled `admin_operation_ledger` from cascading foreign keys. `challenge_id` and `target_user_id` are stored as durable, immutable provenance and identity keys. Referential provenance is verified at claim time within `private_auth.claim_admin_operation` (requiring `auth_challenges.status = 'pending_provisioning'` and unexpired grant).
   - **User Deletion Cascade Safety:** Configured `auth_challenges.user_id` with `ON DELETE SET NULL`, preventing deletion of provisional or abandoned users in `auth.users` from cascading into challenges or the operations ledger.
-  - **Authoritative Transactional Cleanup Procedure:** Designed and specified `private_auth.cleanup_expired_challenges(p_retention_interval)` with a 10-scenario policy matrix, locking via `FOR UPDATE SKIP LOCKED`, and strict safeguards preventing deletion of challenges tied to active, reconciling, or quarantined operations. Corrected cleanup predicates to purge post-verify abandoned/terminal challenges (`failed_terminal`, `pending_provisioning` with expired grants $> 24$h), resolving Cursor Bugbot Medium finding (`PRRT_kwDOVtCmZc659g81`) and guaranteeing full data minimization.
+  - **Authoritative Transactional Cleanup Procedure:** Designed and specified `private_auth.cleanup_expired_challenges(p_retention_interval)` with a 10-scenario policy matrix, locking via `FOR UPDATE SKIP LOCKED`, and strict safeguards preventing deletion of challenges tied to active, reconciling, or quarantined operations. Corrected cleanup predicates to purge post-verify abandoned/terminal challenges (`failed_terminal`, `pending_provisioning` with expired grants $> 24$h) across both operator-reconciled states (`completed` and `failed_terminal`), resolving Cursor Bugbot Medium findings (`PRRT_kwDOVtCmZc659g81` and `PRRT_kwDOVtCmZc659s0e`) and guaranteeing full data minimization.
   - **Cleanup & Retention Regression Suite:** Added Tests Cleanup-A through Cleanup-H to Stage 06I-B2.
   - **Hook Execution Privileges:** Documented requirement for `GRANT USAGE ON SCHEMA private_auth TO supabase_auth_admin` and `GRANT EXECUTE ON FUNCTION private_auth.custom_access_token_hook TO supabase_auth_admin` for Stage 06I-B1.
