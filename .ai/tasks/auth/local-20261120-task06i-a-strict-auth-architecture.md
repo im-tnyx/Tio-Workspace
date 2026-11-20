@@ -2,9 +2,9 @@
 
 | Field | Value |
 |---|---|
-| **Task ID** | Task 06I-A (Revision R9 — Durable Identity Ledger Retention & Cascade-Delete Safety) |
+| **Task ID** | Task 06I-A (Revision R10 — Strict Admin Operation Identity, Purpose & Grant Binding) |
 | **Status** | **ARCHITECTURE PROPOSED — OWNER DECISION REQUIRED** |
-| **Objective** | Resolve independent `im-tio` P1 review finding (`PRRT_kwDOVtCmZc658mO8`): decouple the durable identity-operation ledger (`admin_operation_ledger`) from short-lived OTP challenge deletion (`auth_challenges`) by removing `ON DELETE CASCADE`; establish distinct lifecycles for ephemeral challenges vs durable identity operations (initial-enrollment uniqueness, active recovery serialization, and quarantined indeterminate fencing); specify safe transactional cleanup procedures and provisional user deletion safety; add Cleanup Regression Tests A–H for Stage 06I-B2; document `supabase_auth_admin` permission prerequisites for the Custom Access Token Hook |
+| **Objective** | Resolve independent `im-tio` P1 review finding (`PRRT_kwDOVtCmZc66FEQo`): strictly bind the claimed Admin password mutation to the verified challenge's locked server identity (`target_user_id`), enforce explicit purpose-to-operation mapping (`signup_initial_password` -> `enroll_initial_password`, `recovery_password_reset` -> `recovery_password_reset`), validate provisioning grants under Tier 1 identity advisory and Tier 3 challenge row locks, reject null/mismatched target UUIDs and purpose crossovers at the authoritative database boundary, define explicit new-user provisional identity binding, and add Claim Authorization Regression Tests Claim-A through Claim-L for Stage 06I-B2 |
 | **Execution Mode** | STRICTLY DOCUMENTATION-ONLY, OFFLINE SECURITY DESIGN CORRECTIONS (No app code, migrations, or hosted mutations) |
 | **Authorization** | Owner instruction: follow `AGENTS.md`, `.ai/current.md`, Supabase skill; production project `bsfwzvgynwriswapxpsp` strictly READ-ONLY |
 | **Implementation Owner** | Security Architecture & Research Agent |
@@ -41,7 +41,7 @@ To maintain absolute evidence integrity, all claims in this document adhere to t
   - All OTP verification is consolidated into `private_auth.verify_otp_challenge` as the **sole authoritative database entry point** across both signup and recovery flows. Governed by the **Global Strict Lock Hierarchy** (Tier 1 Identity Advisory Lock -> Tier 2 Cooldown Row Lock -> Tier 3 Challenge Row Lock), this unified transaction handles valid redemptions, invalid attempts, active lockout checks (`cooldown_active`), and post-cooldown budget rollovers under a single row lock. Standalone failure functions (`record_failed_attempt`) and raw direct UPSERTs are completely retired to eliminate valid-vs-fifth-wrong race conditions.
   - OTP rate-limiting and challenge issuance (`private_auth.reserve_email_send`) serialize under the same Tier 2 cooldown row lock, strictly enforcing post-commit outbound email dispatch.
   - Supabase Auth is utilized strictly as a **Password Identity Provider** (`signInWithPassword`) and Admin API target (`admin.createUser`, `admin.updateUserById`).
-  - *GoTrue Idempotency, Identity Quarantine & Durable Ledger Retention (R9):* GoTrue Admin API does NOT implement an `Idempotency-Key` header. Safe execution requires a server-owned, durable operation ledger (`admin_operation_ledger`) in PostgreSQL. To guarantee that initial-enrollment uniqueness and indeterminate operation quarantines survive short-lived OTP challenge cleanup, `admin_operation_ledger` is completely decoupled from cascading deletes (removing `ON DELETE CASCADE`). Routine purging of ephemeral `auth_challenges` rows leaves permanent enrollment guards and quarantine locks 100% intact. Initial enrollment is permanently serialized per identity (`target_user_id`, `normalized_email`), while password recovery is repeatable over the lifecycle. Identity claiming is encapsulated in `private_auth.claim_admin_operation` with explicit `EXCEPTION WHEN unique_violation` diagnostics for partial unique indexes to guarantee structured HTTP 409 conflict handling. If an Admin API password update times out or encounters network ambiguity, the operation enters an explicit **quarantined indeterminate state** (`quarantined_indeterminate`), retaining the identity lock at the database level to prevent racing external GoTrue mutations.
+  - *GoTrue Idempotency, Identity Quarantine & Durable Ledger Retention (R9):* GoTrue Admin API does NOT implement an `Idempotency-Key` header. Safe execution requires a server-owned, durable operation ledger (`admin_operation_ledger`) in PostgreSQL. To guarantee that initial-enrollment uniqueness and indeterminate operation quarantines survive short-lived OTP challenge cleanup, `admin_operation_ledger` is completely decoupled from cascading deletes (removing `ON DELETE CASCADE`). Routine purging of ephemeral `auth_challenges` rows leaves permanent enrollment guards and quarantine locks 100% intact. Initial enrollment is permanently serialized per identity (`target_user_id`, `normalized_email`), while password recovery is repeatable over the lifecycle. Identity claiming is encapsulated in `private_auth.claim_admin_operation` under Tier 1 Identity Advisory Lock and Tier 3 Challenge Row Lock, enforcing strict server-side validation: (1) exact provisioning grant verification (`provisioning_grant_id`, unexpired `grant_expires_at`, status `pending_provisioning`), (2) strict purpose-to-operation mapping (`signup_initial_password` -> `enroll_initial_password`, `recovery_password_reset` -> `recovery_password_reset`), (3) non-nullable target UUID binding against server-owned records (`v_challenge.user_id`) to prevent cross-user mutations, (4) explicit provisional identity creation and atomic binding for new signups, and (5) structured HTTP 409 conflict diagnostics (`EXCEPTION WHEN unique_violation`). If an Admin API password update times out or encounters network ambiguity, the operation enters an explicit **quarantined indeterminate state** (`quarantined_indeterminate`), retaining the identity lock at the database level to prevent racing external GoTrue mutations.
   - *Multi-Consumer JWT Cutover Nuance:* Deleting sessions in `auth.sessions` immediately invalidates Auth `/user` (403 on local GoTrue; hosted NOT VERIFIED), but stateless non-Auth JWT consumers (PostgREST Data API, Storage) will accept signed JWTs until their `exp` timestamp. Cutover must account for this lingering window or rotate signing secrets.
 - **Contingency Fallback: Option D1 (Self-Hosted Supabase GoTrue Behind an Exclusive Reverse Proxy / API Gateway)**.
   - *Status:* **PROPOSED FALLBACK (NOT TESTED)**.
@@ -459,11 +459,57 @@ To resolve cross-service coordination without impossible distributed transaction
      *User Deletion Chain Safety (`auth.users → auth_challenges → admin_operation_ledger`):*
      In `auth_challenges`, `user_id` foreign key is decoupled (`ON DELETE SET NULL`), and `admin_operation_ledger` maintains zero cascading dependency from `auth.users`. Deleting a provisional user in `auth.users` CANNOT silently delete active or quarantined records in `admin_operation_ledger`. Account deletion is an authorized administrative procedure, strictly separated from routine challenge cleanup.
 
-   - **Atomic Claim Helper with Claim-Time Referential Validation (`claim_admin_operation` — R9):**
-     Claiming is encapsulated in a dedicated stored function that transactionally validates challenge status and grant validity, handles all partial unique index conflicts, and maps errors cleanly without crashing:
+   - **Strict Claim-Time Authorization, Purpose Mapping & UUID Binding (`claim_admin_operation` — R10 — `PRRT_kwDOVtCmZc66FEQo`):**
+     A critical vulnerability in earlier iterations was reliance on caller-supplied parameters and an unlocked `IF NOT EXISTS` check. Specifically, `claim_admin_operation` validated that a challenge was in `pending_provisioning` and unexpired, but it accepted `p_target_user_id` and `p_operation_type` directly from the caller without verifying them against `auth_challenges.user_id` or `auth_challenges.purpose`. This created an authorization boundary failure where a compromised, misconfigured, or buggy Edge Function could present a verified signup challenge to authorize a recovery password reset on an unrelated user UUID!
+
+     To eliminate this vulnerability and establish an unbreakable database-enforced authorization boundary, `claim_admin_operation` is redesigned around five authoritative principles:
+
+     1. **Authoritative Claim-Time Authorization Under Global Lock Hierarchy (Stage 1):**
+        - The claim transaction first acquires the **Tier 1 Identity Advisory Lock** (`PERFORM pg_advisory_xact_lock(hashtext('auth_identity:' || p_normalized_email));`), serializing all operations for that identity.
+        - The transaction then locks the referenced challenge row using **Tier 3 Challenge Row Lock** (`SELECT * FROM private_auth.auth_challenges WHERE challenge_id = p_challenge_id FOR UPDATE;`).
+        - All authorization attributes (`normalized_email`, `status`, `purpose`, `user_id`, `provisioning_grant_id`, `grant_expires_at`) are inspected directly from the locked database record, never trusted from client or Edge Function inputs.
+        - An unlocked, non-transactional `IF NOT EXISTS` check followed by a separate insert is **STRICTLY PROHIBITED**.
+
+     2. **Enforce Purpose-to-Operation Mapping (Stage 2):**
+        The authorized mapping from challenge purpose to administrative mutation is hardcoded and validated inside PostgreSQL:
+
+        | Verified Challenge Purpose | Authoritatively Mapped Operation Type | Target Identity Requirement |
+        |---|---|---|
+        | `signup_initial_password` | `enroll_initial_password` | Verified provisional identity |
+        | `recovery_password_reset` | `recovery_password_reset` | Verified password-complete identity |
+
+        - A signup challenge can **NEVER** authorize a recovery password reset.
+        - A recovery challenge can **NEVER** authorize an initial password enrollment.
+        - If the caller supplies `p_operation_type` and it does not match the mapped `v_expected_op`, the transaction immediately aborts with conflict code `'operation_purpose_mismatch'`.
+        - Unknown or missing purposes fail closed.
+
+     3. **Exact Target UUID Binding & Provisional Identity Handling (Stage 3):**
+        - **Non-Nullable Target Identity:** Password mutations must target an explicit, non-null UUID. Null target UUIDs fail closed (`'target_user_id_required'`).
+        - **Recovery Operations:** A recovery challenge must target an existing, registered account. `v_challenge.user_id` must be NOT NULL, and the caller's `p_target_user_id` must exactly match `v_challenge.user_id`. Any mismatch fails closed with `'user_id_mismatch'`. A challenge verified for User A can never mutate User B.
+        - **Signup Operations:**
+          - *Returning Provisional User:* If `v_challenge.user_id` is already populated (from an interrupted signup), `p_target_user_id` must match `v_challenge.user_id`.
+          - *Genuinely New Signup:* If `v_challenge.user_id` is NULL at verification time, the server Edge Function creates the provisional identity via Supabase Auth Admin API (`admin.createUser`) and passes the minted provisional UUID as `p_target_user_id`. Under the Tier 1 Identity Advisory Lock, `claim_admin_operation` binds `v_bound_user_id := p_target_user_id` to the challenge record (`UPDATE auth_challenges SET user_id = v_bound_user_id`) before recording the operation in `admin_operation_ledger`.
+          - *Enrollment Protection:* Initial enrollment is strictly once per identity (`uq_admin_ledger_single_enrollment_user`, indexing `completed`). An already enrolled or password-complete identity attempting to enroll again is rejected with `'enrollment_conflict_identity_locked'`.
+
+     4. **Bind the Provisioning Grant (Stage 4):**
+        - The caller must supply `p_provisioning_grant_id UUID`.
+        - The function verifies:
+          - `p_provisioning_grant_id = v_challenge.provisioning_grant_id` (mismatch fails closed with `'grant_mismatch'`).
+          - `v_challenge.grant_expires_at > clock_timestamp()` (expired grant fails closed with `'grant_expired'`).
+          - `v_challenge.status = 'pending_provisioning'` (unverified fails with `'challenge_not_verified'`; already consumed fails with `'challenge_already_consumed'`).
+        - Client-supplied grant IDs carry zero intrinsic trust; they must match the server-generated grant recorded during successful in-database verification.
+
+     5. **Race Safety, Concurrency & Ledger Integrity (Stage 5):**
+        - Concurrent claims for the same challenge serialize behind the Tier 3 row lock; exactly one succeeds and the second observes `challenge_already_claimed`.
+        - Competing recovery attempts against an identity in active quarantine (`quarantined_indeterminate`) are rejected by partial unique index `uq_admin_ledger_active_recovery_user` with `'recovery_conflict_identity_locked'`.
+        - Database locks are held strictly during in-database validation and ledger insertion; **zero database locks are held during outbound GoTrue Admin API HTTP calls**.
+
+     6. **Authoritative Stored Procedure (`claim_admin_operation` — Stage 6):**
      ```sql
+     -- Atomic Claim Helper with Strict Identity, Purpose & Grant Binding (R7, R9 & R10 — PRRT_kwDOVtCmZc66FEQo)
      CREATE OR REPLACE FUNCTION private_auth.claim_admin_operation(
          p_challenge_id UUID,
+         p_provisioning_grant_id UUID,
          p_normalized_email TEXT,
          p_target_user_id UUID,
          p_operation_type private_auth.operation_type,
@@ -473,55 +519,142 @@ To resolve cross-service coordination without impossible distributed transaction
          claimed BOOLEAN,
          operation_id UUID,
          fencing_token BIGINT,
+         target_user_id UUID,
+         operation_type private_auth.operation_type,
          conflict_code TEXT
      ) AS $$
      DECLARE
          v_op_id UUID;
          v_token BIGINT;
          v_err_constraint TEXT;
+         v_challenge RECORD;
+         v_expected_op private_auth.operation_type;
+         v_bound_user_id UUID;
+         v_now TIMESTAMPTZ := clock_timestamp();
      BEGIN
-         -- Claim-Time Referential Provenance Validation (R9)
-         IF NOT EXISTS (
-             SELECT 1 FROM private_auth.auth_challenges
-             WHERE challenge_id = p_challenge_id
-               AND normalized_email = p_normalized_email
-               AND status = 'pending_provisioning'
-               AND grant_expires_at > clock_timestamp()
-         ) THEN
-             RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, 'invalid_or_expired_grant'::TEXT;
+         -- Tier 1: Identity Advisory Transaction Lock (Global Strict Lock Hierarchy)
+         PERFORM pg_advisory_xact_lock(hashtext('auth_identity:' || p_normalized_email));
+
+         -- Tier 3: Lock referenced challenge row for authoritative validation
+         SELECT * INTO v_challenge
+         FROM private_auth.auth_challenges
+         WHERE challenge_id = p_challenge_id
+         FOR UPDATE;
+
+         IF NOT FOUND THEN
+             RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'challenge_not_found'::TEXT;
              RETURN;
          END IF;
 
+         -- 1. Validate Normalized Email
+         IF v_challenge.normalized_email != p_normalized_email THEN
+             RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'email_mismatch'::TEXT;
+             RETURN;
+         END IF;
+
+         -- 2. Validate Challenge Status
+         IF v_challenge.status != 'pending_provisioning' THEN
+             IF v_challenge.status = 'consumed' THEN
+                 RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'challenge_already_consumed'::TEXT;
+             ELSIF v_challenge.status = 'superseded' THEN
+                 RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'challenge_superseded'::TEXT;
+             ELSIF v_challenge.status = 'issued' THEN
+                 RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'challenge_not_verified'::TEXT;
+             ELSE
+                 RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'invalid_challenge_status'::TEXT;
+             END IF;
+             RETURN;
+         END IF;
+
+         -- 3. Validate Provisioning Grant ID and Expiry (Stage 4)
+         IF p_provisioning_grant_id IS NULL OR v_challenge.provisioning_grant_id IS NULL OR v_challenge.provisioning_grant_id != p_provisioning_grant_id THEN
+             RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'grant_mismatch'::TEXT;
+             RETURN;
+         END IF;
+
+         IF v_challenge.grant_expires_at IS NULL OR v_challenge.grant_expires_at <= v_now THEN
+             RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'grant_expired'::TEXT;
+             RETURN;
+         END IF;
+
+         -- 4. Derive and Enforce Purpose-to-Operation Mapping (Stage 2)
+         IF v_challenge.purpose = 'signup_initial_password' THEN
+             v_expected_op := 'enroll_initial_password'::private_auth.operation_type;
+         ELSIF v_challenge.purpose = 'recovery_password_reset' THEN
+             v_expected_op := 'recovery_password_reset'::private_auth.operation_type;
+         ELSE
+             RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'unsupported_challenge_purpose'::TEXT;
+             RETURN;
+         END IF;
+
+         IF p_operation_type IS NOT NULL AND p_operation_type != v_expected_op THEN
+             RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'operation_purpose_mismatch'::TEXT;
+             RETURN;
+         END IF;
+
+         -- 5. Strict Target Identity Binding (Stage 3)
+         IF p_target_user_id IS NULL AND v_challenge.user_id IS NULL THEN
+             RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'target_user_id_required'::TEXT;
+             RETURN;
+         END IF;
+
+         IF v_challenge.purpose = 'recovery_password_reset' THEN
+             IF v_challenge.user_id IS NULL THEN
+                 RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'recovery_target_user_missing'::TEXT;
+                 RETURN;
+             END IF;
+             IF p_target_user_id IS NOT NULL AND p_target_user_id != v_challenge.user_id THEN
+                 RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'user_id_mismatch'::TEXT;
+                 RETURN;
+             END IF;
+             v_bound_user_id := v_challenge.user_id;
+
+         ELSIF v_challenge.purpose = 'signup_initial_password' THEN
+             IF v_challenge.user_id IS NOT NULL THEN
+                 IF p_target_user_id IS NOT NULL AND p_target_user_id != v_challenge.user_id THEN
+                     RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'user_id_mismatch'::TEXT;
+                     RETURN;
+                 END IF;
+                 v_bound_user_id := v_challenge.user_id;
+             ELSE
+                 v_bound_user_id := p_target_user_id;
+                 UPDATE private_auth.auth_challenges
+                 SET user_id = v_bound_user_id
+                 WHERE id = v_challenge.id;
+             END IF;
+         END IF;
+
+         -- 6. Insert Durable Operation Record with Fencing & Unique Index Handling (Stage 5 & 6)
          BEGIN
              INSERT INTO private_auth.admin_operation_ledger (
                  challenge_id, normalized_email, target_user_id, operation_type,
                  status, worker_lease_id, lease_expires_at, fencing_token, idempotency_payload_hash
              ) VALUES (
-                 p_challenge_id, p_normalized_email, p_target_user_id, p_operation_type,
-                 'executing', p_worker_lease_id, clock_timestamp() + INTERVAL '30 seconds', 1, p_idempotency_payload_hash
+                 p_challenge_id, p_normalized_email, v_bound_user_id, v_expected_op,
+                 'executing', p_worker_lease_id, v_now + INTERVAL '30 seconds', 1, p_idempotency_payload_hash
              )
              RETURNING admin_operation_ledger.operation_id, admin_operation_ledger.fencing_token
              INTO v_op_id, v_token;
 
-             RETURN QUERY SELECT TRUE, v_op_id, v_token, NULL::TEXT;
+             RETURN QUERY SELECT TRUE, v_op_id, v_token, v_bound_user_id, v_expected_op, NULL::TEXT;
              RETURN;
          EXCEPTION WHEN unique_violation THEN
              GET STACKED DIAGNOSTICS v_err_constraint = CONSTRAINT_NAME;
              IF v_err_constraint = 'admin_operation_ledger_challenge_id_key' THEN
-                 RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, 'challenge_already_claimed'::TEXT;
+                 RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'challenge_already_claimed'::TEXT;
              ELSIF v_err_constraint IN ('uq_admin_ledger_single_enrollment_user', 'uq_admin_ledger_single_enrollment_email') THEN
-                 RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, 'enrollment_conflict_identity_locked'::TEXT;
+                 RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'enrollment_conflict_identity_locked'::TEXT;
              ELSIF v_err_constraint IN ('uq_admin_ledger_active_recovery_user', 'uq_admin_ledger_active_recovery_email') THEN
-                 RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, 'recovery_conflict_identity_locked'::TEXT;
+                 RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'recovery_conflict_identity_locked'::TEXT;
              ELSE
-                 RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, 'identity_conflict_generic'::TEXT;
+                 RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'identity_conflict_generic'::TEXT;
              END IF;
              RETURN;
          END;
      END;
      $$ LANGUAGE plpgsql SECURITY DEFINER;
      ```
-     The Edge Function inspects `claimed`: if `TRUE`, it proceeds to the outbound Admin API call with `fencing_token`; if `FALSE`, it maps the structured `conflict_code` directly to `HTTP 409 Conflict` (`{ error: "conflict", code: conflict_code }`).
+     The Edge Function inspects `claimed`: if `TRUE`, it proceeds to the outbound Admin API call with authoritative `target_user_id`, `operation_type`, and `fencing_token`; if `FALSE`, it maps the structured `conflict_code` directly to `HTTP 409 Conflict` (`{ error: "conflict", code: conflict_code }`).
    - **Expired-Lease Takeover & Fencing Token Protocol (P2-7):**
      If a worker crashes or encounters an event-loop pause, `INSERT ... ON CONFLICT DO NOTHING` affects 0 rows. A recovery worker cannot insert, but safely claims ownership using an atomic conditional update that increments a monotonic `fencing_token`:
      ```sql
@@ -1157,8 +1290,8 @@ sequenceDiagram
         Edge-->>User: 400 Bad Request { error: "invalid_grant", message: "Verification failed. Please try again or request a new code." }
     else OTP Valid & Not Locked
         DB-->>Edge: Phase 1 Success: status = 'pending_provisioning', grant_id generated
-        Edge->>DB: Phase 2: claim_admin_operation(challenge_id, email, user_id, op_type, lease_id, hash)
-        Note over DB: Handles partial unique indexes via EXCEPTION WHEN unique_violation (R7)
+        Edge->>DB: Phase 2: claim_admin_operation(challenge_id, grant_id, email, provisional_uuid, 'enroll_initial_password', lease_id, hash)
+        Note over DB: Tier 1 Advisory + Tier 3 Challenge Lock: validates grant, purpose mapping, exact UUID binding & unique enrollment (R10)
         alt Competing Active or Quarantined Operation Exists
             DB-->>Edge: Conflict / Identity Locked (conflict_code)
             Edge-->>User: 409 Conflict { error: "conflict", code: conflict_code }
@@ -1256,8 +1389,8 @@ sequenceDiagram
         Edge-->>User: 400 Bad Request { error: "invalid_grant", message: "Verification failed. Please try again or request a new code." }
     else Atomic Verification Succeeded
         DB-->>Edge: Phase 1 Success: status = 'pending_provisioning', grant_id generated
-        Edge->>DB: Phase 2: claim_admin_operation(challenge_id, email, user_id, op_type, lease_id, hash)
-        Note over DB: Handles partial unique indexes via EXCEPTION WHEN unique_violation (R7)
+        Edge->>DB: Phase 2: claim_admin_operation(challenge_id, grant_id, email, user_id, 'recovery_password_reset', lease_id, hash)
+        Note over DB: Tier 1 Advisory + Tier 3 Challenge Lock: validates grant, purpose mapping & exact registered user_id (R10)
         alt Competing Active or Quarantined Recovery Exists
             DB-->>Edge: Conflict / Identity Quarantined (conflict_code)
             Edge-->>User: 409 Conflict { error: "conflict", code: conflict_code }
@@ -1671,9 +1804,10 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- Atomic Claim Helper with Referential Validation & Conflict Diagnostics (R7 & R9)
+-- Atomic Claim Helper with Strict Identity, Purpose & Grant Binding (R7, R9 & R10 — PRRT_kwDOVtCmZc66FEQo)
 CREATE OR REPLACE FUNCTION private_auth.claim_admin_operation(
     p_challenge_id UUID,
+    p_provisioning_grant_id UUID,
     p_normalized_email TEXT,
     p_target_user_id UUID,
     p_operation_type private_auth.operation_type,
@@ -1683,48 +1817,135 @@ CREATE OR REPLACE FUNCTION private_auth.claim_admin_operation(
     claimed BOOLEAN,
     operation_id UUID,
     fencing_token BIGINT,
+    target_user_id UUID,
+    operation_type private_auth.operation_type,
     conflict_code TEXT
 ) AS $$
 DECLARE
     v_op_id UUID;
     v_token BIGINT;
     v_err_constraint TEXT;
+    v_challenge RECORD;
+    v_expected_op private_auth.operation_type;
+    v_bound_user_id UUID;
+    v_now TIMESTAMPTZ := clock_timestamp();
 BEGIN
-    -- Claim-Time Referential Provenance Validation (R9)
-    IF NOT EXISTS (
-        SELECT 1 FROM private_auth.auth_challenges
-        WHERE challenge_id = p_challenge_id
-          AND normalized_email = p_normalized_email
-          AND status = 'pending_provisioning'
-          AND grant_expires_at > clock_timestamp()
-    ) THEN
-        RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, 'invalid_or_expired_grant'::TEXT;
+    -- Tier 1: Identity Advisory Transaction Lock (Global Strict Lock Hierarchy)
+    PERFORM pg_advisory_xact_lock(hashtext('auth_identity:' || p_normalized_email));
+
+    -- Tier 3: Lock referenced challenge row for authoritative validation
+    SELECT * INTO v_challenge
+    FROM private_auth.auth_challenges
+    WHERE challenge_id = p_challenge_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'challenge_not_found'::TEXT;
         RETURN;
     END IF;
 
+    -- 1. Validate Normalized Email
+    IF v_challenge.normalized_email != p_normalized_email THEN
+        RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'email_mismatch'::TEXT;
+        RETURN;
+    END IF;
+
+    -- 2. Validate Challenge Status
+    IF v_challenge.status != 'pending_provisioning' THEN
+        IF v_challenge.status = 'consumed' THEN
+            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'challenge_already_consumed'::TEXT;
+        ELSIF v_challenge.status = 'superseded' THEN
+            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'challenge_superseded'::TEXT;
+        ELSIF v_challenge.status = 'issued' THEN
+            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'challenge_not_verified'::TEXT;
+        ELSE
+            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'invalid_challenge_status'::TEXT;
+        END IF;
+        RETURN;
+    END IF;
+
+    -- 3. Validate Provisioning Grant ID and Expiry (Stage 4)
+    IF p_provisioning_grant_id IS NULL OR v_challenge.provisioning_grant_id IS NULL OR v_challenge.provisioning_grant_id != p_provisioning_grant_id THEN
+        RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'grant_mismatch'::TEXT;
+        RETURN;
+    END IF;
+
+    IF v_challenge.grant_expires_at IS NULL OR v_challenge.grant_expires_at <= v_now THEN
+        RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'grant_expired'::TEXT;
+        RETURN;
+    END IF;
+
+    -- 4. Derive and Enforce Purpose-to-Operation Mapping (Stage 2)
+    IF v_challenge.purpose = 'signup_initial_password' THEN
+        v_expected_op := 'enroll_initial_password'::private_auth.operation_type;
+    ELSIF v_challenge.purpose = 'recovery_password_reset' THEN
+        v_expected_op := 'recovery_password_reset'::private_auth.operation_type;
+    ELSE
+        RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'unsupported_challenge_purpose'::TEXT;
+        RETURN;
+    END IF;
+
+    IF p_operation_type IS NOT NULL AND p_operation_type != v_expected_op THEN
+        RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'operation_purpose_mismatch'::TEXT;
+        RETURN;
+    END IF;
+
+    -- 5. Strict Target Identity Binding (Stage 3)
+    IF p_target_user_id IS NULL AND v_challenge.user_id IS NULL THEN
+        RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'target_user_id_required'::TEXT;
+        RETURN;
+    END IF;
+
+    IF v_challenge.purpose = 'recovery_password_reset' THEN
+        IF v_challenge.user_id IS NULL THEN
+            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'recovery_target_user_missing'::TEXT;
+            RETURN;
+        END IF;
+        IF p_target_user_id IS NOT NULL AND p_target_user_id != v_challenge.user_id THEN
+            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'user_id_mismatch'::TEXT;
+            RETURN;
+        END IF;
+        v_bound_user_id := v_challenge.user_id;
+
+    ELSIF v_challenge.purpose = 'signup_initial_password' THEN
+        IF v_challenge.user_id IS NOT NULL THEN
+            IF p_target_user_id IS NOT NULL AND p_target_user_id != v_challenge.user_id THEN
+                RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'user_id_mismatch'::TEXT;
+                RETURN;
+            END IF;
+            v_bound_user_id := v_challenge.user_id;
+        ELSE
+            v_bound_user_id := p_target_user_id;
+            UPDATE private_auth.auth_challenges
+            SET user_id = v_bound_user_id
+            WHERE id = v_challenge.id;
+        END IF;
+    END IF;
+
+    -- 6. Insert Durable Operation Record with Fencing & Unique Index Handling (Stage 5 & 6)
     BEGIN
         INSERT INTO private_auth.admin_operation_ledger (
             challenge_id, normalized_email, target_user_id, operation_type,
             status, worker_lease_id, lease_expires_at, fencing_token, idempotency_payload_hash
         ) VALUES (
-            p_challenge_id, p_normalized_email, p_target_user_id, p_operation_type,
-            'executing', p_worker_lease_id, clock_timestamp() + INTERVAL '30 seconds', 1, p_idempotency_payload_hash
+            p_challenge_id, p_normalized_email, v_bound_user_id, v_expected_op,
+            'executing', p_worker_lease_id, v_now + INTERVAL '30 seconds', 1, p_idempotency_payload_hash
         )
         RETURNING admin_operation_ledger.operation_id, admin_operation_ledger.fencing_token
         INTO v_op_id, v_token;
 
-        RETURN QUERY SELECT TRUE, v_op_id, v_token, NULL::TEXT;
+        RETURN QUERY SELECT TRUE, v_op_id, v_token, v_bound_user_id, v_expected_op, NULL::TEXT;
         RETURN;
     EXCEPTION WHEN unique_violation THEN
         GET STACKED DIAGNOSTICS v_err_constraint = CONSTRAINT_NAME;
         IF v_err_constraint = 'admin_operation_ledger_challenge_id_key' THEN
-            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, 'challenge_already_claimed'::TEXT;
+            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'challenge_already_claimed'::TEXT;
         ELSIF v_err_constraint IN ('uq_admin_ledger_single_enrollment_user', 'uq_admin_ledger_single_enrollment_email') THEN
-            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, 'enrollment_conflict_identity_locked'::TEXT;
+            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'enrollment_conflict_identity_locked'::TEXT;
         ELSIF v_err_constraint IN ('uq_admin_ledger_active_recovery_user', 'uq_admin_ledger_active_recovery_email') THEN
-            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, 'recovery_conflict_identity_locked'::TEXT;
+            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'recovery_conflict_identity_locked'::TEXT;
         ELSE
-            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, 'identity_conflict_generic'::TEXT;
+            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'identity_conflict_generic'::TEXT;
         END IF;
         RETURN;
     END;
@@ -2006,6 +2227,54 @@ The owner is requested to consider a future, bounded two-stage proof-of-concept 
        - Setup: Expired unverified challenges ($> 24$h), superseded challenges ($> 24$h), and old `email_send_log` entries ($> 7$ days).
        - Action: Run `cleanup_expired_challenges()`.
        - Assertion: Ephemeral challenge codes and logs are purged; database storage is reclaimed; user privacy is preserved without sacrificing durable audit invariants.
+   - **Claim Authorization Regression Suite (Tests Claim-A through Claim-L) (R10 Aligned):**
+     - **Test Claim-A (Valid Signup Enrollment Claim):**
+       - Setup: Challenge $C_{sig}$ issued with purpose `signup_initial_password` and verified via `verify_otp_challenge`, transitioning to `pending_provisioning` with `provisioning_grant_id = G_1` and provisional UUID $U_{prov}$.
+       - Action: Execute `SELECT * FROM private_auth.claim_admin_operation(C_{sig}, G_1, email, U_{prov}, 'enroll_initial_password', lease_id, hash);`.
+       - Assertion: Returns `claimed = TRUE`, `target_user_id = U_{prov}`, `operation_type = 'enroll_initial_password'`, `conflict_code = NULL`. Operation ledger row inserted with `status = 'executing'`.
+     - **Test Claim-B (Signup Challenge Submitted as Recovery Operation — Purpose Mismatch):**
+       - Setup: Challenge $C_{sig}$ issued and verified for signup (`purpose = 'signup_initial_password'`, grant $G_1$).
+       - Action: Caller passes `p_operation_type = 'recovery_password_reset'`.
+       - Assertion: Returns `claimed = FALSE, conflict_code = 'operation_purpose_mismatch'`. Zero ledger rows created; zero GoTrue password reset triggered.
+     - **Test Claim-C (Recovery Challenge Submitted as Signup Enrollment — Purpose Mismatch):**
+       - Setup: Challenge $C_{rec}$ issued and verified for recovery (`purpose = 'recovery_password_reset'`, grant $G_2$, user $U_{rec}$).
+       - Action: Caller passes `p_operation_type = 'enroll_initial_password'`.
+       - Assertion: Returns `claimed = FALSE, conflict_code = 'operation_purpose_mismatch'`. Initial enrollment cannot be triggered via recovery challenge.
+     - **Test Claim-D (Cross-User Target UUID Mismatch):**
+       - Setup: Challenge $C_{rec}$ verified for registered User A ($U_A$, grant $G_3$).
+       - Action: Caller passes `p_target_user_id = U_B` (User B's UUID).
+       - Assertion: Returns `claimed = FALSE, conflict_code = 'user_id_mismatch'`. Challenge verified for User A cannot mutate User B's credentials.
+     - **Test Claim-E (Wrong or Expired Provisioning Grant):**
+       - Setup: Challenge $C_4$ verified with grant $G_{orig}$.
+       - Subtest E1: Caller passes fabricated grant $G_{fake}$ -> Returns `claimed = FALSE, conflict_code = 'grant_mismatch'`.
+       - Subtest E2: Fast-forward clock past grant expiry ($t > grant\_expires\_at$) -> Returns `claimed = FALSE, conflict_code = 'grant_expired'`.
+     - **Test Claim-F (Parallel Concurrent Claims of Same Grant):**
+       - Setup: Challenge $C_5$ verified with grant $G_5$.
+       - Concurrency: 10 parallel workers simultaneously execute `claim_admin_operation` with valid parameters under load.
+       - Assertion: Exactly 1 worker acquires Tier 3 row lock and returns `claimed = TRUE, fencing_token = 1`. Remaining 9 workers observe `conflict_code = 'challenge_already_claimed'`. Zero duplicate operations inserted.
+     - **Test Claim-G (Multiple Challenges Targeting Same Provisional UUID):**
+       - Setup: User requests 2 separate signup challenges $C_{6A}$ and $C_{6B}$ for the same email/provisional UUID $U_{prov}$. Both verified.
+       - Action: $C_{6A}$ claims and completes initial enrollment (`status = 'completed'`). $C_{6B}$ then attempts `claim_admin_operation`.
+       - Assertion: `uq_admin_ledger_single_enrollment_user` unique constraint rejects $C_{6B}$ with `conflict_code = 'enrollment_conflict_identity_locked'`. Second enrollment permanently prevented.
+     - **Test Claim-H (Valid Password Recovery Claim):**
+       - Setup: Password-complete registered user $U_7$, challenge $C_7$ verified for `recovery_password_reset` with grant $G_7$.
+       - Action: Execute `claim_admin_operation(C_7, G_7, email, U_7, 'recovery_password_reset', lease_id, hash)`.
+       - Assertion: Returns `claimed = TRUE, target_user_id = U_7, operation_type = 'recovery_password_reset'`.
+     - **Test Claim-I (Recovery Attempted During Identity Quarantine):**
+       - Setup: User $U_8$ has an active quarantine record in `admin_operation_ledger` (`status = 'quarantined_indeterminate'`).
+       - Action: New recovery challenge $C_8$ verified; caller attempts `claim_admin_operation`.
+       - Assertion: Partial unique index `uq_admin_ledger_active_recovery_user` blocks the insert; returns `claimed = FALSE, conflict_code = 'recovery_conflict_identity_locked'`. Identity remains quarantined until operator reconciliation.
+     - **Test Claim-J (Genuinely New Signup Without Preexisting UUID):**
+       - Setup: Fresh signup challenge $C_9$ issued with `user_id = NULL`. Verified via `verify_otp_challenge` (grant $G_9$).
+       - Action: Server Edge Function creates provisional user $U_{new}$, passes $U_{new}$ to `claim_admin_operation`.
+       - Assertion: Function binds $U_{new}$ to $C_9$ under Tier 1 lock and returns `claimed = TRUE, target_user_id = U_{new}`.
+     - **Test Claim-K (Challenge Retention Cleanup Racing with Claim):**
+       - Setup: Challenge $C_{10}$ in `pending_provisioning`.
+       - Concurrency: `cleanup_expired_challenges` runs concurrently with `claim_admin_operation`.
+       - Assertion: `claim_admin_operation` acquires Tier 3 `FOR UPDATE` lock on $C_{10}$; `cleanup_expired_challenges` runs with `FOR UPDATE SKIP LOCKED` and skips $C_{10}$. Zero serialization errors or premature deletion.
+     - **Test Claim-L (Failed Claim Blocks GoTrue Admin Mutation):**
+       - Setup: Any rejected claim scenario (Claims B, C, D, E, G, I).
+       - Assertion: Edge Function evaluates `claimed = FALSE`, immediately returns `HTTP 409 Conflict`, and NEVER invokes GoTrue Admin API (`admin.createUser` or `admin.updateUserById`).
 3. **UUID Lifecycle Assertion:**
    - Test provisional UUID reuse for interrupted signups.
    - Test rejection of initial enrollment against an already password-complete UUID.
@@ -2014,12 +2283,12 @@ The owner is requested to consider a future, bounded two-stage proof-of-concept 
 
 | Deliverable | Location | Status |
 |---|---|---|
-| Canonical Research Document | `.ai/tasks/auth/local-20261120-task06i-a-strict-auth-architecture.md` | **COMPLETE (Revision R9)** |
+| Canonical Research Document | `.ai/tasks/auth/local-20261120-task06i-a-strict-auth-architecture.md` | **COMPLETE (Revision R10)** |
 | Active Continuity Pointer | `.ai/current.md` | **UPDATED** |
 | Research Worktree Branch | `docs/task06i-a-strict-auth-architecture` | **READY FOR REVIEW** |
 | Final Architecture Verdict | **ARCHITECTURE PROPOSED — OWNER DECISION REQUIRED** | **PRODUCTION AUTH NO-GO** |
 
-### Review Findings Disposition Summary (All 22 Findings Addressed Across Revisions R3–R9)
+### Review Findings Disposition Summary (All 23 Findings Addressed Across Revisions R3–R10)
 - **Previous R3 Findings (Retained & Verified):**
   - **P1-1 (Token Hook Allowlist — `PRRT_kwDOVtCmZc654L96`):** Explicit fail-closed allowlist for password sign-in and validated password-origin refresh.
   - **P1-2 (Atomic Email Quota — `PRRT_kwDOVtCmZc654L9_`):** Serialized quota check via `pg_advisory_xact_lock` in `reserve_email_send`.
@@ -2055,3 +2324,12 @@ The owner is requested to consider a future, bounded two-stage proof-of-concept 
   - **Authoritative Transactional Cleanup Procedure:** Designed and specified `private_auth.cleanup_expired_challenges(p_retention_interval)` with a 10-scenario policy matrix, locking via `FOR UPDATE SKIP LOCKED`, and strict safeguards preventing deletion of challenges tied to active, reconciling, or quarantined operations. Corrected cleanup predicates to purge post-verify abandoned/terminal challenges (`failed_terminal`, `pending_provisioning` with expired grants $> 24$h) across both operator-reconciled states (`completed` and `failed_terminal`), resolving Cursor Bugbot Medium findings (`PRRT_kwDOVtCmZc659g81` and `PRRT_kwDOVtCmZc659s0e`) and guaranteeing full data minimization.
   - **Cleanup & Retention Regression Suite:** Added Tests Cleanup-A through Cleanup-H to Stage 06I-B2.
   - **Hook Execution Privileges:** Documented requirement for `GRANT USAGE ON SCHEMA private_auth TO supabase_auth_admin` and `GRANT EXECUTE ON FUNCTION private_auth.custom_access_token_hook TO supabase_auth_admin` for Stage 06I-B1.
+
+- **New R10 Finding (Strict Admin Operation Identity, Purpose & Grant Binding — `PRRT_kwDOVtCmZc66FEQo`):**
+  - **P1 (Authoritative Claim-Time Identity & Purpose Authorization):** Resolved `im-tio` P1 finding on PR #34. In earlier drafts, `claim_admin_operation` validated that a challenge was in `pending_provisioning` and unexpired, but accepted caller-supplied `p_target_user_id` and `p_operation_type` without validating them against `auth_challenges.user_id` or `auth_challenges.purpose`. This created an authorization boundary failure where a privileged Edge Function could cross purposes (authorizing a recovery password reset using a signup challenge) or mutate an unrelated user UUID.
+  - **Authoritative In-Database Enforcement:** Redesigned `claim_admin_operation` under Tier 1 Identity Advisory Lock and Tier 3 Challenge Row Lock:
+    - **Exact Provisioning Grant Binding:** Requires `p_provisioning_grant_id` matching `v_challenge.provisioning_grant_id`, unexpired `grant_expires_at > clock_timestamp()`, and status `pending_provisioning`.
+    - **Enforce Purpose-to-Operation Mapping:** Authoritatively derives and validates mapped operation type (`signup_initial_password` -> `enroll_initial_password`, `recovery_password_reset` -> `recovery_password_reset`). Purpose mismatches abort immediately with `operation_purpose_mismatch`.
+    - **Exact Target UUID Binding:** Rejects null target UUIDs (`target_user_id_required`). For recovery, requires `v_challenge.user_id` to match caller UUID (`user_id_mismatch`). For returning provisional signups, requires matching provisional UUID. For genuinely new signups, binds the server-minted provisional UUID to the challenge under Tier 1 lock.
+    - **Authoritative Return Values:** Returns server-validated `target_user_id` and `operation_type` to the Edge Function, eliminating reliance on client or forwarded parameters.
+  - **Claim Authorization Regression Suite:** Added Tests Claim-A through Claim-L to Stage 06I-B2.
