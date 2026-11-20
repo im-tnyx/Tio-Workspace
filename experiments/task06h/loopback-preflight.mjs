@@ -55,6 +55,47 @@ function containerShortName(found) {
   return typeof name === 'string' ? name.replace(/^\//, '') : '';
 }
 
+export function extractGoTrueEmailQuota(container) {
+  const envList = container?.Config?.Env;
+  if (!Array.isArray(envList)) {
+    throw new Error('MISSING_GOTRUE_EMAIL_QUOTA: GoTrue container missing environment configuration');
+  }
+
+  const matches = envList
+    .map(entry => typeof entry === 'string' && entry.match(/^GOTRUE_RATE_LIMIT_EMAIL_SENT=(.*)$/))
+    .filter(Boolean);
+
+  if (matches.length === 0) {
+    throw new Error('MISSING_GOTRUE_EMAIL_QUOTA: GoTrue container missing GOTRUE_RATE_LIMIT_EMAIL_SENT environment variable');
+  }
+  if (matches.length > 1) {
+    throw new Error('AMBIGUOUS_GOTRUE_EMAIL_QUOTA: GoTrue container has multiple GOTRUE_RATE_LIMIT_EMAIL_SENT definitions');
+  }
+
+  const rawVal = matches[0][1].trim();
+  if (!/^\d+$/.test(rawVal)) {
+    throw new Error(`MALFORMED_GOTRUE_EMAIL_QUOTA: GoTrue container has non-integer GOTRUE_RATE_LIMIT_EMAIL_SENT: '${rawVal}'`);
+  }
+
+  const parsed = Number.parseInt(rawVal, 10);
+  if (!Number.isSafeInteger(parsed) || parsed < 5 || parsed > 100) {
+    throw new Error(`MALFORMED_GOTRUE_EMAIL_QUOTA: GoTrue container GOTRUE_RATE_LIMIT_EMAIL_SENT out of approved bounds (5..100): ${parsed}`);
+  }
+
+  return parsed;
+}
+
+export function validateGoTrueEmailQuota(container, expectedEmailQuota = 5) {
+  if (!Number.isSafeInteger(expectedEmailQuota) || expectedEmailQuota < 5 || expectedEmailQuota > 100) {
+    throw new Error(`Invalid expectedEmailQuota: must be safe integer between 5 and 100, got ${expectedEmailQuota}`);
+  }
+  const actualQuota = extractGoTrueEmailQuota(container);
+  if (actualQuota !== expectedEmailQuota) {
+    throw new Error(`MISMATCHED_GOTRUE_EMAIL_QUOTA: client quota (${expectedEmailQuota}) does not match GoTrue container GOTRUE_RATE_LIMIT_EMAIL_SENT (${actualQuota})`);
+  }
+  return actualQuota;
+}
+
 export function validateWindowsListeners(requiredPorts = ['55621', '55624'], connections = []) {
   if (!Array.isArray(connections)) {
     throw new Error('Connections array required for listener validation');
@@ -141,6 +182,7 @@ export function validateIsolatedLoopbackStack({
   postgresImage = 'public.ecr.aws/supabase/postgres:17.11.0.004',
   apiHostPort = '55621',
   mailHostPort = '55624',
+  expectedEmailQuota = 5,
 } = {}) {
   if (!Array.isArray(containers) || containers.length === 0) {
     throw new Error('No project containers to validate');
@@ -236,6 +278,10 @@ export function validateIsolatedLoopbackStack({
         hostConfigPorts: found.HostConfig?.PortBindings,
         networkSettingsPorts: found.NetworkSettings?.Ports,
       });
+    }
+
+    if (part === 'auth') {
+      validateGoTrueEmailQuota(found, expectedEmailQuota);
     }
   }
 

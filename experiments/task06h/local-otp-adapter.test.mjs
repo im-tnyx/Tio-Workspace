@@ -9,6 +9,7 @@ import {
   generateLocalKeys,
   getRequiredJwtSecret,
   assertRuntimeStackIsolation,
+  initializeLocalStack,
   executeAuthIntegrationSuite,
   validateLocalStackConfig,
   QuotaExhaustedError,
@@ -203,17 +204,18 @@ test('executeAuthIntegrationSuite public entrypoint fails closed on malformed Do
   }
 });
 
-function setupDeterministicProcessMock({ kongHostIp = '127.0.0.1', windowsListeners = true } = {}) {
+function setupDeterministicProcessMock({ kongHostIp = '127.0.0.1', windowsListeners = true, gotrueQuota = 5, gotrueEnv = undefined } = {}) {
   const origExec = childProcess.execFileSync;
   const project = 'tio-task06h-local-auth';
   const network = `supabase_network_${project}`;
 
-  const makeContainer = (part, image, portBindings = {}) => ({
+  const makeContainer = (part, image, portBindings = {}, env = undefined) => ({
     Name: `/supabase_${part}_${project}`,
     State: { Running: true },
     Config: {
       Image: image,
       Labels: { 'com.docker.compose.project': project },
+      Env: env !== undefined ? env : (part === 'auth' ? (gotrueEnv !== undefined ? gotrueEnv : (gotrueQuota !== undefined ? [`GOTRUE_RATE_LIMIT_EMAIL_SENT=${gotrueQuota}`] : [])) : []),
     },
     HostConfig: {
       PortBindings: portBindings,
@@ -394,6 +396,62 @@ test('executeAuthIntegrationSuite invokes both Docker inspection and Windows lis
     assert.ok(dockerNetworkInspect, 'Preflight must invoke docker network inspect');
     assert.ok(dockerContainerInspect, 'Preflight must invoke docker container inspect');
     assert.ok(powershellListenerInspect, 'Preflight must invoke Windows PowerShell listener inspect');
+  } finally {
+    restoreProc();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('executeAuthIntegrationSuite with devModeEmailQuota: 30 fails closed during preflight when GoTrue container has default quota 5', async () => {
+  let fetchCalled = false;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    fetchCalled = true;
+    throw new Error('fetch should not be called');
+  };
+  const restoreProc = setupDeterministicProcessMock({ gotrueQuota: 5 });
+
+  try {
+    await assert.rejects(
+      async () => executeAuthIntegrationSuite({
+        API_URL: 'http://127.0.0.1:55621',
+        MAILPIT_URL: 'http://127.0.0.1:55624',
+        PUBLISHABLE_KEY: 'test-pub',
+        SERVICE_ROLE_KEY: 'test-serv',
+        devModeEmailQuota: 30,
+      }),
+      /MISMATCHED_GOTRUE_EMAIL_QUOTA: client quota \(30\) does not match GoTrue container GOTRUE_RATE_LIMIT_EMAIL_SENT \(5\)/
+    );
+    assert.equal(fetchCalled, false, 'No fetch request must be made when GoTrue container email quota mismatches client dev quota');
+  } finally {
+    restoreProc();
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('executeAuthIntegrationSuite with devModeEmailQuota: 30 succeeds during preflight when GoTrue container matches quota 30', async () => {
+  let fetchCalled = false;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => {
+    fetchCalled = true;
+    if (url.includes('/api/v1/messages')) {
+      return { status: 200, json: async () => ({ messages: [] }) };
+    }
+    return { status: 404, json: async () => ({}) };
+  };
+  const restoreProc = setupDeterministicProcessMock({ gotrueQuota: 30 });
+
+  try {
+    const results = await executeAuthIntegrationSuite({
+      API_URL: 'http://127.0.0.1:55621',
+      MAILPIT_URL: 'http://127.0.0.1:55624',
+      PUBLISHABLE_KEY: 'test-pub',
+      SERVICE_ROLE_KEY: 'test-serv',
+      devModeEmailQuota: 30,
+      selectedCases: ['MAILPIT_BASELINE'],
+    });
+    assert.equal(fetchCalled, true);
+    assert.equal(results.find(r => r.id === 'MAILPIT_BASELINE')?.result, 'PASS');
   } finally {
     restoreProc();
     globalThis.fetch = originalFetch;
@@ -629,6 +687,48 @@ test('validateLocalStackConfig validates loopback URLs, credentials, and batch o
     selectedCases: ['OTP_FORMAT_REPLAY', 'INVALID_CODE'], // 1 + 1 = 2 sends (valid)
   }), true);
 
+  // Exhaustive devModeEmailQuota validation: requires safe integer in range 5..100
+  const invalidDevQuotas = [
+    3, 4, 0, -1, -5, 101, 105, 1000,
+    NaN, Infinity, -Infinity,
+    5.5, 30.2, 99.9,
+    '30', '5', 'dev', true, false, null, {}, [30]
+  ];
+  for (const invalidVal of invalidDevQuotas) {
+    assert.throws(() => validateLocalStackConfig({
+      API_URL: 'http://127.0.0.1:55621',
+      MAILPIT_URL: 'http://127.0.0.1:55624',
+      PUBLISHABLE_KEY: 'test-pub',
+      SERVICE_ROLE_KEY: 'test-serv',
+      devModeEmailQuota: invalidVal,
+    }), /devModeEmailQuota must be a safe integer between 5 and 100/);
+  }
+
+  assert.equal(validateLocalStackConfig({
+    API_URL: 'http://127.0.0.1:55621',
+    MAILPIT_URL: 'http://127.0.0.1:55624',
+    PUBLISHABLE_KEY: 'test-pub',
+    SERVICE_ROLE_KEY: 'test-serv',
+    devModeEmailQuota: 5, // minimum boundary
+  }), true);
+
+  assert.equal(validateLocalStackConfig({
+    API_URL: 'http://127.0.0.1:55621',
+    MAILPIT_URL: 'http://127.0.0.1:55624',
+    PUBLISHABLE_KEY: 'test-pub',
+    SERVICE_ROLE_KEY: 'test-serv',
+    devModeEmailQuota: 100, // maximum boundary
+  }), true);
+
+  assert.equal(validateLocalStackConfig({
+    API_URL: 'http://127.0.0.1:55621',
+    MAILPIT_URL: 'http://127.0.0.1:55624',
+    PUBLISHABLE_KEY: 'test-pub',
+    SERVICE_ROLE_KEY: 'test-serv',
+    devModeEmailQuota: 30,
+    selectedCases: ['OTP_CONCURRENT', 'RECOVERY_FLOW'], // 3 + 4 = 7 sends (allowed with devModeEmailQuota: 30)
+  }), true);
+
   assert.equal(validateLocalStackConfig({
     API_URL: 'http://127.0.0.1:55621',
     MAILPIT_URL: 'http://127.0.0.1:55624',
@@ -766,4 +866,168 @@ test('Mailpit subject matchers cover both configured Task 06G/06H subjects and G
   // Negative checks: unrelated emails must not match
   assert.equal(signupMatcher.test('Your account invoice'), false);
   assert.equal(recoveryMatcher.test('Welcome to our newsletter'), false);
+});
+
+test('initializeLocalStack: default initializer succeeds with GoTrue container quota 5', () => {
+  const origSecret = process.env.JWT_SECRET;
+  process.env.JWT_SECRET = 'test-secret-at-least-32-characters-long';
+  const restoreProc = setupDeterministicProcessMock({ gotrueQuota: 5 });
+  try {
+    const config = initializeLocalStack();
+    assert.equal(config.API_URL, 'http://127.0.0.1:55621');
+    assert.equal(config.MAILPIT_URL, 'http://127.0.0.1:55624');
+    assert.ok(typeof config.PUBLISHABLE_KEY === 'string' && config.PUBLISHABLE_KEY.length > 0);
+    assert.ok(typeof config.SERVICE_ROLE_KEY === 'string' && config.SERVICE_ROLE_KEY.length > 0);
+  } finally {
+    restoreProc();
+    if (origSecret !== undefined) process.env.JWT_SECRET = origSecret;
+    else delete process.env.JWT_SECRET;
+  }
+});
+
+test('initializeLocalStack: explicit development initialization succeeds with GoTrue container quota 30', () => {
+  const origSecret = process.env.JWT_SECRET;
+  process.env.JWT_SECRET = 'test-secret-at-least-32-characters-long';
+  const restoreProc = setupDeterministicProcessMock({ gotrueQuota: 30 });
+  try {
+    const config = initializeLocalStack(30);
+    assert.equal(config.API_URL, 'http://127.0.0.1:55621');
+    assert.equal(config.MAILPIT_URL, 'http://127.0.0.1:55624');
+    assert.ok(typeof config.PUBLISHABLE_KEY === 'string' && config.PUBLISHABLE_KEY.length > 0);
+    assert.ok(typeof config.SERVICE_ROLE_KEY === 'string' && config.SERVICE_ROLE_KEY.length > 0);
+  } finally {
+    restoreProc();
+    if (origSecret !== undefined) process.env.JWT_SECRET = origSecret;
+    else delete process.env.JWT_SECRET;
+  }
+});
+
+test('initializeLocalStack: default initializer fails closed on GoTrue container quota 30', () => {
+  const origSecret = process.env.JWT_SECRET;
+  process.env.JWT_SECRET = 'test-secret-at-least-32-characters-long';
+  const restoreProc = setupDeterministicProcessMock({ gotrueQuota: 30 });
+  try {
+    assert.throws(
+      () => initializeLocalStack(),
+      /MISMATCHED_GOTRUE_EMAIL_QUOTA: client quota \(5\) does not match GoTrue container GOTRUE_RATE_LIMIT_EMAIL_SENT \(30\)/
+    );
+  } finally {
+    restoreProc();
+    if (origSecret !== undefined) process.env.JWT_SECRET = origSecret;
+    else delete process.env.JWT_SECRET;
+  }
+});
+
+test('initializeLocalStack: explicit initializer quota 30 fails closed on GoTrue container quota 5', () => {
+  const origSecret = process.env.JWT_SECRET;
+  process.env.JWT_SECRET = 'test-secret-at-least-32-characters-long';
+  const restoreProc = setupDeterministicProcessMock({ gotrueQuota: 5 });
+  try {
+    assert.throws(
+      () => initializeLocalStack(30),
+      /MISMATCHED_GOTRUE_EMAIL_QUOTA: client quota \(30\) does not match GoTrue container GOTRUE_RATE_LIMIT_EMAIL_SENT \(5\)/
+    );
+  } finally {
+    restoreProc();
+    if (origSecret !== undefined) process.env.JWT_SECRET = origSecret;
+    else delete process.env.JWT_SECRET;
+  }
+});
+
+test('initializeLocalStack: rejects invalid quota arguments and extra arguments', () => {
+  const invalidQuotas = [
+    3, 4, 101, 105, 1000,
+    NaN, Infinity, -Infinity,
+    5.5, 30.2, 99.9,
+    '30', '5', 'dev', true, false, null, {}, [30]
+  ];
+
+  for (const invalid of invalidQuotas) {
+    assert.throws(
+      () => initializeLocalStack(invalid),
+      /expectedEmailQuota must be a safe integer between 5 and 100/
+    );
+  }
+
+  assert.throws(
+    () => initializeLocalStack(5, 'unexpected-extra-argument'),
+    /initializeLocalStack accepts at most 1 argument \(expectedEmailQuota\)/
+  );
+});
+
+test('initializeLocalStack: fails closed on missing or malformed server quota', () => {
+  const origSecret = process.env.JWT_SECRET;
+  process.env.JWT_SECRET = 'test-secret-at-least-32-characters-long';
+
+  // Missing variable
+  const restoreProcMissing = setupDeterministicProcessMock({ gotrueEnv: [] });
+  try {
+    assert.throws(
+      () => initializeLocalStack(),
+      /MISSING_GOTRUE_EMAIL_QUOTA: GoTrue container missing GOTRUE_RATE_LIMIT_EMAIL_SENT environment variable/
+    );
+  } finally {
+    restoreProcMissing();
+  }
+
+  // Malformed variable
+  const restoreProcMalformed = setupDeterministicProcessMock({ gotrueEnv: ['GOTRUE_RATE_LIMIT_EMAIL_SENT=invalid'] });
+  try {
+    assert.throws(
+      () => initializeLocalStack(),
+      /MALFORMED_GOTRUE_EMAIL_QUOTA: GoTrue container has non-integer GOTRUE_RATE_LIMIT_EMAIL_SENT/
+    );
+  } finally {
+    restoreProcMalformed();
+    if (origSecret !== undefined) process.env.JWT_SECRET = origSecret;
+    else delete process.env.JWT_SECRET;
+  }
+});
+
+test('initializeLocalStack: mandatory Docker and Windows inspection cannot be bypassed', () => {
+  const origSecret = process.env.JWT_SECRET;
+  process.env.JWT_SECRET = 'test-secret-at-least-32-characters-long';
+
+  // Windows listeners missing
+  const restoreProcListeners = setupDeterministicProcessMock({ windowsListeners: false, gotrueQuota: 5 });
+  try {
+    assert.throws(
+      () => initializeLocalStack(5),
+      /MISSING_WINDOWS_LISTENER/
+    );
+  } finally {
+    restoreProcListeners();
+  }
+
+  // Non-loopback host IP
+  const restoreProcKong = setupDeterministicProcessMock({ kongHostIp: '0.0.0.0', gotrueQuota: 5 });
+  try {
+    assert.throws(
+      () => initializeLocalStack(5),
+      /non-loopback HostConfig published ports/
+    );
+  } finally {
+    restoreProcKong();
+    if (origSecret !== undefined) process.env.JWT_SECRET = origSecret;
+    else delete process.env.JWT_SECRET;
+  }
+});
+
+test('assertRuntimeStackIsolation and inspectDockerStackRuntime reject invalid quotas and extra arguments', () => {
+  assert.throws(
+    () => assertRuntimeStackIsolation(3),
+    /expectedEmailQuota must be a safe integer between 5 and 100/
+  );
+  assert.throws(
+    () => assertRuntimeStackIsolation(5, 'extra'),
+    /assertRuntimeStackIsolation accepts at most 1 argument/
+  );
+  assert.throws(
+    () => localOtpModule.inspectDockerStackRuntime(3),
+    /expectedEmailQuota must be a safe integer between 5 and 100/
+  );
+  assert.throws(
+    () => localOtpModule.inspectDockerStackRuntime(5, 'extra'),
+    /inspectDockerStackRuntime accepts at most 1 argument/
+  );
 });
