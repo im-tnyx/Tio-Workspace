@@ -899,7 +899,7 @@ To balance data minimization requirements (GDPR/privacy) with permanent security
 | 2 | **Superseded challenge** | `status = 'superseded'` | Purged from `auth_challenges` after retention window ($> 24$ hours). |
 | 3 | **Consumed challenge with completed Admin operation** | `c.status = 'consumed'`, `o.status = 'completed'` | Ephemeral challenge row is purged from `auth_challenges` after retention window ($> 24$ hours). The `admin_operation_ledger` row is **PERMANENTLY PRESERVED** (maintains initial enrollment uniqueness and audit trail). |
 | 4 | **Challenge with actively executing Admin operation** | `o.status = 'executing'`, `o.lease_expires_at > now` | **STRICTLY PROTECTED:** Cleanup job skips any challenge associated with an active lease. |
-| 5 | **Challenge with `quarantined_indeterminate` operation** | `o.status = 'quarantined_indeterminate'` | **IMMUTABLE SECURITY GUARD:** Challenge is marked `failed_terminal`. The `admin_operation_ledger` quarantine row is **PERMANENT AND CAN NEVER BE PURGED BY AUTOMATED CLEANUP**. It blocks all conflicting mutations until explicit operator resolution. |
+| 5 | **Challenge with `quarantined_indeterminate` operation** | `o.status = 'quarantined_indeterminate'` | **IMMUTABLE SECURITY GUARD:** Challenge is preserved in database while quarantined to prevent premature reuse or state discrepancy. Once an operator reconciles the incident (marking the operation `completed` or `failed_terminal` and updating challenge `consumed` or `failed_terminal`), the challenge can be purged after the 24-hour retention window. The `admin_operation_ledger` quarantine row is **PERMANENT AND CAN NEVER BE PURGED BY AUTOMATED CLEANUP**. It blocks all conflicting mutations until explicit operator resolution. |
 | 6 | **Completed initial enrollment** | `operation_type = 'enroll_initial_password'`, `status = 'completed'` | **PERMANENT SECURITY GUARD:** Retained indefinitely in `admin_operation_ledger`. Blocks second enrollment across entire installation life. |
 | 7 | **Completed, repeatable password recovery** | `operation_type = 'recovery_password_reset'`, `status = 'completed'` | Retained in `admin_operation_ledger` for audit. Does not block future recovery because `uq_admin_ledger_active_recovery_*` indexes only active/quarantined states. |
 | 8 | **Worker crash or ambiguous external Admin call** | `lease_expires_at < now`, unreconciled | Reclaimed by recovery worker via fencing token; or transitions to `quarantined_indeterminate`. Cleanup never deletes unreconciled rows. |
@@ -922,9 +922,11 @@ DECLARE
     v_cutoff TIMESTAMPTZ := clock_timestamp() - p_retention_interval;
 BEGIN
     -- Purge ephemeral auth_challenges that are:
-    -- (1) consumed with completed operations, OR
-    -- (2) expired and never claimed, OR
-    -- (3) superseded.
+    -- (1) consumed with terminal operations, OR
+    -- (2) expired and unverified, OR
+    -- (3) superseded, OR
+    -- (4) failed_terminal, OR
+    -- (5) abandoned post-verify with expired grants (PRRT_kwDOVtCmZc659g81).
     -- STRICT INVARIANT: NEVER delete challenges associated with active, reconciling, or quarantined operations!
     WITH deletable AS (
         SELECT c.id
@@ -932,14 +934,22 @@ BEGIN
         LEFT JOIN private_auth.admin_operation_ledger o ON o.challenge_id = c.challenge_id
         WHERE c.created_at < v_cutoff
           AND (
-              -- Case 1: Consumed with terminal completed admin operation
-              (c.status = 'consumed' AND (o.status = 'completed' OR o.status IS NULL))
+              -- Case 1: Consumed with terminal admin operation (or no operation claimed)
+              (c.status = 'consumed' AND (o.status IN ('completed', 'failed_terminal') OR o.status IS NULL))
               OR
               -- Case 2: Expired without verification
               (c.status = 'issued' AND c.expires_at < v_cutoff)
               OR
               -- Case 3: Superseded challenge
               (c.status = 'superseded')
+              OR
+              -- Case 4: Terminal failure challenge
+              (c.status = 'failed_terminal' AND (o.status IS NULL OR o.status = 'failed_terminal'))
+              OR
+              -- Case 5: Verified challenge abandoned before or after claim with expired grant (PRRT_kwDOVtCmZc659g81)
+              (c.status IN ('pending_provisioning', 'provisioning_failed_retryable')
+               AND c.grant_expires_at < v_cutoff
+               AND (o.status IS NULL OR o.status = 'failed_terminal'))
           )
           -- CRITICAL EXCLUSION: Never touch any challenge whose operation is active or quarantined!
           AND (o.status IS NULL OR o.status NOT IN ('claimed', 'executing', 'reconciling', 'quarantined_indeterminate'))
@@ -1734,9 +1744,11 @@ DECLARE
     v_cutoff TIMESTAMPTZ := clock_timestamp() - p_retention_interval;
 BEGIN
     -- Purge ephemeral auth_challenges that are:
-    -- (1) consumed with completed operations, OR
-    -- (2) expired and never claimed, OR
-    -- (3) superseded.
+    -- (1) consumed with terminal operations, OR
+    -- (2) expired and unverified, OR
+    -- (3) superseded, OR
+    -- (4) failed_terminal, OR
+    -- (5) abandoned post-verify with expired grants (PRRT_kwDOVtCmZc659g81).
     -- STRICT INVARIANT: NEVER delete challenges associated with active, reconciling, or quarantined operations!
     WITH deletable AS (
         SELECT c.id
@@ -1744,11 +1756,17 @@ BEGIN
         LEFT JOIN private_auth.admin_operation_ledger o ON o.challenge_id = c.challenge_id
         WHERE c.created_at < v_cutoff
           AND (
-              (c.status = 'consumed' AND (o.status = 'completed' OR o.status IS NULL))
+              (c.status = 'consumed' AND (o.status IN ('completed', 'failed_terminal') OR o.status IS NULL))
               OR
               (c.status = 'issued' AND c.expires_at < v_cutoff)
               OR
               (c.status = 'superseded')
+              OR
+              (c.status = 'failed_terminal' AND (o.status IS NULL OR o.status = 'failed_terminal'))
+              OR
+              (c.status IN ('pending_provisioning', 'provisioning_failed_retryable')
+               AND c.grant_expires_at < v_cutoff
+               AND (o.status IS NULL OR o.status = 'failed_terminal'))
           )
           AND (o.status IS NULL OR o.status NOT IN ('claimed', 'executing', 'reconciling', 'quarantined_indeterminate'))
         FOR UPDATE OF c SKIP LOCKED
@@ -2034,6 +2052,6 @@ The owner is requested to consider a future, bounded two-stage proof-of-concept 
   - **P1 (Decouple Durable Identity Ledger from Short-Lived Challenges):** Resolved `im-tio` P1 finding on PR #34. In earlier drafts, `admin_operation_ledger.challenge_id` had `REFERENCES auth_challenges(challenge_id) ON DELETE CASCADE`. This violated core security invariants because routine cleanup of ephemeral 10-minute OTP challenges ($> 24$h) would silently cascade-delete `admin_operation_ledger` entries, erasing completed initial-enrollment uniqueness guards (`uq_admin_ledger_single_enrollment_*`), active worker fences, indeterminate quarantine locks (`quarantined_indeterminate`), and audit evidence.
   - **Decoupled Architecture (Option B):** Decoupled `admin_operation_ledger` from cascading foreign keys. `challenge_id` and `target_user_id` are stored as durable, immutable provenance and identity keys. Referential provenance is verified at claim time within `private_auth.claim_admin_operation` (requiring `auth_challenges.status = 'pending_provisioning'` and unexpired grant).
   - **User Deletion Cascade Safety:** Configured `auth_challenges.user_id` with `ON DELETE SET NULL`, preventing deletion of provisional or abandoned users in `auth.users` from cascading into challenges or the operations ledger.
-  - **Authoritative Transactional Cleanup Procedure:** Designed and specified `private_auth.cleanup_expired_challenges(p_retention_interval)` with a 10-scenario policy matrix, locking via `FOR UPDATE SKIP LOCKED`, and strict safeguards preventing deletion of challenges tied to active, reconciling, or quarantined operations.
+  - **Authoritative Transactional Cleanup Procedure:** Designed and specified `private_auth.cleanup_expired_challenges(p_retention_interval)` with a 10-scenario policy matrix, locking via `FOR UPDATE SKIP LOCKED`, and strict safeguards preventing deletion of challenges tied to active, reconciling, or quarantined operations. Corrected cleanup predicates to purge post-verify abandoned/terminal challenges (`failed_terminal`, `pending_provisioning` with expired grants $> 24$h), resolving Cursor Bugbot Medium finding (`PRRT_kwDOVtCmZc659g81`) and guaranteeing full data minimization.
   - **Cleanup & Retention Regression Suite:** Added Tests Cleanup-A through Cleanup-H to Stage 06I-B2.
   - **Hook Execution Privileges:** Documented requirement for `GRANT USAGE ON SCHEMA private_auth TO supabase_auth_admin` and `GRANT EXECUTE ON FUNCTION private_auth.custom_access_token_hook TO supabase_auth_admin` for Stage 06I-B1.
