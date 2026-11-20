@@ -2,9 +2,9 @@
 
 | Field | Value |
 |---|---|
-| **Task ID** | Task 06I-A (Revision R8 — Single Authoritative OTP Verifier & Test Contract Closure) |
+| **Task ID** | Task 06I-A (Revision R9 — Durable Identity Ledger Retention & Cascade-Delete Safety) |
 | **Status** | **ARCHITECTURE PROPOSED — OWNER DECISION REQUIRED** |
-| **Objective** | Resolve both remaining GitHub review findings (`PRRT_kwDOVtCmZc657ZXl` and `PRRT_kwDOVtCmZc657idC`): (1) establish `private_auth.verify_otp_challenge` as the sole authoritative database entry point for every OTP submission (valid, invalid, expired, consumed, superseded, active cooldown, and post-cooldown rollover), completely retiring standalone failure handlers (`record_failed_attempt`) and raw UPSERTs to eliminate valid-vs-fifth-wrong race conditions; (2) document the unified server-side Edge Function dispatch sequence and explicit database schema permissions; (3) synchronize the Task 06I-B2 acceptance test suite with actual verifier result categories (`cooldown_active`, `invalid_code`), correctly model 10-minute challenge expiration vs 15-minute cooldown, and assert post-cooldown rollover against fresh replacement challenges |
+| **Objective** | Resolve independent `im-tio` P1 review finding (`PRRT_kwDOVtCmZc658mO8`): decouple the durable identity-operation ledger (`admin_operation_ledger`) from short-lived OTP challenge deletion (`auth_challenges`) by removing `ON DELETE CASCADE`; establish distinct lifecycles for ephemeral challenges vs durable identity operations (initial-enrollment uniqueness, active recovery serialization, and quarantined indeterminate fencing); specify safe transactional cleanup procedures and provisional user deletion safety; add Cleanup Regression Tests A–H for Stage 06I-B2; document `supabase_auth_admin` permission prerequisites for the Custom Access Token Hook |
 | **Execution Mode** | STRICTLY DOCUMENTATION-ONLY, OFFLINE SECURITY DESIGN CORRECTIONS (No app code, migrations, or hosted mutations) |
 | **Authorization** | Owner instruction: follow `AGENTS.md`, `.ai/current.md`, Supabase skill; production project `bsfwzvgynwriswapxpsp` strictly READ-ONLY |
 | **Implementation Owner** | Security Architecture & Research Agent |
@@ -41,7 +41,7 @@ To maintain absolute evidence integrity, all claims in this document adhere to t
   - All OTP verification is consolidated into `private_auth.verify_otp_challenge` as the **sole authoritative database entry point** across both signup and recovery flows. Governed by the **Global Strict Lock Hierarchy** (Tier 1 Identity Advisory Lock -> Tier 2 Cooldown Row Lock -> Tier 3 Challenge Row Lock), this unified transaction handles valid redemptions, invalid attempts, active lockout checks (`cooldown_active`), and post-cooldown budget rollovers under a single row lock. Standalone failure functions (`record_failed_attempt`) and raw direct UPSERTs are completely retired to eliminate valid-vs-fifth-wrong race conditions.
   - OTP rate-limiting and challenge issuance (`private_auth.reserve_email_send`) serialize under the same Tier 2 cooldown row lock, strictly enforcing post-commit outbound email dispatch.
   - Supabase Auth is utilized strictly as a **Password Identity Provider** (`signInWithPassword`) and Admin API target (`admin.createUser`, `admin.updateUserById`).
-  - *GoTrue Idempotency & Identity Quarantine Verdict:* GoTrue Admin API does NOT implement an `Idempotency-Key` header. Safe execution requires a server-owned, durable operation ledger (`admin_operation_ledger`) in PostgreSQL. Initial enrollment is permanently serialized per identity (`target_user_id`, `normalized_email`), while password recovery is repeatable over the lifecycle. If an Admin API password update times out or encounters network ambiguity, the operation enters an explicit **quarantined indeterminate state** (`quarantined_indeterminate`), retaining the identity lock at the database level to prevent racing external GoTrue mutations.
+  - *GoTrue Idempotency, Identity Quarantine & Durable Ledger Retention (R9):* GoTrue Admin API does NOT implement an `Idempotency-Key` header. Safe execution requires a server-owned, durable operation ledger (`admin_operation_ledger`) in PostgreSQL. To guarantee that initial-enrollment uniqueness and indeterminate operation quarantines survive short-lived OTP challenge cleanup, `admin_operation_ledger` is completely decoupled from cascading deletes (removing `ON DELETE CASCADE`). Routine purging of ephemeral `auth_challenges` rows leaves permanent enrollment guards and quarantine locks 100% intact. Initial enrollment is permanently serialized per identity (`target_user_id`, `normalized_email`), while password recovery is repeatable over the lifecycle. Identity claiming is encapsulated in `private_auth.claim_admin_operation` with explicit `EXCEPTION WHEN unique_violation` diagnostics for partial unique indexes to guarantee structured HTTP 409 conflict handling. If an Admin API password update times out or encounters network ambiguity, the operation enters an explicit **quarantined indeterminate state** (`quarantined_indeterminate`), retaining the identity lock at the database level to prevent racing external GoTrue mutations.
   - *Multi-Consumer JWT Cutover Nuance:* Deleting sessions in `auth.sessions` immediately invalidates Auth `/user` (403 on local GoTrue; hosted NOT VERIFIED), but stateless non-Auth JWT consumers (PostgREST Data API, Storage) will accept signed JWTs until their `exp` timestamp. Cutover must account for this lingering window or rotate signing secrets.
 - **Contingency Fallback: Option D1 (Self-Hosted Supabase GoTrue Behind an Exclusive Reverse Proxy / API Gateway)**.
   - *Status:* **PROPOSED FALLBACK (NOT TESTED)**.
@@ -444,9 +444,23 @@ To resolve cross-service coordination without impossible distributed transaction
        WHERE operation_type = 'recovery_password_reset'
          AND status IN ('claimed', 'executing', 'reconciling', 'quarantined_indeterminate');
        ```
-   - **Atomic Claim Helper & Unique Index Diagnostics (`claim_admin_operation` — R7):**
-     *Bugbot Finding Resolution (`PRRT_kwDOVtCmZc656o5X`):* A naive `INSERT ... ON CONFLICT (challenge_id) DO NOTHING` only swallows duplicate requests for the exact same challenge ID. If a second, distinct challenge for the same `target_user_id` or `normalized_email` attempts enrollment or active recovery, it violates `uq_admin_ledger_single_enrollment_*` or `uq_admin_ledger_active_recovery_*`. An unhandled unique violation exception would crash the transaction with an HTTP 500 error instead of cleanly producing the documented HTTP 409 Conflict path.
-     To ensure deterministic conflict handling across all partial unique indexes, claiming is encapsulated in a dedicated stored function with explicit exception handling and constraint diagnostics:
+   - **Durable Identity Invariants & Lifecycle Decoupling (Stage 1 & 2 — R9 — `PRRT_kwDOVtCmZc658mO8`):**
+     A critical architectural boundary exists between two independent lifecycles:
+     1. **Ephemeral OTP Challenge Lifecycle:** Challenges carry a 10-minute expiry, single-use redemption, and are subject to routine cleanup ($> 24$ hours) to satisfy privacy data minimization.
+     2. **Durable Admin Operation Lifecycle:** Initial password enrollment uniqueness (`uq_admin_ledger_single_enrollment_*`) must permanently survive for the entire account lifetime. Indeterminate quarantines (`quarantined_indeterminate`) must block conflicting operations indefinitely until explicit operator reconciliation.
+
+     **The Cascade-Delete Defect & Resolution:**
+     In earlier drafts, `admin_operation_ledger.challenge_id` specified `REFERENCES auth_challenges(challenge_id) ON DELETE CASCADE`. If routine retention cleanup purged an expired or consumed challenge, PostgreSQL cascaded the deletion into `admin_operation_ledger`. This silently erased `quarantined_indeterminate` locks, destroyed initial-enrollment uniqueness guards, and erased immutable audit evidence.
+
+     *Evaluation of Architectural Alternatives:*
+     - *Option A (Restrictive FK `ON DELETE RESTRICT`):* Prevents deletion of challenges associated with completed operations. However, this indefinitely blocks routine challenge cleanup, forcing code hashes and transient grant IDs to remain in the challenge table forever, causing index bloat and violating data minimization.
+     - *Option B (Independently Durable Ledger — PREFERRED):* `admin_operation_ledger.challenge_id UUID UNIQUE NOT NULL` stores the immutable provenance challenge UUID **without an `ON DELETE CASCADE` foreign key dependency**. Referential validity is strictly asserted at claim time within `claim_admin_operation`. Routine cleanup of ephemeral challenges can safely purge `auth_challenges` rows after the retention window ($> 24$ hours) without affecting the durable ledger.
+
+     *User Deletion Chain Safety (`auth.users → auth_challenges → admin_operation_ledger`):*
+     In `auth_challenges`, `user_id` foreign key is decoupled (`ON DELETE SET NULL`), and `admin_operation_ledger` maintains zero cascading dependency from `auth.users`. Deleting a provisional user in `auth.users` CANNOT silently delete active or quarantined records in `admin_operation_ledger`. Account deletion is an authorized administrative procedure, strictly separated from routine challenge cleanup.
+
+   - **Atomic Claim Helper with Claim-Time Referential Validation (`claim_admin_operation` — R9):**
+     Claiming is encapsulated in a dedicated stored function that transactionally validates challenge status and grant validity, handles all partial unique index conflicts, and maps errors cleanly without crashing:
      ```sql
      CREATE OR REPLACE FUNCTION private_auth.claim_admin_operation(
          p_challenge_id UUID,
@@ -466,6 +480,18 @@ To resolve cross-service coordination without impossible distributed transaction
          v_token BIGINT;
          v_err_constraint TEXT;
      BEGIN
+         -- Claim-Time Referential Provenance Validation (R9)
+         IF NOT EXISTS (
+             SELECT 1 FROM private_auth.auth_challenges
+             WHERE challenge_id = p_challenge_id
+               AND normalized_email = p_normalized_email
+               AND status = 'pending_provisioning'
+               AND grant_expires_at > clock_timestamp()
+         ) THEN
+             RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, 'invalid_or_expired_grant'::TEXT;
+             RETURN;
+         END IF;
+
          BEGIN
              INSERT INTO private_auth.admin_operation_ledger (
                  challenge_id, normalized_email, target_user_id, operation_type,
@@ -862,6 +888,82 @@ CREATE TYPE private_auth.challenge_purpose AS ENUM (
 
 ---
 
+### 4.5. Safe Retention & Cleanup Procedures (Stage 4 — R9)
+*(Status: PROPOSED SPECIFICATION — NOT TESTED)*
+
+To balance data minimization requirements (GDPR/privacy) with permanent security enforcement, cleanup operations are strictly compartmentalized across the ten operational scenarios:
+
+| # | Lifecycle Scenario | Target State & Retention Policy | Cleanup Behavior & Guard Invariant |
+|---|---|---|---|
+| 1 | **Expired, never-verified challenge** | `expires_at < now`, `status = 'issued'` | Purged from `auth_challenges` after retention window ($> 24$ hours). Has zero entry in `admin_operation_ledger`. Cooldown ledger row handles lockout duration. |
+| 2 | **Superseded challenge** | `status = 'superseded'` | Purged from `auth_challenges` after retention window ($> 24$ hours). |
+| 3 | **Consumed challenge with completed Admin operation** | `c.status = 'consumed'`, `o.status = 'completed'` | Ephemeral challenge row is purged from `auth_challenges` after retention window ($> 24$ hours). The `admin_operation_ledger` row is **PERMANENTLY PRESERVED** (maintains initial enrollment uniqueness and audit trail). |
+| 4 | **Challenge with actively executing Admin operation** | `o.status = 'executing'`, `o.lease_expires_at > now` | **STRICTLY PROTECTED:** Cleanup job skips any challenge associated with an active lease. |
+| 5 | **Challenge with `quarantined_indeterminate` operation** | `o.status = 'quarantined_indeterminate'` | **IMMUTABLE SECURITY GUARD:** Challenge is marked `failed_terminal`. The `admin_operation_ledger` quarantine row is **PERMANENT AND CAN NEVER BE PURGED BY AUTOMATED CLEANUP**. It blocks all conflicting mutations until explicit operator resolution. |
+| 6 | **Completed initial enrollment** | `operation_type = 'enroll_initial_password'`, `status = 'completed'` | **PERMANENT SECURITY GUARD:** Retained indefinitely in `admin_operation_ledger`. Blocks second enrollment across entire installation life. |
+| 7 | **Completed, repeatable password recovery** | `operation_type = 'recovery_password_reset'`, `status = 'completed'` | Retained in `admin_operation_ledger` for audit. Does not block future recovery because `uq_admin_ledger_active_recovery_*` indexes only active/quarantined states. |
+| 8 | **Worker crash or ambiguous external Admin call** | `lease_expires_at < now`, unreconciled | Reclaimed by recovery worker via fencing token; or transitions to `quarantined_indeterminate`. Cleanup never deletes unreconciled rows. |
+| 9 | **Provisional account deletion** | Deletion in `auth.users` | Deleting an unverified provisional user in `auth.users` sets `auth_challenges.user_id = NULL` (`ON DELETE SET NULL`) and CANNOT cascade into `admin_operation_ledger`. Active/quarantined operations remain fully protected. |
+| 10 | **Authorized account erasure** | GDPR / user deletion request | Explicit administrative workflow (not automatic DB cascade). Verifies zero active/quarantined operations before deletion. Redacts PII (`normalized_email = 'anonymized_' || id`) while preserving tombstone to prevent credential resurrection. |
+
+#### Authoritative Transactional Cleanup Function (`cleanup_expired_challenges`)
+Routine maintenance is executed via a server-owned stored procedure running under `service_role`:
+
+```sql
+CREATE OR REPLACE FUNCTION private_auth.cleanup_expired_challenges(
+    p_retention_interval INTERVAL DEFAULT INTERVAL '24 hours'
+) RETURNS TABLE (
+    purged_challenges INT,
+    purged_logs INT
+) AS $$
+DECLARE
+    v_purged_challenges INT := 0;
+    v_purged_logs INT := 0;
+    v_cutoff TIMESTAMPTZ := clock_timestamp() - p_retention_interval;
+BEGIN
+    -- Purge ephemeral auth_challenges that are:
+    -- (1) consumed with completed operations, OR
+    -- (2) expired and never claimed, OR
+    -- (3) superseded.
+    -- STRICT INVARIANT: NEVER delete challenges associated with active, reconciling, or quarantined operations!
+    WITH deletable AS (
+        SELECT c.id
+        FROM private_auth.auth_challenges c
+        LEFT JOIN private_auth.admin_operation_ledger o ON o.challenge_id = c.challenge_id
+        WHERE c.created_at < v_cutoff
+          AND (
+              -- Case 1: Consumed with terminal completed admin operation
+              (c.status = 'consumed' AND (o.status = 'completed' OR o.status IS NULL))
+              OR
+              -- Case 2: Expired without verification
+              (c.status = 'issued' AND c.expires_at < v_cutoff)
+              OR
+              -- Case 3: Superseded challenge
+              (c.status = 'superseded')
+          )
+          -- CRITICAL EXCLUSION: Never touch any challenge whose operation is active or quarantined!
+          AND (o.status IS NULL OR o.status NOT IN ('claimed', 'executing', 'reconciling', 'quarantined_indeterminate'))
+        FOR UPDATE OF c SKIP LOCKED
+    )
+    DELETE FROM private_auth.auth_challenges c
+    USING deletable
+    WHERE c.id = deletable.id;
+
+    GET DIAGNOSTICS v_purged_challenges = ROW_COUNT;
+
+    -- Purge old email_send_log entries beyond 7 days (preserves quota windows)
+    DELETE FROM private_auth.email_send_log
+    WHERE created_at < (clock_timestamp() - INTERVAL '7 days');
+
+    GET DIAGNOSTICS v_purged_logs = ROW_COUNT;
+
+    RETURN QUERY SELECT v_purged_challenges, v_purged_logs;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+```
+
+---
+
 ## 5. Architecture Candidate Comparison Matrix
 
 | Criteria | Option A: Native GoTrue + Settings | Option B: Managed Supabase + Edge OTP Gateway | Option C: Managed Supabase + Hook Boundary | Option D1: Self-Hosted GoTrue + Exclusive Gateway | Option D2: Third-Party Auth (Auth0/Ory) |
@@ -1221,7 +1323,7 @@ CREATE TABLE private_auth.auth_challenges (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     challenge_id UUID UNIQUE NOT NULL DEFAULT gen_random_uuid(),
     normalized_email TEXT NOT NULL,
-    user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+    user_id UUID REFERENCES auth.users(id) ON DELETE SET NULL, -- Decoupled: user deletion does not cascade-purge active challenge or operation
     purpose private_auth.challenge_purpose NOT NULL,
     status private_auth.challenge_status NOT NULL DEFAULT 'issued',
     code_hash TEXT NOT NULL, -- encode(hmac(code::bytea, server_pepper::bytea, 'sha256'), 'hex')
@@ -1238,12 +1340,12 @@ CREATE INDEX idx_auth_challenges_lookup
 ON private_auth.auth_challenges (challenge_id, normalized_email, purpose)
 WHERE status = 'issued' AND consumed_at IS NULL;
 
--- Durable Operation Ledger with Identity Fencing & Quarantine (P1-3, P1-4, P1-5, P2-7)
+-- Durable Operation Ledger with Identity Fencing & Quarantine (P1-3, P1-4, P1-5, P2-7 & R9 Decoupled)
 CREATE TABLE private_auth.admin_operation_ledger (
     operation_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    challenge_id UUID UNIQUE NOT NULL REFERENCES private_auth.auth_challenges(challenge_id) ON DELETE CASCADE,
+    challenge_id UUID UNIQUE NOT NULL, -- Provenance identifier from verified auth_challenges (decoupled from cascade)
     normalized_email TEXT NOT NULL,
-    target_user_id UUID,
+    target_user_id UUID, -- Identity identifier (decoupled from auth.users cascade)
     operation_type private_auth.operation_type NOT NULL,
     status private_auth.operation_status NOT NULL DEFAULT 'claimed',
     worker_lease_id UUID NOT NULL,
@@ -1559,7 +1661,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- Atomic Claim Helper with Partial Unique Index Exception Handling (PRRT_kwDOVtCmZc656o5X & R7)
+-- Atomic Claim Helper with Referential Validation & Conflict Diagnostics (R7 & R9)
 CREATE OR REPLACE FUNCTION private_auth.claim_admin_operation(
     p_challenge_id UUID,
     p_normalized_email TEXT,
@@ -1578,6 +1680,18 @@ DECLARE
     v_token BIGINT;
     v_err_constraint TEXT;
 BEGIN
+    -- Claim-Time Referential Provenance Validation (R9)
+    IF NOT EXISTS (
+        SELECT 1 FROM private_auth.auth_challenges
+        WHERE challenge_id = p_challenge_id
+          AND normalized_email = p_normalized_email
+          AND status = 'pending_provisioning'
+          AND grant_expires_at > clock_timestamp()
+    ) THEN
+        RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, 'invalid_or_expired_grant'::TEXT;
+        RETURN;
+    END IF;
+
     BEGIN
         INSERT INTO private_auth.admin_operation_ledger (
             challenge_id, normalized_email, target_user_id, operation_type,
@@ -1604,6 +1718,54 @@ BEGIN
         END IF;
         RETURN;
     END;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Authoritative Transactional Challenge Retention Cleanup (Stage 4 — R9)
+CREATE OR REPLACE FUNCTION private_auth.cleanup_expired_challenges(
+    p_retention_interval INTERVAL DEFAULT INTERVAL '24 hours'
+) RETURNS TABLE (
+    purged_challenges INT,
+    purged_logs INT
+) AS $$
+DECLARE
+    v_purged_challenges INT := 0;
+    v_purged_logs INT := 0;
+    v_cutoff TIMESTAMPTZ := clock_timestamp() - p_retention_interval;
+BEGIN
+    -- Purge ephemeral auth_challenges that are:
+    -- (1) consumed with completed operations, OR
+    -- (2) expired and never claimed, OR
+    -- (3) superseded.
+    -- STRICT INVARIANT: NEVER delete challenges associated with active, reconciling, or quarantined operations!
+    WITH deletable AS (
+        SELECT c.id
+        FROM private_auth.auth_challenges c
+        LEFT JOIN private_auth.admin_operation_ledger o ON o.challenge_id = c.challenge_id
+        WHERE c.created_at < v_cutoff
+          AND (
+              (c.status = 'consumed' AND (o.status = 'completed' OR o.status IS NULL))
+              OR
+              (c.status = 'issued' AND c.expires_at < v_cutoff)
+              OR
+              (c.status = 'superseded')
+          )
+          AND (o.status IS NULL OR o.status NOT IN ('claimed', 'executing', 'reconciling', 'quarantined_indeterminate'))
+        FOR UPDATE OF c SKIP LOCKED
+    )
+    DELETE FROM private_auth.auth_challenges c
+    USING deletable
+    WHERE c.id = deletable.id;
+
+    GET DIAGNOSTICS v_purged_challenges = ROW_COUNT;
+
+    -- Purge old email_send_log entries beyond 7 days (preserves quota windows)
+    DELETE FROM private_auth.email_send_log
+    WHERE created_at < (clock_timestamp() - INTERVAL '7 days');
+
+    GET DIAGNOSTICS v_purged_logs = ROW_COUNT;
+
+    RETURN QUERY SELECT v_purged_challenges, v_purged_logs;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
@@ -1658,7 +1820,7 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
--- Schema Security & Permissions (Sole Authoritative Entry Point Enforcement — R8)
+-- Schema Security & Permissions (Sole Authoritative Entry Point Enforcement & Hook Privileges — R9)
 REVOKE ALL ON SCHEMA private_auth FROM PUBLIC, anon, authenticated;
 GRANT USAGE ON SCHEMA private_auth TO service_role;
 
@@ -1666,6 +1828,12 @@ REVOKE ALL ON ALL FUNCTIONS IN SCHEMA private_auth FROM PUBLIC, anon, authentica
 GRANT EXECUTE ON FUNCTION private_auth.reserve_email_send TO service_role;
 GRANT EXECUTE ON FUNCTION private_auth.verify_otp_challenge TO service_role;
 GRANT EXECUTE ON FUNCTION private_auth.claim_admin_operation TO service_role;
+GRANT EXECUTE ON FUNCTION private_auth.cleanup_expired_challenges TO service_role;
+
+-- Hook Execution Privileges (GoTrue supabase_auth_admin Role — R9 Prerequisite)
+-- Supabase GoTrue connects as supabase_auth_admin when executing PostgreSQL Auth Hooks
+GRANT USAGE ON SCHEMA private_auth TO supabase_auth_admin;
+GRANT EXECUTE ON FUNCTION private_auth.custom_access_token_hook TO supabase_auth_admin;
 ```
 
 ---
@@ -1688,7 +1856,10 @@ The owner is requested to consider a future, bounded two-stage proof-of-concept 
    - Direct HTTP probes from outside the network:
      - `POST /auth/v1/otp` -> Must return `422/email_provider_disabled`.
      - `POST /auth/v1/signup` -> Must return `422/signup_disabled`.
-3. **Hook Boundary Verification with RFC 8176 Object-Array Parsing (P1-1):**
+3. **Hook Boundary Verification with RFC 8176 Object-Array Parsing (P1-1 & R9 Hook Privileges):**
+   - Hook Execution Privileges Prerequisite (GoTrue `supabase_auth_admin` Role — R9):
+     - Ensure `GRANT USAGE ON SCHEMA private_auth TO supabase_auth_admin;` and `GRANT EXECUTE ON FUNCTION private_auth.custom_access_token_hook TO supabase_auth_admin;` are applied.
+     - Verify hook executes successfully under `supabase_auth_admin` role context without schema resolution or permission errors.
    - Deploy Send Email Hook: verify it intercepts `POST /auth/v1/recover` and suppresses email delivery.
    - Deploy Custom Access Token Hook with explicit fail-closed allowlist:
      - Test password sign-in -> PASS (`amr: [{'method': 'password', ...}]`).
@@ -1720,8 +1891,8 @@ The owner is requested to consider a future, bounded two-stage proof-of-concept 
 **Goal:** Implement and test the proposed PostgreSQL challenge ledger, rate-limiting, and two-phase Admin API reconciliation.
 *(Triggered ONLY after Stage 06I-B1 achieves verified pass and owner issues separate written approval).*
 1. **Deploy Schema & Functions:**
-   - Deploy `private_auth` schema, tables (`auth_challenges`, `challenge_cooldown_ledger`, `admin_operation_ledger`, `email_send_log`), and authoritative functions (`reserve_email_send`, `verify_otp_challenge`, `claim_admin_operation`).
-   - Apply explicit database permissions (`REVOKE ALL FROM PUBLIC, anon, authenticated; GRANT USAGE/EXECUTE TO service_role;`).
+   - Deploy `private_auth` schema, tables (`auth_challenges`, `challenge_cooldown_ledger`, `admin_operation_ledger`, `email_send_log`), and authoritative functions (`reserve_email_send`, `verify_otp_challenge`, `claim_admin_operation`, `cleanup_expired_challenges`).
+   - Apply explicit database permissions (`REVOKE ALL FROM PUBLIC, anon, authenticated; GRANT USAGE/EXECUTE TO service_role; GRANT USAGE/EXECUTE TO supabase_auth_admin;`).
    - Deploy Edge Functions: `auth-request-otp`, `auth-verify-and-enroll`, `auth-verify-and-recover`.
 2. **Targeted Acceptance & Regression Test Matrix (Tests A–K) (R8 Aligned):**
    *(All tests PROPOSED — NOT EXECUTED; evaluate under deterministic server-side clock controls)*
@@ -1784,6 +1955,39 @@ The owner is requested to consider a future, bounded two-stage proof-of-concept 
      - Worker lease expiration -> recovery worker reclaims lease with incremented `fencing_token`; delayed worker write rejected.
    - **Post-Enrollment Session Test (P1-6):**
      - Client performs in-memory `signInWithPassword` immediately after enrollment, verifies UUID match, and saves cloud profile under `auth.uid() = id` RLS.
+   - **Cleanup & Retention Regression Suite (Tests Cleanup-A through Cleanup-H) (R9 Aligned):**
+     - **Test Cleanup-A (Expired Challenge Cleanup Preserves Durable Operation Evidence):**
+       - Setup: Issue challenge $C_1$, verify it, claim operation $O_1$ (`status = 'completed'`). Age $C_1$ past 24-hour cutoff ($created\_at < clock\_timestamp() - INTERVAL '24 hours'$).
+       - Action: Execute `SELECT * FROM private_auth.cleanup_expired_challenges(INTERVAL '24 hours');`.
+       - Assertion: Challenge $C_1$ is deleted from `auth_challenges`. Operation $O_1$ remains completely intact in `admin_operation_ledger` with its original `challenge_id`, `completed_at`, and audit hash. Zero cascading deletes.
+     - **Test Cleanup-B (Active Operation Protection — No Challenge Deletion While Executing):**
+       - Setup: Challenge $C_2$ verified, operation $O_2$ claimed with `status = 'executing'`. Age $C_2$ past 24 hours.
+       - Action: Execute `cleanup_expired_challenges()`.
+       - Assertion: Challenge $C_2$ is NOT deleted (protected by `o.status NOT IN ('claimed', 'executing', 'reconciling', 'quarantined_indeterminate')`). Operation $O_2$ continues execution safely.
+     - **Test Cleanup-C (Indeterminate Quarantine Survives Cleanup & Restart):**
+       - Setup: Challenge $C_3$, operation $O_3$ has `status = 'quarantined_indeterminate'`. Age both past 24 hours.
+       - Action: Execute `cleanup_expired_challenges()`.
+       - Assertion: Neither $C_3$ nor $O_3$ is deleted. The quarantine lock (`uq_admin_ledger_single_enrollment_*` or `uq_admin_ledger_active_recovery_*`) remains active, preventing racing GoTrue operations or new recovery claims.
+     - **Test Cleanup-D (Completed Initial Enrollment Guard Preserved Across Cleanup):**
+       - Setup: Initial enrollment operation $O_4$ for user $U_1$ has `status = 'completed'`. Challenge $C_4$ aged past 24 hours.
+       - Action: Run `cleanup_expired_challenges()`. Challenge $C_4$ is purged.
+       - Assertion: $O_4$ remains in `admin_operation_ledger`. Subsequent attempt to enroll $U_1$ again triggers `uq_admin_ledger_single_enrollment_user` unique violation and is rejected with `enrollment_conflict_identity_locked`.
+     - **Test Cleanup-E (Repeatable Recovery Audit Preservation):**
+       - Setup: Password recovery operation $O_5$ has `status = 'completed'`. Challenge $C_5$ aged past 24 hours.
+       - Action: Run `cleanup_expired_challenges()`. Challenge $C_5$ is purged.
+       - Assertion: Recovery audit record $O_5$ is preserved. Subsequent recovery operation $O_6$ for the same user is permitted, while $O_5$ remains durable in historical audit logs.
+     - **Test Cleanup-F (Provisional User Deletion Safety):**
+       - Setup: Interrupted signup creates provisional user in `auth.users` ($U_{prov}$), referenced by `auth_challenges.user_id`. Operation $O_7$ is claimed.
+       - Action: Administrative or scheduled cleanup deletes $U_{prov}$ from `auth.users`.
+       - Assertion: `auth_challenges.user_id` is set to NULL (`ON DELETE SET NULL`). Zero rows are deleted in `auth_challenges` or `admin_operation_ledger`. Active identity locks and audit trails remain intact.
+     - **Test Cleanup-G (Concurrent Cleanup and Admin Completion Race):**
+       - Setup: Challenge $C_8$ is verified. Worker is actively completing operation $O_8$.
+       - Concurrency: `cleanup_expired_challenges` runs concurrently with `UPDATE admin_operation_ledger SET status = 'completed'`.
+       - Assertion: `FOR UPDATE OF c SKIP LOCKED` in cleanup skips actively locked challenge rows; zero race conditions or serialization aborts occur.
+     - **Test Cleanup-H (Privacy Retention & Data Minimization):**
+       - Setup: Expired unverified challenges ($> 24$h), superseded challenges ($> 24$h), and old `email_send_log` entries ($> 7$ days).
+       - Action: Run `cleanup_expired_challenges()`.
+       - Assertion: Ephemeral challenge codes and logs are purged; database storage is reclaimed; user privacy is preserved without sacrificing durable audit invariants.
 3. **UUID Lifecycle Assertion:**
    - Test provisional UUID reuse for interrupted signups.
    - Test rejection of initial enrollment against an already password-complete UUID.
@@ -1792,12 +1996,12 @@ The owner is requested to consider a future, bounded two-stage proof-of-concept 
 
 | Deliverable | Location | Status |
 |---|---|---|
-| Canonical Research Document | `.ai/tasks/auth/local-20261120-task06i-a-strict-auth-architecture.md` | **COMPLETE (Revision R8)** |
+| Canonical Research Document | `.ai/tasks/auth/local-20261120-task06i-a-strict-auth-architecture.md` | **COMPLETE (Revision R9)** |
 | Active Continuity Pointer | `.ai/current.md` | **UPDATED** |
 | Research Worktree Branch | `docs/task06i-a-strict-auth-architecture` | **READY FOR REVIEW** |
 | Final Architecture Verdict | **ARCHITECTURE PROPOSED — OWNER DECISION REQUIRED** | **PRODUCTION AUTH NO-GO** |
 
-### Review Findings Disposition Summary (All 21 Findings Addressed Across Revisions R3–R8)
+### Review Findings Disposition Summary (All 22 Findings Addressed Across Revisions R3–R9)
 - **Previous R3 Findings (Retained & Verified):**
   - **P1-1 (Token Hook Allowlist — `PRRT_kwDOVtCmZc654L96`):** Explicit fail-closed allowlist for password sign-in and validated password-origin refresh.
   - **P1-2 (Atomic Email Quota — `PRRT_kwDOVtCmZc654L9_`):** Serialized quota check via `pg_advisory_xact_lock` in `reserve_email_send`.
@@ -1825,3 +2029,11 @@ The owner is requested to consider a future, bounded two-stage proof-of-concept 
 - **New R8 Findings (Single Authoritative Verifier & Test Contract Closure):**
   - **High-1 / corroborated by im-tio (Eliminate Alternative Verification Paths — `PRRT_kwDOVtCmZc657ZXl`):** Established `private_auth.verify_otp_challenge` as the **sole authoritative database entry point for every OTP submission** (valid, invalid, expired, consumed, active cooldown, post-cooldown rollover). Completely retired standalone failure functions (`record_failed_attempt`) and direct SQL UPSERTs from production specification, eliminating the valid-vs-fifth-wrong concurrency race condition. Documented complete server-side Edge Function dispatch sequence and explicit schema permissions (`REVOKE ALL FROM PUBLIC, anon, authenticated; GRANT USAGE/EXECUTE TO service_role`).
   - **P2 (Acceptance Test Contract & Expiry Model Synchronization — `PRRT_kwDOVtCmZc657idC`):** Aligned all Stage 06I-B2 acceptance tests with real `verify_otp_challenge` internal result categories (`cooldown_active`, `invalid_code`). Corrected post-cooldown test sequence to model 10-minute challenge expiration vs 15-minute cooldown by requiring issuance of a fresh replacement challenge prior to testing rollover to a fresh 5-attempt budget. Replaced obsolete `LEFT JOIN` references in First-Challenge tests with `verify_otp_challenge` assertions.
+
+- **New R9 Finding (Durable Identity Ledger Retention & Cascade-Delete Safety — `PRRT_kwDOVtCmZc658mO8`):**
+  - **P1 (Decouple Durable Identity Ledger from Short-Lived Challenges):** Resolved `im-tio` P1 finding on PR #34. In earlier drafts, `admin_operation_ledger.challenge_id` had `REFERENCES auth_challenges(challenge_id) ON DELETE CASCADE`. This violated core security invariants because routine cleanup of ephemeral 10-minute OTP challenges ($> 24$h) would silently cascade-delete `admin_operation_ledger` entries, erasing completed initial-enrollment uniqueness guards (`uq_admin_ledger_single_enrollment_*`), active worker fences, indeterminate quarantine locks (`quarantined_indeterminate`), and audit evidence.
+  - **Decoupled Architecture (Option B):** Decoupled `admin_operation_ledger` from cascading foreign keys. `challenge_id` and `target_user_id` are stored as durable, immutable provenance and identity keys. Referential provenance is verified at claim time within `private_auth.claim_admin_operation` (requiring `auth_challenges.status = 'pending_provisioning'` and unexpired grant).
+  - **User Deletion Cascade Safety:** Configured `auth_challenges.user_id` with `ON DELETE SET NULL`, preventing deletion of provisional or abandoned users in `auth.users` from cascading into challenges or the operations ledger.
+  - **Authoritative Transactional Cleanup Procedure:** Designed and specified `private_auth.cleanup_expired_challenges(p_retention_interval)` with a 10-scenario policy matrix, locking via `FOR UPDATE SKIP LOCKED`, and strict safeguards preventing deletion of challenges tied to active, reconciling, or quarantined operations.
+  - **Cleanup & Retention Regression Suite:** Added Tests Cleanup-A through Cleanup-H to Stage 06I-B2.
+  - **Hook Execution Privileges:** Documented requirement for `GRANT USAGE ON SCHEMA private_auth TO supabase_auth_admin` and `GRANT EXECUTE ON FUNCTION private_auth.custom_access_token_hook TO supabase_auth_admin` for Stage 06I-B1.
