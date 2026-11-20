@@ -134,47 +134,234 @@ flowchart TD
 ### 4.1. AUTH-12 — Atomic OTP Single-Use & Concurrency Serialization
 Task 06H-E proved that GoTrue v2.197.0 suffers from a concurrency race condition: parallel requests with the same valid OTP both succeeded and minted two independent sessions.
 
-#### PostgreSQL Atomic Verification Pattern & First-Challenge Initialization (P1-2 & R5)
-To guarantee that exactly one redemption succeeds across concurrent threads, the challenge store must enforce row-level locking or atomic conditional updates. Note that PostgreSQL's `hmac(data, key, type)` function from `pgcrypto` returns `bytea`. If the column `code_hash` is defined as `TEXT`, it must be explicitly encoded (e.g. `encode(hmac(...), 'hex')`) to prevent `operator does not exist: text = bytea` runtime syntax errors.
+#### Concurrency Serialization & The 5th-Failure Race Vulnerability (P1 Hardened — R7)
+Task 06H-E proved that GoTrue v2.197.0 suffers from a concurrency race condition where parallel requests with the same valid OTP both minted independent sessions.
 
-Furthermore, to ensure first-time signup and recovery verifications succeed, the query uses a `LEFT JOIN` on `challenge_cooldown_ledger` (which is transactionally initialized during challenge issuance):
+However, independent review finding `PRRT_kwDOVtCmZc656hwv` (im-tio [P1]) identified a critical cross-table concurrency vulnerability in earlier revisions: locking only `auth_challenges` (`FOR UPDATE OF c`) while `record_failed_attempt` locked `challenge_cooldown_ledger` independently permitted a severe race condition between a **concurrent 5th invalid attempt** and a **valid OTP submission**:
+1. Request W (submitting a 5th incorrect guess) begins executing `record_failed_attempt`.
+2. Request C (submitting the correct OTP) begins executing the verification query. In its statement snapshot, `l.cooldown_until IS NULL` evaluates to TRUE.
+3. Request W commits its transaction, setting `cooldown_until = clock_timestamp() + INTERVAL '15 minutes'`.
+4. Request C acquires the row lock on `auth_challenges`. Because it never acquired a row lock on `challenge_cooldown_ledger` or rechecked active cooldown state under lock, Request C proceeds to evaluate the HMAC hash, succeeds, and transitions the challenge to `pending_provisioning`!
+5. **Vulnerability Impact:** The intended 5-failure lockout boundary (AUTH-22) is defeated under concurrent guessing, allowing an attacker or race condition to consume the challenge despite an active lockout having committed.
 
-```sql
--- Atomic Single-Use Verification Query (Draft Specification — P1-2 Hardened)
-WITH candidate AS (
-    SELECT c.id, c.challenge_id, c.user_id, c.normalized_email, c.purpose, c.code_hash, c.expires_at
-    FROM private_auth.auth_challenges c
-    LEFT JOIN private_auth.challenge_cooldown_ledger l
-      ON l.normalized_email = c.normalized_email AND l.purpose = c.purpose
-    WHERE c.challenge_id = $1
-      AND c.normalized_email = $2
-      AND c.purpose = $3
-      AND c.status = 'issued'
-      AND c.consumed_at IS NULL
-      AND (l.cooldown_until IS NULL OR l.cooldown_until <= clock_timestamp())
-      AND c.expires_at >= clock_timestamp()
-    FOR UPDATE OF c
-)
-UPDATE private_auth.auth_challenges c
-SET status = 'pending_provisioning',
-    verified_at = clock_timestamp(),
-    provisioning_grant_id = gen_random_uuid(),
-    grant_expires_at = clock_timestamp() + INTERVAL '5 minutes'
-FROM candidate
-WHERE c.id = candidate.id
-  AND candidate.code_hash = encode(hmac($4::bytea, $server_pepper::bytea, 'sha256'), 'hex')
-RETURNING c.id, c.user_id, c.provisioning_grant_id, c.grant_expires_at;
+#### Global Strict Lock Hierarchy (R7)
+To mathematically eliminate deadlocks and guarantee strict serializability across issuance, valid verification, failed attempts, and credential provisioning, all database transactions MUST strictly acquire locks according to the following **Global Strict Lock Hierarchy**:
+
+```
+Tier 1: Identity Advisory Lock      (PERFORM pg_advisory_xact_lock(hashtext('auth_identity:' || normalized_email)))
+   │
+   ▼
+Tier 2: Cooldown Row Lock           (SELECT ... FROM challenge_cooldown_ledger WHERE normalized_email = ... FOR UPDATE)
+   │
+   ▼
+Tier 3: Challenge Row Lock          (SELECT ... FROM auth_challenges WHERE challenge_id = ... FOR UPDATE)
+   │
+   ▼
+Tier 4: Send Log Row                (INSERT INTO email_send_log ...)
+   │
+   ▼
+Tier 5: Admin Operation Ledger Claim (INSERT INTO admin_operation_ledger ... / claim_admin_operation)
 ```
 
-#### Concurrency Evaluation
-- **Pessimistic Row Lock (`SELECT ... FOR UPDATE`):**
-  - When Request A and Request B arrive concurrently with identical tokens, Request A obtains the row lock on `private_auth.auth_challenges`.
-  - Request B blocks until Request A commits.
-  - In PostgreSQL `READ COMMITTED` isolation, when Request B unblocks, its re-evaluation of the row sees `status = 'pending_provisioning'` (no longer `'issued'`).
-  - Request B immediately fails with `already_consumed` / `0 rows returned`.
-- **Atomic Conditional `UPDATE ... WHERE status = 'issued' RETURNING ...`:**
-  - Operates as a single atomic write lock. Request A updates the row and returns `c.id` and `c.provisioning_grant_id`.
-  - Request B's `UPDATE` affects 0 rows. Request B detects 0 rows returned and rejects the attempt.
+Because every transaction (OTP issuance, verification, invalid attempt recording, and recovery claiming) acquires locks in this top-down order, deadlocks cannot occur.
+
+#### Unified Verification Transaction (`private_auth.verify_otp_challenge`)
+To enforce this hierarchy and serialize successful redemptions with cooldown mutations, both valid and invalid attempts are consolidated under a single authoritative stored procedure, `private_auth.verify_otp_challenge` (draft specification):
+
+```sql
+-- Unified Challenge Verification & Cooldown Guard (P1 Hardened & R7)
+CREATE OR REPLACE FUNCTION private_auth.verify_otp_challenge(
+    p_challenge_id UUID,
+    p_normalized_email TEXT,
+    p_purpose private_auth.challenge_purpose,
+    p_raw_code TEXT,
+    p_server_pepper TEXT
+) RETURNS TABLE (
+    status TEXT,
+    user_id UUID,
+    provisioning_grant_id UUID,
+    grant_expires_at TIMESTAMPTZ,
+    remaining_attempts INT,
+    cooldown_until TIMESTAMPTZ,
+    retry_after_seconds INT
+) AS $$
+DECLARE
+    v_cooldown private_auth.challenge_cooldown_ledger%ROWTYPE;
+    v_challenge private_auth.auth_challenges%ROWTYPE;
+    v_now TIMESTAMPTZ := clock_timestamp();
+    v_computed_hash TEXT;
+    v_is_valid BOOLEAN := FALSE;
+    v_new_grant UUID;
+    v_grant_exp TIMESTAMPTZ;
+BEGIN
+    -- Tier 1: Identity Advisory Lock
+    PERFORM pg_advisory_xact_lock(hashtext('auth_identity:' || p_normalized_email));
+
+    -- Ensure cooldown ledger row exists idempotently
+    INSERT INTO private_auth.challenge_cooldown_ledger (
+        normalized_email, purpose, consecutive_failed_attempts, cooldown_until, last_failed_at, updated_at
+    ) VALUES (
+        p_normalized_email, p_purpose, 0, NULL, NULL, v_now
+    ) ON CONFLICT (normalized_email, purpose) DO NOTHING;
+
+    -- Tier 2: Authoritative Cooldown Row Lock (serializes valid and invalid attempts)
+    SELECT * INTO v_cooldown
+    FROM private_auth.challenge_cooldown_ledger
+    WHERE normalized_email = p_normalized_email AND purpose = p_purpose
+    FOR UPDATE;
+
+    -- Strict Lockout Check: If cooldown is active, fail closed with zero challenge mutation
+    IF v_cooldown.cooldown_until IS NOT NULL AND v_cooldown.cooldown_until > v_now THEN
+        RETURN QUERY SELECT
+            'cooldown_active'::TEXT,
+            NULL::UUID, NULL::UUID, NULL::TIMESTAMPTZ,
+            0, v_cooldown.cooldown_until,
+            GREATEST(1, EXTRACT(EPOCH FROM (v_cooldown.cooldown_until - v_now))::INT);
+        RETURN;
+    END IF;
+
+    -- Cooldown Rollover: If prior cooldown expired, roll over to a fresh 5-attempt budget (R5)
+    IF v_cooldown.cooldown_until IS NOT NULL AND v_cooldown.cooldown_until <= v_now THEN
+        UPDATE private_auth.challenge_cooldown_ledger
+        SET consecutive_failed_attempts = 0,
+            cooldown_until = NULL,
+            last_failed_at = NULL,
+            updated_at = v_now
+        WHERE normalized_email = p_normalized_email AND purpose = p_purpose
+        RETURNING * INTO v_cooldown;
+    END IF;
+
+    -- Tier 3: Challenge Row Lock
+    SELECT * INTO v_challenge
+    FROM private_auth.auth_challenges
+    WHERE challenge_id = p_challenge_id
+      AND normalized_email = p_normalized_email
+      AND purpose = p_purpose
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RETURN QUERY SELECT
+            'challenge_not_found'::TEXT,
+            NULL::UUID, NULL::UUID, NULL::TIMESTAMPTZ,
+            GREATEST(0, 5 - v_cooldown.consecutive_failed_attempts),
+            v_cooldown.cooldown_until, 0;
+        RETURN;
+    END IF;
+
+    IF v_challenge.status != 'issued' OR v_challenge.consumed_at IS NOT NULL THEN
+        RETURN QUERY SELECT
+            'already_consumed'::TEXT,
+            NULL::UUID, NULL::UUID, NULL::TIMESTAMPTZ,
+            GREATEST(0, 5 - v_cooldown.consecutive_failed_attempts),
+            v_cooldown.cooldown_until, 0;
+        RETURN;
+    END IF;
+
+    IF v_challenge.expires_at < v_now THEN
+        RETURN QUERY SELECT
+            'challenge_expired'::TEXT,
+            NULL::UUID, NULL::UUID, NULL::TIMESTAMPTZ,
+            GREATEST(0, 5 - v_cooldown.consecutive_failed_attempts),
+            v_cooldown.cooldown_until, 0;
+        RETURN;
+    END IF;
+
+    -- Constant-time cryptographic comparison (explicit hex encoding)
+    v_computed_hash := encode(hmac(p_raw_code::bytea, p_server_pepper::bytea, 'sha256'), 'hex');
+    v_is_valid := (v_challenge.code_hash = v_computed_hash);
+
+    IF v_is_valid THEN
+        -- Recheck cooldown state immediately before committing redemption
+        IF v_cooldown.cooldown_until IS NOT NULL AND v_cooldown.cooldown_until > v_now THEN
+            RETURN QUERY SELECT
+                'cooldown_active'::TEXT,
+                NULL::UUID, NULL::UUID, NULL::TIMESTAMPTZ,
+                0, v_cooldown.cooldown_until,
+                GREATEST(1, EXTRACT(EPOCH FROM (v_cooldown.cooldown_until - v_now))::INT);
+            RETURN;
+        END IF;
+
+        -- Transition challenge to pending_provisioning
+        v_new_grant := gen_random_uuid();
+        v_grant_exp := v_now + INTERVAL '5 minutes';
+
+        UPDATE private_auth.auth_challenges
+        SET status = 'pending_provisioning',
+            verified_at = v_now,
+            provisioning_grant_id = v_new_grant,
+            grant_expires_at = v_grant_exp
+        WHERE id = v_challenge.id;
+
+        -- Reset cooldown ledger on successful verification
+        UPDATE private_auth.challenge_cooldown_ledger
+        SET consecutive_failed_attempts = 0,
+            cooldown_until = NULL,
+            last_failed_at = NULL,
+            updated_at = v_now
+        WHERE normalized_email = p_normalized_email AND purpose = p_purpose;
+
+        RETURN QUERY SELECT
+            'verified'::TEXT,
+            v_challenge.user_id,
+            v_new_grant,
+            v_grant_exp,
+            5,
+            NULL::TIMESTAMPTZ,
+            0;
+        RETURN;
+    ELSE
+        -- Invalid Code: Execute failure state machine under held Tier 2 row lock
+        IF v_cooldown.consecutive_failed_attempts + 1 >= 5 THEN
+            -- 5th failure: activate fixed 15-minute cooldown
+            UPDATE private_auth.challenge_cooldown_ledger
+            SET consecutive_failed_attempts = v_cooldown.consecutive_failed_attempts + 1,
+                cooldown_until = v_now + INTERVAL '15 minutes',
+                last_failed_at = v_now,
+                updated_at = v_now
+            WHERE normalized_email = p_normalized_email AND purpose = p_purpose
+            RETURNING * INTO v_cooldown;
+
+            RETURN QUERY SELECT
+                'fifth_failure_activated_cooldown'::TEXT,
+                NULL::UUID, NULL::UUID, NULL::TIMESTAMPTZ,
+                0,
+                v_cooldown.cooldown_until,
+                900;
+            RETURN;
+        ELSE
+            -- Failures 1-4: increment counter
+            UPDATE private_auth.challenge_cooldown_ledger
+            SET consecutive_failed_attempts = v_cooldown.consecutive_failed_attempts + 1,
+                cooldown_until = NULL,
+                last_failed_at = v_now,
+                updated_at = v_now
+            WHERE normalized_email = p_normalized_email AND purpose = p_purpose
+            RETURNING * INTO v_cooldown;
+
+            RETURN QUERY SELECT
+                'invalid_code'::TEXT,
+                NULL::UUID, NULL::UUID, NULL::TIMESTAMPTZ,
+                GREATEST(0, 5 - v_cooldown.consecutive_failed_attempts),
+                NULL::TIMESTAMPTZ,
+                0;
+            RETURN;
+        END IF;
+    END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+```
+
+#### Concurrency Evaluation Under Unified Lock Hierarchy
+- **Scenario A: Concurrent Identical Valid Tokens (AUTH-12):**
+  - Request 1 and Request 2 both arrive with valid OTPs for the same challenge.
+  - Request 1 acquires the Tier 2 cooldown lock and Tier 3 challenge lock. It updates the challenge to `pending_provisioning` and commits.
+  - Request 2 waits on Tier 2. When it acquires Tier 2 and Tier 3, it reads `status = 'pending_provisioning'`. It immediately fails with `already_consumed`. Exactly 1 grant is issued.
+- **Scenario B: Concurrent 5th Wrong Attempt vs. Valid OTP (AUTH-22 & AUTH-12 Race Closure):**
+  - Challenge has 4 previous failed attempts (`consecutive_failed_attempts = 4`). Request W submits an invalid guess; Request C submits the valid OTP concurrently.
+  - **Case B1 (Wrong guess acquires Tier 2 lock first):** Request W enters `verify_otp_challenge`, acquires Tier 2 lock, detects 5th failure, sets `cooldown_until = v_now + INTERVAL '15 minutes'`, and commits. Request C was blocked waiting for Tier 2 lock. When Request C unblocks, it reads the updated cooldown row, sees `cooldown_until > v_now`, and immediately terminates with `cooldown_active`. The valid OTP is rejected, and the challenge is NOT consumed.
+  - **Case B2 (Valid OTP acquires Tier 2 lock first):** Request C enters `verify_otp_challenge`, acquires Tier 2 lock and Tier 3 lock, verifies the hash, updates challenge to `pending_provisioning`, resets cooldown counter to 0, and commits. Request W was blocked waiting for Tier 2 lock. When Request W unblocks, it acquires Tier 3 challenge lock, sees `status = 'pending_provisioning'`, and fails without triggering a lockout or invalidating the valid user's grant.
+- **Scenario C: Concurrent Invalid Guesses (AUTH-22 Serialized Counting):**
+  - Multiple concurrent invalid guesses queue strictly on the Tier 2 row lock. Each guess observes the committed counter of its predecessor. Attempt 5 triggers the 15-minute lockout; subsequent guesses observe `cooldown_until > v_now` and trigger zero counter or deadline mutations (`active_cooldown_no_mutation`).
 
 #### The Cross-Service Distributed Transaction Problem & GoTrue Admin Idempotency Verdict
 A critical architectural reality must be acknowledged: **a PostgreSQL database transaction cannot roll back an independent outbound HTTP call to Supabase GoTrue Admin API**.
@@ -223,18 +410,58 @@ To resolve cross-service coordination without impossible distributed transaction
        WHERE operation_type = 'recovery_password_reset'
          AND status IN ('claimed', 'executing', 'reconciling', 'quarantined_indeterminate');
        ```
-   - **Initial Claim Query:**
+   - **Atomic Claim Helper & Unique Index Diagnostics (`claim_admin_operation` — R7):**
+     *Bugbot Finding Resolution (`PRRT_kwDOVtCmZc656o5X`):* A naive `INSERT ... ON CONFLICT (challenge_id) DO NOTHING` only swallows duplicate requests for the exact same challenge ID. If a second, distinct challenge for the same `target_user_id` or `normalized_email` attempts enrollment or active recovery, it violates `uq_admin_ledger_single_enrollment_*` or `uq_admin_ledger_active_recovery_*`. An unhandled unique violation exception would crash the transaction with an HTTP 500 error instead of cleanly producing the documented HTTP 409 Conflict path.
+     To ensure deterministic conflict handling across all partial unique indexes, claiming is encapsulated in a dedicated stored function with explicit exception handling and constraint diagnostics:
      ```sql
-     INSERT INTO private_auth.admin_operation_ledger (
-         challenge_id, normalized_email, target_user_id, operation_type,
-         status, worker_lease_id, lease_expires_at, fencing_token, idempotency_payload_hash
-     ) VALUES (
-         $1, $2, $3, $4, 'executing', $worker_lease_id,
-         clock_timestamp() + INTERVAL '30 seconds', 1, $payload_hash
-     )
-     ON CONFLICT (challenge_id) DO NOTHING
-     RETURNING operation_id, fencing_token;
+     CREATE OR REPLACE FUNCTION private_auth.claim_admin_operation(
+         p_challenge_id UUID,
+         p_normalized_email TEXT,
+         p_target_user_id UUID,
+         p_operation_type private_auth.operation_type,
+         p_worker_lease_id UUID,
+         p_idempotency_payload_hash TEXT
+     ) RETURNS TABLE (
+         claimed BOOLEAN,
+         operation_id UUID,
+         fencing_token BIGINT,
+         conflict_code TEXT
+     ) AS $$
+     DECLARE
+         v_op_id UUID;
+         v_token BIGINT;
+         v_err_constraint TEXT;
+     BEGIN
+         BEGIN
+             INSERT INTO private_auth.admin_operation_ledger (
+                 challenge_id, normalized_email, target_user_id, operation_type,
+                 status, worker_lease_id, lease_expires_at, fencing_token, idempotency_payload_hash
+             ) VALUES (
+                 p_challenge_id, p_normalized_email, p_target_user_id, p_operation_type,
+                 'executing', p_worker_lease_id, clock_timestamp() + INTERVAL '30 seconds', 1, p_idempotency_payload_hash
+             )
+             RETURNING admin_operation_ledger.operation_id, admin_operation_ledger.fencing_token
+             INTO v_op_id, v_token;
+
+             RETURN QUERY SELECT TRUE, v_op_id, v_token, NULL::TEXT;
+             RETURN;
+         EXCEPTION WHEN unique_violation THEN
+             GET STACKED DIAGNOSTICS v_err_constraint = CONSTRAINT_NAME;
+             IF v_err_constraint = 'admin_operation_ledger_challenge_id_key' THEN
+                 RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, 'challenge_already_claimed'::TEXT;
+             ELSIF v_err_constraint IN ('uq_admin_ledger_single_enrollment_user', 'uq_admin_ledger_single_enrollment_email') THEN
+                 RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, 'enrollment_conflict_identity_locked'::TEXT;
+             ELSIF v_err_constraint IN ('uq_admin_ledger_active_recovery_user', 'uq_admin_ledger_active_recovery_email') THEN
+                 RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, 'recovery_conflict_identity_locked'::TEXT;
+             ELSE
+                 RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, 'identity_conflict_generic'::TEXT;
+             END IF;
+             RETURN;
+         END;
+     END;
+     $$ LANGUAGE plpgsql SECURITY DEFINER;
      ```
+     The Edge Function inspects `claimed`: if `TRUE`, it proceeds to the outbound Admin API call with `fencing_token`; if `FALSE`, it maps the structured `conflict_code` directly to `HTTP 409 Conflict` (`{ error: "conflict", code: conflict_code }`).
    - **Expired-Lease Takeover & Fencing Token Protocol (P2-7):**
      If a worker crashes or encounters an event-loop pause, `INSERT ... ON CONFLICT DO NOTHING` affects 0 rows. A recovery worker cannot insert, but safely claims ownership using an atomic conditional update that increments a monotonic `fencing_token`:
      ```sql
@@ -567,52 +794,58 @@ DECLARE
     v_recent_count INT;
     v_new_id UUID;
     v_last_send TIMESTAMPTZ;
+    v_cooldown_until TIMESTAMPTZ;
+    v_now TIMESTAMPTZ := clock_timestamp();
 BEGIN
-    -- Acquire exclusive transactional lock scoped strictly to this normalized email
-    PERFORM pg_advisory_xact_lock(hashtext('email_send_quota:' || p_normalized_email));
+    -- Tier 1: Identity Advisory Lock
+    PERFORM pg_advisory_xact_lock(hashtext('auth_identity:' || p_normalized_email));
 
     -- Transactionally initialize cooldown ledger row if absent (P1-2)
     INSERT INTO private_auth.challenge_cooldown_ledger (
-        normalized_email, purpose, consecutive_failed_attempts, cooldown_until
+        normalized_email, purpose, consecutive_failed_attempts, cooldown_until, last_failed_at, updated_at
     ) VALUES (
-        p_normalized_email, p_purpose, 0, NULL
-    )
-    ON CONFLICT (normalized_email, purpose) DO NOTHING;
+        p_normalized_email, p_purpose, 0, NULL, NULL, v_now
+    ) ON CONFLICT (normalized_email, purpose) DO NOTHING;
 
-    -- Check active cooldown for this purpose
-    IF EXISTS (
-        SELECT 1 FROM private_auth.challenge_cooldown_ledger
-        WHERE normalized_email = p_normalized_email
-          AND purpose = p_purpose
-          AND cooldown_until > clock_timestamp()
-    ) THEN
-        RETURN QUERY SELECT FALSE, NULL::UUID, 900, 'cooldown_active';
+    -- Tier 2: Acquire pessimistic row lock on the cooldown ledger (PRRT_kwDOVtCmZc656o5Q)
+    -- Eliminates the issuance-vs-cooldown race where resend slips past an uncommitted 5th failure
+    SELECT cooldown_until INTO v_cooldown_until
+    FROM private_auth.challenge_cooldown_ledger
+    WHERE normalized_email = p_normalized_email AND purpose = p_purpose
+    FOR UPDATE;
+
+    -- Check active cooldown for this purpose under lock
+    IF v_cooldown_until IS NOT NULL AND v_cooldown_until > v_now THEN
+        RETURN QUERY SELECT FALSE, NULL::UUID,
+            GREATEST(1, EXTRACT(EPOCH FROM (v_cooldown_until - v_now))::INT),
+            'cooldown_active'::TEXT;
         RETURN;
     END IF;
 
     -- Atomic Cooldown Rollover: If prior cooldown has expired, reset failure budget for the new cycle (R5)
-    UPDATE private_auth.challenge_cooldown_ledger
-    SET consecutive_failed_attempts = 0,
-        cooldown_until = NULL,
-        last_failed_at = NULL
-    WHERE normalized_email = p_normalized_email
-      AND purpose = p_purpose
-      AND cooldown_until IS NOT NULL
-      AND cooldown_until <= clock_timestamp();
+    IF v_cooldown_until IS NOT NULL AND v_cooldown_until <= v_now THEN
+        UPDATE private_auth.challenge_cooldown_ledger
+        SET consecutive_failed_attempts = 0,
+            cooldown_until = NULL,
+            last_failed_at = NULL,
+            updated_at = v_now
+        WHERE normalized_email = p_normalized_email AND purpose = p_purpose;
+    END IF;
 
-    -- Check minimum 60-second interval across both purposes (P2-5)
+    -- Tier 4: Check minimum 60-second interval across both purposes (P2-5 & R7)
+    -- Predicate correctly accepts at >= 60 seconds and rejects strictly at < 60 seconds (PRRT_kwDOVtCmZc656o5e)
     SELECT created_at INTO v_last_send
     FROM private_auth.email_send_log
     WHERE normalized_email = p_normalized_email
-      AND created_at >= clock_timestamp() - INTERVAL '60 seconds'
+      AND created_at > (v_now - INTERVAL '60 seconds')
       AND status IN ('reserved', 'sent')
     ORDER BY created_at DESC
     LIMIT 1;
 
     IF FOUND THEN
         RETURN QUERY SELECT FALSE, NULL::UUID,
-            GREATEST(1, EXTRACT(EPOCH FROM (v_last_send + INTERVAL '60 seconds' - clock_timestamp()))::INT),
-            'interval_active';
+            GREATEST(1, EXTRACT(EPOCH FROM (v_last_send + INTERVAL '60 seconds' - v_now))::INT),
+            'interval_active'::TEXT;
         RETURN;
     END IF;
 
@@ -620,29 +853,30 @@ BEGIN
     SELECT COUNT(*) INTO v_recent_count
     FROM private_auth.email_send_log
     WHERE normalized_email = p_normalized_email
-      AND created_at >= clock_timestamp() - INTERVAL '1 hour'
+      AND created_at >= (v_now - INTERVAL '1 hour')
       AND status IN ('reserved', 'sent');
 
     IF v_recent_count >= 5 THEN
-        RETURN QUERY SELECT FALSE, NULL::UUID, 3600, 'hourly_quota_exceeded';
+        RETURN QUERY SELECT FALSE, NULL::UUID, 3600, 'hourly_quota_exceeded'::TEXT;
         RETURN;
     END IF;
 
     -- Atomically reserve quota
     v_new_id := gen_random_uuid();
     INSERT INTO private_auth.email_send_log (id, normalized_email, purpose, status, created_at)
-    VALUES (v_new_id, p_normalized_email, p_purpose, 'reserved', clock_timestamp());
+    VALUES (v_new_id, p_normalized_email, p_purpose, 'reserved', v_now);
 
-    RETURN QUERY SELECT TRUE, v_new_id, 0, 'reserved';
+    RETURN QUERY SELECT TRUE, v_new_id, 0, 'reserved'::TEXT;
 END;
-$$ LANGUAGE plpgsql;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 ```
-- **Deterministic Quota Test Matrix (P2-5):**
-  - **Test A (10 Simultaneous Requests):** Ten simultaneous requests for the same email serialize under `pg_advisory_xact_lock`. The first request reserves quota (`allowed = true`). The subsequent nine requests execute within $< 60$ seconds of the first, find `created_at >= clock_timestamp() - INTERVAL '60 seconds'`, and are REJECTED (`allowed = false, reason = 'interval_active'`). Exactly 1 reservation succeeds.
-  - **Test B (Five Spaced Requests):** Five requests separated by $\ge 60$ seconds (e.g. $t = 0, 65, 130, 195, 260$ seconds) all pass both the 60-second spacing rule and the 5/hour count rule. Exactly 5 reservations succeed.
-  - **Test C (Sixth Request Within Rolling Hour):** A sixth request attempted at $t = 325$ seconds ($\ge 60$ seconds after the 5th send, but within 60 minutes of the first send) passes the 60-second interval check but fails the rolling 1-hour count check ($5 \ge 5$). It is REJECTED (`allowed = false, reason = 'hourly_quota_exceeded'`).
+- **Deterministic Quota Test Matrix (P2-5 & R7):**
+  - **Test A (10 Simultaneous Requests):** Ten simultaneous requests for the same email serialize under `pg_advisory_xact_lock` and the Tier 2 cooldown row lock. The first request reserves quota (`allowed = true`). The subsequent nine requests execute within $< 60$ seconds of the first, find `created_at > (v_now - INTERVAL '60 seconds')`, and are REJECTED (`allowed = false, reason = 'interval_active'`). Exactly 1 reservation succeeds.
+  - **Test B (Five Spaced Requests — Boundary Precision):** Five requests separated by $\ge 60$ seconds (e.g. $t = 0.000, 60.000, 120.000, 180.000, 240.000$ seconds) all pass both the inclusive 60-second spacing rule and the 5/hour count rule. Because the interval predicate evaluates `created_at > (v_now - INTERVAL '60 seconds')`, a request arriving at exactly $t = 60.000$ seconds evaluates to FALSE and is successfully accepted. Exactly 5 reservations succeed.
+  - **Test C (Sixth Request Within Rolling Hour):** A sixth request attempted at $t = 300.000$ seconds ($\ge 60$ seconds after the 5th send, but within 60 minutes of the first send) passes the 60-second interval check but fails the rolling 1-hour count check ($5 \ge 5$). It is REJECTED (`allowed = false, reason = 'hourly_quota_exceeded'`).
   - **Test D (Rolling-Window Release):** At $t = 3601$ seconds (after the 1st send falls outside the 60-minute rolling window), a new request passes both checks and successfully reserves quota.
-- **Conservative Accounting:** Reserved rows count against quota immediately. On delivery confirmation, status updates to `'sent'`. On permanent provider failure, status updates to `'failed'` (releasing quota). On provider timeout or network ambiguity, status remains `'reserved'` (fail-closed).
+- **Post-Commit Outbound Email Dispatch Guarantee (R7):**
+  To prevent phantom emails during transaction rollbacks or database errors, outbound email dispatch (`POST /send` to Resend/SMTP) occurs strictly **post-commit**. The database transaction completes `reserve_email_send` and inserts the hashed challenge into `auth_challenges`. Only after PostgreSQL returns a committed transaction does the Edge Function invoke the external email provider. If the database transaction rejects (e.g. `cooldown_active`, `interval_active`, `hourly_quota_exceeded`) or encounters an error, no outbound HTTP call is ever made.
 
 #### Public Response & Anti-Enumeration Contract (P2-8)
 To prevent timing or status code oracles that allow attackers to probe account existence or lockout status:
@@ -874,14 +1108,15 @@ sequenceDiagram
     participant RLS as Cloud Profile Store (PostgREST RLS)
 
     User->>Edge: POST /auth-request-otp { email, purpose: 'signup_initial_password' }
-    Edge->>DB: reserve_email_send(email, purpose) under pg_advisory_xact_lock
-    Note over DB: Initializes cooldown ledger row if absent; rolls over expired cooldown (R5)
+    Edge->>DB: reserve_email_send(email, purpose) under Tier 1 Advisory + Tier 2 Cooldown Lock
+    Note over DB: Serializes with failed attempts; checks active lockout; rolls over expired cooldown (R7)
     alt Cooldown Active, Interval < 60s, or > 5 sends/hr
         DB-->>Edge: Quota Rejected / Cooldown Active
         Edge-->>User: 200 OK (Generic anti-enumeration message)
     else Quota Reserved
         DB-->>Edge: Reserved (send_id)
         Edge->>DB: Insert HMAC-SHA256(OTP) into auth_challenges (status: 'issued')
+        Note over Edge,DB: Post-Commit Email Dispatch (R7): Transaction commits before sending
         Edge->>Email: Send 6-digit OTP
         Email-->>Edge: Accepted
         Edge->>DB: Update email_send_log status = 'sent'
@@ -891,16 +1126,18 @@ sequenceDiagram
     Note over User: User reviews email & enters 6-digit OTP + New Password (Create Password screen)
 
     User->>Edge: POST /auth-verify-and-enroll { email, otp, password, purpose: 'signup_initial_password' }
-    Edge->>DB: Phase 1: Atomic verify & row lock (LEFT JOIN cooldown ledger)
-    alt OTP Invalid
-        DB->>DB: record_failed_attempt (skips mutation if locked; rolls over if expired; locks on 5th)
+    Edge->>DB: Phase 1: verify_otp_challenge(challenge_id, email, purpose, otp, pepper)
+    Note over DB: Unified Lock Hierarchy (R7): Tier 1 Advisory -> Tier 2 Cooldown Lock -> Tier 3 Challenge Lock
+    alt OTP Invalid or Cooldown Active
+        DB-->>Edge: Verification Failed (cooldown updated or active_cooldown_no_mutation)
         Edge-->>User: 400 Bad Request { error: "invalid_grant", message: "Verification failed. Please try again or request a new code." }
     else OTP Valid & Not Locked
         DB-->>Edge: Phase 1 Success: status = 'pending_provisioning', grant_id generated
-        Edge->>DB: Phase 2: Claim identity-serialized worker lease (target_user_id / normalized_email)
+        Edge->>DB: Phase 2: claim_admin_operation(challenge_id, email, user_id, op_type, lease_id, hash)
+        Note over DB: Handles partial unique indexes via EXCEPTION WHEN unique_violation (R7)
         alt Competing Active or Quarantined Operation Exists
-            DB-->>Edge: Conflict / Identity Locked
-            Edge-->>User: 409 Conflict { error: "operation_in_progress" }
+            DB-->>Edge: Conflict / Identity Locked (conflict_code)
+            Edge-->>User: 409 Conflict { error: "conflict", code: conflict_code }
         else Lease Acquired (fencing_token = N)
             Note over Edge: Phase 3: Outbound Admin Call
             alt Provisional UUID Exists
@@ -970,14 +1207,15 @@ sequenceDiagram
     participant Admin as Supabase Auth (Admin API)
 
     User->>Edge: POST /auth-request-otp { email, purpose: 'recovery_password_reset' }
-    Edge->>DB: reserve_email_send(email, purpose) under pg_advisory_xact_lock
-    Note over DB: Initializes cooldown ledger row if absent; rolls over expired cooldown (R5)
+    Edge->>DB: reserve_email_send(email, purpose) under Tier 1 Advisory + Tier 2 Cooldown Lock
+    Note over DB: Serializes with failed attempts; checks active lockout; rolls over expired cooldown (R7)
     alt Rate Limit / Cooldown Active
         DB-->>Edge: Quota Rejected
         Edge-->>User: 200 OK (Generic anti-enumeration message)
     else Quota Reserved
         Edge->>DB: Check lifecycle (must be PASSWORD_COMPLETE / SERVER_ELIGIBLE)
         Edge->>DB: Insert HMAC-SHA256(OTP) into auth_challenges (purpose: recovery_password_reset)
+        Note over Edge,DB: Post-Commit Email Dispatch (R7): Transaction commits before sending
         Edge->>Email: Send Recovery OTP
         Email-->>Edge: Accepted
         Edge->>DB: Update email_send_log status = 'sent'
@@ -987,16 +1225,18 @@ sequenceDiagram
     Note over User: User enters Recovery OTP + New Password
 
     User->>Edge: POST /auth-verify-and-recover { email, otp, new_password, purpose: 'recovery_password_reset' }
-    Edge->>DB: Phase 1: Atomic verify & row lock (LEFT JOIN cooldown ledger)
-    alt Verification Failed
-        DB->>DB: record_failed_attempt (skips mutation if locked; rolls over if expired; locks on 5th)
+    Edge->>DB: Phase 1: verify_otp_challenge(challenge_id, email, purpose, otp, pepper)
+    Note over DB: Unified Lock Hierarchy (R7): Tier 1 Advisory -> Tier 2 Cooldown Lock -> Tier 3 Challenge Lock
+    alt Verification Failed or Cooldown Active
+        DB-->>Edge: Verification Failed (cooldown updated or active_cooldown_no_mutation)
         Edge-->>User: 400 Bad Request { error: "invalid_grant", message: "Verification failed. Please try again or request a new code." }
     else Atomic Verification Succeeded
         DB-->>Edge: Phase 1 Success: status = 'pending_provisioning', grant_id generated
-        Edge->>DB: Phase 2: Claim identity-serialized worker lease (fencing_token = N)
+        Edge->>DB: Phase 2: claim_admin_operation(challenge_id, email, user_id, op_type, lease_id, hash)
+        Note over DB: Handles partial unique indexes via EXCEPTION WHEN unique_violation (R7)
         alt Competing Active or Quarantined Recovery Exists
-            DB-->>Edge: Conflict / Identity Quarantined
-            Edge-->>User: 409 Conflict { error: "recovery_in_progress" }
+            DB-->>Edge: Conflict / Identity Quarantined (conflict_code)
+            Edge-->>User: 409 Conflict { error: "conflict", code: conflict_code }
         else Lease Acquired (fencing_token = N)
             Edge->>Admin: admin.updateUserById(user_id, { password: new_password })
             alt Admin API Succeeded (200 OK)
@@ -1141,94 +1381,317 @@ CREATE TABLE private_auth.email_send_log (
 CREATE INDEX idx_email_send_log_window
 ON private_auth.email_send_log (normalized_email, created_at DESC);
 
--- Authoritative Failure Recording & Fixed Lockout Guard (P1 Hardened & R6)
-CREATE OR REPLACE FUNCTION private_auth.record_failed_attempt(
+-- Serialized Quota Reservation & Cooldown Boundary (P1-2, P2-5 & R7)
+CREATE OR REPLACE FUNCTION private_auth.reserve_email_send(
     p_normalized_email TEXT,
     p_purpose private_auth.challenge_purpose
-) RETURNS TABLE (
-    result_category TEXT,
-    consecutive_failed_attempts INT,
-    cooldown_until TIMESTAMPTZ,
-    retry_after_seconds INT
-) AS $$
+) RETURNS TABLE(allowed BOOLEAN, send_id UUID, retry_after_seconds INT, reason TEXT) AS $$
 DECLARE
-    v_row private_auth.challenge_cooldown_ledger%ROWTYPE;
+    v_recent_count INT;
+    v_new_id UUID;
+    v_last_send TIMESTAMPTZ;
+    v_cooldown_until TIMESTAMPTZ;
     v_now TIMESTAMPTZ := clock_timestamp();
 BEGIN
-    -- 1. Ensure ledger row exists idempotently
+    -- Tier 1: Identity Advisory Lock
+    PERFORM pg_advisory_xact_lock(hashtext('auth_identity:' || p_normalized_email));
+
+    -- Transactionally initialize cooldown ledger row if absent (P1-2)
     INSERT INTO private_auth.challenge_cooldown_ledger (
         normalized_email, purpose, consecutive_failed_attempts, cooldown_until, last_failed_at, updated_at
     ) VALUES (
         p_normalized_email, p_purpose, 0, NULL, NULL, v_now
     ) ON CONFLICT (normalized_email, purpose) DO NOTHING;
 
-    -- 2. Lock row exclusively under pessimistic row lock (serializes concurrent attempts)
-    SELECT * INTO v_row
+    -- Tier 2: Acquire pessimistic row lock on the cooldown ledger (PRRT_kwDOVtCmZc656o5Q)
+    -- Serializes issuance with failed verification attempts, eliminating the resend-vs-cooldown race
+    SELECT cooldown_until INTO v_cooldown_until
     FROM private_auth.challenge_cooldown_ledger
     WHERE normalized_email = p_normalized_email AND purpose = p_purpose
     FOR UPDATE;
 
-    -- 3. Case A: Active Cooldown -> STRICT REJECT / ZERO MUTATION (P1 Fixed Lockout Deadline)
-    IF v_row.cooldown_until IS NOT NULL AND v_row.cooldown_until > v_now THEN
-        RETURN QUERY SELECT
-            'active_cooldown_no_mutation'::TEXT,
-            v_row.consecutive_failed_attempts,
-            v_row.cooldown_until,
-            GREATEST(1, EXTRACT(EPOCH FROM (v_row.cooldown_until - v_now))::INT);
+    -- Check active cooldown for this purpose under lock
+    IF v_cooldown_until IS NOT NULL AND v_cooldown_until > v_now THEN
+        RETURN QUERY SELECT FALSE, NULL::UUID,
+            GREATEST(1, EXTRACT(EPOCH FROM (v_cooldown_until - v_now))::INT),
+            'cooldown_active'::TEXT;
         RETURN;
     END IF;
 
-    -- 4. Case B: Expired Cooldown -> ROLLOVER to Attempt 1 of a fresh 5-attempt budget
-    IF v_row.cooldown_until IS NOT NULL AND v_row.cooldown_until <= v_now THEN
+    -- Atomic Cooldown Rollover: If prior cooldown has expired, reset failure budget for the new cycle (R5)
+    IF v_cooldown_until IS NOT NULL AND v_cooldown_until <= v_now THEN
         UPDATE private_auth.challenge_cooldown_ledger
-        SET consecutive_failed_attempts = 1,
+        SET consecutive_failed_attempts = 0,
             cooldown_until = NULL,
-            last_failed_at = v_now,
+            last_failed_at = NULL,
+            updated_at = v_now
+        WHERE normalized_email = p_normalized_email AND purpose = p_purpose;
+    END IF;
+
+    -- Tier 4: Check minimum 60-second interval across both purposes (P2-5 & R7)
+    -- Correct predicate accepts at >= 60 seconds and rejects at < 60 seconds (PRRT_kwDOVtCmZc656o5e)
+    SELECT created_at INTO v_last_send
+    FROM private_auth.email_send_log
+    WHERE normalized_email = p_normalized_email
+      AND created_at > (v_now - INTERVAL '60 seconds')
+      AND status IN ('reserved', 'sent')
+    ORDER BY created_at DESC
+    LIMIT 1;
+
+    IF FOUND THEN
+        RETURN QUERY SELECT FALSE, NULL::UUID,
+            GREATEST(1, EXTRACT(EPOCH FROM (v_last_send + INTERVAL '60 seconds' - v_now))::INT),
+            'interval_active'::TEXT;
+        RETURN;
+    END IF;
+
+    -- Check rolling 1-hour window (max 5 sends across both purposes) (P2-5)
+    SELECT COUNT(*) INTO v_recent_count
+    FROM private_auth.email_send_log
+    WHERE normalized_email = p_normalized_email
+      AND created_at >= (v_now - INTERVAL '1 hour')
+      AND status IN ('reserved', 'sent');
+
+    IF v_recent_count >= 5 THEN
+        RETURN QUERY SELECT FALSE, NULL::UUID, 3600, 'hourly_quota_exceeded'::TEXT;
+        RETURN;
+    END IF;
+
+    -- Atomically reserve quota
+    v_new_id := gen_random_uuid();
+    INSERT INTO private_auth.email_send_log (id, normalized_email, purpose, status, created_at)
+    VALUES (v_new_id, p_normalized_email, p_purpose, 'reserved', v_now);
+
+    RETURN QUERY SELECT TRUE, v_new_id, 0, 'reserved'::TEXT;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
+-- Unified Challenge Verification & Cooldown Guard (P1 Hardened & R7)
+CREATE OR REPLACE FUNCTION private_auth.verify_otp_challenge(
+    p_challenge_id UUID,
+    p_normalized_email TEXT,
+    p_purpose private_auth.challenge_purpose,
+    p_raw_code TEXT,
+    p_server_pepper TEXT
+) RETURNS TABLE (
+    status TEXT,
+    user_id UUID,
+    provisioning_grant_id UUID,
+    grant_expires_at TIMESTAMPTZ,
+    remaining_attempts INT,
+    cooldown_until TIMESTAMPTZ,
+    retry_after_seconds INT
+) AS $$
+DECLARE
+    v_cooldown private_auth.challenge_cooldown_ledger%ROWTYPE;
+    v_challenge private_auth.auth_challenges%ROWTYPE;
+    v_now TIMESTAMPTZ := clock_timestamp();
+    v_computed_hash TEXT;
+    v_is_valid BOOLEAN := FALSE;
+    v_new_grant UUID;
+    v_grant_exp TIMESTAMPTZ;
+BEGIN
+    -- Tier 1: Identity Advisory Lock
+    PERFORM pg_advisory_xact_lock(hashtext('auth_identity:' || p_normalized_email));
+
+    -- Ensure cooldown ledger row exists idempotently
+    INSERT INTO private_auth.challenge_cooldown_ledger (
+        normalized_email, purpose, consecutive_failed_attempts, cooldown_until, last_failed_at, updated_at
+    ) VALUES (
+        p_normalized_email, p_purpose, 0, NULL, NULL, v_now
+    ) ON CONFLICT (normalized_email, purpose) DO NOTHING;
+
+    -- Tier 2: Authoritative Cooldown Row Lock (serializes valid and invalid attempts)
+    SELECT * INTO v_cooldown
+    FROM private_auth.challenge_cooldown_ledger
+    WHERE normalized_email = p_normalized_email AND purpose = p_purpose
+    FOR UPDATE;
+
+    -- Strict Lockout Check: If cooldown is active, fail closed with zero challenge mutation
+    IF v_cooldown.cooldown_until IS NOT NULL AND v_cooldown.cooldown_until > v_now THEN
+        RETURN QUERY SELECT
+            'cooldown_active'::TEXT,
+            NULL::UUID, NULL::UUID, NULL::TIMESTAMPTZ,
+            0, v_cooldown.cooldown_until,
+            GREATEST(1, EXTRACT(EPOCH FROM (v_cooldown.cooldown_until - v_now))::INT);
+        RETURN;
+    END IF;
+
+    -- Cooldown Rollover: If prior cooldown expired, roll over to a fresh 5-attempt budget (R5)
+    IF v_cooldown.cooldown_until IS NOT NULL AND v_cooldown.cooldown_until <= v_now THEN
+        UPDATE private_auth.challenge_cooldown_ledger
+        SET consecutive_failed_attempts = 0,
+            cooldown_until = NULL,
+            last_failed_at = NULL,
             updated_at = v_now
         WHERE normalized_email = p_normalized_email AND purpose = p_purpose
-        RETURNING * INTO v_row;
+        RETURNING * INTO v_cooldown;
+    END IF;
+
+    -- Tier 3: Challenge Row Lock
+    SELECT * INTO v_challenge
+    FROM private_auth.auth_challenges
+    WHERE challenge_id = p_challenge_id
+      AND normalized_email = p_normalized_email
+      AND purpose = p_purpose
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RETURN QUERY SELECT
+            'challenge_not_found'::TEXT,
+            NULL::UUID, NULL::UUID, NULL::TIMESTAMPTZ,
+            GREATEST(0, 5 - v_cooldown.consecutive_failed_attempts),
+            v_cooldown.cooldown_until, 0;
+        RETURN;
+    END IF;
+
+    IF v_challenge.status != 'issued' OR v_challenge.consumed_at IS NOT NULL THEN
+        RETURN QUERY SELECT
+            'already_consumed'::TEXT,
+            NULL::UUID, NULL::UUID, NULL::TIMESTAMPTZ,
+            GREATEST(0, 5 - v_cooldown.consecutive_failed_attempts),
+            v_cooldown.cooldown_until, 0;
+        RETURN;
+    END IF;
+
+    IF v_challenge.expires_at < v_now THEN
+        RETURN QUERY SELECT
+            'challenge_expired'::TEXT,
+            NULL::UUID, NULL::UUID, NULL::TIMESTAMPTZ,
+            GREATEST(0, 5 - v_cooldown.consecutive_failed_attempts),
+            v_cooldown.cooldown_until, 0;
+        RETURN;
+    END IF;
+
+    -- Constant-time cryptographic comparison (explicit hex encoding)
+    v_computed_hash := encode(hmac(p_raw_code::bytea, p_server_pepper::bytea, 'sha256'), 'hex');
+    v_is_valid := (v_challenge.code_hash = v_computed_hash);
+
+    IF v_is_valid THEN
+        -- Recheck cooldown state immediately before committing redemption
+        IF v_cooldown.cooldown_until IS NOT NULL AND v_cooldown.cooldown_until > v_now THEN
+            RETURN QUERY SELECT
+                'cooldown_active'::TEXT,
+                NULL::UUID, NULL::UUID, NULL::TIMESTAMPTZ,
+                0, v_cooldown.cooldown_until,
+                GREATEST(1, EXTRACT(EPOCH FROM (v_cooldown.cooldown_until - v_now))::INT);
+            RETURN;
+        END IF;
+
+        -- Transition challenge to pending_provisioning
+        v_new_grant := gen_random_uuid();
+        v_grant_exp := v_now + INTERVAL '5 minutes';
+
+        UPDATE private_auth.auth_challenges
+        SET status = 'pending_provisioning',
+            verified_at = v_now,
+            provisioning_grant_id = v_new_grant,
+            grant_expires_at = v_grant_exp
+        WHERE id = v_challenge.id;
+
+        -- Reset cooldown ledger on successful verification
+        UPDATE private_auth.challenge_cooldown_ledger
+        SET consecutive_failed_attempts = 0,
+            cooldown_until = NULL,
+            last_failed_at = NULL,
+            updated_at = v_now
+        WHERE normalized_email = p_normalized_email AND purpose = p_purpose;
 
         RETURN QUERY SELECT
-            'expired_cooldown_rolled_over'::TEXT,
-            v_row.consecutive_failed_attempts,
-            v_row.cooldown_until,
+            'verified'::TEXT,
+            v_challenge.user_id,
+            v_new_grant,
+            v_grant_exp,
+            5,
+            NULL::TIMESTAMPTZ,
             0;
         RETURN;
+    ELSE
+        -- Invalid Code: Execute failure state machine under held Tier 2 row lock
+        IF v_cooldown.consecutive_failed_attempts + 1 >= 5 THEN
+            -- 5th failure: activate fixed 15-minute cooldown
+            UPDATE private_auth.challenge_cooldown_ledger
+            SET consecutive_failed_attempts = v_cooldown.consecutive_failed_attempts + 1,
+                cooldown_until = v_now + INTERVAL '15 minutes',
+                last_failed_at = v_now,
+                updated_at = v_now
+            WHERE normalized_email = p_normalized_email AND purpose = p_purpose
+            RETURNING * INTO v_cooldown;
+
+            RETURN QUERY SELECT
+                'fifth_failure_activated_cooldown'::TEXT,
+                NULL::UUID, NULL::UUID, NULL::TIMESTAMPTZ,
+                0,
+                v_cooldown.cooldown_until,
+                900;
+            RETURN;
+        ELSE
+            -- Failures 1-4: increment counter
+            UPDATE private_auth.challenge_cooldown_ledger
+            SET consecutive_failed_attempts = v_cooldown.consecutive_failed_attempts + 1,
+                cooldown_until = NULL,
+                last_failed_at = v_now,
+                updated_at = v_now
+            WHERE normalized_email = p_normalized_email AND purpose = p_purpose
+            RETURNING * INTO v_cooldown;
+
+            RETURN QUERY SELECT
+                'invalid_code'::TEXT,
+                NULL::UUID, NULL::UUID, NULL::TIMESTAMPTZ,
+                GREATEST(0, 5 - v_cooldown.consecutive_failed_attempts),
+                NULL::TIMESTAMPTZ,
+                0;
+            RETURN;
+        END IF;
     END IF;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
 
-    -- 5. Case C: 5th Failure in Current Cycle -> ACTIVATE FIXED 15-MINUTE COOLDOWN
-    IF v_row.consecutive_failed_attempts + 1 >= 5 THEN
-        UPDATE private_auth.challenge_cooldown_ledger
-        SET consecutive_failed_attempts = v_row.consecutive_failed_attempts + 1,
-            cooldown_until = v_now + INTERVAL '15 minutes',
-            last_failed_at = v_now,
-            updated_at = v_now
-        WHERE normalized_email = p_normalized_email AND purpose = p_purpose
-        RETURNING * INTO v_row;
+-- Atomic Claim Helper with Partial Unique Index Exception Handling (PRRT_kwDOVtCmZc656o5X & R7)
+CREATE OR REPLACE FUNCTION private_auth.claim_admin_operation(
+    p_challenge_id UUID,
+    p_normalized_email TEXT,
+    p_target_user_id UUID,
+    p_operation_type private_auth.operation_type,
+    p_worker_lease_id UUID,
+    p_idempotency_payload_hash TEXT
+) RETURNS TABLE (
+    claimed BOOLEAN,
+    operation_id UUID,
+    fencing_token BIGINT,
+    conflict_code TEXT
+) AS $$
+DECLARE
+    v_op_id UUID;
+    v_token BIGINT;
+    v_err_constraint TEXT;
+BEGIN
+    BEGIN
+        INSERT INTO private_auth.admin_operation_ledger (
+            challenge_id, normalized_email, target_user_id, operation_type,
+            status, worker_lease_id, lease_expires_at, fencing_token, idempotency_payload_hash
+        ) VALUES (
+            p_challenge_id, p_normalized_email, p_target_user_id, p_operation_type,
+            'executing', p_worker_lease_id, clock_timestamp() + INTERVAL '30 seconds', 1, p_idempotency_payload_hash
+        )
+        RETURNING admin_operation_ledger.operation_id, admin_operation_ledger.fencing_token
+        INTO v_op_id, v_token;
 
-        RETURN QUERY SELECT
-            'fifth_failure_activated_cooldown'::TEXT,
-            v_row.consecutive_failed_attempts,
-            v_row.cooldown_until,
-            900;
+        RETURN QUERY SELECT TRUE, v_op_id, v_token, NULL::TEXT;
         RETURN;
-    END IF;
-
-    -- 6. Case D: Attempts 1-4 in Current Cycle -> INCREMENT FAILURE COUNTER
-    UPDATE private_auth.challenge_cooldown_ledger
-    SET consecutive_failed_attempts = v_row.consecutive_failed_attempts + 1,
-        cooldown_until = NULL,
-        last_failed_at = v_now,
-        updated_at = v_now
-    WHERE normalized_email = p_normalized_email AND purpose = p_purpose
-    RETURNING * INTO v_row;
-
-    RETURN QUERY SELECT
-        'invalid_attempt_recorded'::TEXT,
-        v_row.consecutive_failed_attempts,
-        v_row.cooldown_until,
-        0;
-    RETURN;
+    EXCEPTION WHEN unique_violation THEN
+        GET STACKED DIAGNOSTICS v_err_constraint = CONSTRAINT_NAME;
+        IF v_err_constraint = 'admin_operation_ledger_challenge_id_key' THEN
+            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, 'challenge_already_claimed'::TEXT;
+        ELSIF v_err_constraint IN ('uq_admin_ledger_single_enrollment_user', 'uq_admin_ledger_single_enrollment_email') THEN
+            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, 'enrollment_conflict_identity_locked'::TEXT;
+        ELSIF v_err_constraint IN ('uq_admin_ledger_active_recovery_user', 'uq_admin_ledger_active_recovery_email') THEN
+            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, 'recovery_conflict_identity_locked'::TEXT;
+        ELSE
+            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, 'identity_conflict_generic'::TEXT;
+        END IF;
+        RETURN;
+    END;
 END;
 $$ LANGUAGE plpgsql SECURITY DEFINER;
 
@@ -1340,9 +1803,29 @@ The owner is requested to consider a future, bounded two-stage proof-of-concept 
    - Deploy Edge Functions: `auth-request-otp`, `auth-verify-and-enroll`, `auth-verify-and-recover`.
 2. **Automated Negative, Concurrency & Rate Limit Suite:**
    - **Parallel Single-Use Test (AUTH-12):** Concurrency harness with 10 simultaneous parallel verification requests using the exact same OTP -> Expect exactly 1 winner (`pending_provisioning`), 9 rejections (`invalid_grant`), and zero duplicate sessions.
-   - **Deterministic Parallel Quota Test Matrix (P2-5):**
+   - **5th-Wrong-Versus-Correct Concurrent Verification Race Test (AUTH-22 & AUTH-12 Concurrency Closure — im-tio P1 `PRRT_kwDOVtCmZc656hwv`):**
+     - Setup: Challenge has 4 previous failed attempts (`consecutive_failed_attempts = 4`).
+     - Concurrency: Launch Request W (submitting an invalid 5th guess) and Request C (submitting the valid OTP) simultaneously under load.
+     - **Assertion Sub-case 1 (Wrong Guess commits first):** Request W enters `verify_otp_challenge`, acquires Tier 2 lock, sets `cooldown_until = now + 15m`, and commits. Request C unblocks, inspects locked cooldown row, evaluates `cooldown_until > now`, and terminates with `cooldown_active`. Challenge is NOT consumed, and no grant is issued.
+     - **Assertion Sub-case 2 (Valid OTP commits first):** Request C enters `verify_otp_challenge`, acquires Tier 2 lock, verifies hash, transitions challenge to `pending_provisioning`, resets cooldown counter to 0, and commits. Request W unblocks, acquires Tier 3 challenge lock, sees `status = 'pending_provisioning'`, and fails without triggering a lockout or invalidating C's grant.
+     - In zero test executions does a valid OTP succeed after a 5th wrong guess commits lockout.
+   - **Issuance-vs-Cooldown Concurrency & Post-Commit Email Dispatch Test (`PRRT_kwDOVtCmZc656o5Q`):**
+     - Setup: Challenge has 4 previous failed attempts.
+     - Concurrency: Launch Request W (submitting 5th wrong guess) and Request I (calling `reserve_email_send` to resend an OTP) simultaneously.
+     - Assertion: Request I serializes behind Tier 2 row lock. If Request W commits first, Request I detects `cooldown_until > now` and returns `allowed = false, reason = 'cooldown_active'`. Zero new challenge rows are inserted.
+     - Dispatch Assertion: Verify that external email provider (`POST /send`) is invoked strictly **post-commit**. If database transaction aborts or is rejected, zero emails are dispatched.
+   - **Identity Unique Index Conflict Handling Test (`PRRT_kwDOVtCmZc656o5X`):**
+     - Concurrently execute two different challenges attempting initial password enrollment for the same `target_user_id` or `normalized_email`.
+     - First challenge claims lease via `claim_admin_operation` (`claimed = true`).
+     - Second challenge triggers `uq_admin_ledger_single_enrollment_*`. Assert `claim_admin_operation` handles `unique_violation` via `EXCEPTION`, diagnoses constraint name, and returns `claimed = false, conflict_code = 'enrollment_conflict_identity_locked'`. Edge Function maps this to `HTTP 409 Conflict`. Zero unhandled database exceptions or 500 errors occur.
+     - Repeat for active recovery (`uq_admin_ledger_active_recovery_*`).
+   - **Deterministic Parallel Quota & Boundary Precision Test Matrix (P2-5 & R7):**
      - **Test A (10 Simultaneous Requests):** Fire 10 simultaneous requests to `reserve_email_send` for the same email -> Assert exactly 1 reservation succeeds (`allowed = true, send_id = UUID`), and 9 are rejected under the 60-second interval rule (`allowed = false, reason = 'interval_active'`).
-     - **Test B (Five Spaced Requests):** Fire 5 requests separated by $\ge 60$ seconds -> Assert all 5 reservations succeed.
+     - **Test B (Five Spaced Requests — Inclusive Boundary):** Fire 5 requests separated by $\ge 60.000$ seconds -> Assert all 5 reservations succeed.
+     - **Test B-Boundary (Sixty-Second Boundary Precision — `PRRT_kwDOVtCmZc656o5e`):**
+       - At $t = 59.999$ seconds: Request evaluates `created_at > (v_now - INTERVAL '60 seconds')` as TRUE -> Assert REJECTED with `interval_active`.
+       - At $t = 60.000$ seconds: Request evaluates `created_at > (v_now - INTERVAL '60 seconds')` as FALSE -> Assert ACCEPTED with `reserved`.
+       - At $t = 60.001$ seconds: Request evaluates FALSE -> Assert ACCEPTED with `reserved`.
      - **Test C (Sixth Request Within Rolling Hour):** Fire a 6th request within the rolling 60-minute window (spaced $\ge 60$ seconds after the 5th) -> Assert rejection with `hourly_quota_exceeded`.
      - **Test D (Rolling-Window Release):** After $t \ge 60$ minutes from the 1st send, fire a subsequent request -> Assert reservation succeeds.
    - **Deterministic Cooldown Expiry, Fixed-Deadline & Failure-Budget Test Suite (Tests A–I) (R5 & R6):**
@@ -1380,12 +1863,12 @@ The owner is requested to consider a future, bounded two-stage proof-of-concept 
 
 | Deliverable | Location | Status |
 |---|---|---|
-| Canonical Research Document | `.ai/tasks/auth/local-20261120-task06i-a-strict-auth-architecture.md` | **COMPLETE (Revision R6)** |
+| Canonical Research Document | `.ai/tasks/auth/local-20261120-task06i-a-strict-auth-architecture.md` | **COMPLETE (Revision R7)** |
 | Active Continuity Pointer | `.ai/current.md` | **UPDATED** |
 | Research Worktree Branch | `docs/task06i-a-strict-auth-architecture` | **READY FOR REVIEW** |
 | Final Architecture Verdict | **ARCHITECTURE PROPOSED — OWNER DECISION REQUIRED** | **PRODUCTION AUTH NO-GO** |
 
-### Review Findings Disposition Summary (All 15 Findings Addressed)
+### Review Findings Disposition Summary (All 19 Findings Addressed Across Revisions R3–R7)
 - **Previous R3 Findings (Retained & Verified):**
   - **P1-1 (Token Hook Allowlist — `PRRT_kwDOVtCmZc654L96`):** Explicit fail-closed allowlist for password sign-in and validated password-origin refresh.
   - **P1-2 (Atomic Email Quota — `PRRT_kwDOVtCmZc654L9_`):** Serialized quota check via `pg_advisory_xact_lock` in `reserve_email_send`.
@@ -1403,5 +1886,10 @@ The owner is requested to consider a future, bounded two-stage proof-of-concept 
   - **P2-5 (Correct Parallel Quota Test Expectations — `PRRT_kwDOVtCmZc654tV5`):** Replaced flawed 5-of-10 expectation with deterministic 4-part matrix (Tests A–D).
 - **Previous R5 Finding (Retained & Verified):**
   - **P2-1 (Cooldown Expiry Rollover & Failure-Budget Reset — `PRRT_kwDOVtCmZc655GZH`):** Designed atomic dual-touchpoint rollover: `reserve_email_send` clears expired cooldowns during post-cooldown challenge issuance, and verification failure upsert conditionally resets `consecutive_failed_attempts = 1` if `cooldown_until <= clock_timestamp()`. Guaranteed a fresh 5-attempt budget after cooldown expiry while preventing active cooldown bypass.
-- **New R6 Finding (Corrected & Closed):**
+- **Previous R6 Finding (Retained & Verified):**
   - **P1-1 (Prevent Indefinite OTP Cooldown Extension — `PRRT_kwDOVtCmZc655fpj`):** Fixed the invalid-attempt mutation boundary by introducing an authoritative SQL predicate (`WHERE cooldown_until IS NULL OR cooldown_until <= clock_timestamp()`) and companion stored function `private_auth.record_failed_attempt` with pessimistic row locking (`FOR UPDATE`). Guaranteed that submissions during an active cooldown produce zero counter or deadline mutations (`active_cooldown_no_mutation`), enforcing a fixed 15-minute deadline measured strictly from the 5th qualifying failure. Reconciled state machine and defined Deterministic Regression Tests A–I for Stage 06I-B2.
+- **New R7 Findings (Unified Concurrency & Boundary Closure):**
+  - **P1-1 (Serialize Valid OTP Redemption Under Cooldown Row Lock — `PRRT_kwDOVtCmZc656hwv`):** Consolidated valid OTP verification and invalid attempt handling into a unified transaction boundary (`private_auth.verify_otp_challenge`) governed by the Global Strict Lock Hierarchy (Tier 1 Identity Advisory Lock -> Tier 2 Cooldown Row Lock -> Tier 3 Challenge Row Lock). Rechecked active cooldown state under lock immediately before committing successful redemption, eliminating the race condition where a valid OTP consumes a challenge concurrently locked out by a 5th wrong guess. Added 5th-wrong-versus-correct concurrent verification test suite for Stage 06I-B2.
+  - **High-1 (Issuance Races Past Cooldown Lock — `PRRT_kwDOVtCmZc656o5Q`):** Upgraded `private_auth.reserve_email_send` to acquire the Tier 2 `FOR UPDATE` row lock on `challenge_cooldown_ledger`, serializing issuance with failed verification attempts and eliminating the resend-vs-cooldown race. Enforced strictly post-commit outbound email dispatch (`POST /send`).
+  - **Medium-1 (Identity Unique Index Exception Handling — `PRRT_kwDOVtCmZc656o5X`):** Encapsulated operation claiming in `private_auth.claim_admin_operation` with an explicit `BEGIN ... EXCEPTION WHEN unique_violation THEN ... END;` block and constraint diagnostics (`uq_admin_ledger_single_enrollment_*`, `uq_admin_ledger_active_recovery_*`), mapping conflicting attempts to structured conflict codes (`enrollment_conflict_identity_locked`, `recovery_conflict_identity_locked`) for clean HTTP 409 Conflict handling.
+  - **Low-1 (Sixty-Second Boundary Predicate Correction — `PRRT_kwDOVtCmZc656o5e`):** Corrected the interval predicate in `reserve_email_send` from `>=` to `created_at > (v_now - INTERVAL '60 seconds')`, ensuring requests at exactly $\ge 60.000$ seconds are accepted while requests strictly $< 60.000$ seconds are rejected, fully aligning with the owner-approved 60-second timer.
