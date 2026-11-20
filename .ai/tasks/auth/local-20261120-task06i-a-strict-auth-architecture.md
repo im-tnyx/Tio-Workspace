@@ -2,9 +2,9 @@
 
 | Field | Value |
 |---|---|
-| **Task ID** | Task 06I-A (Revision R11 — Provisional Identity Safety, Password Enrollment Guard & Post-Lock Expiry) |
+| **Task ID** | Task 06I-A (Revision R12 — End-to-End Auth Security Contract & SQL Consistency Closure) |
 | **Status** | **ARCHITECTURE PROPOSED — OWNER DECISION REQUIRED** |
-| **Objective** | Resolve all three outstanding GitHub findings on PR #34: (1) Cursor High (`PRRT_kwDOVtCmZc66F5EN`) — establish durable server-owned provisional creation reservation and completion via `private_auth.identity_lifecycle` (`lifecycle_stage = 'provisional_created'`) and `admin_operation_ledger`, eliminating orphan passwordless GoTrue users and supporting safe resume on interrupted signups without duplicate `createUser` calls; (2) Cursor Medium (`PRRT_kwDOVtCmZc66F5EZ`) — enforce server-authoritative initial enrollment protection inside `claim_admin_operation`, strictly rejecting signup enrollment against existing password-complete accounts (`lifecycle_stage = 'enrolled_password_complete'` or `auth.users.encrypted_password IS NOT NULL`) and confining existing users to Sign In or approved recovery; (3) `im-tio` P2 (`PRRT_kwDOVtCmZc66GwiI`) — re-evaluate database expiration timestamp (`v_now := clock_timestamp()`) strictly AFTER acquiring Tier 1 advisory, Tier 2 cooldown, Tier 3 challenge, and Tier 4 lifecycle locks, enforcing consistent fail-closed boundaries (`database_now < deadline` valid, `database_now >= deadline` expired); and add 13 targeted regression tests (`PROV-01..06`, `AUTH-17-01..03`, `EXP-01..04`) to Stage 06I-B2 |
+| **Objective** | Resolve all eleven review findings on PR #34 across Cursor Bugbot (10) and independent reviewer `im-tio` (1 P1): (1) H1 (`PRRT_kwDOVtCmZc66HSzX`) — restore strict fail-closed token hook allowlist verifying top-level `authentication_method = 'password'` and inspecting every AMR element to reject non-password or mixed methods; (2) H2 (`PRRT_kwDOVtCmZc66HSzf`) — prevent lifecycle stage demotion in `complete_provisional_creation`, strictly blocking overwrite of `enrolled_password_complete`, `quarantined_indeterminate`, or `enrollment_pending`; (3) H3 (`PRRT_kwDOVtCmZc66HSzi`) — bind provisional reservation strictly to verified signup challenge matching email and `purpose = 'signup_initial_password'`; (4) H4 (`PRRT_kwDOVtCmZc66HSzq`) — fail closed on every lifecycle stage in `reserve_provisional_creation`, explicitly blocking `enrollment_pending` (`enrollment_in_progress`); (5) H5 (`PRRT_kwDOVtCmZc66HSzv`) — include `quarantined_indeterminate` in `uq_admin_ledger_active_creation_email` unique index and reservation check; (6) H6 (`PRRT_kwDOVtCmZc66HSz0`) — decouple `identity_lifecycle.user_id UUID PRIMARY KEY` from cascading foreign keys, preserving lifecycle provenance and quarantine evidence; (7) M1 (`PRRT_kwDOVtCmZc66HSz6`) — enforce Tier 4 lifecycle row lock in recovery branch of `claim_admin_operation`, requiring `enrolled_password_complete`; (8) M2 (`PRRT_kwDOVtCmZc66HSz_`) — obey global lock hierarchy (advisory before ledger) and compute `v_now` post-lock in `complete_provisional_creation`; (9) M3 (`PRRT_kwDOVtCmZc66HS0C`) — rewrite `cleanup_expired_challenges` using scoped `NOT EXISTS` across all related operations to safely handle one-to-many challenge operations; (10) M4 (`PRRT_kwDOVtCmZc66HS0F`) — restore explicit least-privilege `REVOKE ALL` and `GRANT EXECUTE` statements, with `SET search_path = ''` on all functions; and (11) `im-tio` P1 (`PRRT_kwDOVtCmZc66Hbdq`) — authorize `complete_provisional_creation` against `operation_type = 'create_provisional_user'`, signup challenge purpose, and `auth.users` normalized email match; and add complete Stage 06I-B2 regression suite |
 | **Execution Mode** | STRICTLY DOCUMENTATION-ONLY, OFFLINE SECURITY DESIGN CORRECTIONS (No app code, migrations, or hosted mutations) |
 | **Authorization** | Owner instruction: follow `AGENTS.md`, `.ai/current.md`, Supabase skill; production project `bsfwzvgynwriswapxpsp` strictly READ-ONLY |
 | **Implementation Owner** | Security Architecture & Research Agent |
@@ -41,10 +41,11 @@ To maintain absolute evidence integrity, all claims in this document adhere to t
   - All OTP verification is consolidated into `private_auth.verify_otp_challenge` as the **sole authoritative database entry point** across both signup and recovery flows. Governed by the **Global Strict Lock Hierarchy** (Tier 1 Identity Advisory Lock -> Tier 2 Cooldown Row Lock -> Tier 3 Challenge Row Lock), this unified transaction handles valid redemptions, invalid attempts, active lockout checks (`cooldown_active`), and post-cooldown budget rollovers under a single row lock. Standalone failure functions (`record_failed_attempt`) and raw direct UPSERTs are completely retired to eliminate valid-vs-fifth-wrong race conditions.
   - OTP rate-limiting and challenge issuance (`private_auth.reserve_email_send`) serialize under the same Tier 2 cooldown row lock, strictly enforcing post-commit outbound email dispatch.
   - Supabase Auth is utilized strictly as a **Password Identity Provider** (`signInWithPassword`) and Admin API target (`admin.createUser`, `admin.updateUserById`).
-  - *GoTrue Idempotency, Identity Quarantine & Durable Ledger Retention (R9–R11):* GoTrue Admin API does NOT implement an `Idempotency-Key` header. Safe execution requires a server-owned, durable operation ledger (`admin_operation_ledger`) and persistent identity lifecycle state table (`identity_lifecycle`) in PostgreSQL. To guarantee that initial-enrollment uniqueness, provisional identity provenance, and indeterminate operation quarantines survive short-lived OTP challenge cleanup, `admin_operation_ledger` and `identity_lifecycle` are completely decoupled from cascading deletes (removing `ON DELETE CASCADE`). Routine purging of ephemeral `auth_challenges` rows leaves permanent enrollment guards, provisional identities, and quarantine locks 100% intact. Initial enrollment is permanently serialized per identity (`target_user_id`, `normalized_email`), while password recovery is repeatable over the lifecycle.
-  - *Post-Lock Expiry Re-evaluation (R11 — `PRRT_kwDOVtCmZc66GwiI`):* To prevent lock contention from masking credential expiry, `verify_otp_challenge` and `claim_admin_operation` strictly capture database time (`v_now := clock_timestamp()`) **AFTER** acquiring all required advisory and row locks (Tier 1–4). Expiry boundaries are enforced consistently fail-closed: credentials are valid only while `database_now < deadline`; at `database_now >= deadline`, operations immediately reject.
-  - *Durable Provisional Identity Safety (R11 — `PRRT_kwDOVtCmZc66F5EN`):* Provisional identity creation is decoupled from password enrollment into a durable two-step process: (1) `reserve_provisional_creation` records a server-owned creation lease under lock; (2) external `admin.createUser` (without password) executes; (3) `complete_provisional_creation` binds the minted UUID in `identity_lifecycle` (`lifecycle_stage = 'provisional_created'`). If password enrollment fails or the client disconnects, the provisional identity remains tracked; subsequent signups reuse the existing provisional UUID without calling `createUser` again, eliminating orphan passwordless identities.
-  - *Server-Authoritative Password-Complete Protection (R11 — `PRRT_kwDOVtCmZc66F5EZ`):* Inside `claim_admin_operation`, initial password enrollment requires `identity_lifecycle.lifecycle_stage = 'provisional_created'` under row lock. If an account is already `enrolled_password_complete` or possesses an active password in `auth.users`, the claim strictly aborts with `account_already_enrolled` (SQLSTATE `42501`). Sign Up can NEVER overwrite an existing account's credentials; existing users are strictly confined to Sign In or approved recovery.
+  - *GoTrue Idempotency, Identity Quarantine & Durable Ledger Retention (R9–R12):* GoTrue Admin API does NOT implement an `Idempotency-Key` header. Safe execution requires a server-owned, durable operation ledger (`admin_operation_ledger`) and persistent identity lifecycle state table (`identity_lifecycle`) in PostgreSQL. To guarantee that initial-enrollment uniqueness, provisional identity provenance, and indeterminate operation quarantines survive short-lived OTP challenge cleanup, `admin_operation_ledger` and `identity_lifecycle` are completely decoupled from cascading foreign keys. Routine purging of ephemeral `auth_challenges` rows leaves permanent enrollment guards, provisional identities, and quarantine locks 100% intact. Initial enrollment is permanently serialized per identity (`target_user_id`, `normalized_email`), while password recovery is repeatable over the lifecycle.
+  - *Unified Security Invariant Matrix & Lock Hierarchy (R12):* All privileged database functions strictly obey the Global Strict Lock Hierarchy (Tier 1 Identity Advisory Lock -> Tier 2 Cooldown Row Lock -> Tier 3 Challenge Row Lock -> Tier 4 Lifecycle Row Lock -> Tier 5 Send Log Insert -> Tier 6 Admin Operation Ledger Lock). Every security-critical function acquires locks in this top-down order and recomputes fresh database time (`v_now := clock_timestamp()`) post-lock before checking expiry boundaries (`database_now < deadline` valid, `database_now >= deadline` expired).
+  - *Durable Provisional Creation & Completion Authorization (R12 — `PRRT_kwDOVtCmZc66HSzi`, `PRRT_kwDOVtCmZc66HSzq`, `PRRT_kwDOVtCmZc66HSzv`, `PRRT_kwDOVtCmZc66Hbdq`):* Provisional identity creation is strictly authorized under locked challenge state (`purpose = 'signup_initial_password'`, `status = 'pending_provisioning'`, matching unexpired grant). `reserve_provisional_creation` fails closed on every non-eligible lifecycle state (`enrolled_password_complete`, `quarantined_indeterminate`, `enrollment_pending`). `complete_provisional_creation` verifies `operation_type = 'create_provisional_user'`, confirms the target UUID in `auth.users` belongs to the reserved normalized email, and enforces monotonic transitions, preventing lifecycle demotion (`PRRT_kwDOVtCmZc66HSzf`). Active and quarantined creation operations are indexed to prevent duplicate creation races.
+  - *Server-Authoritative Recovery & Enrollment Guards (R12 — `PRRT_kwDOVtCmZc66HSz6`):* Both signup enrollment and password recovery enforce Tier 4 `identity_lifecycle` row locks inside `claim_admin_operation`. Initial enrollment strictly requires `lifecycle_stage = 'provisional_created'`; password recovery strictly requires `lifecycle_stage = 'enrolled_password_complete'`. Quarantined or mismatched accounts fail closed.
+  - *Strict Token Hook AMR Allowlist & Schema Privileges (R12 — `PRRT_kwDOVtCmZc66HSzX`, `PRRT_kwDOVtCmZc66HS0F`):* `custom_access_token_hook` enforces a strict fail-closed allowlist, verifying top-level `authentication_method = 'password'` and inspecting all AMR elements to reject mixed or prohibited methods (`otp`, `recovery`, `magiclink`, `signup`, `sso`). Explicit least-privilege `REVOKE ALL` and `GRANT EXECUTE` statements with `SET search_path = ''` protect all schema functions.
   - *Multi-Consumer JWT Cutover Nuance:* Deleting sessions in `auth.sessions` immediately invalidates Auth `/user` (403 on local GoTrue; hosted NOT VERIFIED), but stateless non-Auth JWT consumers (PostgREST Data API, Storage) will accept signed JWTs until their `exp` timestamp. Cutover must account for this lingering window or rotate signing secrets.
 - **Contingency Fallback: Option D1 (Self-Hosted Supabase GoTrue Behind an Exclusive Reverse Proxy / API Gateway)**.
   - *Status:* **PROPOSED FALLBACK (NOT TESTED)**.
@@ -148,7 +149,7 @@ However, independent review finding `PRRT_kwDOVtCmZc656hwv` (im-tio [P1]) identi
 4. Request C acquires the row lock on `auth_challenges`. Because it never acquired a row lock on `challenge_cooldown_ledger` or rechecked active cooldown state under lock, Request C proceeds to evaluate the HMAC hash, succeeds, and transitions the challenge to `pending_provisioning`!
 5. **Vulnerability Impact:** The intended 5-failure lockout boundary (AUTH-22) is defeated under concurrent guessing, allowing an attacker or race condition to consume the challenge despite an active lockout having committed.
 
-#### Global Strict Lock Hierarchy (R7–R11)
+#### Global Strict Lock Hierarchy (R7–R12)
 To mathematically eliminate deadlocks and guarantee strict serializability across issuance, valid verification, failed attempts, provisional identity lifecycle, and credential provisioning, all database transactions MUST strictly acquire locks according to the following **Global Strict Lock Hierarchy**:
 
 ```
@@ -171,6 +172,19 @@ Tier 6: Admin Operation Ledger Claim (INSERT INTO admin_operation_ledger ... / c
 ```
 
 Because every transaction (OTP issuance, verification, provisional identity reservation/completion, invalid attempt recording, password enrollment, and recovery claiming) acquires locks in this top-down order, deadlocks cannot occur.
+
+#### Cross-Function Security Invariant Matrix (R12 End-to-End Closure)
+To guarantee zero security gaps, unambiguous authority, and complete SQL consistency across all authentication paths, all database functions adhere to the following **Cross-Function Security Invariant Matrix**:
+
+| Function | Permitted Roles | Required Locks (In Tier Order) | Time Capture Order | Lifecycle Stage Preconditions | Operation / Purpose Binding | Failure Modes & Error Codes | Enforced Security Invariants |
+|---|---|---|---|---|---|---|---|
+| `reserve_email_send` | `service_role` | Tier 1 Advisory -> Tier 2 Cooldown Row -> Tier 5 Send Log Insert | Post-lock (`v_now := clock_timestamp()`) | Any | Bound to `p_purpose` | `cooldown_active`, `interval_too_short`, `hourly_limit_exceeded` | AUTH-22 cooldown check; strict 60s interval & 5/hr quota; anti-enumeration |
+| `verify_otp_challenge` | `service_role` | Tier 1 Advisory -> Tier 2 Cooldown Row -> Tier 3 Challenge Row | Post-lock (`v_now := clock_timestamp()`) | N/A (binds provisional or enrolled if found) | Bound to `p_purpose` matching challenge row | `challenge_not_found`, `cooldown_active`, `already_consumed`, `challenge_expired`, `invalid_code`, `fifth_failure_activated_cooldown` | AUTH-12 single-use; AUTH-22 5th-failure race elimination; post-lock expiry; monotonic cooldown rollover |
+| `reserve_provisional_creation` | `service_role` | Tier 1 Advisory -> Tier 3 Challenge Row -> Tier 4 Lifecycle Row -> Tier 6 Ledger Insert | Post-lock (`v_now := clock_timestamp()`) | Fails closed on all non-eligible stages: `enrolled_password_complete`, `quarantined_indeterminate`, `enrollment_pending` | Strict: `purpose = 'signup_initial_password'` & `p_normalized_email` | `challenge_not_found`, `invalid_challenge_status`, `grant_mismatch`, `grant_expired`, `account_already_enrolled`, `identity_quarantined`, `enrollment_in_progress`, `creation_quarantined_indeterminate`, `creation_already_reserved` | Prov identity reservation boundary (H3, H4, H5); prevents duplicate GoTrue user creation; isolates signup from recovery |
+| `complete_provisional_creation` | `service_role` | Tier 1 Advisory -> Tier 3 Challenge Row -> Tier 4 Lifecycle Row -> Tier 6 Ledger Row | Post-lock (`v_now := clock_timestamp()`) | Strictly monotonic: permits insert or update of `provisional_created`; rejects demotion if already enrolled, quarantined, or pending | Strict: `operation_type = 'create_provisional_user'`, signup challenge purpose, and `auth.users` normalized email match | `operation_not_found`, `invalid_operation_type`, `challenge_not_found`, `invalid_challenge_purpose_or_status`, `invalid_lease_state`, `lease_expired`, `target_user_not_found`, `target_user_email_mismatch`, `account_already_enrolled`, `identity_quarantined`, `lifecycle_demotion_prohibited` | Prov creation completion provenance (H2, H6, M2, im-tio P1); prevents lifecycle demotion; binds minted user_id |
+| `claim_admin_operation` | `service_role` | Tier 1 Advisory -> Tier 3 Challenge Row -> Tier 4 Lifecycle Row -> Tier 6 Ledger Insert | Post-lock (`v_now := clock_timestamp()`) | Signup: strictly `provisional_created`. Recovery: strictly `enrolled_password_complete`. Both reject quarantined accounts | Signup: `enroll_initial_password`. Recovery: `recovery_password_reset`. Strict purpose mapping | `challenge_not_found`, `email_mismatch`, `invalid_challenge_status`, `grant_mismatch`, `grant_expired`, `operation_purpose_mismatch`, `target_user_id_required`, `recovery_target_user_missing`, `user_id_mismatch`, `target_user_not_found`, `account_already_enrolled`, `account_not_enrolled`, `identity_quarantined`, `challenge_already_claimed`, `enrollment_conflict_identity_locked` | AUTH-17 password enrollment protection (M1); strict purpose mapping (R10); lease fencing & idempotency |
+| `cleanup_expired_challenges` | `service_role` | Tier 3 Challenge Row (`FOR UPDATE SKIP LOCKED`) | Cutoff (`v_cutoff := clock_timestamp() - interval`) | N/A | Evaluates all associated operations via scoped `NOT EXISTS` | None (returns purged counts) | M3 1-to-many challenge operation retention; leaves active, reconciling, and quarantined operations 100% intact |
+| `custom_access_token_hook` | `supabase_auth_admin` | Evaluates claims in memory | N/A | Enforces server-authoritative password origin | Validates `authentication_method = 'password'` or `token_refresh` | Exception SQLSTATE `42501` on any non-password, mixed AMR, or malformed claims | AUTH-17 fail-closed allowlist (H1); denies native OTP/magiclink/recovery session minting |
 
 #### Post-Lock Expiry Re-evaluation & Strict Boundary Semantics (R11 — `PRRT_kwDOVtCmZc66GwiI`)
 A subtle and critical vulnerability identified in review (`PRRT_kwDOVtCmZc66GwiI`) occurred when functions declared:
@@ -421,7 +435,7 @@ BEGIN
         END IF;
     END IF;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
 ```
 
 #### Concurrency Evaluation Under Unified Lock Hierarchy
@@ -435,33 +449,40 @@ GoTrue is an external HTTP service backed by its own internal SQL connection poo
 
 Furthermore, empirical testing and official Supabase documentation confirm that **Supabase GoTrue does NOT support an `Idempotency-Key` HTTP header** for `admin.createUser` or `admin.updateUserById`. Sending `Idempotency-Key: <UUID>` is silently ignored; repeating a timed-out call executes an independent mutation.
 
-#### Server-Owned Durable Operation Ledger & Identity Quarantine (P1-3, P1-4, P1-5, P2-7, R9–R11)
+#### Server-Owned Durable Operation Ledger & Identity Quarantine (P1-3, P1-4, P1-5, P2-7, R9–R12 Closure)
 To bridge this gap without risking duplicate user creation, silent credential overwrite, or orphan passwordless identities, the architecture establishes a **Server-Owned Durable Operation Ledger** (`private_auth.admin_operation_ledger`) and persistent identity state table (`private_auth.identity_lifecycle`):
 
 1. **Challenge & Identity Status Lifecycle:**
    - Challenge: `issued` -> `pending_provisioning` -> `consumed` (or `provisioning_failed_retryable`, `failed_terminal`, `superseded`).
    - Identity Lifecycle: `provisional_created` -> `enrollment_pending` -> `enrolled_password_complete` (or `quarantined_indeterminate`).
 
-2. **Durable Provisional Identity Safety (R11 — `PRRT_kwDOVtCmZc66F5EN`):**
+2. **Durable Provisional Identity Safety & Lifecycle Demotion Prevention (R11–R12 — `PRRT_kwDOVtCmZc66F5EN`, `PRRT_kwDOVtCmZc66HSzf`, `PRRT_kwDOVtCmZc66HSzi`, `PRRT_kwDOVtCmZc66HSzq`, `PRRT_kwDOVtCmZc66HSzv`, `PRRT_kwDOVtCmZc66HSz0`, `PRRT_kwDOVtCmZc66HSz_`, `PRRT_kwDOVtCmZc66Hbdq`):**
    In previous drafts, `admin.createUser` was called out-of-band before `claim_admin_operation`. If the claim was subsequently rejected, an unconfirmed passwordless `auth.users` row was stranded without durable provenance, causing all subsequent signups for that email to fail on GoTrue's unique email constraint.
-   To prevent orphan identities, provisional creation is separated into a durable, server-owned two-step lifecycle:
+   Furthermore, review findings on PR #34 uncovered critical edge cases:
+   - *Demotion Prevention (H2 — `PRRT_kwDOVtCmZc66HSzf`):* `complete_provisional_creation` previously executed `ON CONFLICT (user_id) DO UPDATE SET lifecycle_stage = 'provisional_created'`, which silently demoted completed accounts (`enrolled_password_complete`) or quarantined accounts (`quarantined_indeterminate`) back to provisional status. In R12, monotonic lifecycle transitions are enforced under lock: any attempt to demote an existing enrolled, quarantined, or in-progress account is strictly rejected.
+   - *Strict Signup Challenge Binding (H3 — `PRRT_kwDOVtCmZc66HSzi`):* `reserve_provisional_creation` verifies that the challenge matches `p_normalized_email` AND `purpose = 'signup_initial_password'`. A password recovery challenge is strictly prevented from reserving user creation.
+   - *Fail Closed on All Lifecycle Stages (H4 — `PRRT_kwDOVtCmZc66HSzq`):* `reserve_provisional_creation` explicitly inspects every lifecycle stage. In-progress enrollments (`enrollment_pending`) fail closed with `enrollment_in_progress`; already enrolled accounts return `account_already_enrolled`; quarantined accounts return `identity_quarantined`.
+   - *Quarantined Creation Partial Unique Index (H5 — `PRRT_kwDOVtCmZc66HSzv`):* `uq_admin_ledger_active_creation_email` includes `'quarantined_indeterminate'` alongside `'claimed'`, `'executing'`, and `'reconciling'`, ensuring racing or timed-out creations cannot spawn duplicates while under investigation.
+   - *Decoupled Identity Lifecycle Primary Key (H6 — `PRRT_kwDOVtCmZc66HSz0`):* `identity_lifecycle.user_id UUID PRIMARY KEY` is decoupled from foreign key cascade deletion (`REFERENCES auth.users(id) ON DELETE SET NULL` was invalid and destroyed audit records).
+   - *Global Lock Hierarchy & Post-Lock Time Evaluation (M2 — `PRRT_kwDOVtCmZc66HSz_`):* `complete_provisional_creation` acquires the Tier 1 Identity Advisory Lock before acquiring the Tier 6 ledger row lock, and evaluates fresh database time (`v_now := clock_timestamp()`) post-lock before checking lease expiry.
+   - *Authoritative Purpose & User Email Matching (`im-tio` P1 — `PRRT_kwDOVtCmZc66Hbdq`):* `complete_provisional_creation` verifies that the operation ledger record has `operation_type = 'create_provisional_user'`, verifies the linked challenge has `purpose = 'signup_initial_password'` and `status = 'pending_provisioning'`, and queries `auth.users` to confirm the minted UUID exists and matches the reserved `normalized_email`.
+
+   **Two-Step Server Lifecycle Execution:**
    - **Step A: Creation Reservation:** Edge Function invokes `private_auth.reserve_provisional_creation(challenge_id, grant_id, email, lease_id, hash)`. Under Tier 1 advisory lock, database checks grant validity (post-lock `v_now`), verifies the email is not already enrolled, and inserts an executing creation lease into `admin_operation_ledger` (`operation_type = 'create_provisional_user'`).
    - **Step B: External Creation:** Edge Function calls `admin.createUser({ email, email_confirm: false })` (NO password).
-   - **Step C: Durable Completion:** Edge Function invokes `private_auth.complete_provisional_creation(op_id, lease_id, new_user_id)`. Database inserts into `identity_lifecycle` (`lifecycle_stage = 'provisional_created'`), binds `auth_challenges.user_id = new_user_id`, and marks the creation ledger record `completed`.
+   - **Step C: Durable Completion:** Edge Function invokes `private_auth.complete_provisional_creation(op_id, lease_id, new_user_id)`. Database obeys lock hierarchy, enforces monotonic lifecycle transitions, binds `auth_challenges.user_id = new_user_id`, and marks the creation ledger record `completed`.
    - **Step D: Safe Resume on Interrupted Signup:** If client disconnects or claim fails before password enrollment, the provisional identity remains tracked in `identity_lifecycle`. When the user returns and verifies a fresh signup OTP, `verify_otp_challenge` reuses the existing provisional UUID, skipping `admin.createUser` entirely!
 
-3. **Server-Authoritative Password-Complete Protection (R11 — `PRRT_kwDOVtCmZc66F5EZ`):**
+3. **Server-Authoritative Password-Complete Protection & Recovery Lifecycle Guard (R11–R12 — `PRRT_kwDOVtCmZc66F5EZ`, `PRRT_kwDOVtCmZc66HSz6`):**
    In earlier drafts, `claim_admin_operation` accepted any caller-supplied UUID matching the verified email. This allowed an existing password-complete account to be overwritten through Sign Up if an Edge Function lifecycle precheck was bypassed.
-   To eliminate this vulnerability, `claim_admin_operation` enforces strict server-authoritative checks under Tier 4 row lock:
-   - Queries `identity_lifecycle` FOR UPDATE for the target user.
-   - If `lifecycle_stage = 'enrolled_password_complete'`, it strictly rejects with `account_already_enrolled` (SQLSTATE `42501`).
-   - If `lifecycle_stage = 'quarantined_indeterminate'`, it strictly rejects with `identity_quarantined` (SQLSTATE `55P03`).
-   - Only `lifecycle_stage = 'provisional_created'` is permitted to claim initial password enrollment.
-   - Defense-in-depth: checks `auth.users.encrypted_password`. If a password hash is present, it reconciles `identity_lifecycle` to `enrolled_password_complete` and aborts with `account_already_enrolled`.
-   - Sign Up route can NEVER mutate or overwrite an existing account's password. Existing accounts are strictly confined to Sign In or approved recovery.
+   Furthermore, review finding M1 (`PRRT_kwDOVtCmZc66HSz6`) identified that the recovery branch failed to acquire a Tier 4 lifecycle row lock, permitting password recovery claims against unverified or provisional identities.
+   In R12, `claim_admin_operation` enforces strict server-authoritative checks across both branches under Tier 4 row lock:
+   - **Signup Branch (`signup_initial_password`):** Queries `identity_lifecycle` FOR UPDATE for the target user. Requires `lifecycle_stage = 'provisional_created'`. If `lifecycle_stage = 'enrolled_password_complete'`, it strictly rejects with `account_already_enrolled` (SQLSTATE `42501`). If `lifecycle_stage = 'quarantined_indeterminate'`, it strictly rejects with `identity_quarantined` (SQLSTATE `55P03`). Sign Up route can NEVER mutate or overwrite an existing account's password.
+   - **Recovery Branch (`recovery_password_reset` — M1 Hardened):** Acquires Tier 4 row lock on `identity_lifecycle` for `v_bound_user_id` FOR UPDATE. Strictly requires `lifecycle_stage = 'enrolled_password_complete'`. If account is provisional or quarantined, claim is rejected with `account_not_enrolled` or `identity_quarantined`.
+   - **Defense-in-Depth:** Checks `auth.users.encrypted_password`. If a password hash is present during signup, it reconciles `identity_lifecycle` to `enrolled_password_complete` and aborts with `account_already_enrolled`.
 
 ```sql
--- Provisional Creation Reservation Helper (R11)
+-- Provisional Creation Reservation Helper (R11–R12 Hardened — H3, H4, H5)
 CREATE OR REPLACE FUNCTION private_auth.reserve_provisional_creation(
     p_challenge_id UUID,
     p_provisioning_grant_id UUID,
@@ -476,16 +497,19 @@ CREATE OR REPLACE FUNCTION private_auth.reserve_provisional_creation(
 DECLARE
     v_challenge RECORD;
     v_lifecycle RECORD;
+    v_active_op RECORD;
     v_now TIMESTAMPTZ;
     v_op_id UUID;
 BEGIN
     -- Tier 1: Identity Advisory Lock
     PERFORM pg_advisory_xact_lock(hashtext('auth_identity:' || p_normalized_email));
 
-    -- Tier 3: Challenge Row Lock
+    -- Tier 3: Challenge Row Lock with strict email and signup purpose check (H3 — PRRT_kwDOVtCmZc66HSzi)
     SELECT * INTO v_challenge
     FROM private_auth.auth_challenges
     WHERE challenge_id = p_challenge_id
+      AND normalized_email = p_normalized_email
+      AND purpose = 'signup_initial_password'::private_auth.challenge_purpose
     FOR UPDATE;
 
     IF NOT FOUND THEN
@@ -493,7 +517,7 @@ BEGIN
         RETURN;
     END IF;
 
-    -- Post-Lock Timestamp Evaluation (R11)
+    -- Post-Lock Timestamp Evaluation (R11/R12)
     v_now := clock_timestamp();
 
     IF v_challenge.status != 'pending_provisioning' THEN
@@ -506,12 +530,13 @@ BEGIN
         RETURN;
     END IF;
 
+    -- Boundary: v_now < grant_expires_at is valid; v_now >= grant_expires_at is expired
     IF v_challenge.grant_expires_at IS NULL OR v_now >= v_challenge.grant_expires_at THEN
         RETURN QUERY SELECT FALSE, NULL::UUID, 'grant_expired'::TEXT;
         RETURN;
     END IF;
 
-    -- Check if email is already enrolled in identity_lifecycle
+    -- Tier 4: Check identity_lifecycle under lock and fail closed on ALL non-eligible stages (H4 — PRRT_kwDOVtCmZc66HSzq)
     SELECT * INTO v_lifecycle
     FROM private_auth.identity_lifecycle
     WHERE normalized_email = p_normalized_email
@@ -524,6 +549,9 @@ BEGIN
         ELSIF v_lifecycle.lifecycle_stage = 'quarantined_indeterminate' THEN
             RETURN QUERY SELECT FALSE, NULL::UUID, 'identity_quarantined'::TEXT;
             RETURN;
+        ELSIF v_lifecycle.lifecycle_stage = 'enrollment_pending' THEN
+            RETURN QUERY SELECT FALSE, NULL::UUID, 'enrollment_in_progress'::TEXT;
+            RETURN;
         ELSIF v_lifecycle.lifecycle_stage = 'provisional_created' THEN
             -- Already exists as provisional; reuse it directly
             UPDATE private_auth.auth_challenges
@@ -532,10 +560,33 @@ BEGIN
 
             RETURN QUERY SELECT FALSE, NULL::UUID, 'provisional_already_exists'::TEXT;
             RETURN;
+        ELSE
+            -- Fail-closed on any unrecognized lifecycle stage
+            RETURN QUERY SELECT FALSE, NULL::UUID, 'invalid_lifecycle_stage'::TEXT;
+            RETURN;
         END IF;
     END IF;
 
-    -- Insert executing creation lease
+    -- Check active or quarantined creation lease in admin_operation_ledger (H5 — PRRT_kwDOVtCmZc66HSzv)
+    SELECT * INTO v_active_op
+    FROM private_auth.admin_operation_ledger
+    WHERE normalized_email = p_normalized_email
+      AND operation_type = 'create_provisional_user'
+      AND status IN ('claimed', 'executing', 'reconciling', 'quarantined_indeterminate')
+    ORDER BY created_at DESC
+    LIMIT 1;
+
+    IF FOUND THEN
+        IF v_active_op.status = 'quarantined_indeterminate' THEN
+            RETURN QUERY SELECT FALSE, NULL::UUID, 'creation_quarantined_indeterminate'::TEXT;
+            RETURN;
+        ELSE
+            RETURN QUERY SELECT FALSE, NULL::UUID, 'creation_already_reserved'::TEXT;
+            RETURN;
+        END IF;
+    END IF;
+
+    -- Tier 6: Insert executing creation lease
     BEGIN
         INSERT INTO private_auth.admin_operation_ledger (
             challenge_id, normalized_email, target_user_id, operation_type,
@@ -552,9 +603,9 @@ BEGIN
         RETURN;
     END;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
 
--- Provisional Creation Completion Helper (R11)
+-- Provisional Creation Completion Helper (R11–R12 Hardened — H2, H6, M2, im-tio P1)
 CREATE OR REPLACE FUNCTION private_auth.complete_provisional_creation(
     p_operation_id UUID,
     p_worker_lease_id UUID,
@@ -564,9 +615,59 @@ CREATE OR REPLACE FUNCTION private_auth.complete_provisional_creation(
     conflict_code TEXT
 ) AS $$
 DECLARE
+    v_op_meta RECORD;
     v_op RECORD;
-    v_now TIMESTAMPTZ := clock_timestamp();
+    v_challenge RECORD;
+    v_lifecycle RECORD;
+    v_auth_email TEXT;
+    v_now TIMESTAMPTZ;
 BEGIN
+    -- Step 1: Pre-read operation metadata without row lock to resolve identity for Tier 1 Advisory Lock
+    SELECT normalized_email, challenge_id, operation_type
+    INTO v_op_meta
+    FROM private_auth.admin_operation_ledger
+    WHERE operation_id = p_operation_id;
+
+    IF NOT FOUND THEN
+        RETURN QUERY SELECT FALSE, 'operation_not_found'::TEXT;
+        RETURN;
+    END IF;
+
+    -- Authorize operation_type (im-tio P1 — PRRT_kwDOVtCmZc66Hbdq)
+    IF v_op_meta.operation_type != 'create_provisional_user'::private_auth.operation_type THEN
+        RETURN QUERY SELECT FALSE, 'invalid_operation_type'::TEXT;
+        RETURN;
+    END IF;
+
+    -- Step 2: Acquire locks in strict Global Lock Hierarchy order (M2 — PRRT_kwDOVtCmZc66HSz_)
+    -- Tier 1: Identity Advisory Lock
+    PERFORM pg_advisory_xact_lock(hashtext('auth_identity:' || v_op_meta.normalized_email));
+
+    -- Tier 3: Challenge Row Lock
+    SELECT * INTO v_challenge
+    FROM private_auth.auth_challenges
+    WHERE challenge_id = v_op_meta.challenge_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RETURN QUERY SELECT FALSE, 'challenge_not_found'::TEXT;
+        RETURN;
+    END IF;
+
+    -- Authorize Challenge Purpose & Status (im-tio P1 — PRRT_kwDOVtCmZc66Hbdq)
+    IF v_challenge.purpose != 'signup_initial_password'::private_auth.challenge_purpose
+       OR v_challenge.status != 'pending_provisioning'::private_auth.challenge_status THEN
+        RETURN QUERY SELECT FALSE, 'invalid_challenge_purpose_or_status'::TEXT;
+        RETURN;
+    END IF;
+
+    -- Tier 4: Identity Lifecycle Row Lock (Lock existing target record if present)
+    SELECT * INTO v_lifecycle
+    FROM private_auth.identity_lifecycle
+    WHERE user_id = p_target_user_id
+    FOR UPDATE;
+
+    -- Tier 6: Admin Operation Ledger Row Lock
     SELECT * INTO v_op
     FROM private_auth.admin_operation_ledger
     WHERE operation_id = p_operation_id
@@ -577,21 +678,65 @@ BEGIN
         RETURN;
     END IF;
 
+    -- Post-Lock Timestamp Evaluation (M2 — PRRT_kwDOVtCmZc66HSz_)
+    v_now := clock_timestamp();
+
+    -- Validate lease state and lease expiry post-lock
     IF v_op.worker_lease_id != p_worker_lease_id OR v_op.status != 'executing' THEN
         RETURN QUERY SELECT FALSE, 'invalid_lease_state'::TEXT;
         RETURN;
     END IF;
 
-    -- Tier 1: Identity Advisory Lock
-    PERFORM pg_advisory_xact_lock(hashtext('auth_identity:' || v_op.normalized_email));
+    IF v_now >= v_op.lease_expires_at THEN
+        RETURN QUERY SELECT FALSE, 'lease_expired'::TEXT;
+        RETURN;
+    END IF;
 
-    -- Register provisional identity in identity_lifecycle
-    INSERT INTO private_auth.identity_lifecycle (
-        user_id, normalized_email, lifecycle_stage, provisional_created_at, last_challenge_id, last_operation_id
-    ) VALUES (
-        p_target_user_id, v_op.normalized_email, 'provisional_created', v_now, v_op.challenge_id, p_operation_id
-    ) ON CONFLICT (user_id) DO UPDATE
-      SET lifecycle_stage = 'provisional_created', updated_at = v_now;
+    -- Verify target user exists in auth.users and matches normalized email (im-tio P1 — PRRT_kwDOVtCmZc66Hbdq)
+    SELECT lower(trim(email)) INTO v_auth_email
+    FROM auth.users
+    WHERE id = p_target_user_id;
+
+    IF NOT FOUND THEN
+        RETURN QUERY SELECT FALSE, 'target_user_not_found'::TEXT;
+        RETURN;
+    END IF;
+
+    IF v_auth_email != v_op.normalized_email THEN
+        RETURN QUERY SELECT FALSE, 'target_user_email_mismatch'::TEXT;
+        RETURN;
+    END IF;
+
+    -- Prevent Lifecycle Demotion (H2 — PRRT_kwDOVtCmZc66HSzf)
+    IF v_lifecycle.user_id IS NOT NULL THEN
+        IF v_lifecycle.lifecycle_stage = 'enrolled_password_complete' THEN
+            RETURN QUERY SELECT FALSE, 'account_already_enrolled'::TEXT;
+            RETURN;
+        ELSIF v_lifecycle.lifecycle_stage = 'quarantined_indeterminate' THEN
+            RETURN QUERY SELECT FALSE, 'identity_quarantined'::TEXT;
+            RETURN;
+        ELSIF v_lifecycle.lifecycle_stage = 'enrollment_pending' THEN
+            RETURN QUERY SELECT FALSE, 'enrollment_in_progress'::TEXT;
+            RETURN;
+        ELSIF v_lifecycle.lifecycle_stage = 'provisional_created' THEN
+            -- Update challenge reference idempotently without demotion
+            UPDATE private_auth.identity_lifecycle
+            SET last_challenge_id = v_op.challenge_id,
+                last_operation_id = p_operation_id,
+                updated_at = v_now
+            WHERE user_id = p_target_user_id;
+        ELSE
+            RETURN QUERY SELECT FALSE, 'lifecycle_demotion_prohibited'::TEXT;
+            RETURN;
+        END IF;
+    ELSE
+        -- Insert new provisional lifecycle record (H6: decoupled PK)
+        INSERT INTO private_auth.identity_lifecycle (
+            user_id, normalized_email, lifecycle_stage, provisional_created_at, last_challenge_id, last_operation_id
+        ) VALUES (
+            p_target_user_id, v_op.normalized_email, 'provisional_created', v_now, v_op.challenge_id, p_operation_id
+        );
+    END IF;
 
     -- Update challenge user_id
     UPDATE private_auth.auth_challenges
@@ -607,9 +752,9 @@ BEGIN
 
     RETURN QUERY SELECT TRUE, NULL::TEXT;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
 
--- Authoritative Claim Helper with Strict Identity, Purpose & Grant Binding (R7, R9, R10 & R11)
+-- Authoritative Claim Helper with Strict Identity, Purpose & Recovery Lifecycle Guard (R7, R9, R10, R11 & R12 — M1)
 CREATE OR REPLACE FUNCTION private_auth.claim_admin_operation(
     p_challenge_id UUID,
     p_provisioning_grant_id UUID,
@@ -652,7 +797,7 @@ BEGIN
         RETURN;
     END IF;
 
-    -- CRITICAL R11 FIX: Compute fresh database timestamp AFTER acquiring Tier 1 and Tier 3 locks
+    -- CRITICAL R11/R12 FIX: Compute fresh database timestamp AFTER acquiring Tier 1 and Tier 3 locks
     v_now := clock_timestamp();
 
     -- 1. Validate Normalized Email
@@ -675,7 +820,7 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 3. Validate Provisioning Grant ID and Expiry (Post-Lock R11)
+    -- 3. Validate Provisioning Grant ID and Expiry (Post-Lock R11/R12)
     IF p_provisioning_grant_id IS NULL OR v_challenge.provisioning_grant_id IS NULL OR v_challenge.provisioning_grant_id != p_provisioning_grant_id THEN
         RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'grant_mismatch'::TEXT;
         RETURN;
@@ -702,7 +847,7 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 5. Strict Target Identity Binding (R10 & R11)
+    -- 5. Strict Target Identity Binding & Lifecycle Enforcement (R10, R11 & R12 — M1 Hardened)
     IF p_target_user_id IS NULL AND v_challenge.user_id IS NULL THEN
         RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'target_user_id_required'::TEXT;
         RETURN;
@@ -718,6 +863,45 @@ BEGIN
             RETURN;
         END IF;
         v_bound_user_id := v_challenge.user_id;
+
+        -- Tier 4: Recovery Branch Lifecycle Row Lock & Eligibility (M1 — PRRT_kwDOVtCmZc66HSz6)
+        SELECT * INTO v_lifecycle
+        FROM private_auth.identity_lifecycle
+        WHERE user_id = v_bound_user_id
+        FOR UPDATE;
+
+        IF NOT FOUND THEN
+            -- Check auth.users for existing account credentials
+            SELECT email, encrypted_password INTO v_auth_user_email, v_auth_user_pwd
+            FROM auth.users
+            WHERE id = v_bound_user_id;
+
+            IF NOT FOUND THEN
+                RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'target_user_not_found'::TEXT;
+                RETURN;
+            END IF;
+
+            IF v_auth_user_pwd IS NOT NULL AND v_auth_user_pwd <> '' THEN
+                INSERT INTO private_auth.identity_lifecycle (
+                    user_id, normalized_email, lifecycle_stage, enrolled_at
+                ) VALUES (
+                    v_bound_user_id, p_normalized_email, 'enrolled_password_complete', v_now
+                ) ON CONFLICT (user_id) DO UPDATE
+                  SET lifecycle_stage = 'enrolled_password_complete', updated_at = v_now
+                RETURNING * INTO v_lifecycle;
+            ELSE
+                RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'missing_identity_lifecycle'::TEXT;
+                RETURN;
+            END IF;
+        END IF;
+
+        IF v_lifecycle.lifecycle_stage = 'quarantined_indeterminate' THEN
+            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'identity_quarantined'::TEXT;
+            RETURN;
+        ELSIF v_lifecycle.lifecycle_stage != 'enrolled_password_complete' THEN
+            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'account_not_enrolled'::TEXT;
+            RETURN;
+        END IF;
 
     ELSIF v_challenge.purpose = 'signup_initial_password' THEN
         IF v_challenge.user_id IS NOT NULL THEN
@@ -847,7 +1031,7 @@ BEGIN
         RETURN;
     END;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
 ```
 #### Token Cryptography & Storage
 - Six-digit numeric OTP generated via cryptographically secure pseudo-random number generator (`crypto.randomInt(100000, 1000000)`).
@@ -861,10 +1045,13 @@ Task 06B, 06D, and 06H-E proved that any session bearing `amr: ['otp']` can call
 
 #### Enforcement Architecture
 1. **Denial of Native OTP Sessions:** The client never receives a Supabase Auth session from OTP verification. OTP verification occurs in the Edge Function, which returns only a purpose-bound transient verification grant (`provisioning_grant_id`) or proceeds immediately to server-side password enrollment.
-2. **Explicit Fail-Closed Token Hook Allowlist with Object-Array AMR Parsing (P1-1):**
+2. **Explicit Fail-Closed Token Hook Allowlist with Object-Array AMR Parsing (P1-1, H1 Hardened — R12):**
    *(Status: PROPOSED SPECIFICATION — REQUIRES EXPERIMENT ON HOSTED)*
-   Supabase Auth emits the `amr` JWT claim as an array of JSON objects conforming to RFC 8176 (e.g. `[{"method": "password", "timestamp": 1234567890}]`). Testing the JSON array for string membership (`v_amr ? 'password'`) fails because the elements are objects, causing legitimate password-session refreshes to fail closed.
-   To correctly enforce fail-closed security, the hook iterates over the array of objects, inspects `amr[*].method`, and applies strict allowlist logic:
+   Supabase Auth emits the `amr` JWT claim as an array of JSON objects conforming to RFC 8176 (e.g. `[{"method": "password", "timestamp": 1234567890}]`).
+   Cursor High review finding H1 (`PRRT_kwDOVtCmZc66HSzX`) identified that earlier revisions dropped the top-level `authentication_method` check in the hook function and accepted mixed AMR arrays containing `password` alongside disallowed methods.
+   In R12, the hook restores a strict fail-closed contract:
+   - **Mandatory Top-Level Authentication Method Check:** The hook explicitly checks `claims->>'authentication_method'`. It must strictly equal `'password'` (for initial sign-in) or `'token_refresh'`. Any missing, null, empty, or other value immediately aborts with SQLSTATE `42501`.
+   - **Complete AMR Array Traversal & Mixed AMR Rejection:** The hook inspects EVERY element in `claims->'amr'`. It verifies that `method = 'password'` is present AND that ZERO disallowed methods (`'otp'`, `'recovery'`, `'magiclink'`, `'signup'`, `'invite'`, `'anonymous'`, `'oauth'`, `'sso'`, or unknown methods) are present. If a mixed AMR array is encountered (e.g. both password and OTP/recovery present), the hook strictly rejects the token minting.
    - **Allowed Authentication Methods:**
      1. `authentication_method = 'password'` for initial sign-in.
      2. `authentication_method = 'token_refresh'` ONLY WHEN server-trusted session claims establish that the session originated strictly from password authentication:
@@ -1098,7 +1285,7 @@ BEGIN
 
     RETURN QUERY SELECT TRUE, v_new_id, 0, 'reserved'::TEXT;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
 ```
 - **Deterministic Quota Test Matrix (P2-5 & R7):**
   - **Test A (10 Simultaneous Requests):** Ten simultaneous requests for the same email serialize under `pg_advisory_xact_lock` and the Tier 2 cooldown row lock. The first request reserves quota (`allowed = true`). The subsequent nine requests execute within $< 60$ seconds of the first, find `created_at > (v_now - INTERVAL '60 seconds')`, and are REJECTED (`allowed = false, reason = 'interval_active'`). Exactly 1 reservation succeeds.
@@ -1220,48 +1407,55 @@ BEGIN
     -- (4) failed_terminal, OR
     -- (5) abandoned post-verify with expired grants (PRRT_kwDOVtCmZc659g81).
     -- STRICT INVARIANT: NEVER delete challenges associated with active, reconciling, or quarantined operations!
+    -- CRITICAL M3 FIX: Scoped NOT EXISTS across all operations for this challenge safely handles 1-to-many operations (PRRT_kwDOVtCmZc66HS0C)
     WITH deletable AS (
         SELECT c.id
         FROM private_auth.auth_challenges c
-        LEFT JOIN private_auth.admin_operation_ledger o ON o.challenge_id = c.challenge_id
         WHERE c.created_at < v_cutoff
           AND (
-              -- Case 1: Consumed with terminal admin operation (or no operation claimed)
-              (c.status = 'consumed' AND (o.status IN ('completed', 'failed_terminal') OR o.status IS NULL))
+              -- Case 1: Consumed
+              c.status = 'consumed'
               OR
               -- Case 2: Expired without verification
               (c.status = 'issued' AND c.expires_at < v_cutoff)
               OR
               -- Case 3: Superseded challenge
-              (c.status = 'superseded')
+              c.status = 'superseded'
               OR
-              -- Case 4: Terminal failure challenge (reconciled by operator as completed or failed_terminal, or abandoned) (PRRT_kwDOVtCmZc659s0e)
-              (c.status = 'failed_terminal' AND (o.status IN ('completed', 'failed_terminal') OR o.status IS NULL))
+              -- Case 4: Terminal failure challenge
+              c.status = 'failed_terminal'
               OR
-              -- Case 5: Verified challenge abandoned before or after claim with expired grant (PRRT_kwDOVtCmZc659g81, PRRT_kwDOVtCmZc659s0e)
+              -- Case 5: Verified challenge abandoned before or after claim with expired grant
               (c.status IN ('pending_provisioning', 'provisioning_failed_retryable')
-               AND c.grant_expires_at < v_cutoff
-               AND (o.status IN ('completed', 'failed_terminal') OR o.status IS NULL))
+               AND c.grant_expires_at < v_cutoff)
           )
-          -- CRITICAL EXCLUSION: Never touch any challenge whose operation is active or quarantined!
-          AND (o.status IS NULL OR o.status NOT IN ('claimed', 'executing', 'reconciling', 'quarantined_indeterminate'))
+          -- CRITICAL M3 FIX: Scoped NOT EXISTS across all associated operations
+          AND NOT EXISTS (
+              SELECT 1
+              FROM private_auth.admin_operation_ledger o
+              WHERE o.challenge_id = c.challenge_id
+                AND o.status IN ('claimed', 'executing', 'reconciling', 'quarantined_indeterminate')
+          )
         FOR UPDATE OF c SKIP LOCKED
+    ),
+    deleted_chal AS (
+        DELETE FROM private_auth.auth_challenges
+        WHERE id IN (SELECT id FROM deletable)
+        RETURNING id
+    ),
+    deleted_logs AS (
+        DELETE FROM private_auth.email_send_log
+        WHERE created_at < (clock_timestamp() - INTERVAL '7 days')
+        RETURNING id
     )
-    DELETE FROM private_auth.auth_challenges c
-    USING deletable
-    WHERE c.id = deletable.id;
-
-    GET DIAGNOSTICS v_purged_challenges = ROW_COUNT;
-
-    -- Purge old email_send_log entries beyond 7 days (preserves quota windows)
-    DELETE FROM private_auth.email_send_log
-    WHERE created_at < (clock_timestamp() - INTERVAL '7 days');
-
-    GET DIAGNOSTICS v_purged_logs = ROW_COUNT;
+    SELECT
+        (SELECT COUNT(*)::INT FROM deleted_chal),
+        (SELECT COUNT(*)::INT FROM deleted_logs)
+    INTO v_purged_challenges, v_purged_logs;
 
     RETURN QUERY SELECT v_purged_challenges, v_purged_logs;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
 ```
 
 ---
@@ -1454,13 +1648,13 @@ sequenceDiagram
             Note over Edge: Reuses existing provisional UUID from DB; skips createUser
         else Genuinely New Identity (No Prior Provisional User — PROV-01)
             Edge->>DB: reserve_provisional_creation(challenge_id, grant_id, email, lease_id, hash)
-            Note over DB: Tier 1 Advisory + Tier 3 Challenge Lock: post-lock v_now; validates grant; verifies email not enrolled; inserts executing creation lease
+            Note over DB: Tier 1 Advisory + Tier 3 Challenge Lock: post-lock v_now; validates signup purpose & grant; verifies email not enrolled/quarantined/pending; inserts executing creation lease (H3, H4, H5)
             DB-->>Edge: Creation Reserved (op_id)
             Edge->>Admin: admin.createUser({ email, email_confirm: false }) (Server lifecycle: creates unconfirmed provisional identity with NO password)
             alt createUser Succeeded (201)
                 Admin-->>Edge: Provisional Identity Minted (provisional_uuid)
                 Edge->>DB: complete_provisional_creation(op_id, lease_id, provisional_uuid)
-                Note over DB: Inserts into identity_lifecycle (provisional_created); binds user_id to challenge; completes creation ledger
+                Note over DB: Tier 1 -> Tier 3 -> Tier 4 -> Tier 6 locks: post-lock v_now; validates operation_type & auth.users email; prevents lifecycle demotion; binds user_id; completes ledger (H2, M2, im-tio P1)
                 DB-->>Edge: Creation Completed (provisional_uuid)
             else createUser Ambiguous / Timeout (PROV-03)
                 Edge->>DB: record_operation_quarantine(op_id, lease_id, 'createUser timeout')
@@ -1566,7 +1760,7 @@ sequenceDiagram
     else Atomic Verification Succeeded
         DB-->>Edge: Phase 1 Success: status = 'pending_provisioning', grant_id generated
         Edge->>DB: Phase 2: claim_admin_operation(challenge_id, grant_id, email, user_id, 'recovery_password_reset', lease_id, hash)
-        Note over DB: Tier 1 Advisory + Tier 3 Challenge + Tier 4 Lifecycle Lock: post-lock v_now; validates grant, purpose mapping, enrolled lifecycle & exact registered user_id (R10, R11)
+        Note over DB: Tier 1 Advisory + Tier 3 Challenge + Tier 4 Lifecycle Lock: post-lock v_now; validates grant, purpose mapping, enrolled lifecycle & exact registered user_id (R10, R11, R12 — M1)
         alt Competing Active or Quarantined Recovery Exists (or Grant Expired Post-Lock)
             DB-->>Edge: Conflict / Identity Quarantined (conflict_code)
             Edge-->>User: 409 Conflict { error: "conflict", code: conflict_code }
@@ -1670,7 +1864,7 @@ WHERE status = 'issued' AND consumed_at IS NULL;
 -- Durable Identity Lifecycle State Table (P1-3, P1-5 & R11 — Stage 1 & 2)
 -- Tracks provisional creation provenance, enrollment completion, and indeterminate quarantines decoupled from challenge retention
 CREATE TABLE private_auth.identity_lifecycle (
-    user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE SET NULL,
+    user_id UUID PRIMARY KEY, -- Decoupled from auth.users foreign key cascade; preserves lifecycle provenance & quarantine evidence (H6 — PRRT_kwDOVtCmZc66HSz0)
     normalized_email TEXT NOT NULL UNIQUE,
     lifecycle_stage private_auth.lifecycle_stage NOT NULL,
     provisional_created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
@@ -1720,7 +1914,7 @@ WHERE operation_type = 'enroll_initial_password'
 CREATE UNIQUE INDEX uq_admin_ledger_active_creation_email
 ON private_auth.admin_operation_ledger (normalized_email)
 WHERE operation_type = 'create_provisional_user'
-  AND status IN ('claimed', 'executing', 'reconciling');
+  AND status IN ('claimed', 'executing', 'reconciling', 'quarantined_indeterminate');
 
 CREATE UNIQUE INDEX uq_admin_ledger_creation_user
 ON private_auth.admin_operation_ledger (target_user_id)
@@ -1837,7 +2031,7 @@ BEGIN
 
     RETURN QUERY SELECT TRUE, v_new_id, 0, 'reserved'::TEXT;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
 
 -- Unified Challenge Verification, Cooldown Guard & Provisional Identity Reuse (P1 Hardened & R7–R11)
 CREATE OR REPLACE FUNCTION private_auth.verify_otp_challenge(
@@ -2065,9 +2259,9 @@ BEGIN
         END IF;
     END IF;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
 
--- Provisional Creation Reservation Helper (Stage 1 — R11 — PRRT_kwDOVtCmZc66F5EN)
+-- Provisional Creation Reservation Helper (R11–R12 Hardened — H3, H4, H5)
 CREATE OR REPLACE FUNCTION private_auth.reserve_provisional_creation(
     p_challenge_id UUID,
     p_provisioning_grant_id UUID,
@@ -2082,16 +2276,19 @@ CREATE OR REPLACE FUNCTION private_auth.reserve_provisional_creation(
 DECLARE
     v_challenge RECORD;
     v_lifecycle RECORD;
+    v_active_op RECORD;
     v_now TIMESTAMPTZ;
     v_op_id UUID;
 BEGIN
     -- Tier 1: Identity Advisory Lock
     PERFORM pg_advisory_xact_lock(hashtext('auth_identity:' || p_normalized_email));
 
-    -- Tier 3: Challenge Row Lock
+    -- Tier 3: Challenge Row Lock with strict email and signup purpose check (H3 — PRRT_kwDOVtCmZc66HSzi)
     SELECT * INTO v_challenge
     FROM private_auth.auth_challenges
     WHERE challenge_id = p_challenge_id
+      AND normalized_email = p_normalized_email
+      AND purpose = 'signup_initial_password'::private_auth.challenge_purpose
     FOR UPDATE;
 
     IF NOT FOUND THEN
@@ -2099,7 +2296,7 @@ BEGIN
         RETURN;
     END IF;
 
-    -- Post-Lock Timestamp Evaluation (R11)
+    -- Post-Lock Timestamp Evaluation (R11/R12)
     v_now := clock_timestamp();
 
     IF v_challenge.status != 'pending_provisioning' THEN
@@ -2112,12 +2309,13 @@ BEGIN
         RETURN;
     END IF;
 
+    -- Boundary: v_now < grant_expires_at is valid; v_now >= grant_expires_at is expired
     IF v_challenge.grant_expires_at IS NULL OR v_now >= v_challenge.grant_expires_at THEN
         RETURN QUERY SELECT FALSE, NULL::UUID, 'grant_expired'::TEXT;
         RETURN;
     END IF;
 
-    -- Check if email is already enrolled in identity_lifecycle
+    -- Tier 4: Check identity_lifecycle under lock and fail closed on ALL non-eligible stages (H4 — PRRT_kwDOVtCmZc66HSzq)
     SELECT * INTO v_lifecycle
     FROM private_auth.identity_lifecycle
     WHERE normalized_email = p_normalized_email
@@ -2130,6 +2328,9 @@ BEGIN
         ELSIF v_lifecycle.lifecycle_stage = 'quarantined_indeterminate' THEN
             RETURN QUERY SELECT FALSE, NULL::UUID, 'identity_quarantined'::TEXT;
             RETURN;
+        ELSIF v_lifecycle.lifecycle_stage = 'enrollment_pending' THEN
+            RETURN QUERY SELECT FALSE, NULL::UUID, 'enrollment_in_progress'::TEXT;
+            RETURN;
         ELSIF v_lifecycle.lifecycle_stage = 'provisional_created' THEN
             -- Already exists as provisional; reuse it directly
             UPDATE private_auth.auth_challenges
@@ -2138,10 +2339,33 @@ BEGIN
 
             RETURN QUERY SELECT FALSE, NULL::UUID, 'provisional_already_exists'::TEXT;
             RETURN;
+        ELSE
+            -- Fail-closed on any unrecognized lifecycle stage
+            RETURN QUERY SELECT FALSE, NULL::UUID, 'invalid_lifecycle_stage'::TEXT;
+            RETURN;
         END IF;
     END IF;
 
-    -- Insert executing creation lease
+    -- Check active or quarantined creation lease in admin_operation_ledger (H5 — PRRT_kwDOVtCmZc66HSzv)
+    SELECT * INTO v_active_op
+    FROM private_auth.admin_operation_ledger
+    WHERE normalized_email = p_normalized_email
+      AND operation_type = 'create_provisional_user'
+      AND status IN ('claimed', 'executing', 'reconciling', 'quarantined_indeterminate')
+    ORDER BY created_at DESC
+    LIMIT 1;
+
+    IF FOUND THEN
+        IF v_active_op.status = 'quarantined_indeterminate' THEN
+            RETURN QUERY SELECT FALSE, NULL::UUID, 'creation_quarantined_indeterminate'::TEXT;
+            RETURN;
+        ELSE
+            RETURN QUERY SELECT FALSE, NULL::UUID, 'creation_already_reserved'::TEXT;
+            RETURN;
+        END IF;
+    END IF;
+
+    -- Tier 6: Insert executing creation lease
     BEGIN
         INSERT INTO private_auth.admin_operation_ledger (
             challenge_id, normalized_email, target_user_id, operation_type,
@@ -2158,9 +2382,9 @@ BEGIN
         RETURN;
     END;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
 
--- Provisional Creation Completion Helper (Stage 1 — R11 — PRRT_kwDOVtCmZc66F5EN)
+-- Provisional Creation Completion Helper (R11–R12 Hardened — H2, H6, M2, im-tio P1)
 CREATE OR REPLACE FUNCTION private_auth.complete_provisional_creation(
     p_operation_id UUID,
     p_worker_lease_id UUID,
@@ -2170,9 +2394,59 @@ CREATE OR REPLACE FUNCTION private_auth.complete_provisional_creation(
     conflict_code TEXT
 ) AS $$
 DECLARE
+    v_op_meta RECORD;
     v_op RECORD;
-    v_now TIMESTAMPTZ := clock_timestamp();
+    v_challenge RECORD;
+    v_lifecycle RECORD;
+    v_auth_email TEXT;
+    v_now TIMESTAMPTZ;
 BEGIN
+    -- Step 1: Pre-read operation metadata without row lock to resolve identity for Tier 1 Advisory Lock
+    SELECT normalized_email, challenge_id, operation_type
+    INTO v_op_meta
+    FROM private_auth.admin_operation_ledger
+    WHERE operation_id = p_operation_id;
+
+    IF NOT FOUND THEN
+        RETURN QUERY SELECT FALSE, 'operation_not_found'::TEXT;
+        RETURN;
+    END IF;
+
+    -- Authorize operation_type (im-tio P1 — PRRT_kwDOVtCmZc66Hbdq)
+    IF v_op_meta.operation_type != 'create_provisional_user'::private_auth.operation_type THEN
+        RETURN QUERY SELECT FALSE, 'invalid_operation_type'::TEXT;
+        RETURN;
+    END IF;
+
+    -- Step 2: Acquire locks in strict Global Lock Hierarchy order (M2 — PRRT_kwDOVtCmZc66HSz_)
+    -- Tier 1: Identity Advisory Lock
+    PERFORM pg_advisory_xact_lock(hashtext('auth_identity:' || v_op_meta.normalized_email));
+
+    -- Tier 3: Challenge Row Lock
+    SELECT * INTO v_challenge
+    FROM private_auth.auth_challenges
+    WHERE challenge_id = v_op_meta.challenge_id
+    FOR UPDATE;
+
+    IF NOT FOUND THEN
+        RETURN QUERY SELECT FALSE, 'challenge_not_found'::TEXT;
+        RETURN;
+    END IF;
+
+    -- Authorize Challenge Purpose & Status (im-tio P1 — PRRT_kwDOVtCmZc66Hbdq)
+    IF v_challenge.purpose != 'signup_initial_password'::private_auth.challenge_purpose
+       OR v_challenge.status != 'pending_provisioning'::private_auth.challenge_status THEN
+        RETURN QUERY SELECT FALSE, 'invalid_challenge_purpose_or_status'::TEXT;
+        RETURN;
+    END IF;
+
+    -- Tier 4: Identity Lifecycle Row Lock (Lock existing target record if present)
+    SELECT * INTO v_lifecycle
+    FROM private_auth.identity_lifecycle
+    WHERE user_id = p_target_user_id
+    FOR UPDATE;
+
+    -- Tier 6: Admin Operation Ledger Row Lock
     SELECT * INTO v_op
     FROM private_auth.admin_operation_ledger
     WHERE operation_id = p_operation_id
@@ -2183,21 +2457,65 @@ BEGIN
         RETURN;
     END IF;
 
+    -- Post-Lock Timestamp Evaluation (M2 — PRRT_kwDOVtCmZc66HSz_)
+    v_now := clock_timestamp();
+
+    -- Validate lease state and lease expiry post-lock
     IF v_op.worker_lease_id != p_worker_lease_id OR v_op.status != 'executing' THEN
         RETURN QUERY SELECT FALSE, 'invalid_lease_state'::TEXT;
         RETURN;
     END IF;
 
-    -- Tier 1: Identity Advisory Lock
-    PERFORM pg_advisory_xact_lock(hashtext('auth_identity:' || v_op.normalized_email));
+    IF v_now >= v_op.lease_expires_at THEN
+        RETURN QUERY SELECT FALSE, 'lease_expired'::TEXT;
+        RETURN;
+    END IF;
 
-    -- Register provisional identity in identity_lifecycle
-    INSERT INTO private_auth.identity_lifecycle (
-        user_id, normalized_email, lifecycle_stage, provisional_created_at, last_challenge_id, last_operation_id
-    ) VALUES (
-        p_target_user_id, v_op.normalized_email, 'provisional_created', v_now, v_op.challenge_id, p_operation_id
-    ) ON CONFLICT (user_id) DO UPDATE
-      SET lifecycle_stage = 'provisional_created', updated_at = v_now;
+    -- Verify target user exists in auth.users and matches normalized email (im-tio P1 — PRRT_kwDOVtCmZc66Hbdq)
+    SELECT lower(trim(email)) INTO v_auth_email
+    FROM auth.users
+    WHERE id = p_target_user_id;
+
+    IF NOT FOUND THEN
+        RETURN QUERY SELECT FALSE, 'target_user_not_found'::TEXT;
+        RETURN;
+    END IF;
+
+    IF v_auth_email != v_op.normalized_email THEN
+        RETURN QUERY SELECT FALSE, 'target_user_email_mismatch'::TEXT;
+        RETURN;
+    END IF;
+
+    -- Prevent Lifecycle Demotion (H2 — PRRT_kwDOVtCmZc66HSzf)
+    IF v_lifecycle.user_id IS NOT NULL THEN
+        IF v_lifecycle.lifecycle_stage = 'enrolled_password_complete' THEN
+            RETURN QUERY SELECT FALSE, 'account_already_enrolled'::TEXT;
+            RETURN;
+        ELSIF v_lifecycle.lifecycle_stage = 'quarantined_indeterminate' THEN
+            RETURN QUERY SELECT FALSE, 'identity_quarantined'::TEXT;
+            RETURN;
+        ELSIF v_lifecycle.lifecycle_stage = 'enrollment_pending' THEN
+            RETURN QUERY SELECT FALSE, 'enrollment_in_progress'::TEXT;
+            RETURN;
+        ELSIF v_lifecycle.lifecycle_stage = 'provisional_created' THEN
+            -- Update challenge reference idempotently without demotion
+            UPDATE private_auth.identity_lifecycle
+            SET last_challenge_id = v_op.challenge_id,
+                last_operation_id = p_operation_id,
+                updated_at = v_now
+            WHERE user_id = p_target_user_id;
+        ELSE
+            RETURN QUERY SELECT FALSE, 'lifecycle_demotion_prohibited'::TEXT;
+            RETURN;
+        END IF;
+    ELSE
+        -- Insert new provisional lifecycle record (H6: decoupled PK)
+        INSERT INTO private_auth.identity_lifecycle (
+            user_id, normalized_email, lifecycle_stage, provisional_created_at, last_challenge_id, last_operation_id
+        ) VALUES (
+            p_target_user_id, v_op.normalized_email, 'provisional_created', v_now, v_op.challenge_id, p_operation_id
+        );
+    END IF;
 
     -- Update challenge user_id
     UPDATE private_auth.auth_challenges
@@ -2213,9 +2531,9 @@ BEGIN
 
     RETURN QUERY SELECT TRUE, NULL::TEXT;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
 
--- Authoritative Claim Helper with Strict Identity, Purpose & Grant Binding (R7, R9, R10 & R11)
+-- Authoritative Claim Helper with Strict Identity, Purpose & Recovery Lifecycle Guard (R7, R9, R10, R11 & R12 — M1)
 CREATE OR REPLACE FUNCTION private_auth.claim_admin_operation(
     p_challenge_id UUID,
     p_provisioning_grant_id UUID,
@@ -2258,7 +2576,7 @@ BEGIN
         RETURN;
     END IF;
 
-    -- CRITICAL R11 FIX: Compute fresh database timestamp AFTER acquiring Tier 1 and Tier 3 locks (PRRT_kwDOVtCmZc66GwiI)
+    -- CRITICAL R11/R12 FIX: Compute fresh database timestamp AFTER acquiring Tier 1 and Tier 3 locks
     v_now := clock_timestamp();
 
     -- 1. Validate Normalized Email
@@ -2281,7 +2599,7 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 3. Validate Provisioning Grant ID and Expiry (Post-Lock R11)
+    -- 3. Validate Provisioning Grant ID and Expiry (Post-Lock R11/R12)
     IF p_provisioning_grant_id IS NULL OR v_challenge.provisioning_grant_id IS NULL OR v_challenge.provisioning_grant_id != p_provisioning_grant_id THEN
         RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'grant_mismatch'::TEXT;
         RETURN;
@@ -2308,7 +2626,7 @@ BEGIN
         RETURN;
     END IF;
 
-    -- 5. Strict Target Identity Binding (R10 & R11)
+    -- 5. Strict Target Identity Binding & Lifecycle Enforcement (R10, R11 & R12 — M1 Hardened)
     IF p_target_user_id IS NULL AND v_challenge.user_id IS NULL THEN
         RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'target_user_id_required'::TEXT;
         RETURN;
@@ -2324,6 +2642,45 @@ BEGIN
             RETURN;
         END IF;
         v_bound_user_id := v_challenge.user_id;
+
+        -- Tier 4: Recovery Branch Lifecycle Row Lock & Eligibility (M1 — PRRT_kwDOVtCmZc66HSz6)
+        SELECT * INTO v_lifecycle
+        FROM private_auth.identity_lifecycle
+        WHERE user_id = v_bound_user_id
+        FOR UPDATE;
+
+        IF NOT FOUND THEN
+            -- Check auth.users for existing account credentials
+            SELECT email, encrypted_password INTO v_auth_user_email, v_auth_user_pwd
+            FROM auth.users
+            WHERE id = v_bound_user_id;
+
+            IF NOT FOUND THEN
+                RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'target_user_not_found'::TEXT;
+                RETURN;
+            END IF;
+
+            IF v_auth_user_pwd IS NOT NULL AND v_auth_user_pwd <> '' THEN
+                INSERT INTO private_auth.identity_lifecycle (
+                    user_id, normalized_email, lifecycle_stage, enrolled_at
+                ) VALUES (
+                    v_bound_user_id, p_normalized_email, 'enrolled_password_complete', v_now
+                ) ON CONFLICT (user_id) DO UPDATE
+                  SET lifecycle_stage = 'enrolled_password_complete', updated_at = v_now
+                RETURNING * INTO v_lifecycle;
+            ELSE
+                RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'missing_identity_lifecycle'::TEXT;
+                RETURN;
+            END IF;
+        END IF;
+
+        IF v_lifecycle.lifecycle_stage = 'quarantined_indeterminate' THEN
+            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'identity_quarantined'::TEXT;
+            RETURN;
+        ELSIF v_lifecycle.lifecycle_stage != 'enrolled_password_complete' THEN
+            RETURN QUERY SELECT FALSE, NULL::UUID, NULL::BIGINT, NULL::UUID, NULL::private_auth.operation_type, 'account_not_enrolled'::TEXT;
+            RETURN;
+        END IF;
 
     ELSIF v_challenge.purpose = 'signup_initial_password' THEN
         IF v_challenge.user_id IS NOT NULL THEN
@@ -2453,7 +2810,7 @@ BEGIN
         RETURN;
     END;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
 
 -- Authoritative Transactional Challenge Retention Cleanup (Stage 4 — R9 & R11)
 CREATE OR REPLACE FUNCTION private_auth.cleanup_expired_challenges(
@@ -2475,82 +2832,134 @@ BEGIN
     -- (5) abandoned post-verify with expired grants (PRRT_kwDOVtCmZc659g81).
     -- STRICT INVARIANT: NEVER delete challenges associated with active, reconciling, or quarantined operations!
     -- STRICT INVARIANT: identity_lifecycle and admin_operation_ledger are completely decoupled and retained intact!
+    -- CRITICAL M3 FIX: Scoped NOT EXISTS across all operations for this challenge safely handles 1-to-many operations (PRRT_kwDOVtCmZc66HS0C)
     WITH deletable AS (
         SELECT c.id
         FROM private_auth.auth_challenges c
-        LEFT JOIN private_auth.admin_operation_ledger o ON o.challenge_id = c.challenge_id
         WHERE c.created_at < v_cutoff
           AND (
-              (c.status = 'consumed' AND (o.status IN ('completed', 'failed_terminal') OR o.status IS NULL))
+              -- Case 1: Consumed
+              c.status = 'consumed'
               OR
+              -- Case 2: Expired without verification
               (c.status = 'issued' AND c.expires_at < v_cutoff)
               OR
-              (c.status = 'superseded')
+              -- Case 3: Superseded challenge
+              c.status = 'superseded'
               OR
-              (c.status = 'failed_terminal' AND (o.status IS NULL OR o.status = 'failed_terminal'))
+              -- Case 4: Terminal failure challenge
+              c.status = 'failed_terminal'
               OR
-              (c.status = 'pending_provisioning' AND c.grant_expires_at < v_cutoff AND o.status IS NULL)
+              -- Case 5: Verified challenge abandoned before or after claim with expired grant
+              (c.status IN ('pending_provisioning', 'provisioning_failed_retryable')
+               AND c.grant_expires_at < v_cutoff)
           )
-          AND (o.status IS NULL OR o.status NOT IN ('claimed', 'executing', 'reconciling', 'quarantined_indeterminate'))
+          -- CRITICAL M3 FIX: Scoped NOT EXISTS across all associated operations
+          AND NOT EXISTS (
+              SELECT 1
+              FROM private_auth.admin_operation_ledger o
+              WHERE o.challenge_id = c.challenge_id
+                AND o.status IN ('claimed', 'executing', 'reconciling', 'quarantined_indeterminate')
+          )
         FOR UPDATE OF c SKIP LOCKED
+    ),
+    deleted_chal AS (
+        DELETE FROM private_auth.auth_challenges
+        WHERE id IN (SELECT id FROM deletable)
+        RETURNING id
+    ),
+    deleted_logs AS (
+        DELETE FROM private_auth.email_send_log
+        WHERE created_at < (clock_timestamp() - INTERVAL '7 days')
+        RETURNING id
     )
-    DELETE FROM private_auth.auth_challenges
-    WHERE id IN (SELECT id FROM deletable);
-
-    GET DIAGNOSTICS v_purged_challenges = ROW_COUNT;
-
-    -- Purge send logs older than 7 days
-    DELETE FROM private_auth.email_send_log
-    WHERE created_at < (clock_timestamp() - INTERVAL '7 days');
-
-    GET DIAGNOSTICS v_purged_logs = ROW_COUNT;
+    SELECT
+        (SELECT COUNT(*)::INT FROM deleted_chal),
+        (SELECT COUNT(*)::INT FROM deleted_logs)
+    INTO v_purged_challenges, v_purged_logs;
 
     RETURN QUERY SELECT v_purged_challenges, v_purged_logs;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
 
--- Custom Access Token Hook with Fail-Closed Allowlist & RFC 8176 Object-Array AMR (P1-1, R4 & R9)
+-- Custom Access Token Hook with Fail-Closed Allowlist & RFC 8176 Object-Array AMR (P1-1, R4, R9 & R12 Hardened — H1, M4)
 CREATE OR REPLACE FUNCTION private_auth.custom_access_token_hook(event JSONB)
 RETURNS JSONB AS $$
 DECLARE
     claims JSONB;
     amr_array JSONB;
     amr_elem JSONB;
-    is_password_authenticated BOOLEAN := FALSE;
+    v_auth_method TEXT;
+    v_has_password BOOLEAN := FALSE;
+    v_has_disallowed BOOLEAN := FALSE;
     amr_method TEXT;
 BEGIN
     claims := event->'claims';
+    v_auth_method := claims->>'authentication_method';
+
+    -- Strict fail-closed check on top-level authentication_method (H1 — PRRT_kwDOVtCmZc66HSzX)
+    IF v_auth_method IS NULL OR v_auth_method NOT IN ('password', 'token_refresh') THEN
+        RAISE EXCEPTION 'Access Denied: authentication_method % not permitted by policy', COALESCE(v_auth_method, 'NULL')
+            USING ERRCODE = '42501',
+                  HINT = 'Only password and valid token_refresh authentication methods are permitted';
+    END IF;
+
     amr_array := claims->'amr';
 
-    IF amr_array IS NOT NULL AND jsonb_typeof(amr_array) = 'array' THEN
-        FOR amr_elem IN SELECT * FROM jsonb_array_elements(amr_array) LOOP
-            IF jsonb_typeof(amr_elem) = 'object' THEN
-                amr_method := amr_elem->>'method';
-                IF amr_method = 'password' THEN
-                    is_password_authenticated := TRUE;
-                    EXIT;
-                END IF;
-            ELSIF jsonb_typeof(amr_elem) = 'string' THEN
-                IF amr_elem::TEXT = '"password"' THEN
-                    is_password_authenticated := TRUE;
-                    EXIT;
-                END IF;
-            END IF;
-        END LOOP;
+    IF amr_array IS NULL OR jsonb_typeof(amr_array) != 'array' OR jsonb_array_length(amr_array) = 0 THEN
+        RAISE EXCEPTION 'Access Denied: AMR array missing or empty'
+            USING ERRCODE = '42501';
     END IF;
 
-    IF is_password_authenticated THEN
-        claims := jsonb_set(claims, '{user_metadata, amr_authenticated}', '"true"'::jsonb);
-        claims := jsonb_set(claims, '{app_metadata, security_role}', '"authenticated_user"'::jsonb);
-        event := jsonb_set(event, '{claims}', claims);
-        RETURN event;
-    ELSE
-        RAISE EXCEPTION 'Access Denied: AMR method not authorized by policy (allowlist: password only)'
+    -- Complete AMR Array Traversal & Mixed AMR Rejection (H1 — PRRT_kwDOVtCmZc66HSzX)
+    FOR amr_elem IN SELECT * FROM jsonb_array_elements(amr_array) LOOP
+        IF jsonb_typeof(amr_elem) = 'object' THEN
+            amr_method := amr_elem->>'method';
+        ELSIF jsonb_typeof(amr_elem) = 'string' THEN
+            amr_method := amr_elem#>>'{}';
+        ELSE
+            amr_method := NULL;
+        END IF;
+
+        IF amr_method = 'password' THEN
+            v_has_password := TRUE;
+        ELSIF amr_method IN ('otp', 'recovery', 'magiclink', 'signup', 'invite', 'anonymous', 'oauth', 'sso') OR amr_method IS NULL THEN
+            v_has_disallowed := TRUE;
+        ELSE
+            -- Unknown/unrecognized method rejected fail-closed
+            v_has_disallowed := TRUE;
+        END IF;
+    END LOOP;
+
+    -- Mixed AMR or missing password method is strictly denied
+    IF NOT v_has_password OR v_has_disallowed THEN
+        RAISE EXCEPTION 'Access Denied: AMR method not authorized by policy (allowlist: pure password only, no mixed or non-password methods)'
             USING ERRCODE = '42501',
-                  HINT = 'Direct OTP token exchange and non-password sessions are rejected by fail-closed hook policy';
+                  HINT = 'Direct OTP token exchange and mixed AMR sessions are rejected by fail-closed hook policy';
     END IF;
+
+    claims := jsonb_set(claims, '{user_metadata, amr_authenticated}', '"true"'::jsonb);
+    claims := jsonb_set(claims, '{app_metadata, security_role}', '"authenticated_user"'::jsonb);
+    event := jsonb_set(event, '{claims}', claims);
+    RETURN event;
 END;
-$$ LANGUAGE plpgsql SECURITY DEFINER;
+$$ LANGUAGE plpgsql SECURITY DEFINER SET search_path = '';
+
+-- Least-Privilege Role & Execution Grants (M4 — PRRT_kwDOVtCmZc66HS0F)
+REVOKE ALL ON ALL FUNCTIONS IN SCHEMA private_auth FROM PUBLIC;
+REVOKE ALL ON ALL TABLES IN SCHEMA private_auth FROM PUBLIC;
+
+-- Grant execution to trusted service_role only (Edge Functions)
+GRANT EXECUTE ON FUNCTION private_auth.reserve_email_send(TEXT, private_auth.challenge_purpose) TO service_role;
+GRANT EXECUTE ON FUNCTION private_auth.verify_otp_challenge(UUID, TEXT, private_auth.challenge_purpose, TEXT, TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION private_auth.reserve_provisional_creation(UUID, UUID, TEXT, UUID, TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION private_auth.complete_provisional_creation(UUID, UUID, UUID) TO service_role;
+GRANT EXECUTE ON FUNCTION private_auth.claim_admin_operation(UUID, UUID, TEXT, UUID, private_auth.operation_type, UUID, TEXT) TO service_role;
+GRANT EXECUTE ON FUNCTION private_auth.cleanup_expired_challenges(INTERVAL) TO service_role;
+
+-- Grant execution to supabase_auth_admin for token hook
+GRANT EXECUTE ON FUNCTION private_auth.custom_access_token_hook(JSONB) TO supabase_auth_admin;
+GRANT USAGE ON SCHEMA private_auth TO service_role, supabase_auth_admin;
 ```
 
 ---
@@ -2815,17 +3224,30 @@ The owner is requested to consider a future, bounded two-stage proof-of-concept 
        - Setup: 10 parallel verification requests queued against a challenge 50 milliseconds before expiration.
        - Execution: 3 requests process before deadline; remaining 7 process after deadline.
        - Assertion: Early requests evaluate valid OTP and issue grant (or invalid and increment); all requests executing after the microsecond deadline fail closed with `challenge_expired`. Consistent, non-flaky boundary enforcement.
+   - **End-to-End Security Contract & SQL Consistency Suite (R12 Closure — H1 through H6, M1 through M4, im-tio P1):**
+     - **Test H1-01 (Token Hook Valid Password Authentication):** Submit token issuance event with `claims->>'authentication_method' = 'password'` and `claims->'amr' = [{'method': 'password', 'timestamp': 1234567890}]`. Hook executes successfully, adds metadata claims (`amr_authenticated: true`, `security_role: authenticated_user`), and returns modified event.
+     - **Test H1-02 (Token Hook Rejection of Non-Password Methods):** Submit token issuance with `claims->>'authentication_method' = 'otp'`. Hook fails closed, raising SQLSTATE `42501` exception; zero session issued.
+     - **Test H1-03 (Token Hook Mixed AMR Array Rejection):** Submit token issuance with `claims->'amr' = [{'method': 'password'}, {'method': 'otp'}]`. Hook traverses all elements, detects prohibited method `'otp'`, and raises SQLSTATE `42501` (mixed AMR rejection).
+     - **Test H2-01 (Provisional Completion Demotion Prevention):** For an account in `enrolled_password_complete` or `quarantined_indeterminate`, call `complete_provisional_creation`. Under held Tier 1 and Tier 4 locks, procedure detects existing enrolled/quarantined stage and returns `completed = FALSE, conflict_code = 'account_already_enrolled'` (or `'identity_quarantined'`); lifecycle stage is NOT demoted.
+     - **Test H3-01 (Provisional Reservation Purpose Isolation):** Invoke `reserve_provisional_creation` supplying a challenge with `purpose = 'recovery_password_reset'`. Procedure query fails to find matching challenge and returns `allowed = FALSE, conflict_code = 'challenge_not_found'`.
+     - **Test H4-01 (Provisional Reservation In-Progress Enrollment Guard):** Invoke `reserve_provisional_creation` for an identity currently in `enrollment_pending`. Procedure detects stage and returns `allowed = FALSE, conflict_code = 'enrollment_in_progress'`.
+     - **Test H5-01 (Quarantined Creation Lease Rejection):** Inject a creation lease in `admin_operation_ledger` with `status = 'quarantined_indeterminate'`. Call `reserve_provisional_creation` for that email. Procedure returns `allowed = FALSE, conflict_code = 'creation_quarantined_indeterminate'` and blocks duplicate creation.
+     - **Test H6-01 (Decoupled Identity Lifecycle Provenance):** Delete a provisional or enrolled user from `auth.users`. Verify that corresponding `private_auth.identity_lifecycle` row is NOT deleted or set null; provenance and quarantine audit evidence remain 100% intact.
+     - **Test M1-01 (Recovery Branch Lifecycle Row Lock & Enrolled Guard):** Invoke `claim_admin_operation` for `recovery_password_reset` against a provisional identity (`lifecycle_stage = 'provisional_created'`). Procedure locks lifecycle row under Tier 4 lock, detects non-enrolled stage, and returns `claimed = FALSE, conflict_code = 'account_not_enrolled'`.
+     - **Test M2-01 (Provisional Completion Lock Hierarchy & Post-Lock Expiry):** Worker A holds Tier 1 advisory lock for 35 seconds across the 30-second lease expiry. Worker B calls `complete_provisional_creation`. Worker B blocks on Tier 1 lock; once released, Worker B computes `v_now` post-lock, detects `v_now >= lease_expires_at`, and returns `completed = FALSE, conflict_code = 'lease_expired'`.
+     - **Test M3-01 (Scoped NOT EXISTS Challenge Cleanup with One-to-Many Operations):** Create challenge $C_1$ associated with completed `create_provisional_user` and active `enroll_initial_password` lease. Call `cleanup_expired_challenges`. Scoped `NOT EXISTS` check verifies active operation exists and skips $C_1$; zero premature purging occurs.
+     - **Test M4-01 (Least-Privilege Schema Execution Privileges):** Attempt to invoke `private_auth.verify_otp_challenge` or `private_auth.claim_admin_operation` using `anon` or `authenticated` role. PostgreSQL raises permission denied (SQLSTATE `42501`). Verify all schema functions execute under `SET search_path = ''`.
 
 ## 10. Summary & Sign-off
 
 | Deliverable | Location | Status |
 |---|---|---|
-| Canonical Research Document | `.ai/tasks/auth/local-20261120-task06i-a-strict-auth-architecture.md` | **COMPLETE (Revision R11)** |
+| Canonical Research Document | `.ai/tasks/auth/local-20261120-task06i-a-strict-auth-architecture.md` | **COMPLETE (Revision R12)** |
 | Active Continuity Pointer | `.ai/current.md` | **UPDATED** |
 | Research Worktree Branch | `docs/task06i-a-strict-auth-architecture` | **READY FOR REVIEW** |
 | Final Architecture Verdict | **ARCHITECTURE PROPOSED — OWNER DECISION REQUIRED** | **PRODUCTION AUTH NO-GO** |
 
-### Review Findings Disposition Summary (All 26 Findings Addressed Across Revisions R3–R11)
+### Review Findings Disposition Summary (All 37 Findings Addressed Across Revisions R3–R12)
 - **Previous R3 Findings (Retained & Verified):**
   - **P1-1 (Token Hook Allowlist — `PRRT_kwDOVtCmZc654L96`):** Explicit fail-closed allowlist for password sign-in and validated password-origin refresh.
   - **P1-2 (Atomic Email Quota — `PRRT_kwDOVtCmZc654L9_`):** Serialized quota check via `pg_advisory_xact_lock` in `reserve_email_send`.
@@ -2873,7 +3295,20 @@ The owner is requested to consider a future, bounded two-stage proof-of-concept 
     - **Authoritative Return Values:** Returns server-validated `target_user_id` and `operation_type` to the Edge Function, eliminating reliance on client or forwarded parameters.
   - **Claim Authorization Regression Suite:** Added Tests Claim-A through Claim-L to Stage 06I-B2.
 
-- **New R11 Findings (Provisional Identity Safety, Password Enrollment Guard & Post-Lock Expiry — `PRRT_kwDOVtCmZc66F5EN`, `PRRT_kwDOVtCmZc66F5EZ`, `PRRT_kwDOVtCmZc66GwiI`):**
+- **Previous R11 Findings (Retained & Verified):**
   - **High (Durable Provisional Creation & Orphan Prevention — `PRRT_kwDOVtCmZc66F5EN`):** Resolved Cursor Bugbot High finding on PR #34. In earlier drafts, `admin.createUser` was called out-of-band before `claim_admin_operation`. If the claim was subsequently rejected, an unconfirmed passwordless `auth.users` row was stranded without durable provenance, causing all subsequent signups for that email to fail on GoTrue's unique email constraint. Redesigned provisional creation into a server-owned, two-step lifecycle: (1) `reserve_provisional_creation` records an executing creation lease in `admin_operation_ledger`; (2) `admin.createUser` (without password) executes; (3) `complete_provisional_creation` binds the minted UUID in `identity_lifecycle` (`lifecycle_stage = 'provisional_created'`). On interrupted signups, subsequent signups reuse the existing provisional UUID without calling `createUser` again. Added Tests PROV-01 through PROV-06 to Stage 06I-B2.
   - **Medium (Server-Authoritative Password-Complete Protection — `PRRT_kwDOVtCmZc66F5EZ`):** Resolved Cursor Bugbot Medium finding on PR #34. In earlier drafts, `claim_admin_operation` accepted any caller-supplied UUID matching the verified email, permitting an existing password-complete account to be overwritten through Sign Up. Redesigned `claim_admin_operation` to lock `identity_lifecycle` under Tier 4 row lock, requiring `lifecycle_stage = 'provisional_created'`. If the account is already `enrolled_password_complete` or possesses an active password in `auth.users`, the claim strictly aborts with `account_already_enrolled` (SQLSTATE `42501`). Existing accounts are strictly confined to Sign In or approved recovery. Added Tests AUTH-17-01 through AUTH-17-03 to Stage 06I-B2.
   - **P2 (Post-Lock Expiry Re-evaluation & Strict Boundaries — `PRRT_kwDOVtCmZc66GwiI`):** Resolved `im-tio` P2 finding on PR #34. In earlier drafts, `verify_otp_challenge` and `claim_admin_operation` declared `v_now TIMESTAMPTZ := clock_timestamp()` before acquiring locks. Under advisory or row lock contention, requests could wait across the 10-minute OTP or 5-minute grant deadline and still pass validation against the stale entry timestamp. Corrected both functions to compute `v_now := clock_timestamp()` strictly AFTER acquiring all advisory and row locks (Tier 1–4), enforcing consistent boundary semantics (`database_now < deadline` valid, `database_now >= deadline` expired). Added Tests EXP-01 through EXP-04 to Stage 06I-B2.
+
+- **New R12 Findings (End-to-End Auth Security Contract & SQL Consistency Closure):**
+  - **H1 (Token Hook Strict Fail-Closed Allowlist & Mixed AMR Rejection — `PRRT_kwDOVtCmZc66HSzX`):** Resolved Cursor Bugbot High finding on PR #34. Earlier revisions dropped the top-level `authentication_method` check and accepted mixed AMR arrays containing `password` alongside disallowed methods. Restored strict fail-closed check verifying `claims->>'authentication_method' = 'password'` (or `'token_refresh'`) and traversing all elements in `claims->'amr'` to require `'password'` and strictly reject any prohibited or unknown method (`otp`, `recovery`, `magiclink`, `signup`, `invite`, `anonymous`, `oauth`, `sso`).
+  - **H2 (Lifecycle Stage Monotonicity & Demotion Prevention — `PRRT_kwDOVtCmZc66HSzf`):** Resolved Cursor Bugbot High finding on PR #34. `complete_provisional_creation` previously executed `ON CONFLICT (user_id) DO UPDATE SET lifecycle_stage = 'provisional_created'`, which overwrote `enrolled_password_complete` or `quarantined_indeterminate`. Enforced strict monotonic transitions under lock: attempts to demote enrolled, quarantined, or in-progress accounts are strictly blocked.
+  - **H3 (Strict Signup Challenge Purpose & Email Binding — `PRRT_kwDOVtCmZc66HSzi`):** Resolved Cursor Bugbot High finding on PR #34. `reserve_provisional_creation` now enforces that the locked challenge row strictly matches `p_normalized_email` AND `purpose = 'signup_initial_password'::private_auth.challenge_purpose`. Recovery challenges cannot reserve provisional creation.
+  - **H4 (Fail Closed on All Non-Eligible Lifecycle Stages — `PRRT_kwDOVtCmZc66HSzq`):** Resolved Cursor Bugbot High finding on PR #34. `reserve_provisional_creation` explicitly inspects all lifecycle stages under lock, failing closed on `enrollment_pending` with `enrollment_in_progress`, alongside `account_already_enrolled` and `identity_quarantined`.
+  - **H5 (Quarantined Creation Unique Index & Reservation Guard — `PRRT_kwDOVtCmZc66HSzv`):** Resolved Cursor Bugbot High finding on PR #34. Included `'quarantined_indeterminate'` in `uq_admin_ledger_active_creation_email` partial unique index predicate and added explicit check in `reserve_provisional_creation` to block racing creation leases after ambiguous timeouts.
+  - **H6 (Decoupled Identity Lifecycle Primary Key — `PRRT_kwDOVtCmZc66HSz0`):** Resolved Cursor Bugbot High finding on PR #34. Decoupled `identity_lifecycle.user_id UUID PRIMARY KEY` from cascading foreign keys (removing invalid `ON DELETE SET NULL` on PK), preserving audit provenance and quarantine evidence across user deletions.
+  - **M1 (Tier 4 Lifecycle Row Lock & Enrolled Guard in Recovery — `PRRT_kwDOVtCmZc66HSz6`):** Resolved Cursor Bugbot Medium finding on PR #34. `claim_admin_operation` now acquires Tier 4 row lock on `identity_lifecycle` for `v_bound_user_id` FOR UPDATE in the recovery branch, strictly requiring `lifecycle_stage = 'enrolled_password_complete'`.
+  - **M2 (Lock Hierarchy Ordering & Post-Lock Time Evaluation — `PRRT_kwDOVtCmZc66HSz_`):** Resolved Cursor Bugbot Medium finding on PR #34. `complete_provisional_creation` obeys the Global Strict Lock Hierarchy (Tier 1 Identity Advisory Lock before Tier 6 ledger lock) and evaluates `v_now := clock_timestamp()` strictly post-lock before verifying lease expiry.
+  - **M3 (Scoped NOT EXISTS Challenge Cleanup — `PRRT_kwDOVtCmZc66HS0C`):** Resolved Cursor Bugbot Medium finding on PR #34. Rewrote `cleanup_expired_challenges` using scoped `NOT EXISTS` across all associated operations in `admin_operation_ledger`, safely handling 1-to-many challenge operations and preventing deletion of challenges with active or quarantined operations.
+  - **M4 (Least-Privilege Role Grants & Immutable Empty Search Path — `PRRT_kwDOVtCmZc66HS0F`):** Resolved Cursor Bugbot Medium finding on PR #34. Restored explicit `REVOKE ALL` and `GRANT EXECUTE` statements granting execution exclusively to `service_role` (Edge Functions) and `supabase_auth_admin` (token hook), and set `SET search_path = ''` on all 13 schema functions.
+  - **P1 (Authoritative Operation Type, Challenge Purpose & User Email Matching — `PRRT_kwDOVtCmZc66Hbdq`):** Resolved `im-tio` P1 finding on PR #34. `complete_provisional_creation` now strictly authorizes `operation_type = 'create_provisional_user'`, verifies linked challenge has `purpose = 'signup_initial_password'` and `status = 'pending_provisioning'`, and queries `auth.users` to confirm the minted UUID matches `v_op.normalized_email`.
