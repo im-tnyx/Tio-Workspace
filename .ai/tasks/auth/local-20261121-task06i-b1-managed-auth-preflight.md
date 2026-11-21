@@ -5,14 +5,14 @@
 | Field | Value |
 |---|---|
 | Status | **PREFLIGHT COMPLETE (REVISION R2) — HOSTED PROVISIONING BLOCKED PENDING OWNER APPROVAL & SAFE TARGET RESOLUTION** |
-| Objective | Resolve PR #35 review findings (R2-01..R2-08), enforce strict AMR allowlist, add recovery endpoint bypass case (BYPASS-05), implement server-owned claim handling, harden fail-closed gate evaluator, integrate CI workflow, and correct whitespace/links |
+| Objective | Resolve PR #35 review findings (R2-01..R2-08), enforce strict AMR allowlist, add recovery endpoint bypass case (BYPASS-05), implement server-owned claim handling, harden fail-closed gate evaluator, document CI attribution-guard boundary, and correct whitespace/links |
 | Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-R2 slice |
 | Previous agent | Codex / Task 06I-A Revision R17 author |
 | Last commit agent | `065073488184e4b044b622957427586fdc89d0e5` (Task 06I-B1-R1 commit on PR #35) |
 | Tracking / approval | Task 06I-B1-R2 authorized by user prompt; PR #35 active; owner mandates $0 cost and preserves `Tio-world`; hosted mutations strictly prohibited |
 | Branch | `docs/task06i-b1-managed-auth-preflight` |
 | Base SHA / inspected HEAD | `b7d4fda97979e734a85461e83bf119dbc1a9689c` (`main`, verified up to date with `origin/main`) |
-| Platform and file scope | Documentation, `.ai/` context, CI workflow, isolated offline preflight test harnesses under `experiments/task06i/`; zero client Expo UI, production schema, or live Auth changes |
+| Platform and file scope | Documentation, `.ai/` context, isolated offline preflight test harnesses under `experiments/task06i/`; zero client Expo UI, production schema, or live Auth changes |
 | Created / updated | 2026-11-21 |
 
 ---

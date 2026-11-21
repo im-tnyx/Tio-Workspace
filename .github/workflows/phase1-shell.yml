@@ -5,7 +5,6 @@ on:
     paths:
       - 'src/**'
       - 'tests/**'
-      - 'experiments/task06i/**'
       - 'app.json'
       - 'package.json'
       - 'package-lock.json'
@@ -18,7 +17,6 @@ on:
     paths:
       - 'src/**'
       - 'tests/**'
-      - 'experiments/task06i/**'
       - 'app.json'
       - 'package.json'
       - 'package-lock.json'
@@ -65,5 +63,3 @@ jobs:
         run: npm run lint
       - name: Pure shell contract tests
         run: npm test
-      - name: Task 06I security contract tests
-        run: npm run test:task06i

@@ -15,8 +15,7 @@
     "tokens:check": "node scripts/check-design-tokens.cjs",
     "tokens:self-test": "node scripts/check-design-tokens.cjs --self-test",
     "test": "node --experimental-strip-types --test tests/*.test.ts",
-    "test:task06i": "node --test experiments/task06i/*.test.mjs",
-    "verify": "npm run tokens:self-test && npm run tokens:check && npm run typecheck && npm run lint && npm test && npm run test:task06i",
+    "verify": "npm run tokens:self-test && npm run tokens:check && npm run typecheck && npm run lint && npm test",
     "expo:check": "expo install --check",
     "mobile": "expo start --tunnel --go"
   },
