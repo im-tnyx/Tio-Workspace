@@ -1,18 +1,18 @@
-# Phase 1.2 Task 06I-B1-R1 — Managed Auth Feasibility & Security Boundary Verification Preflight
+# Phase 1.2 Task 06I-B1-R2 — Managed Auth Feasibility & Security Boundary Verification Preflight
 
-> **Preflight Report & Test Plan (Revision R1 — Evidence Review & Scope Reconciliation).** Prepared under `AGENTS.md` operating rules. This document authorizes local investigation, documentation, offline test preparation, and read-only feasibility checks only. It does not authorize creating or modifying a hosted Supabase project. Production Real Auth remains **NO-GO**.
+> **Preflight Report & Test Plan (Revision R2 — Security Review Remediation).** Prepared under `AGENTS.md` operating rules. This document authorizes local investigation, documentation, offline test preparation, and read-only feasibility checks only. It does not authorize creating or modifying a hosted Supabase project. Production Real Auth remains **NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **PREFLIGHT COMPLETE (REVISION R1) — HOSTED PROVISIONING BLOCKED PENDING OWNER APPROVAL & QUOTA RESOLUTION** |
-| Objective | Review and finalize Task 06I-B1 preflight findings, correct evidence classifications, document residual JWT validity and quota rules, enforce owner's $0 cost policy, and prepare a reviewable GitHub PR |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-R1 slice |
+| Status | **PREFLIGHT COMPLETE (REVISION R2) — HOSTED PROVISIONING BLOCKED PENDING OWNER APPROVAL & SAFE TARGET RESOLUTION** |
+| Objective | Resolve PR #35 review findings (R2-01..R2-08), enforce strict AMR allowlist, add recovery endpoint bypass case (BYPASS-05), implement server-owned claim handling, harden fail-closed gate evaluator, integrate CI workflow, and correct whitespace/links |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-R2 slice |
 | Previous agent | Codex / Task 06I-A Revision R17 author |
-| Last commit agent | GitHub merge commit `b7d4fda97979e734a85461e83bf119dbc1a9689c` (Merge PR #34) |
-| Tracking / approval | Task 06I-B1-R1 authorized by user prompt; PR #34 merged; owner mandates $0 cost and preserves `Tio-world`; hosted mutations strictly prohibited |
+| Last commit agent | `065073488184e4b044b622957427586fdc89d0e5` (Task 06I-B1-R1 commit on PR #35) |
+| Tracking / approval | Task 06I-B1-R2 authorized by user prompt; PR #35 active; owner mandates $0 cost and preserves `Tio-world`; hosted mutations strictly prohibited |
 | Branch | `docs/task06i-b1-managed-auth-preflight` |
 | Base SHA / inspected HEAD | `b7d4fda97979e734a85461e83bf119dbc1a9689c` (`main`, verified up to date with `origin/main`) |
-| Platform and file scope | Documentation, `.ai/` context, isolated offline preflight test harnesses under `experiments/task06i/`; zero client Expo UI, production schema, or live Auth changes |
+| Platform and file scope | Documentation, `.ai/` context, CI workflow, isolated offline preflight test harnesses under `experiments/task06i/`; zero client Expo UI, production schema, or live Auth changes |
 | Created / updated | 2026-11-21 |
 
 ---
@@ -20,12 +20,14 @@
 ## 1. Required Context & Git Baseline Verification
 
 ### Checklist & Reconciliation
-- [x] [`AGENTS.md`](../../AGENTS.md) read and operational constraints enforced (Hinglish response, read-only Git preflight, strictly bounded documentation/offline tests).
-- [x] [Current pointer](../current.md) inspected and reconciled.
+- [x] [`AGENTS.md`](../../../AGENTS.md) read and operational constraints enforced (Hinglish response, read-only Git preflight, strictly bounded documentation/offline tests).
+- [x] [Current pointer](../../current.md) inspected and reconciled.
 - [x] Canonical documentation reconciled:
-  - [`docs/04-AUTH-AND-SECURITY.md`](../../docs/04-AUTH-AND-SECURITY.md) (strict Email → OTP → Password, provisional UUID lifecycle, server-owned eligibility, no-guest boundary, AUTH-12/17/22 invariants).
-  - [`docs/27-OTP-FIRST-AUTH-LIFECYCLE.md`](../../docs/27-OTP-FIRST-AUTH-LIFECYCLE.md) (lifecycle state transitions `UNVERIFIED` → `EMAIL_VERIFIED_PASSWORD_PENDING` → `PASSWORD_COMPLETE_PROFILE_PENDING` → `SERVER_ELIGIBLE`).
-  - [`docs/08-TEST-PLAN.md`](../../docs/08-TEST-PLAN.md) (P0 security test definitions for AUTH-12, AUTH-17, and AUTH-22).
+  - [`docs/04-AUTH-AND-SECURITY.md`](../../../docs/04-AUTH-AND-SECURITY.md) (strict Email → OTP → Password, provisional UUID lifecycle, server-owned eligibility, no-guest boundary, AUTH-12/17/22 invariants).
+  - [`docs/27-OTP-FIRST-AUTH-LIFECYCLE.md`](../../../docs/27-OTP-FIRST-AUTH-LIFECYCLE.md) (lifecycle state transitions `UNVERIFIED` → `EMAIL_VERIFIED_PASSWORD_PENDING` → `PASSWORD_COMPLETE_PROFILE_PENDING` → `SERVER_ELIGIBLE`).
+  - [`docs/08-TEST-PLAN.md`](../../../docs/08-TEST-PLAN.md) (P0 security test definitions for AUTH-12, AUTH-17, and AUTH-22).
+  - Relevant Task 06H-E runtime evidence (`local-20261119-task06h-e-runtime-integration.md` — parallel verify race condition, 5-wrong cooldown bypass, and password mutation bypass empirically reproduced on GoTrue v2.197.0).
+  - Task 06I-A architecture decision document (`local-20261120-task06i-a-strict-auth-architecture.md` — Section 4.2 Token Hook allowlist contract, Section 7 empirical gaps, Section 9 Stage 06I-B1 proof plan).
   - Relevant Task 06H-E runtime evidence (`local-20261119-task06h-e-runtime-integration.md` — parallel verify race condition, 5-wrong cooldown bypass, and password mutation bypass empirically reproduced on GoTrue v2.197.0).
   - Task 06I-A architecture decision document (`local-20261120-task06i-a-strict-auth-architecture.md` — Section 4.2 Token Hook allowlist contract, Section 7 empirical gaps, Section 9 Stage 06I-B1 proof plan).
 
@@ -186,9 +188,9 @@ Zero hosted actions are authorized by this preflight prompt.
 
 ---
 
-## 5. Security Threat & Hosted Test Matrix (17 Requirements)
+## 5. Security Threat & Hosted Test Matrix (18 Requirements)
 
-The following reproducible test matrix defines the 17 security requirements across 3 functional categories. Expected responses are drawn from the Task 06I-A contract:
+The following reproducible test matrix defines the 18 security requirements across 3 functional categories. Expected responses are drawn from the Task 06I-A contract:
 
 | Case ID | Category | Target / Vector | Expected Response (Contract) | Hosted Status | Precondition / Prerequisite |
 |---|---|---|---|---|---|
@@ -196,11 +198,12 @@ The following reproducible test matrix defines the 17 security requirements acro
 | **BYPASS-02** | Native Bypass | `POST /auth/v1/signup` (direct signup) | `422 Unprocessable Entity (signup_disabled)` | **NOT TESTED** | `disable_signup: true` |
 | **BYPASS-03** | Native Bypass | `POST /auth/v1/verify` (type email / recovery) | `500 Error invoking access token hook` (0 token issued) | **NOT TESTED** | Custom Access Token Hook deployed |
 | **BYPASS-04** | Native Bypass | Magic Link, Invite & Anonymous endpoints | `500 Error invoking access token hook` (0 token issued) | **NOT TESTED** | Custom Access Token Hook deployed |
+| **BYPASS-05** | Native Bypass | `POST /auth/v1/recover` (password recovery) | Send Email Hook intercepts and suppresses recovery email delivery; failure/fallback fails closed without usable token or default SMTP routing; purpose isolation preserved | **NOT TESTED** | Send Email Hook deployed |
 | **HOOK-01** | Token Hook | Legitimate Password Sign-In | `200 OK` with valid JWT (`amr: [{method: "password"}]`) | **NOT TESTED** | Test user enrolled with password |
 | **HOOK-02** | Token Hook | Legitimate Password Token Refresh | `200 OK` with refreshed JWT (`amr: [{method: "password"}]`) | **NOT TESTED** | Active password session |
 | **HOOK-03** | Token Hook | OTP-Origin Token Refresh | `500 Error invoking access token hook` (SQLSTATE `42501`) | **NOT TESTED** | Simulated OTP session |
 | **HOOK-04** | Token Hook | Recovery-Origin Token Refresh | `500 Error invoking access token hook` (SQLSTATE `42501`) | **NOT TESTED** | Simulated recovery session |
-| **HOOK-05** | Token Hook | Mixed AMR (`password` + `otp`) | `500 Error invoking access token hook` (SQLSTATE `42501`) | **NOT TESTED** | Simulated mixed AMR payload |
+| **HOOK-05** | Token Hook | Mixed AMR (`password` + unauthorized) | `500 Error invoking access token hook` (SQLSTATE `42501`) | **NOT TESTED** | Simulated mixed AMR payload |
 | **HOOK-06** | Token Hook | Missing / Malformed AMR (string array, empty) | `500 Error invoking access token hook` (SQLSTATE `42501`) | **NOT TESTED** | Malformed AMR payload |
 | **HOOK-07** | Token Hook | Fail-Closed on Hook Exception / Error | `500 Error invoking access token hook` (transaction aborted) | **NOT TESTED** | Syntax/runtime error injection in hook |
 | **SESSION-01**| Session & Consumer | Password Session Creation | Row created in `auth.sessions` with user ID | **NOT TESTED** | Successful password login |
@@ -217,20 +220,20 @@ The following reproducible test matrix defines the 17 security requirements acro
 To ensure deterministic verification of the provider hook contract before any hosted experiment, isolated offline evaluators were implemented in `experiments/task06i/`:
 
 ### Offline Artifacts Implemented
-1. `experiments/task06i/hook-allowlist-contract.mjs`: Pure JavaScript implementation of the official `custom_access_token_hook` specification, enforcing RFC 8176 object-array traversal, top-level `authentication_method` validation, and SQLSTATE 42501 fail-closed exceptions.
-2. `experiments/task06i/hook-allowlist-contract.test.mjs`: Node native test suite verifying all 10 provider-shaped test fixtures from Task 06I-A Section 4.2.2 plus boundary conditions.
-3. `experiments/task06i/preflight-evaluator.mjs`: Preflight matrix evaluator and account quota validation engine.
-4. `experiments/task06i/preflight-evaluator.test.mjs`: Unit tests for the 17-point security matrix and gate decision logic.
+1. `experiments/task06i/hook-allowlist-contract.mjs`: Pure JavaScript implementation of the official `custom_access_token_hook` specification, enforcing RFC 8176 object-array traversal, top-level `authentication_method` validation, strict allowlist (only `'password'` allowed), and SQLSTATE 42501 fail-closed exceptions.
+2. `experiments/task06i/hook-allowlist-contract.test.mjs`: Node native test suite verifying all 10 provider-shaped test fixtures from Task 06I-A Section 4.2.2 plus negative regression tests for mixed AMR, malformed AMR, and missing `user_metadata` handling (24 tests).
+3. `experiments/task06i/preflight-evaluator.mjs`: Preflight matrix evaluator, 18-point requirement set validator, and quota/target strategy evaluator.
+4. `experiments/task06i/preflight-evaluator.test.mjs`: Unit tests verifying the 18-point security matrix, fail-closed gate decisions on failures/blockers, and target strategy separation (15 tests).
 
 ### Evidence Classification Taxonomy
 To eliminate ambiguity, all capabilities and assertions are categorized across three distinct levels of evidence:
-- **Documented:** Capabilities described in official Supabase documentation, Management API specifications, or GoTrue source code. (e.g. `external_email_magic_link_disabled`, `disable_signup`, Send Email Hook payload structure).
+- **Documented:** Capabilities described in official Supabase documentation, Management API specifications, or GoTrue source code (e.g. `external_email_magic_link_disabled`, `disable_signup`, Send Email Hook payload structure).
 - **Observed Local:** Capabilities empirically executed, measured, and reproduced in local Docker GoTrue containers (e.g. Task 06D hook denial, Task 06H-E concurrent verification failure, 5-wrong cooldown bypass, direct `PUT /user` password mutation bypass).
 - **Hosted Unverified:** Documented capabilities that have **NOT YET BEEN EXECUTED OR PROVEN** on live managed Supabase Cloud infrastructure.
 
 > [!IMPORTANT]
-> **Offline Contract Tests Are NOT Hosted Integration Proof:**  
-> The 22 unit tests in `experiments/task06i/` verify only that the local JavaScript specification and SQL policy contract logic parse inputs, traverse RFC 8176 AMR arrays, and throw fail-closed SQLSTATE 42501 exceptions correctly. They **do not prove** that managed Supabase Cloud executes hooks without latency timeouts, preserves AMR arrays across repeated token refreshes, or reliably enforces Management API route disablements.
+> **Offline Contract Tests Are NOT Hosted Integration Proof:**
+> The 39 unit tests in `experiments/task06i/` verify only that the local JavaScript specification and SQL policy contract logic parse inputs, traverse RFC 8176 AMR arrays, and throw fail-closed SQLSTATE 42501 exceptions correctly. They **do not prove** that managed Supabase Cloud executes hooks without latency timeouts, preserves AMR arrays across repeated token refreshes, or reliably enforces Management API route disablements.
 
 ### Test Execution Results
 Executed test commands:
@@ -239,37 +242,15 @@ Executed test commands:
 node --test experiments/task06i/*.test.mjs
 ```
 
-**Results:**
-```
-✔ Fixture 1: Valid initial password authentication is allowed (1.57ms)
-✔ Fixture 2: Valid token refresh with password-origin AMR is allowed (0.14ms)
-✔ Fixture 3: Native email OTP authentication is denied fail-closed (0.23ms)
-✔ Fixture 4: Native recovery authentication is denied fail-closed (0.13ms)
-✔ Fixture 5: Native magiclink authentication is denied fail-closed (0.16ms)
-✔ Fixture 6: Password method combined with prohibited OTP AMR is denied (mixed AMR) (0.14ms)
-✔ Fixture 7: Token refresh with missing claims object is denied (0.20ms)
-✔ Fixture 8: Token refresh with non-array AMR is denied (0.16ms)
-✔ Fixture 9: Token refresh with prohibited recovery AMR is denied (0.15ms)
-✔ Fixture 10: Unknown authentication method is denied fail-closed (0.22ms)
-✔ Boundary: null or non-object event fails closed (0.38ms)
-✔ Boundary: missing or blank authentication_method fails closed (0.14ms)
-✔ Boundary: empty AMR array fails closed (0.11ms)
-✔ Boundary: string-array AMR (legacy format) fails closed under RFC 8176 parser (0.10ms)
-✔ Boundary: amr element missing string method property fails closed (0.10ms)
-✔ Boundary: anonymous and invite authentication methods fail closed (0.20ms)
-✔ Security matrix contains exactly 17 discrete requirements across 3 categories (1.28ms)
-✔ All requirements have valid initial preflight statuses (0.30ms)
-✔ Quota exhaustion (2 active projects out of 2) triggers QUOTA_EXHAUSTED blocker (0.89ms)
-✔ Unapproved project creation halts before hosted execution (0.13ms)
-✔ Invalid requirement status fails validation (0.39ms)
-✔ Production Real Auth is unconditionally NO-GO across all gate evaluations (0.12ms)
-ℹ tests 22 | pass 22 | fail 0 | cancelled 0 | skipped 0
-```
+**Results (39 passed, 0 failed):**
+- 24 Hook Contract tests (Fixtures 1–10, mixed AMR with `email/signup`, `sso/saml`, `email/change`, and unknown methods rejected; non-object elements rejected; missing/blank method rejected; server-owned `amr_authenticated` claim added regardless of `user_metadata` presence).
+- 15 Preflight Evaluator tests (18 requirements validated; empty, duplicate, missing, or unknown IDs rejected; `VERIFIED FAIL` and `BLOCKED` surface as blocking verdicts; `NOT TESTED` prevents completion; quota and existing project target strategies evaluated; production Auth unconditionally `NO-GO`).
 
-### Full Repository Regression Verification
+### CI and Full Repository Regression Verification
+- Integrated CI script in `package.json`: `"test:task06i": "node --test experiments/task06i/*.test.mjs"`.
+- Integrated CI workflow step in `.github/workflows/phase1-shell.yml` triggered on `experiments/task06i/**`.
+- Full verification suite: `npm run verify` (tokens check, typecheck, lint, shell tests, task06i tests) → **Clean exit code 0**.
 - Historical Task 06H offline test suite: `node --test experiments/task06h/*.test.mjs` → **115 passed, 0 failed (100% pass)**.
-- Expo shell contract test suite: `npm test` → **22 passed, 0 failed (100% pass)**.
-- Full verification suite: `npm run verify` (tokens check, typecheck, lint, test) → **Clean exit code 0**.
 
 ---
 
@@ -333,9 +314,20 @@ BEGIN
   END IF;
 
   FOR v_item IN SELECT * FROM jsonb_array_elements(v_amr) LOOP
+    IF jsonb_typeof(v_item) <> 'object' THEN
+      RAISE EXCEPTION 'malformed amr element: must be a JSON object'
+        USING ERRCODE = '42501';
+    END IF;
+
+    IF v_item->>'method' IS NULL OR trim(v_item->>'method') = '' THEN
+      RAISE EXCEPTION 'malformed amr method: string method property required'
+        USING ERRCODE = '42501';
+    END IF;
+
     IF v_item->>'method' = 'password' THEN
       v_has_password := TRUE;
-    ELSIF v_item->>'method' IN ('otp', 'recovery', 'magiclink', 'signup', 'invite', 'anonymous', 'oauth', 'sso') THEN
+    ELSE
+      -- Strict allowlist: Any non-password method (known disallowed or unknown) immediately fails closed
       RAISE EXCEPTION 'prohibited amr method % in token session', v_item->>'method'
         USING ERRCODE = '42501';
     END IF;
@@ -346,8 +338,9 @@ BEGIN
       USING ERRCODE = '42501';
   END IF;
 
-  -- Enrich claims with server confirmation
-  v_claims := jsonb_set(v_claims, '{user_metadata,amr_authenticated}', '"true"');
+  -- Enrich claims with dedicated server-owned authorization claim directly under claims
+  -- (does not rely on client-editable or optionally missing user_metadata)
+  v_claims := jsonb_set(v_claims, '{amr_authenticated}', '"true"'::jsonb, true);
   event := jsonb_set(event, '{claims}', v_claims);
   RETURN event;
 END;
@@ -356,6 +349,7 @@ $$;
 GRANT USAGE ON SCHEMA private_auth TO supabase_auth_admin;
 GRANT EXECUTE ON FUNCTION private_auth.custom_access_token_hook(jsonb) TO supabase_auth_admin;
 REVOKE ALL ON FUNCTION private_auth.custom_access_token_hook(jsonb) FROM public, anon, authenticated;
+-- Note: SQL runtime behavior on live database is classified as NOT TESTED on live database; offline JS contracts verify specification.
 ```
 
 ### Deterministic Test Identities
@@ -372,8 +366,8 @@ The following items are explicit blockers that halt execution before any hosted 
 | Blocker ID | Description | Impact | Current Status & Required Action |
 |---|---|---|---|
 | **BLK-01** (Account Quota & Cost) | Free tier active quota exhausted (2 of 2 active projects). Owner strictly mandates $0 cost and preserves `Tio-world`. | Cannot provision a 3rd project. | Owner resolved policy: zero spending; use existing project lifecycle if hosted testing is approved in future; `Tio-world` off-limits. |
-| **BLK-02** (Creation Gate) | Explicit owner approval is required before any hosted project modification or testing. | Prevents accidental configuration mutations. | Bounded owner authorization required before any future hosted execution. |
-| **BLK-03** (Hosted Empirical Gap) | Management API parameter behavior and AMR refresh behavior remain unverified on live infrastructure. | Cannot declare Option B feasible without empirical proof. | Authorize Stage 06I-B1 test execution under separate future gate. |
+| **BLK-02** (Target Safety & Production Boundary) | Explicit owner approval is required before any hosted project modification or testing. Production project `bsfwzvgynwriswapxpsp` and `Tio-world` remain strictly READ-ONLY. | Prevents accidental configuration mutations or production destruction. | Bounded owner authorization required before any future hosted execution. Deleting or regenerating production project is NOT approved. If no safe isolated hosted target exists, hosted testing is BLOCKED (`NO_SAFE_HOSTED_TARGET`). |
+| **BLK-03** (Hosted Empirical Gap) | Management API parameter behavior, recovery email suppression, and AMR refresh behavior remain unverified on live infrastructure. | Cannot declare Option B feasible without empirical proof. | Authorize Stage 06I-B1 test execution under separate future gate. |
 | **BLK-04** (Production Auth Gate) | Pinned GoTrue security vulnerabilities (AUTH-12, AUTH-17, AUTH-22) remain open in native runtime. | Production Auth cannot be safely enabled. | Production Auth remains strictly **NO-GO**. |
 
 ---
@@ -381,22 +375,22 @@ The following items are explicit blockers that halt execution before any hosted 
 ## 9. STOP / GO Decision & Recommendations
 
 ### Final Assessment
-- **Task 06I-B1-R1 Preflight Deliverable:** **VERIFIED PASS** (Documentation audited, evidence classifications corrected, 17-point test matrices defined, residual JWT validity documented, and 22 offline unit tests passing).
-- **Disposable Hosted Project Execution:** **BLOCKED (STOP)** (Awaiting separate owner authorization for future hosted execution).
+- **Task 06I-B1-R2 Preflight Deliverable:** **VERIFIED PASS** (Documentation audited, evidence classifications corrected, 18-point test matrices defined, recovery endpoint bypass covered, residual JWT validity documented, and 39 offline unit tests passing).
+- **Disposable Hosted Project Execution:** **BLOCKED (STOP)** (Awaiting separate owner authorization and safe isolated target resolution).
 - **Managed Supabase Auth Feasibility:** **NOT VERIFIED ON HOSTED** (Documented capabilities indicate feasibility, but empirical hosted proof is mandatory).
 - **Production Real Auth:** **STRICT NO-GO**.
 
 ### Recommended Next Action
-1. Review this finalized Task 06I-B1-R1 preflight package and PR.
+1. Review this finalized Task 06I-B1-R2 preflight package and PR #35.
 2. Maintain `bsfwzvgynwriswapxpsp` and `oykupyiitspujzpwwvuj` as strictly READ-ONLY.
-3. When the owner chooses to authorize future hosted feasibility testing, execute the 17-point Stage 06I-B1 test checklist against the authorized target at $0 cost under strict cleanup guarantees.
+3. When the owner chooses to authorize future hosted feasibility testing, execute the 18-point Stage 06I-B1 test checklist against an authorized safe target under strict cleanup guarantees.
 
 ---
 
 ## 10. Handoff
 
-**Next owner:** Repository Owner review & PR review  
-**Next authorized action:** PR review and owner review gate  
-**Post-merge synchronization/archive needed:** Yes (upon future PR review and merge)  
+**Next owner:** Repository Owner review & PR review
+**Next authorized action:** PR review and owner review gate
+**Post-merge synchronization/archive needed:** Yes (upon future PR review and merge)
 
-[← Task guide](README.md) · [Root agent contract](../../AGENTS.md)
+[← Task guide](../README.md) · [Root agent contract](../../../AGENTS.md)

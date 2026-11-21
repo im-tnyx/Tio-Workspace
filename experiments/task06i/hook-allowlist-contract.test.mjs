@@ -5,6 +5,15 @@ import {
   classifyHookOutcome
 } from './hook-allowlist-contract.mjs';
 
+/**
+ * Task 06I-B1-R2 Hook Allowlist Contract Tests
+ *
+ * NOTE: These tests verify the pure offline JavaScript contract parser, RFC 8176
+ * AMR traversal, and fail-closed SQLSTATE 42501 exception logic. They demonstrate
+ * specification compliance and do NOT constitute empirical proof of live SQL
+ * execution on a hosted Supabase database.
+ */
+
 // Fixture 1: Valid Initial Password Authentication (ALLOWED)
 test('Fixture 1: Valid initial password authentication is allowed', () => {
   const event = {
@@ -200,7 +209,186 @@ test('Fixture 10: Unknown authentication method is denied fail-closed', () => {
   assert.match(outcome.error, /authentication_method_custom_insecure_auth_not_permitted_by_policy/);
 });
 
-// Additional Boundary Tests: Missing event, empty AMR, malformed AMR item, string array AMR
+// R2-01 Negative Regression Tests: Mixed Password + Unknown / Disallowed AMR
+test('R2-01: Mixed password and email/signup AMR is strictly denied', () => {
+  const event = {
+    user_id: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4',
+    authentication_method: 'password',
+    claims: {
+      sub: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4',
+      email: 'user@example.com',
+      amr: [
+        { method: 'password', timestamp: 1700000000 },
+        { method: 'email/signup', timestamp: 1700000000 }
+      ]
+    }
+  };
+  const outcome = classifyHookOutcome(event);
+  assert.equal(outcome.allowed, false);
+  assert.equal(outcome.result, 'DENIED_FAIL_CLOSED');
+  assert.match(outcome.error, /prohibited_amr_method_email\/signup_in_token_session/);
+});
+
+test('R2-01: Mixed password and sso/saml AMR is strictly denied', () => {
+  const event = {
+    user_id: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4',
+    authentication_method: 'token_refresh',
+    claims: {
+      sub: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4',
+      email: 'user@example.com',
+      amr: [
+        { method: 'password', timestamp: 1700000000 },
+        { method: 'sso/saml', timestamp: 1700000000 }
+      ]
+    }
+  };
+  const outcome = classifyHookOutcome(event);
+  assert.equal(outcome.allowed, false);
+  assert.equal(outcome.result, 'DENIED_FAIL_CLOSED');
+  assert.match(outcome.error, /prohibited_amr_method_sso\/saml_in_token_session/);
+});
+
+test('R2-01: Mixed password and email/change AMR is strictly denied', () => {
+  const event = {
+    user_id: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4',
+    authentication_method: 'token_refresh',
+    claims: {
+      sub: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4',
+      email: 'user@example.com',
+      amr: [
+        { method: 'password', timestamp: 1700000000 },
+        { method: 'email/change', timestamp: 1700000000 }
+      ]
+    }
+  };
+  const outcome = classifyHookOutcome(event);
+  assert.equal(outcome.allowed, false);
+  assert.equal(outcome.result, 'DENIED_FAIL_CLOSED');
+  assert.match(outcome.error, /prohibited_amr_method_email\/change_in_token_session/);
+});
+
+test('R2-01: Mixed password and completely unknown AMR method is strictly denied (catch-all allowlist)', () => {
+  const event = {
+    user_id: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4',
+    authentication_method: 'password',
+    claims: {
+      sub: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4',
+      email: 'user@example.com',
+      amr: [
+        { method: 'password', timestamp: 1700000000 },
+        { method: 'unknown_future_auth_vector', timestamp: 1700000000 }
+      ]
+    }
+  };
+  const outcome = classifyHookOutcome(event);
+  assert.equal(outcome.allowed, false);
+  assert.equal(outcome.result, 'DENIED_FAIL_CLOSED');
+  assert.match(outcome.error, /prohibited_amr_method_unknown_future_auth_vector_in_token_session/);
+});
+
+// R2-01 Malformed AMR element regression tests
+test('R2-01: Non-object element in AMR array fails closed', () => {
+  for (const badItem of ['password', 123, null, true, ['nested']]) {
+    const event = {
+      authentication_method: 'password',
+      claims: {
+        sub: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4',
+        amr: [{ method: 'password' }, badItem]
+      }
+    };
+    const outcome = classifyHookOutcome(event);
+    assert.equal(outcome.allowed, false);
+    assert.equal(outcome.result, 'DENIED_FAIL_CLOSED');
+    assert.match(outcome.error, /malformed_amr_element/);
+  }
+});
+
+test('R2-01: AMR element missing string method property fails closed', () => {
+  for (const badMethod of [undefined, null, 123, true, {}, []]) {
+    const event = {
+      authentication_method: 'password',
+      claims: {
+        sub: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4',
+        amr: [{ method: 'password' }, { method: badMethod, timestamp: 1700000000 }]
+      }
+    };
+    const outcome = classifyHookOutcome(event);
+    assert.equal(outcome.allowed, false);
+    assert.equal(outcome.result, 'DENIED_FAIL_CLOSED');
+    assert.match(outcome.error, /malformed_amr_method/);
+  }
+});
+
+test('R2-01: AMR element with blank or whitespace method fails closed', () => {
+  const event = {
+    authentication_method: 'password',
+    claims: {
+      sub: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4',
+      amr: [{ method: 'password' }, { method: '   ' }]
+    }
+  };
+  const outcome = classifyHookOutcome(event);
+  assert.equal(outcome.allowed, false);
+  assert.equal(outcome.result, 'DENIED_FAIL_CLOSED');
+  assert.match(outcome.error, /malformed_amr_method/);
+});
+
+// R2-03 JWT Claim Handling: Dedicated Server-Owned Claim (Independent of user_metadata)
+test('R2-03: Successfully adds amr_authenticated when user_metadata is absent from claims', () => {
+  const event = {
+    user_id: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4',
+    authentication_method: 'password',
+    claims: {
+      sub: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4',
+      email: 'user@example.com',
+      role: 'authenticated',
+      amr: [{ method: 'password', timestamp: 1700000000 }]
+      // user_metadata explicitly absent
+    }
+  };
+  const outcome = classifyHookOutcome(event);
+  assert.equal(outcome.allowed, true);
+  assert.equal(outcome.amr_authenticated, true);
+
+  const evaluated = evaluateCustomAccessTokenHook(event);
+  assert.equal(evaluated.claims.amr_authenticated, 'true');
+  assert.equal(evaluated.claims.user_metadata, undefined);
+});
+
+test('R2-03: Successfully adds amr_authenticated when user_metadata is present', () => {
+  const event = {
+    user_id: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4',
+    authentication_method: 'password',
+    claims: {
+      sub: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4',
+      email: 'user@example.com',
+      role: 'authenticated',
+      amr: [{ method: 'password', timestamp: 1700000000 }],
+      user_metadata: { custom_client_pref: 'dark' }
+    }
+  };
+  const evaluated = evaluateCustomAccessTokenHook(event);
+  assert.equal(evaluated.claims.amr_authenticated, 'true');
+  assert.equal(evaluated.claims.user_metadata.custom_client_pref, 'dark');
+});
+
+test('R2-03: Successfully adds amr_authenticated when user_metadata is null or primitive', () => {
+  const event = {
+    user_id: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4',
+    authentication_method: 'password',
+    claims: {
+      sub: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4',
+      email: 'user@example.com',
+      role: 'authenticated',
+      amr: [{ method: 'password', timestamp: 1700000000 }],
+      user_metadata: null
+    }
+  };
+  const evaluated = evaluateCustomAccessTokenHook(event);
+  assert.equal(evaluated.claims.amr_authenticated, 'true');
+});
+
+// Additional Boundary Tests
 test('Boundary: null or non-object event fails closed', () => {
   assert.throws(() => evaluateCustomAccessTokenHook(null), /invalid_hook_event/);
   assert.throws(() => evaluateCustomAccessTokenHook([]), /invalid_hook_event/);
@@ -217,22 +405,6 @@ test('Boundary: empty AMR array fails closed', () => {
     claims: { amr: [] }
   };
   assert.throws(() => evaluateCustomAccessTokenHook(event), /missing_or_empty_amr/);
-});
-
-test('Boundary: string-array AMR (legacy format) fails closed under RFC 8176 parser', () => {
-  const event = {
-    authentication_method: 'password',
-    claims: { amr: ['password'] }
-  };
-  assert.throws(() => evaluateCustomAccessTokenHook(event), /malformed_amr_element/);
-});
-
-test('Boundary: amr element missing string method property fails closed', () => {
-  const event = {
-    authentication_method: 'password',
-    claims: { amr: [{ timestamp: 1700000000 }] }
-  };
-  assert.throws(() => evaluateCustomAccessTokenHook(event), /malformed_amr_method/);
 });
 
 test('Boundary: anonymous and invite authentication methods fail closed', () => {

@@ -1,5 +1,5 @@
-// Pure offline preflight evaluator for Task 06I-B1
-// Evaluates the 17 preflight security requirements and enforces classification rules.
+// Pure offline preflight evaluator for Task 06I-B1-R2
+// Evaluates the 18 preflight security requirements and enforces fail-closed classification and quota/target rules.
 
 export const VALID_STATUSES = new Set([
   'VERIFIED PASS',
@@ -9,11 +9,17 @@ export const VALID_STATUSES = new Set([
   'REQUIRES OWNER APPROVAL'
 ]);
 
+export const TARGET_STRATEGIES = new Set([
+  'NEW_DISPOSABLE_PROJECT',
+  'EXISTING_PROJECT_TESTBED'
+]);
+
 /**
- * Task 06I-B1 17-point Security Matrix Specifications
+ * Task 06I-B1-R2 18-point Security Matrix Specifications
+ * Includes BYPASS-05 for direct recovery endpoint and hook failure/fallback.
  */
 export const PREFLIGHT_REQUIREMENTS = [
-  // 1. Native Bypass Tests (4 items)
+  // 1. Native Bypass Tests (5 items)
   {
     id: 'BYPASS-01',
     category: 'Native Bypass',
@@ -53,6 +59,16 @@ export const PREFLIGHT_REQUIREMENTS = [
     expectedResponse: '500 Error invoking access token hook (zero token issued)',
     hostedExecutionStatus: 'NOT TESTED',
     prerequisite: 'Custom Access Token Hook deployed'
+  },
+  {
+    id: 'BYPASS-05',
+    category: 'Native Bypass',
+    target: 'POST /auth/v1/recover',
+    description: 'Direct native password recovery request; Send Email Hook must intercept and suppress recovery email dispatch; failure/fallback must not deliver usable token or route via default SMTP; purpose isolation preserved',
+    documentedCapability: 'Send Email Hook intercepts email_action_type = recovery; suppresses dispatch',
+    expectedResponse: '200 OK from endpoint, but Send Email Hook suppresses email delivery; hook failure fails closed (zero usable recovery token delivered)',
+    hostedExecutionStatus: 'NOT TESTED',
+    prerequisite: 'Send Email Hook deployed and configured to intercept recovery emails'
   },
 
   // 2. Token Hook Tests (7 items)
@@ -190,6 +206,8 @@ export const PREFLIGHT_REQUIREMENTS = [
   }
 ];
 
+export const EXPECTED_REQUIREMENT_IDS = new Set(PREFLIGHT_REQUIREMENTS.map(r => r.id));
+
 /**
  * Validates the status classification of a requirement.
  */
@@ -201,16 +219,79 @@ export function validateRequirementStatus(status) {
 }
 
 /**
+ * Validates the full set of requirements.
+ * Rejects empty arrays, duplicate IDs, missing expected IDs, or unknown IDs.
+ *
+ * @param {Array<object>} requirements Requirements array
+ * @returns {object} Validation result
+ */
+export function validateRequirementSet(requirements) {
+  if (!Array.isArray(requirements) || requirements.length === 0) {
+    throw new Error('invalid_requirements_input: requirements must be a non-empty array');
+  }
+
+  const seenIds = new Set();
+  const duplicateIds = [];
+  for (const req of requirements) {
+    if (!req || typeof req !== 'object' || typeof req.id !== 'string') {
+      throw new Error('invalid_requirement_shape: each requirement must be an object with string id');
+    }
+    validateRequirementStatus(req.hostedExecutionStatus);
+    if (seenIds.has(req.id)) {
+      duplicateIds.push(req.id);
+    }
+    seenIds.add(req.id);
+  }
+
+  if (duplicateIds.length > 0) {
+    throw new Error(`duplicate_requirement_ids: duplicate IDs encountered: ${duplicateIds.join(', ')}`);
+  }
+
+  const missingExpected = [];
+  for (const expId of EXPECTED_REQUIREMENT_IDS) {
+    if (!seenIds.has(expId)) {
+      missingExpected.push(expId);
+    }
+  }
+
+  if (missingExpected.length > 0) {
+    throw new Error(`missing_expected_requirements: expected requirement IDs missing: ${missingExpected.join(', ')}`);
+  }
+
+  const unknownIds = [];
+  for (const id of seenIds) {
+    if (!EXPECTED_REQUIREMENT_IDS.has(id)) {
+      unknownIds.push(id);
+    }
+  }
+
+  if (unknownIds.length > 0) {
+    throw new Error(`unknown_requirement_ids: unrecognized requirement IDs: ${unknownIds.join(', ')}`);
+  }
+
+  return { valid: true, count: seenIds.size };
+}
+
+/**
  * Computes the overall preflight gate decision.
+ * Separates quota availability from hosted target strategy and enforces fail-closed checks.
  *
  * @param {object} accountQuota Account project slot availability
- * @param {boolean} ownerApproved Has owner granted explicit approval for disposable project creation
+ * @param {object} options Target strategy, approval, and authorization options
  * @param {Array<object>} requirements Requirements list with statuses
  * @returns {object} Decision object
  */
-export function evaluatePreflightGate(accountQuota, ownerApproved, requirements = PREFLIGHT_REQUIREMENTS) {
+export function evaluatePreflightGate(accountQuota, options = {}, requirements = PREFLIGHT_REQUIREMENTS) {
+  // Validate complete requirement set (throws on empty, duplicate, missing, or malformed input)
+  validateRequirementSet(requirements);
+
   if (!accountQuota || typeof accountQuota !== 'object') {
     throw new Error('missing_account_quota: account quota must be provided');
+  }
+
+  const targetStrategy = options.targetStrategy || 'NEW_DISPOSABLE_PROJECT';
+  if (!TARGET_STRATEGIES.has(targetStrategy)) {
+    throw new Error(`invalid_target_strategy: ${targetStrategy}`);
   }
 
   const activeProjects = accountQuota.activeProjects ?? 0;
@@ -220,41 +301,84 @@ export function evaluatePreflightGate(accountQuota, ownerApproved, requirements 
   const pendingApprovals = [];
   const blockers = [];
 
-  if (freeSlotsAvailable === 0) {
+  // Evaluate target strategy and quota separately
+  if (targetStrategy === 'NEW_DISPOSABLE_PROJECT') {
+    if (freeSlotsAvailable === 0) {
+      blockers.push({
+        code: 'QUOTA_EXHAUSTED',
+        detail: `Supabase Free tier active quota exhausted (${activeProjects}/${freeTierLimit} active projects; paused projects do not consume active slots). Creating a new disposable project requires an available Free-tier slot. Zero spending policy strictly forbids paid Pro upgrade.`
+      });
+    }
+
+    if (!options.ownerApproved) {
+      pendingApprovals.push({
+        code: 'DISPOSABLE_PROJECT_CREATION_GATE',
+        detail: 'Owner approval required before creating tio-auth-proof-disposable or modifying hosted project configuration.'
+      });
+    }
+  } else if (targetStrategy === 'EXISTING_PROJECT_TESTBED') {
+    // Existing project testing does not require a new slot, but requires explicit target safety authorization
+    if (!options.targetAuthorized) {
+      blockers.push({
+        code: 'NO_SAFE_HOSTED_TARGET',
+        detail: 'Hosted testing against existing projects requires explicit target authorization and safety approval. Production project bsfwzvgynwriswapxpsp and Tio-world are strictly READ-ONLY. Deleting/regenerating production project is NOT approved.'
+      });
+    }
+  }
+
+  // Evaluate requirements status counts
+  const verifiedPass = requirements.filter(r => r.hostedExecutionStatus === 'VERIFIED PASS');
+  const verifiedFail = requirements.filter(r => r.hostedExecutionStatus === 'VERIFIED FAIL');
+  const blockedReqs = requirements.filter(r => r.hostedExecutionStatus === 'BLOCKED');
+  const notTestedReqs = requirements.filter(r => r.hostedExecutionStatus === 'NOT TESTED');
+  const approvalReqs = requirements.filter(r => r.hostedExecutionStatus === 'REQUIRES OWNER APPROVAL');
+
+  // Surface VERIFIED FAIL as blocking failure
+  if (verifiedFail.length > 0) {
     blockers.push({
-      code: 'QUOTA_EXHAUSTED',
-      detail: `Supabase Free tier active quota exhausted (${activeProjects}/${freeTierLimit} active projects; paused projects do not consume active slots). Owner policy enforces $0 cost; Tio-world is strictly off-limits.`
+      code: 'REQUIREMENT_FAILURES',
+      detail: `${verifiedFail.length} security requirements failed verification: ${verifiedFail.map(r => r.id).join(', ')}`
     });
   }
 
-  if (!ownerApproved) {
-    pendingApprovals.push({
-      code: 'DISPOSABLE_PROJECT_CREATION_GATE',
-      detail: 'Owner approval required before creating tio-auth-proof-disposable or modifying hosted project configuration.'
+  // Surface BLOCKED requirements as blocking
+  if (blockedReqs.length > 0) {
+    blockers.push({
+      code: 'REQUIREMENTS_BLOCKED',
+      detail: `${blockedReqs.length} security requirements are blocked: ${blockedReqs.map(r => r.id).join(', ')}`
     });
   }
-
-  // Count requirements
-  const notTestedCount = requirements.filter(r => r.hostedExecutionStatus === 'NOT TESTED').length;
 
   let overallVerdict;
-  if (blockers.length > 0 || pendingApprovals.length > 0) {
+  if (blockers.length > 0) {
+    overallVerdict = 'BLOCKED';
+  } else if (pendingApprovals.length > 0 || approvalReqs.length > 0) {
     overallVerdict = 'REQUIRES OWNER APPROVAL';
-  } else if (notTestedCount > 0) {
+  } else if (notTestedReqs.length > 0) {
     overallVerdict = 'READY FOR HOSTED EXECUTION';
+  } else if (verifiedPass.length === EXPECTED_REQUIREMENT_IDS.size) {
+    overallVerdict = 'ALL CHECKS PASSED';
   } else {
-    overallVerdict = 'EVALUATION COMPLETE';
+    overallVerdict = 'BLOCKED';
   }
 
   return {
     verdict: overallVerdict,
+    targetStrategy,
     freeSlotsAvailable,
     activeProjects,
     freeTierLimit,
     blockers,
     pendingApprovals,
-    notTestedCount,
-    totalRequirements: requirements.length,
+    counts: {
+      total: requirements.length,
+      verifiedPass: verifiedPass.length,
+      verifiedFail: verifiedFail.length,
+      blocked: blockedReqs.length,
+      notTested: notTestedReqs.length,
+      requiresOwnerApproval: approvalReqs.length
+    },
+    costPolicy: 'STRICT_ZERO_COST',
     productionAuthStatus: 'NO-GO'
   };
 }

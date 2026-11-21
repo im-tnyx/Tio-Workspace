@@ -1,5 +1,5 @@
 // Pure offline specification and assertion evaluator for Task 06I-B1
-// Simulates and verifies the Custom Access Token Hook allowlist contract (Task 06I-A Section 4.2 / R13).
+// Simulates and verifies the Custom Access Token Hook allowlist contract (Task 06I-A Section 4.2 / R13 & Task 06I-B1-R2).
 // Implements exact provider event schema parsing and RFC 8176 object-array AMR traversal.
 
 export const DISALLOWED_AUTH_METHODS = new Set([
@@ -14,12 +14,15 @@ export const DISALLOWED_AUTH_METHODS = new Set([
   'sso',
   'sso/saml',
   'totp',
-  'email_change'
+  'email_change',
+  'email/change'
 ]);
 
 /**
  * Custom Access Token Hook specification evaluator.
  * Mirrors private_auth.custom_access_token_hook(event jsonb) SQL function.
+ * Enforces strict allowlist: ONLY method 'password' is permitted in AMR.
+ * Any other method (known disallowed or unknown/unrecognized) immediately fails closed.
  *
  * @param {object} event Provider hook input event
  * @returns {object} Modified event if allowed
@@ -76,7 +79,9 @@ export function evaluateCustomAccessTokenHook(event) {
 
     if (method === 'password') {
       hasPasswordOrigin = true;
-    } else if (DISALLOWED_AUTH_METHODS.has(method) || method !== 'password') {
+    } else {
+      // Strict allowlist: Any non-password method (whether in DISALLOWED_AUTH_METHODS or completely unknown)
+      // immediately triggers SQLSTATE 42501 fail-closed rejection.
       const err = new Error(`prohibited_amr_method_${method}_in_token_session`);
       err.code = '42501';
       throw err;
@@ -89,13 +94,11 @@ export function evaluateCustomAccessTokenHook(event) {
     throw err;
   }
 
-  // Hook succeeds: add server-verified claims
+  // Hook succeeds: add dedicated server-owned authorization claim directly under claims
+  // (does not rely on client-editable or optionally missing user_metadata)
   const modifiedClaims = {
     ...claims,
-    user_metadata: {
-      ...(claims.user_metadata || {}),
-      amr_authenticated: 'true'
-    }
+    amr_authenticated: 'true'
   };
 
   return {
@@ -114,7 +117,7 @@ export function classifyHookOutcome(event) {
       allowed: true,
       error: null,
       result: 'ALLOWED',
-      amr_authenticated: result.claims?.user_metadata?.amr_authenticated === 'true'
+      amr_authenticated: result.claims?.amr_authenticated === 'true'
     };
   } catch (err) {
     return {
