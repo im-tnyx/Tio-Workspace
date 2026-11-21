@@ -2,9 +2,9 @@
 
 | Field | Value |
 |---|---|
-| **Task ID** | Task 06I-A (Revision R14 — Deterministic Lifecycle Locking & Durable Collision Reconciliation) |
+| **Task ID** | Task 06I-A (Revision R15 — Post-Create Identity Quarantine & Completion Replay Contract) |
 | **Status** | **ARCHITECTURE PROPOSED — OWNER DECISION REQUIRED** |
-| **Objective** | Resolve the two latest GitHub review findings on PR #34 while preserving all 45 previously resolved threads: (1) Cursor Medium (`PRRT_kwDOVtCmZc66JKK9`) — eliminate cross-identity lifecycle deadlocks (SQLSTATE `40P01`) under concurrent swapped-identity calls by adopting Option A: acquiring Tier 1 Identity Advisory Lock and Tier 4 Lifecycle Row Lock solely and exclusively on the authoritative `normalized_email` record, never locking an unrelated row by `target_user_id`, breaking circular wait conditions, and validating cross-identity integrity via authoritative `auth.users` checks and atomic PRIMARY KEY constraints; (2) Cursor Medium (`PRRT_kwDOVtCmZc66JKLF`) — eliminate stranded `executing` leases on collision/rejection branches by updating `admin_operation_ledger` durably to either `failed_terminal` (releasing active creation lease for legitimate signup) or `quarantined_indeterminate` (preserving identity quarantine and audit provenance) with recorded error logs and completion timestamps; and add targeted Stage 06I-B2 regression test suites (`LOCK-A..D`, `LEASE-A..G`) |
+| **Objective** | Resolve the two latest GitHub review findings on PR #34 while preserving all 47 previously resolved threads: (1) Cursor High (`PRRT_kwDOVtCmZc66TaVc`) — establish a strict post-external-operation quarantine principle in `complete_provisional_creation`, ensuring that post-create validation failures (`invalid_challenge_purpose_or_status`, `target_user_email_mismatch`, `account_already_enrolled`, `target_user_not_found`, etc.) transition `admin_operation_ledger` to `quarantined_indeterminate` (never `failed_terminal`), thereby preserving active creation fencing in `uq_admin_ledger_active_creation_email` and preventing untracked/duplicate GoTrue user creation until authoritative reconciliation; (2) Cursor Medium (`PRRT_kwDOVtCmZc66TaVm`) — define one coherent, minimal completion replay policy in `complete_provisional_creation`, explicitly checking if `status = 'completed'` under lock and returning a clean non-mutating conflict result (`completed = FALSE, conflict_code = 'operation_already_completed'`), eliminating stale unreachable "idempotent re-completion" assertions; and add targeted Stage 06I-B2 regression test suites (`ORPHAN-A..E`, `REPLAY-A..E`, `RECON-A..B`) |
 | **Execution Mode** | STRICTLY DOCUMENTATION-ONLY, OFFLINE SECURITY DESIGN CORRECTIONS (No app code, migrations, or hosted mutations) |
 | **Authorization** | Owner instruction: follow `AGENTS.md`, `.ai/current.md`, Supabase skill; production project `bsfwzvgynwriswapxpsp` strictly READ-ONLY |
 | **Implementation Owner** | Security Architecture & Research Agent |
@@ -43,7 +43,7 @@ To maintain absolute evidence integrity, all claims in this document adhere to t
   - Supabase Auth is utilized strictly as a **Password Identity Provider** (`signInWithPassword`) and Admin API target (`admin.createUser`, `admin.updateUserById`).
   - *GoTrue Idempotency, Identity Quarantine & Durable Ledger Retention (R9–R12):* GoTrue Admin API does NOT implement an `Idempotency-Key` header. Safe execution requires a server-owned, durable operation ledger (`admin_operation_ledger`) and persistent identity lifecycle state table (`identity_lifecycle`) in PostgreSQL. To guarantee that initial-enrollment uniqueness, provisional identity provenance, and indeterminate operation quarantines survive short-lived OTP challenge cleanup, `admin_operation_ledger` and `identity_lifecycle` are completely decoupled from cascading foreign keys. Routine purging of ephemeral `auth_challenges` rows leaves permanent enrollment guards, provisional identities, and quarantine locks 100% intact. Initial enrollment is permanently serialized per identity (`target_user_id`, `normalized_email`), while password recovery is repeatable over the lifecycle.
   - *Unified Security Invariant Matrix & Lock Hierarchy (R12–R13):* All privileged database functions strictly obey the Global Strict Lock Hierarchy (Tier 1 Identity Advisory Lock -> Tier 2 Cooldown Row Lock -> Tier 3 Challenge Row Lock -> Tier 4 Lifecycle Row Lock -> Tier 5 Send Log Insert -> Tier 6 Admin Operation Ledger Lock). Every security-critical function acquires locks in this top-down order and recomputes fresh database time (`v_now := clock_timestamp()`) post-lock before checking expiry boundaries (`database_now < deadline` valid, `database_now >= deadline` expired).
-  - *Durable Provisional Creation, Deterministic Lifecycle Locking & Collision Reconciliation (R12–R14 — `PRRT_kwDOVtCmZc66HSzf`, `PRRT_kwDOVtCmZc66HSzi`, `PRRT_kwDOVtCmZc66HSzq`, `PRRT_kwDOVtCmZc66HSzv`, `PRRT_kwDOVtCmZc66Hbdq`, `PRRT_kwDOVtCmZc66IIHq`, `PRRT_kwDOVtCmZc66JKK9`, `PRRT_kwDOVtCmZc66JKLF`):* Provisional identity creation is strictly authorized under locked challenge state (`purpose = 'signup_initial_password'`, `status = 'pending_provisioning'`, matching unexpired grant). To mathematically eliminate cross-identity deadlocks (SQLSTATE `40P01`) under concurrent swapped-identity requests, `complete_provisional_creation` adopts Option A: acquiring the Tier 1 Identity Advisory Lock and Tier 4 Lifecycle Row Lock solely and exclusively on the authoritative `normalized_email` record. Unrelated lifecycle rows for `target_user_id` are never locked, breaking circular wait conditions. Target UUID ownership is enforced via authoritative `auth.users` verification and PostgreSQL PRIMARY KEY constraint checks. Furthermore, all conflict and collision branches transition `admin_operation_ledger` durably to either `failed_terminal` (releasing active creation lease for legitimate signup) or `quarantined_indeterminate` (preserving identity quarantine and audit provenance) with recorded error logs and completion timestamps, eliminating stranded `executing` leases.
+  - *Durable Provisional Creation, Post-Create Quarantine & Completion Replay Contract (R12–R15 — `PRRT_kwDOVtCmZc66HSzf`, `PRRT_kwDOVtCmZc66HSzi`, `PRRT_kwDOVtCmZc66HSzq`, `PRRT_kwDOVtCmZc66HSzv`, `PRRT_kwDOVtCmZc66Hbdq`, `PRRT_kwDOVtCmZc66IIHq`, `PRRT_kwDOVtCmZc66JKK9`, `PRRT_kwDOVtCmZc66JKLF`, `PRRT_kwDOVtCmZc66TaVc`, `PRRT_kwDOVtCmZc66TaVm`):* Provisional identity creation is strictly authorized under locked challenge state (`purpose = 'signup_initial_password'`, `status = 'pending_provisioning'`, matching unexpired grant). To mathematically eliminate cross-identity deadlocks, `complete_provisional_creation` adopts Option A: acquiring Tier 1 Identity Advisory Lock and Tier 4 Lifecycle Row Lock solely on the authoritative `normalized_email` record. Under the strict post-external-operation quarantine principle (R15: `PRRT_kwDOVtCmZc66TaVc`), any validation failure occurring after the outbound `admin.createUser` call (`invalid_challenge_purpose_or_status`, `target_user_email_mismatch`, `account_already_enrolled`, `target_user_not_found`, etc.) MUST transition `admin_operation_ledger` to `quarantined_indeterminate` (never `failed_terminal`), retaining active creation fencing in `uq_admin_ledger_active_creation_email` to prevent untracked/duplicate user creation until authoritative reconciliation. Furthermore, under the minimal completion replay policy (R15: `PRRT_kwDOVtCmZc66TaVm`), re-invocations of already completed operations detect `status = 'completed'` under lock and return a safe, read-only conflict response (`completed = FALSE, conflict_code = 'operation_already_completed'`), preventing duplicate mutations while preserving existing successful bindings.
   - *Server-Authoritative Recovery & Enrollment Guards (R12 — `PRRT_kwDOVtCmZc66HSz6`):* Both signup enrollment and password recovery enforce Tier 4 `identity_lifecycle` row locks inside `claim_admin_operation`. Initial enrollment strictly requires `lifecycle_stage = 'provisional_created'`; password recovery strictly requires `lifecycle_stage = 'enrolled_password_complete'`. Quarantined or mismatched accounts fail closed.
   - *Official Provider Token Hook Contract & Fixtures (R13 — `PRRT_kwDOVtCmZc66It35`):* `custom_access_token_hook` strictly aligns with the official Supabase hook schema by reading `event->>'authentication_method'` as a top-level sibling of `claims`, extracting `claims` from `event->'claims'`, and inspecting AMR from `event->'claims'->'amr'`. Rejects native OTP, recovery, magiclink, and mixed AMR sessions fail-closed (SQLSTATE `42501`). Includes 10 provider-shaped test fixtures covering valid, denied, malformed, and missing event shapes.
   - *Pgcrypto Extension Schema Qualification (R13 — `PRRT_kwDOVtCmZc66IIHh`):* Under secure immutable empty search path (`SET search_path = ''`), `verify_otp_challenge` explicitly qualifies `extensions.hmac(...)` to resolve the `pgcrypto` extension installed in the `extensions` schema, preventing runtime "function does not exist" failures while mathematically preventing search-path hijacking attacks. Explicit least-privilege `REVOKE ALL` and `GRANT EXECUTE` statements protect all schema functions.
@@ -183,6 +183,31 @@ To mathematically eliminate cross-identity deadlocks, all lifecycle-mutating fun
   2. *Constraint enforcement:* `identity_lifecycle.user_id` is the PRIMARY KEY, and `normalized_email` is UNIQUE. Any anomalous concurrent insertion of a duplicate UUID raises `unique_violation` (SQLSTATE `23505`), which is caught deterministically and transitioned to `quarantined_indeterminate`.
 - **SQLSTATE 40P01 Deadlock Handling Contract:** In the event of an unexpected deadlock from uncoordinated external queries, PostgreSQL detects `40P01`. The transaction fails closed and rolls back. The caller (Edge Function) receives a database error, must NOT fabricate a successful claim, and must NOT trigger blind external GoTrue mutations.
 
+##### Post-External-Operation Quarantine Principle & Authoritative Reconciliation Contract (R15 Closure: PRRT_kwDOVtCmZc66TaVc)
+`complete_provisional_creation` executes strictly **after** the outbound `admin.createUser` call to Supabase GoTrue. Under the core architectural reality that external network operations cannot be rolled back by PostgreSQL transactions, local validation failures after external invocation require strict handling:
+- **Core Principle:** A local validation failure after an external `admin.createUser` attempt is **NOT** evidence that the user was not created. Writing `status = 'failed_terminal'` is strictly prohibited on post-create failure branches, because `failed_terminal` is excluded from the partial unique index `uq_admin_ledger_active_creation_email` (`WHERE operation_type = 'create_provisional_user' AND status IN ('claimed', 'executing', 'reconciling', 'quarantined_indeterminate')`). Releasing that index guard prematurely would allow a new `reserve_provisional_creation` to succeed and launch another `admin.createUser` against an untracked, orphaned passwordless user in `auth.users`, reopening the R11 duplicate/orphan identity vulnerability.
+- **Fail-Closed Quarantine Enforcement:** All post-create failure paths (`invalid_challenge_purpose_or_status`, `target_user_email_mismatch`, `account_already_enrolled`, `target_user_not_found`, `email_already_bound_to_different_user`, `user_id_already_bound_to_different_email`, `challenge_not_found`, `enrollment_in_progress`, `invalid_lifecycle_stage`) transition `admin_operation_ledger` to `status = 'quarantined_indeterminate'`, record the exact error in `error_log`, set `completed_at`, and preserve the worker lease and fencing token.
+- **Persistent Creation Fencing:** Because `quarantined_indeterminate` is indexed by `uq_admin_ledger_active_creation_email`, the normalized email remains strictly locked against new creation reservations. No second `admin.createUser` can ever be launched for that email.
+- **Authoritative Reconciliation & Fence Release Lifecycle:**
+  1. *Creation Reserved (`claimed` / `executing`):* Worker lease active; `admin.createUser` in flight.
+  2. *Creation Completed (`completed`):* Provisional identity verified in `auth.users`, bound in `identity_lifecycle`, and challenge linked.
+  3. *Creation Indeterminate (`quarantined_indeterminate`):* Network timeout, email mismatch, or validation failure occurred after external call. Identity fence remains active.
+  4. *Reconciliation In Progress (`reconciling`):* Dedicated background reconciliation worker acquires the lease to inspect external state.
+  5. *Reconciled Safe Binding:* If external inspection verifies that the provisional user in `auth.users` was indeed created by this operation and has no password, the reconciliation worker safely binds the UUID to `identity_lifecycle` and marks the operation `completed`.
+  6. *Reconciled Terminal Failure (`failed_terminal`):* If and ONLY if authoritative external inspection proves that GoTrue never created the user, or the orphaned passwordless user is safely compensated and removed, the reconciliation worker transitions the operation to `failed_terminal`, finally releasing `uq_admin_ledger_active_creation_email`.
+  7. *Operator Intervention Required:* If reconciliation cannot authoritatively resolve identity ownership (e.g., target UUID is password-enrolled or bound elsewhere), quarantine is permanently held for manual security review. Automated processes NEVER delete users or reassign identities based on email equality alone.
+
+##### Completion Replay Policy & Status Rejection Contract (R15 Closure: PRRT_kwDOVtCmZc66TaVm)
+To eliminate dead or contradictory code paths and guarantee deterministic behavior under concurrent or retried completions, `complete_provisional_creation` enforces a strict **Minimal Replay Rejection Policy**:
+- **Rejection of Completed Operations:** Upon acquiring the Tier 6 ledger row lock, the procedure immediately checks `v_op.status`. If `v_op.status = 'completed'`, the operation has already been finalized by the first authorized worker. The procedure immediately returns `completed = FALSE, conflict_code = 'operation_already_completed'`.
+- **Zero Duplicate Mutations:** No additional inserts into `identity_lifecycle`, updates to `auth_challenges`, or external GoTrue calls occur. The existing valid binding is preserved completely unaltered.
+- **Unambiguous State Distinctions:**
+  - *Completed Operation Replay:* `v_op.status = 'completed'` -> returns `FALSE, 'operation_already_completed'`.
+  - *Quarantined Operation Replay:* `v_op.status = 'quarantined_indeterminate'` -> returns `FALSE, 'operation_quarantined'`.
+  - *Stale Worker or Expired Lease:* `v_op.worker_lease_id != p_worker_lease_id` or `v_now >= v_op.lease_expires_at` -> returns `FALSE, 'invalid_lease_state'` / `'lease_expired'`, leaving the executing ledger row unmodified for the reconciliation sweeper.
+  - *Separate Operation for Same Email:* Blocked upstream by `uq_admin_ledger_active_creation_email` during reservation (`creation_already_reserved`).
+  - *Resumed Execution:* If `v_op.status = 'executing'` and worker holds a valid unexpired lease, and `identity_lifecycle` already has the identical `(p_target_user_id, normalized_email, 'provisional_created')`, the procedure finalizes the pending challenge and ledger cleanly without demotion.
+
 #### Cross-Function Security Invariant Matrix (R12 End-to-End Closure)
 To guarantee zero security gaps, unambiguous authority, and complete SQL consistency across all authentication paths, all database functions adhere to the following **Cross-Function Security Invariant Matrix**:
 
@@ -191,7 +216,7 @@ To guarantee zero security gaps, unambiguous authority, and complete SQL consist
 | `reserve_email_send` | `service_role` | Tier 1 Advisory -> Tier 2 Cooldown Row -> Tier 5 Send Log Insert | Post-lock (`v_now := clock_timestamp()`) | Any | Bound to `p_purpose` | `cooldown_active`, `interval_too_short`, `hourly_limit_exceeded` | AUTH-22 cooldown check; strict 60s interval & 5/hr quota; anti-enumeration |
 | `verify_otp_challenge` | `service_role` | Tier 1 Advisory -> Tier 2 Cooldown Row -> Tier 3 Challenge Row | Post-lock (`v_now := clock_timestamp()`) | N/A (binds provisional or enrolled if found) | Bound to `p_purpose` matching challenge row | `challenge_not_found`, `cooldown_active`, `already_consumed`, `challenge_expired`, `invalid_code`, `fifth_failure_activated_cooldown` | AUTH-12 single-use; AUTH-22 5th-failure race elimination; post-lock expiry; monotonic cooldown rollover; schema-qualified `extensions.hmac` under `SET search_path = ''` (R13: `PRRT_kwDOVtCmZc66IIHh`) |
 | `reserve_provisional_creation` | `service_role` | Tier 1 Advisory -> Tier 3 Challenge Row -> Tier 4 Lifecycle Row -> Tier 6 Ledger Insert | Post-lock (`v_now := clock_timestamp()`) | Fails closed on all non-eligible stages: `enrolled_password_complete`, `quarantined_indeterminate`, `enrollment_pending` | Strict: `purpose = 'signup_initial_password'` & `p_normalized_email` | `challenge_not_found`, `invalid_challenge_status`, `grant_mismatch`, `grant_expired`, `account_already_enrolled`, `identity_quarantined`, `enrollment_in_progress`, `creation_quarantined_indeterminate`, `creation_already_reserved` | Prov identity reservation boundary (H3, H4, H5); prevents duplicate GoTrue user creation; isolates signup from recovery |
-| `complete_provisional_creation` | `service_role` | Tier 1 Advisory -> Tier 3 Challenge Row -> Tier 4 Lifecycle Row (authoritative `normalized_email` ONLY, Option A) -> Tier 6 Ledger Row | Post-lock (`v_now := clock_timestamp()`) | Strictly monotonic: permits insert or update of `provisional_created`; rejects demotion if already enrolled, quarantined, or pending; fails closed on cross-identity UUID/email mismatch | Strict: `operation_type = 'create_provisional_user'`, signup challenge purpose, and `auth.users` normalized email match | `operation_not_found`, `invalid_operation_type`, `challenge_not_found`, `invalid_challenge_purpose_or_status`, `invalid_lease_state`, `lease_expired`, `target_user_not_found`, `target_user_email_mismatch`, `account_already_enrolled`, `identity_quarantined`, `email_already_bound_to_different_user`, `user_id_already_bound_to_different_email`, `lifecycle_demotion_prohibited` | Deterministic single-identity lifecycle locking (Option A — PRRT_kwDOVtCmZc66JKK9); durable conflict transitions to failed_terminal / quarantined_indeterminate, preventing stranded executing leases (PRRT_kwDOVtCmZc66JKLF); prov creation completion provenance & email uniqueness protection; prevents lifecycle demotion; binds minted user_id |
+| `complete_provisional_creation` | `service_role` | Tier 1 Advisory -> Tier 3 Challenge Row -> Tier 4 Lifecycle Row (authoritative `normalized_email` ONLY, Option A) -> Tier 6 Ledger Row | Post-lock (`v_now := clock_timestamp()`) | Strictly monotonic: permits insert of `provisional_created`; rejects demotion if already enrolled, quarantined, or pending; fails closed on cross-identity UUID/email mismatch | Strict: `operation_type = 'create_provisional_user'`, signup challenge purpose, and `auth.users` normalized email match | `operation_not_found`, `invalid_operation_type`, `challenge_not_found`, `operation_already_completed`, `operation_quarantined`, `invalid_challenge_purpose_or_status`, `invalid_lease_state`, `lease_expired`, `target_user_not_found`, `target_user_email_mismatch`, `account_already_enrolled`, `identity_quarantined`, `email_already_bound_to_different_user`, `user_id_already_bound_to_different_email`, `lifecycle_demotion_prohibited` | Post-create strict quarantine principle (R15: `PRRT_kwDOVtCmZc66TaVc`): all post-create validation failures transition to `quarantined_indeterminate` to preserve active creation fencing in `uq_admin_ledger_active_creation_email` and prevent untracked/duplicate GoTrue user creation; minimal completion replay policy (R15: `PRRT_kwDOVtCmZc66TaVm`): completed replays return `operation_already_completed` without duplicate mutations; single authoritative email-owner locking (Option A: `PRRT_kwDOVtCmZc66JKK9`); binds minted user_id |
 | `claim_admin_operation` | `service_role` | Tier 1 Advisory -> Tier 3 Challenge Row -> Tier 4 Lifecycle Row -> Tier 6 Ledger Insert | Post-lock (`v_now := clock_timestamp()`) | Signup: strictly `provisional_created`. Recovery: strictly `enrolled_password_complete`. Both reject quarantined accounts | Signup: `enroll_initial_password`. Recovery: `recovery_password_reset`. Strict purpose mapping | `challenge_not_found`, `email_mismatch`, `invalid_challenge_status`, `grant_mismatch`, `grant_expired`, `operation_purpose_mismatch`, `target_user_id_required`, `recovery_target_user_missing`, `user_id_mismatch`, `target_user_not_found`, `account_already_enrolled`, `account_not_enrolled`, `identity_quarantined`, `challenge_already_claimed`, `enrollment_conflict_identity_locked` | AUTH-17 password enrollment protection (M1); strict purpose mapping (R10); lease fencing & idempotency |
 | `cleanup_expired_challenges` | `service_role` | Tier 3 Challenge Row (`FOR UPDATE SKIP LOCKED`) | Cutoff (`v_cutoff := clock_timestamp() - interval`) | N/A | Evaluates all associated operations via scoped `NOT EXISTS` | None (returns purged counts) | M3 1-to-many challenge operation retention; leaves active, reconciling, and quarantined operations 100% intact |
 | `custom_access_token_hook` | `supabase_auth_admin` | Evaluates provider hook event in memory | N/A | Enforces server-authoritative password origin | Validates `event->>'authentication_method' = 'password'` or `token_refresh` and pure password AMR | Exception SQLSTATE `42501` on any non-password, mixed AMR, or malformed claims | AUTH-17 fail-closed allowlist with official Supabase provider event contract (R13: `PRRT_kwDOVtCmZc66It35`); denies native OTP/magiclink/recovery session minting |
@@ -661,6 +686,14 @@ BEGIN
     FOR UPDATE;
 
     IF NOT FOUND THEN
+        -- Post-create failure: challenge record missing.
+        -- Quarantine operation in ledger to preserve audit evidence and keep active creation guard.
+        UPDATE private_auth.admin_operation_ledger
+        SET status = 'quarantined_indeterminate',
+            error_log = 'challenge_not_found',
+            completed_at = clock_timestamp()
+        WHERE operation_id = p_operation_id;
+
         RETURN QUERY SELECT FALSE, 'challenge_not_found'::TEXT;
         RETURN;
     END IF;
@@ -684,10 +717,19 @@ BEGIN
         RETURN;
     END IF;
 
+    -- Replay Policy Check: reject completed-operation replays (R15: PRRT_kwDOVtCmZc66TaVm)
+    IF v_op.status = 'completed' THEN
+        RETURN QUERY SELECT FALSE, 'operation_already_completed'::TEXT;
+        RETURN;
+    ELSIF v_op.status = 'quarantined_indeterminate' THEN
+        RETURN QUERY SELECT FALSE, 'operation_quarantined'::TEXT;
+        RETURN;
+    END IF;
+
     -- Post-Lock Timestamp Evaluation (M2 — PRRT_kwDOVtCmZc66HSz_)
     v_now := clock_timestamp();
 
-    -- Validate worker lease ownership and lease expiry post-lock
+    -- Validate active executing worker lease ownership and lease expiry post-lock
     IF v_op.worker_lease_id != p_worker_lease_id OR v_op.status != 'executing' THEN
         RETURN QUERY SELECT FALSE, 'invalid_lease_state'::TEXT;
         RETURN;
@@ -698,12 +740,15 @@ BEGIN
         RETURN;
     END IF;
 
+    -- Post-Create Strict Quarantine Principle (R15: PRRT_kwDOVtCmZc66TaVc)
+    -- Once outbound admin.createUser has been invoked, validation failures MUST NOT release the creation fence.
+    -- All post-create failure branches transition to quarantined_indeterminate to block duplicate creations.
+
     -- Authorize Challenge Purpose & Status (im-tio P1 — PRRT_kwDOVtCmZc66Hbdq)
     IF v_challenge.purpose != 'signup_initial_password'::private_auth.challenge_purpose
        OR v_challenge.status != 'pending_provisioning'::private_auth.challenge_status THEN
-        -- Terminal configuration/challenge state conflict: record failure and release creation lease
         UPDATE private_auth.admin_operation_ledger
-        SET status = 'failed_terminal',
+        SET status = 'quarantined_indeterminate',
             error_log = 'invalid_challenge_purpose_or_status',
             completed_at = v_now
         WHERE operation_id = p_operation_id;
@@ -719,7 +764,6 @@ BEGIN
 
     IF NOT FOUND THEN
         -- Indeterminate conflict: GoTrue API claimed user creation, but row not visible in auth.users.
-        -- Quarantine identity in admin_operation_ledger to require authoritative reconciliation.
         UPDATE private_auth.admin_operation_ledger
         SET status = 'quarantined_indeterminate',
             error_log = 'target_user_not_found',
@@ -731,10 +775,10 @@ BEGIN
     END IF;
 
     IF v_auth_email != v_op.normalized_email THEN
-        -- Proven terminal conflict: Target user belongs to a DIFFERENT email in auth.users.
-        -- Persist terminal failure, release active creation lease for legitimate signup, and preserve audit evidence.
+        -- Post-create mismatch: Target user exists in auth.users but belongs to a DIFFERENT email!
+        -- Quarantine identity in admin_operation_ledger to preserve creation fencing and prevent duplicate creations.
         UPDATE private_auth.admin_operation_ledger
-        SET status = 'failed_terminal',
+        SET status = 'quarantined_indeterminate',
             error_log = 'target_user_email_mismatch',
             completed_at = v_now
         WHERE operation_id = p_operation_id;
@@ -748,7 +792,7 @@ BEGIN
         -- Case 1A: Email already enrolled with completed password
         IF v_lifecycle.lifecycle_stage = 'enrolled_password_complete' THEN
             UPDATE private_auth.admin_operation_ledger
-            SET status = 'failed_terminal',
+            SET status = 'quarantined_indeterminate',
                 error_log = 'account_already_enrolled',
                 completed_at = v_now
             WHERE operation_id = p_operation_id;
@@ -768,7 +812,7 @@ BEGIN
         -- Case 1C: Enrollment pending in progress
         ELSIF v_lifecycle.lifecycle_stage = 'enrollment_pending' THEN
             UPDATE private_auth.admin_operation_ledger
-            SET status = 'failed_terminal',
+            SET status = 'quarantined_indeterminate',
                 error_log = 'enrollment_in_progress',
                 completed_at = v_now
             WHERE operation_id = p_operation_id;
@@ -779,7 +823,6 @@ BEGIN
         ELSIF v_lifecycle.lifecycle_stage = 'provisional_created' THEN
             IF v_lifecycle.user_id != p_target_user_id THEN
                 -- Indeterminate collision: Email already provisionally bound to a different UUID!
-                -- Quarantine identity in both lifecycle and ledger to prevent duplicate external users.
                 UPDATE private_auth.identity_lifecycle
                 SET lifecycle_stage = 'quarantined_indeterminate',
                     quarantined_at = v_now,
@@ -796,7 +839,7 @@ BEGIN
                 RETURN QUERY SELECT FALSE, 'email_already_bound_to_different_user'::TEXT;
                 RETURN;
             ELSE
-                -- Idempotent re-completion: Same email and same user_id
+                -- Resumed completion: Same email and same user_id under active executing lease
                 UPDATE private_auth.identity_lifecycle
                 SET last_challenge_id = v_op.challenge_id,
                     last_operation_id = p_operation_id,
@@ -837,7 +880,6 @@ BEGIN
             );
         EXCEPTION WHEN unique_violation THEN
             -- Target user_id is already registered in identity_lifecycle under a different email!
-            -- Indeterminate collision: quarantine operation in ledger to preserve audit evidence.
             UPDATE private_auth.admin_operation_ledger
             SET status = 'quarantined_indeterminate',
                 error_log = 'user_id_already_bound_to_different_email',
@@ -2695,6 +2737,14 @@ BEGIN
     FOR UPDATE;
 
     IF NOT FOUND THEN
+        -- Post-create failure: challenge record missing.
+        -- Quarantine operation in ledger to preserve audit evidence and keep active creation guard.
+        UPDATE private_auth.admin_operation_ledger
+        SET status = 'quarantined_indeterminate',
+            error_log = 'challenge_not_found',
+            completed_at = clock_timestamp()
+        WHERE operation_id = p_operation_id;
+
         RETURN QUERY SELECT FALSE, 'challenge_not_found'::TEXT;
         RETURN;
     END IF;
@@ -2718,10 +2768,19 @@ BEGIN
         RETURN;
     END IF;
 
+    -- Replay Policy Check: reject completed-operation replays (R15: PRRT_kwDOVtCmZc66TaVm)
+    IF v_op.status = 'completed' THEN
+        RETURN QUERY SELECT FALSE, 'operation_already_completed'::TEXT;
+        RETURN;
+    ELSIF v_op.status = 'quarantined_indeterminate' THEN
+        RETURN QUERY SELECT FALSE, 'operation_quarantined'::TEXT;
+        RETURN;
+    END IF;
+
     -- Post-Lock Timestamp Evaluation (M2 — PRRT_kwDOVtCmZc66HSz_)
     v_now := clock_timestamp();
 
-    -- Validate worker lease ownership and lease expiry post-lock
+    -- Validate active executing worker lease ownership and lease expiry post-lock
     IF v_op.worker_lease_id != p_worker_lease_id OR v_op.status != 'executing' THEN
         RETURN QUERY SELECT FALSE, 'invalid_lease_state'::TEXT;
         RETURN;
@@ -2732,12 +2791,15 @@ BEGIN
         RETURN;
     END IF;
 
+    -- Post-Create Strict Quarantine Principle (R15: PRRT_kwDOVtCmZc66TaVc)
+    -- Once outbound admin.createUser has been invoked, validation failures MUST NOT release the creation fence.
+    -- All post-create failure branches transition to quarantined_indeterminate to block duplicate creations.
+
     -- Authorize Challenge Purpose & Status (im-tio P1 — PRRT_kwDOVtCmZc66Hbdq)
     IF v_challenge.purpose != 'signup_initial_password'::private_auth.challenge_purpose
        OR v_challenge.status != 'pending_provisioning'::private_auth.challenge_status THEN
-        -- Terminal configuration/challenge state conflict: record failure and release creation lease
         UPDATE private_auth.admin_operation_ledger
-        SET status = 'failed_terminal',
+        SET status = 'quarantined_indeterminate',
             error_log = 'invalid_challenge_purpose_or_status',
             completed_at = v_now
         WHERE operation_id = p_operation_id;
@@ -2753,7 +2815,6 @@ BEGIN
 
     IF NOT FOUND THEN
         -- Indeterminate conflict: GoTrue API claimed user creation, but row not visible in auth.users.
-        -- Quarantine identity in admin_operation_ledger to require authoritative reconciliation.
         UPDATE private_auth.admin_operation_ledger
         SET status = 'quarantined_indeterminate',
             error_log = 'target_user_not_found',
@@ -2765,10 +2826,10 @@ BEGIN
     END IF;
 
     IF v_auth_email != v_op.normalized_email THEN
-        -- Proven terminal conflict: Target user belongs to a DIFFERENT email in auth.users.
-        -- Persist terminal failure, release active creation lease for legitimate signup, and preserve audit evidence.
+        -- Post-create mismatch: Target user exists in auth.users but belongs to a DIFFERENT email!
+        -- Quarantine identity in admin_operation_ledger to preserve creation fencing and prevent duplicate creations.
         UPDATE private_auth.admin_operation_ledger
-        SET status = 'failed_terminal',
+        SET status = 'quarantined_indeterminate',
             error_log = 'target_user_email_mismatch',
             completed_at = v_now
         WHERE operation_id = p_operation_id;
@@ -2782,7 +2843,7 @@ BEGIN
         -- Case 1A: Email already enrolled with completed password
         IF v_lifecycle.lifecycle_stage = 'enrolled_password_complete' THEN
             UPDATE private_auth.admin_operation_ledger
-            SET status = 'failed_terminal',
+            SET status = 'quarantined_indeterminate',
                 error_log = 'account_already_enrolled',
                 completed_at = v_now
             WHERE operation_id = p_operation_id;
@@ -2802,7 +2863,7 @@ BEGIN
         -- Case 1C: Enrollment pending in progress
         ELSIF v_lifecycle.lifecycle_stage = 'enrollment_pending' THEN
             UPDATE private_auth.admin_operation_ledger
-            SET status = 'failed_terminal',
+            SET status = 'quarantined_indeterminate',
                 error_log = 'enrollment_in_progress',
                 completed_at = v_now
             WHERE operation_id = p_operation_id;
@@ -2813,7 +2874,6 @@ BEGIN
         ELSIF v_lifecycle.lifecycle_stage = 'provisional_created' THEN
             IF v_lifecycle.user_id != p_target_user_id THEN
                 -- Indeterminate collision: Email already provisionally bound to a different UUID!
-                -- Quarantine identity in both lifecycle and ledger to prevent duplicate external users.
                 UPDATE private_auth.identity_lifecycle
                 SET lifecycle_stage = 'quarantined_indeterminate',
                     quarantined_at = v_now,
@@ -2830,7 +2890,7 @@ BEGIN
                 RETURN QUERY SELECT FALSE, 'email_already_bound_to_different_user'::TEXT;
                 RETURN;
             ELSE
-                -- Idempotent re-completion: Same email and same user_id
+                -- Resumed completion: Same email and same user_id under active executing lease
                 UPDATE private_auth.identity_lifecycle
                 SET last_challenge_id = v_op.challenge_id,
                     last_operation_id = p_operation_id,
@@ -2871,7 +2931,6 @@ BEGIN
             );
         EXCEPTION WHEN unique_violation THEN
             -- Target user_id is already registered in identity_lifecycle under a different email!
-            -- Indeterminate collision: quarantine operation in ledger to preserve audit evidence.
             UPDATE private_auth.admin_operation_ledger
             SET status = 'quarantined_indeterminate',
                 error_log = 'user_id_already_bound_to_different_email',
@@ -3623,7 +3682,7 @@ The owner is requested to consider a future, bounded two-stage proof-of-concept 
 eq U_2$, updates both `identity_lifecycle` and `admin_operation_ledger` to `status = 'quarantined_indeterminate'` with `error_log = 'email_already_bound_to_different_user'`, and returns `completed = FALSE, conflict_code = 'email_already_bound_to_different_user'`. Zero unhandled unique constraint exceptions occur; creation lease is durably quarantined rather than stranded in `executing`.
      - **Test LIFE-C (Password-Complete Identity Reassignment & Demotion Rejection):** Email $E_1$ exists in `identity_lifecycle` with `lifecycle_stage = 'enrolled_password_complete'`. Calling `complete_provisional_creation` returns `completed = FALSE, conflict_code = 'account_already_enrolled'`; lifecycle stage is NOT demoted, and ledger row transitions to `failed_terminal`.
      - **Test LIFE-D (Quarantined Identity Reassignment Rejection):** Email $E_1$ exists in `identity_lifecycle` with `lifecycle_stage = 'quarantined_indeterminate'`. Calling `complete_provisional_creation` returns `completed = FALSE, conflict_code = 'identity_quarantined'`; ledger row transitions to `quarantined_indeterminate`.
-     - **Test LIFE-E (Concurrent Completion Serialization):** Two parallel workers attempt `complete_provisional_creation` for the same email. Both serialize on Tier 1 advisory lock. First completes successfully; second rechecks state under lock and completes idempotently without duplicate inserts or demotions.
+     - **Test LIFE-E (Concurrent Completion Serialization & Replay Rejection):** Two parallel workers attempt `complete_provisional_creation` for the same operation. Both serialize on Tier 1 advisory lock. Worker 1 completes successfully (`executing -> completed`); Worker 2 unblocks post-commit, detects `status = 'completed'`, and returns `completed = FALSE, conflict_code = 'operation_already_completed'` without duplicate inserts, demotions, or external calls.
      - **Test LIFE-F (Target User Bound to Different Email Rejection):** Target UUID $U_1$ already exists in `identity_lifecycle` with email $E_{old}$. Worker attempts `complete_provisional_creation` with $U_1$ and email $E_{new}$. Procedure detects collision and returns `completed = FALSE, conflict_code = 'user_id_already_bound_to_different_email'`, transitioning ledger to `quarantined_indeterminate`.
      - **Test LIFE-G (Expired Worker Lease Rejection):** Worker blocks past the 30-second lease expiry. Post-lock timestamp evaluation detects `v_now >= lease_expires_at` and rejects with `completed = FALSE, conflict_code = 'lease_expired'`. Procedure leaves ledger intact for the reconciliation sweeper.
      - **Test LIFE-H (Durable Operation Ledger Retention on Failure):** When lifecycle completion encounters terminal conflicts (`target_user_email_mismatch`, `account_already_enrolled`, `invalid_challenge_purpose_or_status`), `admin_operation_ledger` transitions to `failed_terminal` (releasing active creation lease). When encountering indeterminate collisions (`target_user_not_found`, `email_already_bound_to_different_user`, `user_id_already_bound_to_different_email`), ledger transitions to `quarantined_indeterminate`. In all cases, `error_log` records exact failure reason, `completed_at` is set, and zero leases remain stranded in `executing`.
@@ -3634,22 +3693,21 @@ eq U_2$, updates both `identity_lifecycle` and `admin_operation_ledger` to `stat
        - Concurrency: Worker 1 calls `complete_provisional_creation(op_A, lease_1, U_B)` for $E_A$ while Worker 2 calls `complete_provisional_creation(op_B, lease_2, U_A)` for $E_B$ simultaneously.
        - Execution: Under Option A, Worker 1 acquires Tier 1 advisory lock on $E_A$ and Tier 4 lifecycle lock on $E_A$. Worker 2 acquires Tier 1 advisory lock on $E_B$ and Tier 4 lifecycle lock on $E_B$. Neither worker attempts to acquire row locks on the other's identity record.
        - Assertion: Zero circular wait conditions occur. Zero `40P01` deadlock exceptions are raised. Both transactions proceed concurrently without blocking each other. Each evaluates $auth.users$ and lifecycle state, safely rejecting mismatches without deadlock.
-     - **Test LOCK-B (Same-Email Parallel Completion Serialization):**
-       - Setup: Single email $E_1$ with concurrent completion calls from Worker 1 and Worker 2.
-       - Concurrency: Both workers call `complete_provisional_creation` for $E_1$ with the same target UUID $U_1$.
-       - Assertion: Both workers serialize strictly on Tier 1 advisory lock `hashtext('auth_identity:' || E_1)`. Worker 1 acquires locks, inserts lifecycle record, and marks ledger `completed`. Worker 2 acquires locks post-commit, evaluates existing `provisional_created` record with same $U_1$, and completes idempotently without duplicate inserts or constraint violations.
+     - **Test LOCK-B (Same-Operation Parallel Completion & Replay Rejection — PRRT_kwDOVtCmZc66TaVm):**
+       - Setup: Single operation for email $E_1$ with concurrent completion calls from Worker 1 and Worker 2.
+       - Concurrency: Both workers call `complete_provisional_creation` for the same `operation_id` and target UUID $U_1$.
+       - Assertion: Both workers serialize strictly on Tier 1 advisory lock `hashtext('auth_identity:' || E_1)`. Worker 1 acquires locks, inserts lifecycle record, and marks ledger `completed`. Worker 2 acquires locks post-commit, evaluates `v_op.status = 'completed'`, and returns `completed = FALSE, conflict_code = 'operation_already_completed'`. Replay is rejected safely without duplicate inserts, constraint violations, or GoTrue mutations.
      - **Test LOCK-C (UUID Collision & Single Legitimate Owner Preservation):**
        - Setup: Worker 1 holds reservation for $E_A$; Worker 2 holds reservation for $E_B$. Both attempt to complete with the exact same UUID $U_{shared}$ (where $U_{shared}$ exists in $auth.users$ with email $E_A$).
-       - Execution: Worker 1 verifies $auth.users$ email matches $E_A$, successfully inserts into `identity_lifecycle`, and commits `completed`. Worker 2 inspects $auth.users$, detects $v_auth_email (E_A)
-eq v_op.normalized_email (E_B)$, transitions its ledger to `failed_terminal` with `error_log = 'target_user_email_mismatch'`, and returns `completed = FALSE, conflict_code = 'target_user_email_mismatch'`.
-       - Assertion: Exactly one legitimate owner ($E_A$) is bound to $U_{shared}$. Worker 2 fails closed without deadlocks or unhandled exceptions.
+       - Execution: Worker 1 verifies $auth.users$ email matches $E_A$, successfully inserts into `identity_lifecycle`, and commits `completed`. Worker 2 inspects $auth.users$, detects $v_auth_email (E_A) \neq v_op.normalized_email (E_B)$, transitions its ledger to `quarantined_indeterminate` with `error_log = 'target_user_email_mismatch'` (retaining active creation fence), and returns `completed = FALSE, conflict_code = 'target_user_email_mismatch'`.
+       - Assertion: Exactly one legitimate owner ($E_A$) is bound to $U_{shared}$. Worker 2 fails closed into quarantine without deadlocks or unhandled exceptions.
      - **Test LOCK-D (Lock Timeout & Deadlock Handling Contract):**
        - Setup: Inject synthetic lock contention or simulate external uncoordinated table locking triggering SQLSTATE `40P01`.
        - Assertion: Transaction rolls back cleanly. Edge Function caller catches database exception, returns HTTP 503 `service_unavailable`, does NOT fabricate a successful claim, and does NOT trigger blind external GoTrue API mutations.
-     - **Test LEASE-A (Proven Terminal Collision Transition — PRRT_kwDOVtCmZc66JKLF):**
+     - **Test LEASE-A (Post-Create Mismatch Quarantine Transition — PRRT_kwDOVtCmZc66TaVc):**
        - Setup: Target UUID $U_1$ exists in $auth.users$ with email $E_2$. Worker calls `complete_provisional_creation` for email $E_1$ with target UUID $U_1$.
        - Execution: Procedure detects `v_auth_email != v_op.normalized_email`.
-       - Assertion: `admin_operation_ledger` transitions to `status = 'failed_terminal'` with `error_log = 'target_user_email_mismatch'` and fresh `completed_at`. Active creation index `uq_admin_ledger_active_creation_email` is released. Zero leases remain in `executing`.
+       - Assertion: `admin_operation_ledger` transitions to `status = 'quarantined_indeterminate'` with `error_log = 'target_user_email_mismatch'` and fresh `completed_at`. Active creation index `uq_admin_ledger_active_creation_email` is RETAINED, preventing untracked/duplicate user creation until authoritative reconciliation.
      - **Test LEASE-B (Ambiguous External Collision Quarantine):**
        - Setup: GoTrue `admin.createUser` call timed out or returned UUID $U_1$, but $U_1$ is not present in $auth.users$ upon completion verification.
        - Execution: Procedure detects `target_user_not_found`.
@@ -3671,17 +3729,60 @@ eq v_op.normalized_email (E_B)$, transitions its ledger to `failed_terminal` wit
      - **Test LEASE-G (Cleanup Retention Safety During Unresolved Reconciliation):**
        - Setup: Identity $E_1$ has operation in `status = 'quarantined_indeterminate'`. Daily `cleanup_expired_challenges` runs.
        - Assertion: Expired ephemeral challenges in `auth_challenges` are purged, but `admin_operation_ledger` row and `identity_lifecycle` row remain 100% intact due to decoupled foreign keys, preserving reconciliation evidence.
+   - **Post-Create Identity Quarantine & Completion Replay Suite (R15 Closure — ORPHAN-A..E, REPLAY-A..E, RECON-A..B):**
+     *(All tests PROPOSED — NOT EXECUTED; evaluate under deterministic concurrency interleavings and database-time controls)*
+     - **Test ORPHAN-A (Invalid Challenge After Successful Creation — PRRT_kwDOVtCmZc66TaVc):**
+       - Setup: Worker successfully calls GoTrue `admin.createUser`, obtaining UUID $U_1$. Before completion, challenge is corrupted or revoked (`status = 'consumed'`).
+       - Execution: Worker calls `complete_provisional_creation(op_1, lease_1, U_1)`. Procedure detects `invalid_challenge_purpose_or_status`.
+       - Assertion: `admin_operation_ledger` transitions to `status = 'quarantined_indeterminate'` with `error_log = 'invalid_challenge_purpose_or_status'`. Active creation index `uq_admin_ledger_active_creation_email` is RETAINED. The newly created passwordless user in `auth.users` remains fenced, preventing untracked orphan user creation.
+     - **Test ORPHAN-B (Wrong Returned UUID/Email Quarantine):**
+       - Setup: GoTrue returns UUID $U_2$ whose `auth.users` row has email $E_2 \neq v_op.normalized_email (E_1)$.
+       - Execution: Worker calls `complete_provisional_creation`. Procedure detects `target_user_email_mismatch`.
+       - Assertion: Operation enters `quarantined_indeterminate`. Creation fence remains active; duplicate creation attempts are strictly blocked until external reconciliation.
+     - **Test ORPHAN-C (Signup Retry Blocked Following Quarantine):**
+       - Setup: Operation for email $E_1$ enters `quarantined_indeterminate`. Client or attacker attempts a fresh signup for $E_1$.
+       - Execution: New challenge is verified; worker calls `reserve_provisional_creation`.
+       - Assertion: `reserve_provisional_creation` detects existing active quarantine in `admin_operation_ledger` and rejects with `creation_quarantined_indeterminate`. Zero outbound `admin.createUser` calls are initiated.
+     - **Test ORPHAN-D (Safe Existing Provisional Identity Reuse):**
+       - Setup: Authoritative reconciliation sweeper identifies an untracked provisional identity in `auth.users` for email $E_1$, binds it safely to `identity_lifecycle`, and marks the operation `completed`.
+       - Execution: Client restarts signup for $E_1$. Worker calls `reserve_provisional_creation`.
+       - Assertion: `reserve_provisional_creation` detects `lifecycle_stage = 'provisional_created'`, updates challenge `user_id = v_lifecycle.user_id`, and returns `provisional_already_exists`. The existing provisional user is reused safely without duplicate creation.
+     - **Test ORPHAN-E (Zero Unrelated User Deletions):**
+       - Setup: Identity $E_1$ has an operation in `quarantined_indeterminate`. Reconciliation sweeper runs.
+       - Assertion: Sweeper NEVER deletes or modifies any user record in `auth.users` that is password-enrolled (`enrolled_password_complete`) or belongs to an unrelated identity. Ambiguous identities are preserved for manual security review.
+     - **Test REPLAY-A (Same Operation, Concurrent Dual Workers — PRRT_kwDOVtCmZc66TaVm):**
+       - Setup: Worker 1 and Worker 2 concurrently invoke `complete_provisional_creation` for the exact same `operation_id`.
+       - Execution: Worker 1 acquires Tier 1 advisory lock, binds provisional identity, marks ledger `completed`, and commits. Worker 2 unblocks post-commit, detects `v_op.status = 'completed'`, and evaluates the replay contract.
+       - Assertion: Worker 2 immediately returns `completed = FALSE, conflict_code = 'operation_already_completed'`. Exactly one authoritative completion occurs; zero duplicate inserts or mutations.
+     - **Test REPLAY-B (Completed Operation Replay Rejection):**
+       - Setup: Client or network proxy retries `complete_provisional_creation` after operation status is `completed`.
+       - Assertion: Procedure detects `v_op.status = 'completed'` under lock and returns `completed = FALSE, conflict_code = 'operation_already_completed'`. All database records remain intact.
+     - **Test REPLAY-C (Different Operation, Same Identity Blocked):**
+       - Setup: A completed operation exists for email $E_1$. A second worker attempts to create another operation for $E_1$.
+       - Assertion: Blocked upstream by `reserve_provisional_creation` (`provisional_already_exists`) and partial unique index `uq_admin_ledger_active_creation_email`.
+     - **Test REPLAY-D (Expired or Stale Worker Lease Protection):**
+       - Setup: Worker lease expires (`clock_timestamp() >= lease_expires_at`). Stale worker attempts `complete_provisional_creation`.
+       - Assertion: Procedure detects expired lease and returns `completed = FALSE, conflict_code = 'lease_expired'`. Ledger row is left unmodified for the reconciliation sweeper.
+     - **Test REPLAY-E (Cross-Identity Completion Attempt Rejection):**
+       - Setup: Caller presents `operation_id` for email $E_1$ but supplies target UUID $U_2$ belonging to email $E_2$.
+       - Assertion: Procedure detects `target_user_email_mismatch`, transitions ledger to `quarantined_indeterminate`, and returns `completed = FALSE`. No unauthorized completion is granted.
+     - **Test RECON-A (Ambiguous External Network Timeout Handling):**
+       - Setup: Worker invokes `admin.createUser` but connection drops before response is received. Target UUID is not known; completion is invoked with `target_user_not_found`.
+       - Assertion: Ledger transitions to `quarantined_indeterminate`. Active creation fence remains held, preventing race conditions.
+     - **Test RECON-B (Authorized Reconciliation Fence Release):**
+       - Setup: Operation for $E_1$ is in `quarantined_indeterminate`. Authorized reconciliation sweeper checks GoTrue Admin API.
+       - Assertion: If GoTrue proves that no user was created, sweeper transitions operation to `failed_terminal` with audit proof, safely releasing `uq_admin_ledger_active_creation_email`. If user was created, sweeper binds it safely. Only verified external evidence permits release of quarantine.
 
 ## 10. Summary & Sign-off
 
 | Deliverable | Location | Status |
 |---|---|---|
-| Canonical Research Document | `.ai/tasks/auth/local-20261120-task06i-a-strict-auth-architecture.md` | **COMPLETE (Revision R14)** |
+| Canonical Research Document | `.ai/tasks/auth/local-20261120-task06i-a-strict-auth-architecture.md` | **COMPLETE (Revision R15)** |
 | Active Continuity Pointer | `.ai/current.md` | **UPDATED** |
 | Research Worktree Branch | `docs/task06i-a-strict-auth-architecture` | **READY FOR REVIEW** |
 | Final Architecture Verdict | **ARCHITECTURE PROPOSED — OWNER DECISION REQUIRED** | **PRODUCTION AUTH NO-GO** |
 
-### Review Findings Disposition Summary (All 42 Findings Addressed Across Revisions R3–R14)
+### Review Findings Disposition Summary (All 44 Findings Addressed Across Revisions R3–R15)
 - **Previous R3 Findings (Retained & Verified):**
   - **P1-1 (Token Hook Allowlist — `PRRT_kwDOVtCmZc654L96`):** Explicit fail-closed allowlist for password sign-in and validated password-origin refresh.
   - **P1-2 (Atomic Email Quota — `PRRT_kwDOVtCmZc654L9_`):** Serialized quota check via `pg_advisory_xact_lock` in `reserve_email_send`.
@@ -3754,6 +3855,9 @@ eq v_op.normalized_email (E_B)$, transitions its ledger to `failed_terminal` wit
 - **New R14 Findings (Deterministic Lifecycle Locking & Durable Collision Reconciliation):**
   - **Cursor Medium (Deterministic Single-Identity Lifecycle Locking / Deadlock Elimination — `PRRT_kwDOVtCmZc66JKK9`):** Resolved Cursor Bugbot Medium finding on PR #34. Under concurrent calls with cross-swapped identities (Tx1: email A, user B; Tx2: email B, user A), taking row locks on both `normalized_email` and `target_user_id` caused circular wait deadlocks (SQLSTATE `40P01`), aborting transactions and leaving creation leases stranded. Adopted Option A: `complete_provisional_creation` acquires the Tier 1 Identity Advisory Lock and Tier 4 Lifecycle Row Lock solely and exclusively on the authoritative `normalized_email` record. Unrelated lifecycle rows for `target_user_id` are never locked, breaking circular wait conditions and mathematically eliminating cross-identity deadlocks. Cross-identity validation is enforced through authoritative `auth.users` inspection and atomic PRIMARY KEY constraints. Added Tests LOCK-A through LOCK-D to Stage 06I-B2.
   - **Cursor Medium (Durable Conflict Ledger Transitions / Zero Stranded Leases — `PRRT_kwDOVtCmZc66JKLF`):** Resolved Cursor Bugbot Medium finding on PR #34. Collision and rejection branches previously returned conflict codes (e.g., `email_already_bound_to_different_user`, `target_user_email_mismatch`) without updating `admin_operation_ledger`, leaving rows in `status = 'executing'` and permanently blocking `uq_admin_ledger_active_creation_email`. Hardened every single conflict branch in `complete_provisional_creation` to update `admin_operation_ledger` durably: terminal conflicts (`target_user_email_mismatch`, `account_already_enrolled`, `enrollment_in_progress`, `invalid_challenge_purpose_or_status`) transition to `status = 'failed_terminal'` (releasing the active creation index guard for legitimate signups), while ambiguous or cross-identity collisions (`target_user_not_found`, `email_already_bound_to_different_user`, `identity_quarantined`, `user_id_already_bound_to_different_email`) transition to `status = 'quarantined_indeterminate'` (preserving quarantine fences and audit provenance). Added Tests LEASE-A through LEASE-G to Stage 06I-B2.
+- **New R15 Findings (Post-Create Identity Quarantine & Completion Replay Contract):**
+  - **Cursor High (Post-Create Strict Identity Quarantine / Zero Premature Fence Release — `PRRT_kwDOVtCmZc66TaVc`):** Resolved Cursor Bugbot High finding on PR #34. `complete_provisional_creation` executes strictly after the outbound `admin.createUser` call to Supabase GoTrue. Previously, failure branches like `invalid_challenge_purpose_or_status` and `target_user_email_mismatch` wrote `status = 'failed_terminal'`, dropping the active creation fence in `uq_admin_ledger_active_creation_email` and allowing subsequent signups to call `createUser` again against an untracked, orphaned passwordless user in `auth.users`. Established the strict post-external-operation quarantine principle: all post-create validation failures (`invalid_challenge_purpose_or_status`, `target_user_email_mismatch`, `account_already_enrolled`, `target_user_not_found`, `email_already_bound_to_different_user`, `user_id_already_bound_to_different_email`, `challenge_not_found`, `enrollment_in_progress`, `invalid_lifecycle_stage`) transition `admin_operation_ledger` to `status = 'quarantined_indeterminate'`, permanently retaining the creation fence in `uq_admin_ledger_active_creation_email` until authoritative background or manual operator reconciliation settles external identity ownership. Added Tests ORPHAN-A through ORPHAN-E and RECON-A through RECON-B to Stage 06I-B2.
+  - **Cursor Medium (Minimal Completion Replay Policy & Contradiction Elimination — `PRRT_kwDOVtCmZc66TaVm`):** Resolved Cursor Bugbot Medium finding on PR #34. Test LOCK-B previously asserted that a second same-email worker would evaluate `provisional_created` and complete idempotently, but the procedure rejected retries first with `invalid_lease_state` because `status` was no longer `executing`. Adopted the minimal completion replay rejection policy: upon acquiring the Tier 6 ledger row lock, `complete_provisional_creation` explicitly checks if `v_op.status = 'completed'`. If so, it immediately returns `completed = FALSE, conflict_code = 'operation_already_completed'` without mutating credentials, lifecycle records, or challenges. Corrected stale test assertions in LOCK-B and LIFE-E, and added Tests REPLAY-A through REPLAY-E to Stage 06I-B2.
 
 
 ### Architecture Document Maintenance & Simplification Recommendation (R13)
