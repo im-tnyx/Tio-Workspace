@@ -1,15 +1,15 @@
-# Phase 1.2 Task 06I-B1-R2 — Managed Auth Feasibility & Security Boundary Verification Preflight
+# Phase 1.2 Task 06I-B1-R3 — Managed Auth Feasibility & Security Boundary Verification Preflight
 
-> **Preflight Report & Test Plan (Revision R2 — Security Review Remediation).** Prepared under `AGENTS.md` operating rules. This document authorizes local investigation, documentation, offline test preparation, and read-only feasibility checks only. It does not authorize creating or modifying a hosted Supabase project. Production Real Auth remains **NO-GO**.
+> **Preflight Report & Test Plan (Revision R3 — Final Review Blockers Remediation).** Prepared under `AGENTS.md` operating rules. This document authorizes local investigation, documentation, offline test preparation, and read-only feasibility checks only. It does not authorize creating or modifying a hosted Supabase project. Production Real Auth remains **NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **PREFLIGHT COMPLETE (REVISION R2) — HOSTED PROVISIONING BLOCKED PENDING OWNER APPROVAL & SAFE TARGET RESOLUTION** |
-| Objective | Resolve PR #35 review findings (R2-01..R2-08), enforce strict AMR allowlist, add recovery endpoint bypass case (BYPASS-05), implement server-owned claim handling, harden fail-closed gate evaluator, document CI attribution-guard boundary, and correct whitespace/links |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-R2 slice |
-| Previous agent | Codex / Task 06I-A Revision R17 author |
-| Last commit agent | `065073488184e4b044b622957427586fdc89d0e5` (Task 06I-B1-R1 commit on PR #35) |
-| Tracking / approval | Task 06I-B1-R2 authorized by user prompt; PR #35 active; owner mandates $0 cost and preserves `Tio-world`; hosted mutations strictly prohibited |
+| Status | **PREFLIGHT COMPLETE (REVISION R3) — HOSTED PROVISIONING BLOCKED PENDING OWNER APPROVAL & SAFE TARGET RESOLUTION** |
+| Objective | Address final PR #35 review findings (R3-01 Auth Hook registration & enablement contract, R3-02 CI guard coverage analysis, R3-03 regression evidence, and R3-04 workflow review), document permanent immunity for `Tio-world`, specify both Custom Access Token & Send Email Hooks, and maintain branch protections |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-R3 slice |
+| Previous agent | Agent / Task 06I-B1-R2 author |
+| Last commit agent | `de7f4928860f5616b50ce64c93348dd7dd383a4c` (Task 06I-B1-R2 commit on PR #35) |
+| Tracking / approval | Task 06I-B1-R3 authorized by user prompt; PR #35 active; owner mandates $0 cost and permanent immunity for `Tio-world`; hosted mutations strictly prohibited |
 | Branch | `docs/task06i-b1-managed-auth-preflight` |
 | Base SHA / inspected HEAD | `b7d4fda97979e734a85461e83bf119dbc1a9689c` (`main`, verified up to date with `origin/main`) |
 | Platform and file scope | Documentation, `.ai/` context, isolated offline preflight test harnesses under `experiments/task06i/`; zero client Expo UI, production schema, or live Auth changes |
@@ -196,16 +196,16 @@ The following reproducible test matrix defines the 18 security requirements acro
 |---|---|---|---|---|---|
 | **BYPASS-01** | Native Bypass | `POST /auth/v1/otp` (email OTP) | `422 Unprocessable Entity (email_provider_disabled)` | **NOT TESTED** | `external_email_magic_link_disabled: true` |
 | **BYPASS-02** | Native Bypass | `POST /auth/v1/signup` (direct signup) | `422 Unprocessable Entity (signup_disabled)` | **NOT TESTED** | `disable_signup: true` |
-| **BYPASS-03** | Native Bypass | `POST /auth/v1/verify` (type email / recovery) | `500 Error invoking access token hook` (0 token issued) | **NOT TESTED** | Custom Access Token Hook deployed |
-| **BYPASS-04** | Native Bypass | Magic Link, Invite & Anonymous endpoints | `500 Error invoking access token hook` (0 token issued) | **NOT TESTED** | Custom Access Token Hook deployed |
-| **BYPASS-05** | Native Bypass | `POST /auth/v1/recover` (password recovery) | Send Email Hook intercepts and suppresses recovery email delivery; failure/fallback fails closed without usable token or default SMTP routing; purpose isolation preserved | **NOT TESTED** | Send Email Hook deployed |
-| **HOOK-01** | Token Hook | Legitimate Password Sign-In | `200 OK` with valid JWT (`amr: [{method: "password"}]`) | **NOT TESTED** | Test user enrolled with password |
-| **HOOK-02** | Token Hook | Legitimate Password Token Refresh | `200 OK` with refreshed JWT (`amr: [{method: "password"}]`) | **NOT TESTED** | Active password session |
-| **HOOK-03** | Token Hook | OTP-Origin Token Refresh | `500 Error invoking access token hook` (SQLSTATE `42501`) | **NOT TESTED** | Simulated OTP session |
-| **HOOK-04** | Token Hook | Recovery-Origin Token Refresh | `500 Error invoking access token hook` (SQLSTATE `42501`) | **NOT TESTED** | Simulated recovery session |
-| **HOOK-05** | Token Hook | Mixed AMR (`password` + unauthorized) | `500 Error invoking access token hook` (SQLSTATE `42501`) | **NOT TESTED** | Simulated mixed AMR payload |
-| **HOOK-06** | Token Hook | Missing / Malformed AMR (string array, empty) | `500 Error invoking access token hook` (SQLSTATE `42501`) | **NOT TESTED** | Malformed AMR payload |
-| **HOOK-07** | Token Hook | Fail-Closed on Hook Exception / Error | `500 Error invoking access token hook` (transaction aborted) | **NOT TESTED** | Syntax/runtime error injection in hook |
+| **BYPASS-03** | Native Bypass | `POST /auth/v1/verify` (type email / recovery) | `500 Error invoking access token hook` (0 token issued) | **NOT TESTED** | Custom Access Token Hook deployed to `private_auth` schema and registered/enabled via `hook_custom_access_token_enabled` |
+| **BYPASS-04** | Native Bypass | Magic Link, Invite & Anonymous endpoints | `500 Error invoking access token hook` (0 token issued) | **NOT TESTED** | Custom Access Token Hook deployed and registered/enabled via `hook_custom_access_token_enabled` |
+| **BYPASS-05** | Native Bypass | `POST /auth/v1/recover` (password recovery) | Send Email Hook intercepts and suppresses recovery email delivery; failure/fallback fails closed without usable token or default SMTP routing; purpose isolation preserved | **NOT TESTED** | Send Email Hook deployed to `private_auth` schema and registered/enabled via `hook_send_email_enabled` |
+| **HOOK-01** | Token Hook | Legitimate Password Sign-In | `200 OK` with valid JWT (`amr: [{method: "password"}]`, root `claims.amr_authenticated = 'true'`) | **NOT TESTED** | Test user enrolled with password; Hook deployed and registered |
+| **HOOK-02** | Token Hook | Legitimate Password Token Refresh | `200 OK` with refreshed JWT (`amr: [{method: "password"}]`) | **NOT TESTED** | Active password session; Hook deployed and registered |
+| **HOOK-03** | Token Hook | OTP-Origin Token Refresh | `500 Error invoking access token hook` (SQLSTATE `42501`) | **NOT TESTED** | Simulated OTP session; Hook deployed and registered |
+| **HOOK-04** | Token Hook | Recovery-Origin Token Refresh | `500 Error invoking access token hook` (SQLSTATE `42501`) | **NOT TESTED** | Simulated recovery session; Hook deployed and registered |
+| **HOOK-05** | Token Hook | Mixed AMR (`password` + unauthorized) | `500 Error invoking access token hook` (SQLSTATE `42501`) | **NOT TESTED** | Simulated mixed AMR payload; Hook deployed and registered |
+| **HOOK-06** | Token Hook | Missing / Malformed AMR (string array, empty) | `500 Error invoking access token hook` (SQLSTATE `42501`) | **NOT TESTED** | Malformed AMR payload; Hook deployed and registered |
+| **HOOK-07** | Token Hook | Fail-Closed on Hook Exception / Error | `500 Error invoking access token hook` (transaction aborted) | **NOT TESTED** | Hook deployed and registered; syntax/runtime error injection |
 | **SESSION-01**| Session & Consumer | Password Session Creation | Row created in `auth.sessions` with user ID | **NOT TESTED** | Successful password login |
 | **SESSION-02**| Session & Consumer | Server-Side Password Reset | All active sessions removed/revoked from `auth.sessions` | **NOT TESTED** | Admin API `admin.updateUserById` call |
 | **SESSION-03**| Session & Consumer | `GET/PUT /auth/v1/user` with Revoked Token | `403 Forbidden (session_not_found)` | **NOT TESTED** | Session revoked via Admin API |
@@ -242,46 +242,58 @@ Executed test commands:
 node --test experiments/task06i/*.test.mjs
 ```
 
-**Results (39 passed, 0 failed):**
-- 24 Hook Contract tests (Fixtures 1–10, mixed AMR with `email/signup`, `sso/saml`, `email/change`, and unknown methods rejected; non-object elements rejected; missing/blank method rejected; server-owned `amr_authenticated` claim added regardless of `user_metadata` presence).
+**Results (44 passed, 0 failed):**
+- 29 Hook Contract tests (Fixtures 1–10; mixed AMR with `email/signup`, `sso/saml`, `email/change`, and unknown methods rejected; non-object elements rejected; missing/blank method rejected; server-owned `amr_authenticated` claim added regardless of `user_metadata` presence; Send Email Hook native recovery, signup, and magiclink email suppression verified fail-closed with SQLSTATE 42501; malformed/missing email payload rejected).
 - 15 Preflight Evaluator tests (18 requirements validated; empty, duplicate, missing, or unknown IDs rejected; `VERIFIED FAIL` and `BLOCKED` surface as blocking verdicts; `NOT TESTED` prevents completion; quota and existing project target strategies evaluated; production Auth unconditionally `NO-GO`).
 
-### CI and Full Repository Regression Verification
-- Integrated CI script in `package.json`: `"test:task06i": "node --test experiments/task06i/*.test.mjs"`.
-- Integrated CI workflow step in `.github/workflows/phase1-shell.yml` triggered on `experiments/task06i/**`.
-- Full verification suite: `npm run verify` (tokens check, typecheck, lint, shell tests, task06i tests) → **Clean exit code 0**.
+### CI Status & Commit Attribution Guard Boundary
+- **Automated CI Integration Status:** **OPEN BLOCKER (BLK-05)**.
+- While offline tests run deterministically via `node --test experiments/task06i/*.test.mjs` (44/44 PASS) and shell contract tests pass (`npm test`, 22/22 PASS), automated execution inside GitHub Actions PR checks requires modifying or creating workflow files under `.github/workflows/` (e.g. `.github/workflows/security-experiments.yml`).
+- In this repository, `.github/workflows/*` is an explicitly guarded path under `scripts/check_guard_integrity.sh`. Any pull request modifying `.github/workflows/*` is automatically blocked by the App-owned `Commit attribution guard` (Run exit code 1) unless the repository owner sets the trusted environment variable `ATTRIBUTION_GUARD_CHANGE_APPROVED_PR_HEAD="35:<HEAD_SHA>"`.
+- Furthermore, modifying `package.json` to trigger existing workflows is inappropriate because `phase1-shell.yml` executes `npm run expo:check` (`expo install --check`), which fails due to upstream npm releases for Expo SDK 58 (`expo@~58.0.26`, `expo-router@~58.0.32`). Updating mobile dependencies is outside the authorized scope of Task 06I-B1 preflight.
+- Therefore, to preserve branch protections and prevent false-pass reporting, `.github/workflows/*` and `package.json` remain untouched on this branch, and automated CI integration is formally tracked as an open blocker awaiting owner-authorized workflow update.
 - Historical Task 06H offline test suite: `node --test experiments/task06h/*.test.mjs` → **115 passed, 0 failed (100% pass)**.
 
 ---
 
 ## 7. Proposed Hosted Configuration & Owner $0 Cost Execution Plan
 
-The repository owner has explicitly confirmed the project and cost policy:
+The repository owner has explicitly confirmed the project, cost, and safety policy:
 1. **Zero Cost Mandate:** Work strictly within Free tier ($0 cost). Pro upgrade ($25/mo) is explicitly rejected.
-2. **`Tio-world` (`oykupyiitspujzpwwvuj`) Preservation:** Must NOT be paused, deleted, or modified.
-3. **Hosted Testing Target:** If hosted proof is authorized in the future, the existing project (`bsfwzvgynwriswapxpsp`) would be the test target; prior to final production cutover, it can be deleted and regenerated cleanly.
-4. **Current Status:** For Task 06I-B1-R1, **zero hosted mutation is authorized**.
+2. **Permanent Immunity for `Tio-world` (`oykupyiitspujzpwwvuj`):** Must **NEVER** be paused, deleted, or modified under any circumstance, regardless of future prompt instructions.
+3. **Designated Hosted Testing Target:** When hosted feasibility testing is authorized by the owner in the future, the existing project (`bsfwzvgynwriswapxpsp` [Tio-tnyx]) is the designated testbed. Prior to final production cutover, it can be deleted and regenerated cleanly at $0 cost.
+4. **Current Preflight Mandate:** For Task 06I-B1, **zero hosted mutation is authorized**. Both `bsfwzvgynwriswapxpsp` and `oykupyiitspujzpwwvuj` remain strictly **READ-ONLY**.
 
 ### Target Configuration Parameters (When Authorized)
 - **Target Organization:** `llmbrmxhyirtoqndazpg` ("Tio-tnyx")
+- **Target Project:** `bsfwzvgynwriswapxpsp`
 - **Target Region:** `ap-south-1`
 - **Cost:** $0.00 (Free tier)
 
 ### Exact Management API Configuration PATCH
-Endpoint: `PATCH https://api.supabase.com/v1/projects/{ref}/config/auth`
-Payload:
+To properly activate both route disablements and managed Auth Hooks, the following Management API PATCH must be executed against `https://api.supabase.com/v1/projects/{ref}/config/auth`:
+
 ```json
 {
   "external_email_magic_link_disabled": true,
   "disable_signup": true,
-  "jwt_exp": 300
+  "jwt_exp": 300,
+  "hook_custom_access_token_enabled": true,
+  "hook_custom_access_token_uri": "pg-functions://postgres/private_auth/custom_access_token_hook",
+  "hook_send_email_enabled": true,
+  "hook_send_email_uri": "pg-functions://postgres/private_auth/send_email_hook"
 }
 ```
 
-### Hook Schema Migration SQL
+*Dashboard Alternative:*
+- **Custom Access Token Hook:** Authentication → Hooks → "Customize Access Token (JWT) Hook" → Enabled → Type: Postgres function → Schema: `private_auth`, Function: `custom_access_token_hook`.
+- **Send Email Hook:** Authentication → Hooks → "Send Email Hook" → Enabled → Type: Postgres function → Schema: `private_auth`, Function: `send_email_hook`.
+
+### Complete Hook Schema Migration SQL
 ```sql
 CREATE SCHEMA IF NOT EXISTS private_auth;
 
+-- 1. Custom Access Token Hook
 CREATE OR REPLACE FUNCTION private_auth.custom_access_token_hook(event jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -346,11 +358,66 @@ BEGIN
 END;
 $$;
 
+-- 2. Send Email Hook (Strict Native Email Suppression)
+CREATE OR REPLACE FUNCTION private_auth.send_email_hook(event jsonb)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+DECLARE
+  v_action_type text;
+BEGIN
+  IF event IS NULL OR jsonb_typeof(event) <> 'object' THEN
+    RAISE EXCEPTION 'send_email_hook: invalid event payload'
+      USING ERRCODE = '42501';
+  END IF;
+
+  v_action_type := event->'email_data'->>'email_action_type';
+  IF v_action_type IS NULL THEN
+    v_action_type := event->>'action_type';
+  END IF;
+
+  -- Prohibit native recovery, signup, magiclink, and invite email dispatch
+  IF v_action_type IN ('recovery', 'signup', 'magiclink', 'invite') THEN
+    RAISE EXCEPTION 'send_email_hook: native % email dispatch suppressed by security policy', v_action_type
+      USING ERRCODE = '42501';
+  END IF;
+
+  -- Return empty object for allowed dispatch (if any future custom action permitted)
+  RETURN '{}'::jsonb;
+END;
+$$;
+
+-- 3. Least-Privilege Role Grants & Revocations
 GRANT USAGE ON SCHEMA private_auth TO supabase_auth_admin;
 GRANT EXECUTE ON FUNCTION private_auth.custom_access_token_hook(jsonb) TO supabase_auth_admin;
+GRANT EXECUTE ON FUNCTION private_auth.send_email_hook(jsonb) TO supabase_auth_admin;
+REVOKE ALL ON SCHEMA private_auth FROM public, anon, authenticated;
 REVOKE ALL ON FUNCTION private_auth.custom_access_token_hook(jsonb) FROM public, anon, authenticated;
+REVOKE ALL ON FUNCTION private_auth.send_email_hook(jsonb) FROM public, anon, authenticated;
 -- Note: SQL runtime behavior on live database is classified as NOT TESTED on live database; offline JS contracts verify specification.
 ```
+
+### Pre-Execution Active Verification Protocol
+Before executing any native bypass tests (`BYPASS-01` through `BYPASS-05`), the tester must execute the following active verification:
+1. **Config Read-Back:** Query Management API `GET /v1/projects/{ref}/config/auth` and assert:
+   - `hook_custom_access_token_enabled === true`
+   - `hook_custom_access_token_uri === "pg-functions://postgres/private_auth/custom_access_token_hook"`
+   - `hook_send_email_enabled === true`
+   - `hook_send_email_uri === "pg-functions://postgres/private_auth/send_email_hook"`
+2. **Permission Check:** Verify that role `supabase_auth_admin` can execute both functions and that `public` / `anon` execution is revoked.
+3. **Fail-Closed Gate:** If either hook is missing, disabled (`false`), unreachable, or unhealthy, the environment is immediately marked **UNSAFE / BLOCKED**, halting all further test execution.
+
+### Hook Failure and Fallback Behavior
+- **Custom Access Token Hook Failure:**
+  - If the hook function throws an exception (`RAISE EXCEPTION ... USING ERRCODE = '42501'`), Supabase GoTrue aborts JWT issuance immediately and returns HTTP 500 (`Error invoking access token hook`). ZERO tokens are issued.
+  - If the hook times out (Supabase default timeout is 2 seconds for Postgres functions), GoTrue aborts and returns HTTP 500. ZERO tokens are issued.
+  - If the hook returns malformed JSON or lacks required structure, GoTrue aborts. Fail-closed is absolute.
+- **Send Email Hook Failure & Fallback:**
+  - If the hook throws an exception, GoTrue aborts mail dispatch. ZERO emails are delivered to SMTP or user.
+  - If the hook absorbs/suppresses delivery (returning `{}` without external dispatch), GoTrue logs completion while zero emails or recovery tokens reach the user.
+  - Under either exception or suppression, no usable recovery token or magic link is ever delivered via native endpoints.
 
 ### Deterministic Test Identities
 - `synthetic-admin-test-1@example.invalid` (RFC 2606 non-routable domain)
@@ -365,23 +432,24 @@ The following items are explicit blockers that halt execution before any hosted 
 
 | Blocker ID | Description | Impact | Current Status & Required Action |
 |---|---|---|---|
-| **BLK-01** (Account Quota & Cost) | Free tier active quota exhausted (2 of 2 active projects). Owner strictly mandates $0 cost and preserves `Tio-world`. | Cannot provision a 3rd project. | Owner resolved policy: zero spending; use existing project lifecycle if hosted testing is approved in future; `Tio-world` off-limits. |
-| **BLK-02** (Target Safety & Production Boundary) | Explicit owner approval is required before any hosted project modification or testing. Production project `bsfwzvgynwriswapxpsp` and `Tio-world` remain strictly READ-ONLY. | Prevents accidental configuration mutations or production destruction. | Bounded owner authorization required before any future hosted execution. Deleting or regenerating production project is NOT approved. If no safe isolated hosted target exists, hosted testing is BLOCKED (`NO_SAFE_HOSTED_TARGET`). |
+| **BLK-01** (Account Quota & Cost) | Free tier active quota exhausted (2 of 2 active projects). Owner strictly mandates $0 cost and permanent immunity for `Tio-world`. | Cannot provision a 3rd project. | Owner resolved policy: zero spending; use existing project lifecycle (`bsfwzvgynwriswapxpsp`) if hosted testing is approved in future; `Tio-world` has permanent immunity. |
+| **BLK-02** (Target Safety & Production Boundary) | Explicit owner approval is required before any hosted project modification or testing. Production project `bsfwzvgynwriswapxpsp` and `Tio-world` remain strictly READ-ONLY. | Prevents accidental configuration mutations or production destruction. | Bounded owner authorization required before any future hosted execution. Deleting or regenerating production project is NOT approved at this stage. If no safe isolated hosted target exists, hosted testing is BLOCKED (`NO_SAFE_HOSTED_TARGET`). |
 | **BLK-03** (Hosted Empirical Gap) | Management API parameter behavior, recovery email suppression, and AMR refresh behavior remain unverified on live infrastructure. | Cannot declare Option B feasible without empirical proof. | Authorize Stage 06I-B1 test execution under separate future gate. |
 | **BLK-04** (Production Auth Gate) | Pinned GoTrue security vulnerabilities (AUTH-12, AUTH-17, AUTH-22) remain open in native runtime. | Production Auth cannot be safely enabled. | Production Auth remains strictly **NO-GO**. |
+| **BLK-05** (Guard-Protected CI Workflow Approval) | Adding automated CI for `experiments/task06i` modifies `.github/workflows/*`, which is strictly protected by `scripts/check_guard_integrity.sh`. | Prevents unreviewed workflow modifications from running without owner authorization. | Owner review and approval procedure: Owner independently reviews workflow patch, sets trusted variable `ATTRIBUTION_GUARD_CHANGE_APPROVED_PR_HEAD="35:<HEAD_SHA>"`, and runs guard check. |
 
 ---
 
 ## 9. STOP / GO Decision & Recommendations
 
 ### Final Assessment
-- **Task 06I-B1-R2 Preflight Deliverable:** **VERIFIED PASS** (Documentation audited, evidence classifications corrected, 18-point test matrices defined, recovery endpoint bypass covered, residual JWT validity documented, and 39 offline unit tests passing).
+- **Task 06I-B1-R3 Preflight Deliverable:** **VERIFIED PASS** (Documentation audited, evidence classifications corrected, 18-point test matrices defined, hook registration and enablement contract explicitly specified, recovery endpoint bypass covered, residual JWT validity documented, and 44 offline unit tests passing).
 - **Disposable Hosted Project Execution:** **BLOCKED (STOP)** (Awaiting separate owner authorization and safe isolated target resolution).
 - **Managed Supabase Auth Feasibility:** **NOT VERIFIED ON HOSTED** (Documented capabilities indicate feasibility, but empirical hosted proof is mandatory).
 - **Production Real Auth:** **STRICT NO-GO**.
 
 ### Recommended Next Action
-1. Review this finalized Task 06I-B1-R2 preflight package and PR #35.
+1. Review this finalized Task 06I-B1-R3 preflight package and PR #35.
 2. Maintain `bsfwzvgynwriswapxpsp` and `oykupyiitspujzpwwvuj` as strictly READ-ONLY.
 3. When the owner chooses to authorize future hosted feasibility testing, execute the 18-point Stage 06I-B1 test checklist against an authorized safe target under strict cleanup guarantees.
 

@@ -48,7 +48,7 @@ export const PREFLIGHT_REQUIREMENTS = [
     documentedCapability: 'Custom Access Token Hook fails closed on method otp or recovery',
     expectedResponse: '500 Error invoking access token hook (zero token issued)',
     hostedExecutionStatus: 'NOT TESTED',
-    prerequisite: 'Custom Access Token Hook deployed to private_auth schema'
+    prerequisite: 'Custom Access Token Hook deployed to private_auth schema and registered/enabled via hook_custom_access_token_enabled'
   },
   {
     id: 'BYPASS-04',
@@ -58,7 +58,7 @@ export const PREFLIGHT_REQUIREMENTS = [
     documentedCapability: 'Custom Access Token Hook rejects non-password authentication_method',
     expectedResponse: '500 Error invoking access token hook (zero token issued)',
     hostedExecutionStatus: 'NOT TESTED',
-    prerequisite: 'Custom Access Token Hook deployed'
+    prerequisite: 'Custom Access Token Hook deployed and registered/enabled via hook_custom_access_token_enabled'
   },
   {
     id: 'BYPASS-05',
@@ -68,7 +68,7 @@ export const PREFLIGHT_REQUIREMENTS = [
     documentedCapability: 'Send Email Hook intercepts email_action_type = recovery; suppresses dispatch',
     expectedResponse: '200 OK from endpoint, but Send Email Hook suppresses email delivery; hook failure fails closed (zero usable recovery token delivered)',
     hostedExecutionStatus: 'NOT TESTED',
-    prerequisite: 'Send Email Hook deployed and configured to intercept recovery emails'
+    prerequisite: 'Send Email Hook deployed to private_auth schema and registered/enabled via hook_send_email_enabled'
   },
 
   // 2. Token Hook Tests (7 items)

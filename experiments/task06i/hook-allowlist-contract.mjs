@@ -108,6 +108,46 @@ export function evaluateCustomAccessTokenHook(event) {
 }
 
 /**
+ * Send Email Hook specification evaluator.
+ * Mirrors private_auth.send_email_hook(event jsonb) SQL function.
+ * Enforces strict email suppression for native recovery and signup endpoints.
+ *
+ * @param {object} event Provider hook input event
+ * @returns {object} Response object if allowed
+ * @throws {Error} Fail-closed exception with SQLSTATE 42501 if suppressed or malformed
+ */
+export function evaluateSendEmailHook(event) {
+  if (!event || typeof event !== 'object' || Array.isArray(event)) {
+    const err = new Error('invalid_hook_event: event must be a non-null JSON object');
+    err.code = '42501';
+    throw err;
+  }
+
+  const emailData = event.email_data || event.email;
+  if (!emailData || typeof emailData !== 'object') {
+    const err = new Error('missing_email_data: event must contain email_data object');
+    err.code = '42501';
+    throw err;
+  }
+
+  const actionType = emailData.email_action_type || event.action_type;
+  if (!actionType || typeof actionType !== 'string') {
+    const err = new Error('missing_email_action_type: email_data must specify action type');
+    err.code = '42501';
+    throw err;
+  }
+
+  // Strict suppression list: native recovery, signup, magiclink, and invite dispatch
+  if (['recovery', 'signup', 'magiclink', 'invite'].includes(actionType)) {
+    const err = new Error(`native_${actionType}_email_dispatch_suppressed_by_security_policy`);
+    err.code = '42501';
+    throw err;
+  }
+
+  return { status: 'ok' };
+}
+
+/**
  * Classifies the outcome of a provider hook evaluation against security requirements.
  */
 export function classifyHookOutcome(event) {
@@ -125,6 +165,28 @@ export function classifyHookOutcome(event) {
       error: err.message,
       sqlstate: err.code || 'UNKNOWN',
       result: 'DENIED_FAIL_CLOSED'
+    };
+  }
+}
+
+/**
+ * Classifies the outcome of a send email hook evaluation.
+ */
+export function classifySendEmailOutcome(event) {
+  try {
+    const result = evaluateSendEmailHook(event);
+    return {
+      allowed: true,
+      error: null,
+      result: 'ALLOWED',
+      status: result.status
+    };
+  } catch (err) {
+    return {
+      allowed: false,
+      error: err.message,
+      sqlstate: err.code || 'UNKNOWN',
+      result: 'SUPPRESSED_FAIL_CLOSED'
     };
   }
 }
