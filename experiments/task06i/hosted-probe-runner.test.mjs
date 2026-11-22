@@ -16,7 +16,9 @@ import {
   DEFAULT_PROBE_TIMEOUT_MS,
   TIO_SUPABASE_REAL_REF,
   TIO_SUPABASE_TEMP_REF,
-  BREVO_AUDIT_BASELINE
+  BREVO_AUDIT_BASELINE,
+  TestRunInventory,
+  createHostedDispatcher
 } from './hosted-probe-runner.mjs';
 
 const VALID_TEMP_REF = HARDCODED_TEMP_REF;
@@ -1878,4 +1880,198 @@ test('33. Task 06I-B1-H1: Hosted security preflight, Brevo audit baseline, and p
   assert.equal(dryRunResult.projectRef, HARDCODED_TEMP_REF);
   assert.equal(dryRunResult.zeroNetworkRequestsDispatched, true);
   assert.equal(dryRunResult.plan.totalProbes, 18);
+});
+
+// ---------------------------------------------------------------------------
+// Task 06I-B1-H1-R1: Security Review Remediation Tests (R1-01, R1-03, R1-04)
+// ---------------------------------------------------------------------------
+
+test('34. Task 06I-B1-H1-R1 (R1-01): LIVE dispatcher contract, boundary checks, and error handling', async () => {
+  // 1. Rejects forbidden projects
+  assert.throws(
+    () => createHostedDispatcher({ projectRef: HARDCODED_REAL_REF, anonKey: 'test-anon-key' }),
+    /CRITICAL_SECURITY_VIOLATION.*strictly rejected target/
+  );
+  assert.throws(
+    () => createHostedDispatcher({ projectRef: HARDCODED_TIO_WORLD_REF, anonKey: 'test-anon-key' }),
+    /CRITICAL_SECURITY_VIOLATION.*strictly rejected target/
+  );
+  assert.throws(
+    () => createHostedDispatcher({ projectRef: 'unknown-target-ref', anonKey: 'test-anon-key' }),
+    /CRITICAL_SECURITY_VIOLATION.*strictly rejected target/
+  );
+
+  // 2. Rejects missing or empty anonKey
+  assert.throws(
+    () => createHostedDispatcher({ projectRef: HARDCODED_TEMP_REF, anonKey: '' }),
+    /MISSING_HOSTED_CREDENTIALS.*requires non-empty anonKey/
+  );
+  assert.throws(
+    () => createHostedDispatcher({ projectRef: HARDCODED_TEMP_REF, anonKey: null }),
+    /MISSING_HOSTED_CREDENTIALS.*requires non-empty anonKey/
+  );
+
+  // 3. Dispatches HTTP requests to approved TEMP project with AbortSignal and headers
+  const dispatchedRequests = [];
+  const mockFetch = async (url, init) => {
+    dispatchedRequests.push({ url, init });
+    if (url.endsWith('/auth/v1/otp')) {
+      return {
+        status: 422,
+        json: async () => ({ error_code: 'email_provider_disabled', message: 'Email provider disabled' })
+      };
+    }
+    if (url.endsWith('/auth/v1/signup')) {
+      return {
+        status: 422,
+        json: async () => ({ error_code: 'signup_disabled', message: 'Signups disabled' })
+      };
+    }
+    if (url.endsWith('/auth/v1/token?grant_type=password')) {
+      return {
+        status: 200,
+        json: async () => ({
+          access_token: 'test.live.jwt',
+          user: { app_metadata: { amr_authenticated: true } }
+        })
+      };
+    }
+    return { status: 400, json: async () => ({ message: 'Mock bad request' }) };
+  };
+
+  const dispatcher = createHostedDispatcher({
+    projectRef: HARDCODED_TEMP_REF,
+    anonKey: 'valid-test-anon-key',
+    fetchFn: mockFetch
+  });
+
+  assert.equal(typeof dispatcher, 'function');
+
+  // Probe BYPASS-01 dispatch
+  const outcomeBypass01 = await dispatcher({ id: 'BYPASS-01', testUser: 'probe-test@proof.invalid' }, {});
+  assert.equal(outcomeBypass01.status, 422);
+  assert.equal(outcomeBypass01.route_disabled, true);
+  assert.equal(outcomeBypass01.error_code, 'email_provider_disabled');
+  assert.equal(dispatchedRequests[0].url, `https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/otp`);
+  assert.equal(dispatchedRequests[0].init.headers.apikey, 'valid-test-anon-key');
+
+  // Probe BYPASS-02 dispatch
+  const outcomeBypass02 = await dispatcher({ id: 'BYPASS-02', testUser: 'probe-test@proof.invalid' }, {});
+  assert.equal(outcomeBypass02.status, 422);
+  assert.equal(outcomeBypass02.signup_disabled, true);
+  assert.equal(outcomeBypass02.error_code, 'signup_disabled');
+  assert.equal(dispatchedRequests[1].url, `https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/signup`);
+
+  // Probe HOOK-01 dispatch
+  const outcomeHook01 = await dispatcher({ id: 'HOOK-01', testUser: 'probe-test@proof.invalid' }, {});
+  assert.equal(outcomeHook01.status, 200);
+  assert.equal(outcomeHook01.passed, true);
+  assert.equal(outcomeHook01.access_token, 'test.live.jwt');
+  assert.equal(outcomeHook01.amr_authenticated, true);
+
+  // 4. Runner in LIVE mode without mockDispatcher fails closed
+  await assert.rejects(
+    async () => {
+      await runHostedProbeRunner({
+        projectRef: HARDCODED_TEMP_REF,
+        argv: ['--live'],
+        env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+        mockDispatcher: null
+      });
+    },
+    /NO_HOSTED_DISPATCHER: live hosted execution requires a configured network dispatcher/
+  );
+});
+
+test('35. Task 06I-B1-H1-R1 (R1-03): Run-scoped identity inventory, deterministic cleanup, and residual detection', async () => {
+  const inventory = new TestRunInventory('test-run-123');
+
+  // 1. Identity registration and tracking
+  const user1 = inventory.registerUser({ id: '11111111-2222-3333-4444-555555555555', email: 'user1@proof.invalid' });
+  const user2 = inventory.registerUser({ id: '66666666-7777-8888-9999-000000000000', email: 'user2@proof.invalid' });
+
+  assert.equal(inventory.getTrackedUserIds().length, 2);
+  assert.deepEqual(inventory.getTrackedEmails(), ['user1@proof.invalid', 'user2@proof.invalid']);
+
+  // Rejects invalid customer email domain
+  assert.throws(
+    () => inventory.registerUser({ id: '33333333-4444-5555-6666-777777777777', email: 'real-user@gmail.com' }),
+    /security_violation: real customer or public domain.*prohibited/
+  );
+
+  // 2. Track table rows and storage objects
+  inventory.registerTableRow('task06i_session_probe', 'row-uuid-1');
+  inventory.registerStorageObject('task06i_probe_bucket', 'test.txt');
+
+  // 3. Successful deterministic cleanup
+  const deletedUsers = [];
+  const deletedRows = [];
+  const deletedStorage = [];
+
+  const mockAdminClient = {
+    async deleteUser(userId) {
+      deletedUsers.push(userId);
+      return { success: true };
+    },
+    async deleteTableRow(table, id) {
+      deletedRows.push({ table, id });
+      return { success: true };
+    },
+    async deleteStorageObject(bucket, path) {
+      deletedStorage.push({ bucket, path });
+      return { success: true };
+    },
+    async getUserById(userId) {
+      // Affirmative post-cleanup check: user does not exist
+      return { notFound: true };
+    }
+  };
+
+  const report = await inventory.executeCleanup({ adminClient: mockAdminClient });
+  assert.equal(report.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(report.usersDeleted, 2);
+  assert.equal(report.tableRowsDeleted, 1);
+  assert.equal(report.storageObjectsDeleted, 1);
+  assert.equal(report.residualUsers.length, 0);
+
+  assert.deepEqual(deletedUsers, ['11111111-2222-3333-4444-555555555555', '66666666-7777-8888-9999-000000000000']);
+  assert.deepEqual(deletedRows, [{ table: 'task06i_session_probe', id: 'row-uuid-1' }]);
+  assert.deepEqual(deletedStorage, [{ bucket: 'task06i_probe_bucket', path: 'test.txt' }]);
+
+  // 4. Incomplete cleanup fails closed when residual user detected
+  const residualInventory = new TestRunInventory('residual-run-456');
+  residualInventory.registerUser({ id: 'residual-uuid-99', email: 'residual@proof.invalid' });
+
+  const lingeringAdminClient = {
+    async deleteUser(userId) {
+      // Simulate failed deletion or partial DB write
+      return { success: false };
+    },
+    async getUserById(userId) {
+      // User still found in database!
+      return { id: userId, email: 'residual@proof.invalid', notFound: false };
+    }
+  };
+
+  await assert.rejects(
+    async () => {
+      await residualInventory.executeCleanup({ adminClient: lingeringAdminClient, failClosed: true });
+    },
+    /CLEANUP_INCOMPLETE: 1 synthetic user\(s\) remain in database after cleanup/
+  );
+});
+
+test('36. Task 06I-B1-H1-R1 (R1-04): Evidence classification audit distinguishes hook parity from hosted outcomes', () => {
+  const plan = planProbeExecution(HARDCODED_TEMP_REF);
+  assert.equal(plan.totalProbes, 18);
+
+  // Every probe in the plan is staged for execution; hosted verification is 0
+  for (const c of plan.plannedCases) {
+    assert.match(c.plannedAction, /Execute probe against.*on TEMP project wvdabiwbaavfggcmpizd/);
+    assert.ok(c.expectedResponse);
+  }
+
+  // Verify that Brevo audit status is distinct and unverified
+  assert.equal(BREVO_AUDIT_BASELINE.authenticatedSendingDomains, 0);
+  assert.equal(BREVO_AUDIT_BASELINE.readinessStatus, 'UNAUTHENTICATED_SENDER_DOMAIN_BLOCKED');
 });

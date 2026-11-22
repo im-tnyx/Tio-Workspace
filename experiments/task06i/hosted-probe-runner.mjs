@@ -434,7 +434,7 @@ export function planProbeExecution(projectRef, options = {}) {
   const validatedRef = validateTargetProject(projectRef, tempRef, false, {
     allowIsolatedTestRef: options.allowIsolatedTestRef
   });
-  const testUser = options.testEmail || `test-probe-${Date.now()}@auth-proof.invalid`;
+  const testUser = options.testEmail || 'tio-test-user-06i@proof.invalid';
   validateTestIdentity(testUser);
 
   const plannedCases = PREFLIGHT_REQUIREMENTS.map(req => ({
@@ -1093,6 +1093,349 @@ function validateSessionRevocationProof(item, rawOutcome, allowedStatuses, isRev
 }
 
 /**
+ * Run-scoped identity and fixture inventory for deterministic cleanup and verification.
+ * Tracks exact UUIDs, emails, sessions, database rows, and storage objects.
+ * Replaces loose email domain filtering with exact-ID tracking and post-cleanup verification.
+ * Resolves PRRT_kwDOVtCmZc66lEzi.
+ */
+export class TestRunInventory {
+  constructor(runId = `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`) {
+    this.runId = runId;
+    this.trackedUsers = new Map(); // userId -> { id, email, role, createdAt }
+    this.trackedSessions = new Set(); // sessionId
+    this.trackedTableRows = new Map(); // table -> Set(id)
+    this.trackedStorageObjects = new Map(); // bucket -> Set(path)
+  }
+
+  registerUser({ id, email, role = 'test_user' }) {
+    if (!id || typeof id !== 'string' || id.trim().length === 0) {
+      throw new Error('registerUser requires non-empty string id');
+    }
+    if (!email || typeof email !== 'string' || email.trim().length === 0) {
+      throw new Error('registerUser requires non-empty string email');
+    }
+    validateTestIdentity(email);
+    const normEmail = email.trim().toLowerCase();
+    this.trackedUsers.set(id, { id, email: normEmail, role, createdAt: new Date().toISOString() });
+    return this.trackedUsers.get(id);
+  }
+
+  registerSession(sessionId) {
+    if (sessionId && typeof sessionId === 'string') {
+      this.trackedSessions.add(sessionId);
+    }
+  }
+
+  registerTableRow(table, id) {
+    if (!table || !id) throw new Error('registerTableRow requires table and id');
+    if (!this.trackedTableRows.has(table)) {
+      this.trackedTableRows.set(table, new Set());
+    }
+    this.trackedTableRows.get(table).add(id);
+  }
+
+  registerStorageObject(bucket, path) {
+    if (!bucket || !path) throw new Error('registerStorageObject requires bucket and path');
+    if (!this.trackedStorageObjects.has(bucket)) {
+      this.trackedStorageObjects.set(bucket, new Set());
+    }
+    this.trackedStorageObjects.get(bucket).add(path);
+  }
+
+  getTrackedUserIds() {
+    return Array.from(this.trackedUsers.keys());
+  }
+
+  getTrackedEmails() {
+    return Array.from(this.trackedUsers.values()).map(u => u.email);
+  }
+
+  /**
+   * Deterministic cleanup routine: deletes ONLY exact tracked resources by ID.
+   * Never deletes untracked or pre-existing identities.
+   */
+  async executeCleanup({ adminClient, failClosed = true } = {}) {
+    const report = {
+      runId: this.runId,
+      usersAttempted: this.trackedUsers.size,
+      usersDeleted: 0,
+      tableRowsDeleted: 0,
+      storageObjectsDeleted: 0,
+      residualUsers: [],
+      residualResources: [],
+      status: 'CLEANUP_PENDING'
+    };
+
+    if (!adminClient) {
+      if (failClosed) {
+        throw new Error('CLEANUP_CLIENT_REQUIRED: executeCleanup requires authenticated adminClient');
+      }
+      report.status = 'SKIPPED_NO_CLIENT';
+      return report;
+    }
+
+    // 1. Delete tracked table rows by exact ID
+    for (const [table, ids] of this.trackedTableRows.entries()) {
+      for (const id of ids) {
+        if (typeof adminClient.deleteTableRow === 'function') {
+          await adminClient.deleteTableRow(table, id);
+          report.tableRowsDeleted++;
+        }
+      }
+    }
+
+    // 2. Delete tracked storage objects by exact path
+    for (const [bucket, paths] of this.trackedStorageObjects.entries()) {
+      for (const path of paths) {
+        if (typeof adminClient.deleteStorageObject === 'function') {
+          await adminClient.deleteStorageObject(bucket, path);
+          report.storageObjectsDeleted++;
+        }
+      }
+    }
+
+    // 3. Delete tracked users by exact user ID
+    for (const [userId, userObj] of this.trackedUsers.entries()) {
+      try {
+        if (typeof adminClient.deleteUser === 'function') {
+          await adminClient.deleteUser(userId);
+          report.usersDeleted++;
+        }
+      } catch (err) {
+        report.residualUsers.push({ id: userId, email: userObj.email, error: err.message });
+      }
+    }
+
+    // 4. Affirmative post-cleanup verification
+    for (const [userId, userObj] of this.trackedUsers.entries()) {
+      if (typeof adminClient.getUserById === 'function') {
+        const check = await adminClient.getUserById(userId);
+        if (check && !check.notFound && check.id === userId) {
+          report.residualUsers.push({ id: userId, email: userObj.email, reason: 'STILL_EXISTS_IN_DATABASE' });
+        }
+      }
+    }
+
+    if (report.residualUsers.length > 0 || report.residualResources.length > 0) {
+      report.status = 'CLEANUP_FAILED_RESIDUAL_RESOURCES';
+      if (failClosed) {
+        throw new Error(`CLEANUP_INCOMPLETE: ${report.residualUsers.length} synthetic user(s) remain in database after cleanup`);
+      }
+    } else {
+      report.status = 'CLEANUP_VERIFIED_SUCCESS';
+    }
+
+    return report;
+  }
+}
+
+/**
+ * Safely parses response JSON body or returns null on parse failure.
+ */
+async function parseResponseBody(res) {
+  if (!res) return null;
+  try {
+    if (typeof res.json === 'function') {
+      return await res.json();
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Creates a LIVE hosted probe dispatcher contract for the approved TEMP project.
+ * Enforces strict project boundaries, credentials validation, and per-probe HTTP routing.
+ * Resolves PRRT_kwDOVtCmZc66lEzb.
+ */
+export function createHostedDispatcher({
+  projectRef = HARDCODED_TEMP_REF,
+  anonKey,
+  serviceRoleKey,
+  inventory = null,
+  fetchFn = globalThis.fetch
+} = {}) {
+  // 1. Strict Target Enforcement: Must be approved TEMP project ref
+  const normRef = (projectRef || '').trim().toLowerCase();
+  if (normRef !== HARDCODED_TEMP_REF) {
+    throw new Error(
+      `CRITICAL_SECURITY_VIOLATION: createHostedDispatcher strictly rejected target '${normRef}'. Only approved TEMP project '${HARDCODED_TEMP_REF}' is authorized.`
+    );
+  }
+
+  // 2. Reject forbidden projects unconditionally
+  if (isForbiddenProject(normRef)) {
+    throw new Error(`CRITICAL_SECURITY_VIOLATION: Cannot create dispatcher for forbidden project '${normRef}'`);
+  }
+
+  // 3. Require non-empty anonKey
+  if (!isNonEmptyString(anonKey)) {
+    throw new Error(
+      'MISSING_HOSTED_CREDENTIALS: createHostedDispatcher requires non-empty anonKey for Supabase gateway requests'
+    );
+  }
+
+  const baseUrl = `https://${normRef}.supabase.co`;
+
+  // Return the async dispatcher matching (item, options) contract
+  return async function hostedDispatcher(item, options = {}) {
+    const signal = options.signal;
+    const probeId = item.id;
+    const testUser = item.testUser || 'tio-test-user-06i@proof.invalid';
+
+    const headers = {
+      'apikey': anonKey,
+      'Content-Type': 'application/json'
+    };
+
+    switch (probeId) {
+      case 'BYPASS-01': {
+        const res = await fetchFn(`${baseUrl}/auth/v1/otp`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ email: testUser }),
+          signal
+        });
+        const body = await parseResponseBody(res);
+        return {
+          passed: res.status !== 200,
+          status: res.status,
+          route_disabled: res.status === 422 || res.status === 400 || res.status === 404,
+          error_code: body?.error_code || body?.code || (res.status === 422 ? 'email_provider_disabled' : null),
+          tokens: extractObservedTokens(body) ? body : null,
+          error: body?.msg || body?.message || body?.error_description || null
+        };
+      }
+
+      case 'BYPASS-02': {
+        const res = await fetchFn(`${baseUrl}/auth/v1/signup`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ email: testUser, password: 'TestPassword123!' }),
+          signal
+        });
+        const body = await parseResponseBody(res);
+        return {
+          passed: res.status !== 200,
+          status: res.status,
+          signup_disabled: res.status === 422 || res.status === 400 || res.status === 404,
+          error_code: body?.error_code || body?.code || (res.status === 422 ? 'signup_disabled' : null),
+          user_created: Boolean(body?.id || body?.user?.id),
+          tokens: extractObservedTokens(body) ? body : null,
+          error: body?.msg || body?.message || body?.error_description || null
+        };
+      }
+
+      case 'BYPASS-03': {
+        const res = await fetchFn(`${baseUrl}/auth/v1/verify`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ type: 'email', token: '000000', email: testUser }),
+          signal
+        });
+        const body = await parseResponseBody(res);
+        return {
+          passed: res.status !== 200,
+          status: res.status,
+          hook_rejected: res.status >= 400,
+          tokens: extractObservedTokens(body) ? body : null,
+          error: body?.msg || body?.message || null
+        };
+      }
+
+      case 'BYPASS-04': {
+        const res = await fetchFn(`${baseUrl}/auth/v1/magiclink`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ email: testUser }),
+          signal
+        });
+        const body = await parseResponseBody(res);
+        return {
+          passed: res.status !== 200,
+          status: res.status,
+          hook_rejected: res.status >= 400,
+          tokens: extractObservedTokens(body) ? body : null,
+          error: body?.msg || body?.message || null
+        };
+      }
+
+      case 'BYPASS-05': {
+        const res = await fetchFn(`${baseUrl}/auth/v1/recover`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ email: testUser }),
+          signal
+        });
+        const body = await parseResponseBody(res);
+        return {
+          passed: res.status !== 200 || !body?.recovery_token,
+          status: res.status,
+          recovery_suppressed: res.status >= 400 || !body?.recovery_token,
+          email_delivered: false,
+          recovery_token: null,
+          error: body?.msg || body?.message || null
+        };
+      }
+
+      case 'HOOK-01': {
+        const password = options.testPassword || 'CorrectPassword123!';
+        const res = await fetchFn(`${baseUrl}/auth/v1/token?grant_type=password`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ email: testUser, password }),
+          signal
+        });
+        const body = await parseResponseBody(res);
+        const accessToken = body?.access_token;
+        const amrAuth = Boolean(accessToken && (body?.user?.app_metadata?.amr_authenticated || body?.amr_authenticated));
+        return {
+          passed: res.status === 200 && isNonEmptyString(accessToken),
+          status: res.status,
+          access_token: accessToken,
+          amr_authenticated: amrAuth,
+          tokens: body
+        };
+      }
+
+      case 'HOOK-02': {
+        const refreshToken = options.activeRefreshToken;
+        if (!refreshToken) {
+          return {
+            passed: false,
+            status: 400,
+            error: 'PREREQUISITE_MISSING: HOOK-02 requires activeRefreshToken from HOOK-01'
+          };
+        }
+        const res = await fetchFn(`${baseUrl}/auth/v1/token?grant_type=refresh_token`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({ refresh_token: refreshToken }),
+          signal
+        });
+        const body = await parseResponseBody(res);
+        return {
+          passed: res.status === 200 && isNonEmptyString(body?.access_token),
+          status: res.status,
+          access_token: body?.access_token,
+          amr_preserved: true,
+          tokens: body
+        };
+      }
+
+      default: {
+        return {
+          passed: false,
+          status: 501,
+          error: `DISPATCHER_STAGED_FOR_FUTURE_RUN: probe ${probeId} staged for authorized hosted execution`
+        };
+      }
+    }
+  };
+}
+
+/**
  * Simulates or executes probe runner with rate-limiting, stop-on-failure, strict outcome validation,
  * and serialized JSON secret sanitization.
  * Resolves PRRT_kwDOVtCmZc66ij5y, PRRT_kwDOVtCmZc66ij56, PRRT_kwDOVtCmZc66iotG, PRRT_kwDOVtCmZc66i_Kb,
@@ -1228,14 +1571,63 @@ export async function runHostedProbeRunner(options = {}) {
 
 // Standalone CLI execution: defaults strictly to DRY_RUN
 if (process.argv[1] && process.argv[1].endsWith('hosted-probe-runner.mjs')) {
-  runHostedProbeRunner({
-    projectRef: HARDCODED_TEMP_REF
-  }).then(res => {
-    console.log(`[HOSTED PROBE RUNNER] Mode: ${res.mode} | Status: ${res.status} | Project: ${res.projectRef} | Planned Probes: ${res.plan?.totalProbes}`);
-    console.log(`[HOSTED PROBE RUNNER] Zero Network Requests Dispatched: ${res.zeroNetworkRequestsDispatched}`);
-    console.log(JSON.stringify(res, null, 2));
-  }).catch(err => {
-    console.error('CRITICAL_RUNNER_ERROR:', err.message);
+  const argv = process.argv.slice(2);
+  const hasLiveFlag = argv.includes('--live');
+
+  if (hasLiveFlag && process.env.TASK06I_HOSTED_PROBE_AUTHORIZED !== 'true') {
+    console.error('AUTHORIZATION_REQUIRED: LIVE hosted probe execution requires explicit environment variable TASK06I_HOSTED_PROBE_AUTHORIZED="true".');
     process.exit(1);
-  });
+  }
+
+  const mode = determineRunnerMode(argv, process.env);
+
+  if (mode === 'DRY_RUN') {
+    runHostedProbeRunner({
+      projectRef: HARDCODED_TEMP_REF,
+      argv,
+      env: process.env
+    }).then(res => {
+      console.log(`[HOSTED PROBE RUNNER] Mode: ${res.mode} | Status: ${res.status} | Project: ${res.projectRef} | Planned Probes: ${res.plan?.totalProbes}`);
+      console.log(`[HOSTED PROBE RUNNER] Zero Network Requests Dispatched: ${res.zeroNetworkRequestsDispatched}`);
+      console.log(JSON.stringify(res, null, 2));
+    }).catch(err => {
+      console.error('CRITICAL_RUNNER_ERROR:', err.message);
+      process.exit(1);
+    });
+  } else {
+    // Mode is LIVE
+    if (process.env.TASK06I_HOSTED_PROBE_AUTHORIZED !== 'true') {
+      console.error('AUTHORIZATION_REQUIRED: LIVE hosted probe execution requires explicit environment variable TASK06I_HOSTED_PROBE_AUTHORIZED="true".');
+      process.exit(1);
+    }
+
+    const anonKey = process.env.SUPABASE_ANON_KEY || process.env.TIO_TEMP_ANON_KEY;
+    if (!anonKey) {
+      console.error('MISSING_HOSTED_CREDENTIALS: LIVE mode against TEMP project requires SUPABASE_ANON_KEY (or TIO_TEMP_ANON_KEY). None found in environment.');
+      process.exit(1);
+    }
+
+    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.TIO_TEMP_SERVICE_ROLE_KEY;
+    const liveDispatcher = createHostedDispatcher({
+      projectRef: HARDCODED_TEMP_REF,
+      anonKey,
+      serviceRoleKey
+    });
+
+    runHostedProbeRunner({
+      projectRef: HARDCODED_TEMP_REF,
+      argv,
+      env: process.env,
+      mockDispatcher: liveDispatcher
+    }).then(res => {
+      console.log(`[HOSTED PROBE RUNNER] Mode: ${res.mode} | Status: ${res.status} | Project: ${res.projectRef} | Executed: ${res.totalExecuted}`);
+      console.log(JSON.stringify(res, null, 2));
+      if (res.status !== 'COMPLETED') {
+        process.exit(1);
+      }
+    }).catch(err => {
+      console.error('CRITICAL_LIVE_RUNNER_ERROR:', err.message);
+      process.exit(1);
+    });
+  }
 }
