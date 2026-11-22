@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import fs from 'node:fs';
 import {
   validateTargetProject,
   validateTestIdentity,
@@ -18,8 +19,29 @@ import {
   TIO_SUPABASE_TEMP_REF,
   BREVO_AUDIT_BASELINE,
   TestRunInventory,
-  createHostedDispatcher
+  createHostedDispatcher,
+  parseAndValidateJwt,
+  DEFAULT_TEST_PASSWORD,
+  getRunTestPassword,
+  createRunContext
 } from './hosted-probe-runner.mjs';
+
+function createMockJwt(claims = {}) {
+  const header = { alg: 'HS256', typ: 'JWT' };
+  const payload = {
+    sub: 'user-uuid-1234',
+    iss: `https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1`,
+    aud: 'authenticated',
+    exp: Math.floor(Date.now() / 1000) + 300,
+    amr_authenticated: 'true',
+    amr: [{ method: 'password', timestamp: Math.floor(Date.now() / 1000) }],
+    ...claims
+  };
+  const b64Header = Buffer.from(JSON.stringify(header)).toString('base64url');
+  const b64Payload = Buffer.from(JSON.stringify(payload)).toString('base64url');
+  const signature = Buffer.from('mock_test_signature').toString('base64url');
+  return `${b64Header}.${b64Payload}.${signature}`;
+}
 
 const VALID_TEMP_REF = HARDCODED_TEMP_REF;
 
@@ -2074,4 +2096,253 @@ test('36. Task 06I-B1-H1-R1 (R1-04): Evidence classification audit distinguishes
   // Verify that Brevo audit status is distinct and unverified
   assert.equal(BREVO_AUDIT_BASELINE.authenticatedSendingDomains, 0);
   assert.equal(BREVO_AUDIT_BASELINE.readinessStatus, 'UNAUTHENTICATED_SENDER_DOMAIN_BLOCKED');
+});
+
+test('37. Task 06I-B1-H1-R2 (R2-01): False-positive bypass probe prevention', async () => {
+  // 1. Generic 400 on OTP rejected, route_disabled must be false
+  const fetchOtp400 = async () => ({ status: 400, json: async () => ({ message: 'Bad request' }) });
+  const dispOtp400 = createHostedDispatcher({ anonKey: 'valid-anon-key', fetchFn: fetchOtp400 });
+  const outOtp400 = await dispOtp400({ id: 'BYPASS-01', testUser: 'test@proof.invalid' });
+  assert.equal(outOtp400.passed, false);
+  assert.equal(outOtp400.route_disabled, false);
+
+  // 2. 422 on OTP with email_provider_disabled passes
+  const fetchOtpDisabled = async () => ({ status: 422, json: async () => ({ error_code: 'email_provider_disabled', message: 'Email provider is disabled' }) });
+  const dispOtpDisabled = createHostedDispatcher({ anonKey: 'valid-anon-key', fetchFn: fetchOtpDisabled });
+  const outOtpDisabled = await dispOtpDisabled({ id: 'BYPASS-01', testUser: 'test@proof.invalid' });
+  assert.equal(outOtpDisabled.passed, true);
+  assert.equal(outOtpDisabled.route_disabled, true);
+
+  // 3. 200 on /signup fails closed
+  const fetchSignup200 = async () => ({ status: 200, json: async () => ({ id: 'usr-123' }) });
+  const dispSignup200 = createHostedDispatcher({ anonKey: 'valid-anon-key', fetchFn: fetchSignup200 });
+  const outSignup200 = await dispSignup200({ id: 'BYPASS-02', testUser: 'test@proof.invalid' });
+  assert.equal(outSignup200.passed, false);
+
+  // 4. Generic 400 password too short on /signup does NOT fabricate signup_disabled
+  const fetchSignup400 = async () => ({ status: 400, json: async () => ({ message: 'Password is too short' }) });
+  const dispSignup400 = createHostedDispatcher({ anonKey: 'valid-anon-key', fetchFn: fetchSignup400 });
+  const outSignup400 = await dispSignup400({ id: 'BYPASS-02', testUser: 'test@proof.invalid' });
+  assert.equal(outSignup400.passed, false);
+  assert.equal(outSignup400.signup_disabled, false);
+
+  // 5. 422 on /signup with signup_disabled passes
+  const fetchSignupDisabled = async () => ({ status: 422, json: async () => ({ error_code: 'signup_disabled', message: 'Signups not allowed' }) });
+  const dispSignupDisabled = createHostedDispatcher({ anonKey: 'valid-anon-key', fetchFn: fetchSignupDisabled });
+  const outSignupDisabled = await dispSignupDisabled({ id: 'BYPASS-02', testUser: 'test@proof.invalid' });
+  assert.equal(outSignupDisabled.passed, true);
+  assert.equal(outSignupDisabled.signup_disabled, true);
+
+  // 6. 200 on /recover fails (cannot prove email suppression due to anti-enumeration)
+  const fetchRecover200 = async () => ({ status: 200, json: async () => ({}) });
+  const dispRecover200 = createHostedDispatcher({ anonKey: 'valid-anon-key', fetchFn: fetchRecover200 });
+  const outRecover200 = await dispRecover200({ id: 'BYPASS-05', testUser: 'test@proof.invalid' });
+  assert.equal(outRecover200.passed, false);
+  assert.equal(outRecover200.recovery_suppressed, false);
+
+  // 7. 500 on /recover with 42501 / send_email_hook passes
+  const fetchRecover500 = async () => ({ status: 500, json: async () => ({ message: 'send_email_hook: native recovery email dispatch suppressed (SQLSTATE 42501)' }) });
+  const dispRecover500 = createHostedDispatcher({ anonKey: 'valid-anon-key', fetchFn: fetchRecover500 });
+  const outRecover500 = await dispRecover500({ id: 'BYPASS-05', testUser: 'test@proof.invalid' });
+  assert.equal(outRecover500.passed, true);
+  assert.equal(outRecover500.recovery_suppressed, true);
+});
+
+test('38. Task 06I-B1-H1-R2 (R2-02): JWT claim extraction & AMR verification', () => {
+  // 1. Valid JWT with server-owned claims.amr_authenticated passes
+  const validJwt = createMockJwt();
+  const validCheck = parseAndValidateJwt(validJwt);
+  assert.equal(validCheck.valid, true);
+
+  // 2. JWT missing claims.amr_authenticated fails
+  const missingAmrAuthJwt = createMockJwt({ amr_authenticated: undefined });
+  const missingAmrAuthCheck = parseAndValidateJwt(missingAmrAuthJwt);
+  assert.equal(missingAmrAuthCheck.valid, false);
+  assert.match(missingAmrAuthCheck.reason, /MISSING_AMR_AUTHENTICATED/);
+
+  // 3. JWT with prohibited AMR method (otp) fails
+  const prohibitedAmrJwt = createMockJwt({ amr: [{ method: 'otp' }] });
+  const prohibitedAmrCheck = parseAndValidateJwt(prohibitedAmrJwt);
+  assert.equal(prohibitedAmrCheck.valid, false);
+  assert.match(prohibitedAmrCheck.reason, /PROHIBITED_AMR_METHOD/);
+
+  // 4. Token validation rejects client-editable user_metadata or app_metadata spoofing
+  const itemHook01 = { id: 'HOOK-01', category: 'Token Hook', target: 'Password Sign-In' };
+  const spoofOutcome = validateProbeOutcome(itemHook01, {
+    passed: true,
+    status: 200,
+    access_token: missingAmrAuthJwt,
+    amr_source: 'user_metadata',
+    amr_authenticated: true
+  });
+  assert.equal(spoofOutcome.passed, false);
+  assert.match(spoofOutcome.reason, /JWT_CLAIM_VIOLATION|SECURITY_INVARIANT_VIOLATION/);
+
+  // 5. parseAndValidateJwt rejects empty, non-3-part, and expired tokens
+  assert.equal(parseAndValidateJwt('').valid, false);
+  assert.equal(parseAndValidateJwt('not.a.valid.jwt.token').valid, false);
+  const expiredJwt = createMockJwt({ exp: Math.floor(Date.now() / 1000) - 300 });
+  assert.match(parseAndValidateJwt(expiredJwt).reason, /TOKEN_EXPIRED/);
+});
+
+test('39. Task 06I-B1-H1-R2 (R2-03): Run-scoped refresh token propagation & AMR preservation in HOOK-02', async () => {
+  const runCtx = createRunContext();
+  const mockFetchRefresh = async (url, init) => {
+    if (url.includes('grant_type=password')) {
+      return {
+        status: 200,
+        json: async () => ({
+          access_token: createMockJwt(),
+          refresh_token: 'fresh-refresh-token-xyz',
+          user: { id: 'usr-1' },
+          session_id: 'sess-1'
+        })
+      };
+    }
+    if (url.includes('grant_type=refresh_token')) {
+      const body = JSON.parse(init.body);
+      if (body.refresh_token === 'fresh-refresh-token-xyz') {
+        return {
+          status: 200,
+          json: async () => ({
+            access_token: createMockJwt({ exp: Math.floor(Date.now() / 1000) + 600 }),
+            refresh_token: 'refreshed-token-2'
+          })
+        };
+      }
+      return { status: 400, json: async () => ({ message: 'Invalid refresh token' }) };
+    }
+    return { status: 400, json: async () => ({}) };
+  };
+
+  const dispWithCtx = createHostedDispatcher({ anonKey: 'valid-anon-key', runContext: runCtx, fetchFn: mockFetchRefresh });
+
+  // 1. HOOK-02 without activeRefreshToken returns 400 PREREQUISITE_MISSING
+  const h2Missing = await dispWithCtx({ id: 'HOOK-02' });
+  assert.equal(h2Missing.passed, false);
+  assert.equal(h2Missing.status, 400);
+  assert.match(h2Missing.error, /PREREQUISITE_MISSING/);
+
+  // 2. HOOK-01 logs in and sets activeRefreshToken in runContext
+  const h1Res = await dispWithCtx({ id: 'HOOK-01' });
+  assert.equal(h1Res.passed, true);
+  assert.equal(runCtx.activeRefreshToken, 'fresh-refresh-token-xyz');
+
+  // 3. HOOK-02 propagates activeRefreshToken and validates AMR preservation
+  const h2Res = await dispWithCtx({ id: 'HOOK-02' });
+  assert.equal(h2Res.passed, true);
+  assert.equal(h2Res.amr_preserved, true);
+  assert.equal(runCtx.activeRefreshToken, 'refreshed-token-2');
+
+  // 4. Credential cleanup clears sensitive state
+  runCtx.clear();
+  assert.equal(runCtx.activeRefreshToken, null);
+  assert.equal(runCtx.activeAccessToken, null);
+  assert.equal(runCtx.testPassword, null);
+});
+
+test('40. Task 06I-B1-H1-R2 (R2-04 & R2-05): Inventory integration and robust cleanup failure detection', async () => {
+  const inv = new TestRunInventory('test-run-r2-inv');
+  inv.registerUser({ id: 'user-r2-1', email: 'test1@proof.invalid' });
+  inv.registerTableRow('task06i_session_probe', 'row-1');
+  inv.registerStorageObject('task06i_probe_bucket', 'file-1.txt');
+
+  // 1. Accidental user creation in BYPASS-02 is captured into inventory
+  const mockFetchAccidental = async () => ({ status: 200, json: async () => ({ user: { id: 'accidental-user-uuid' } }) });
+  const dispAccidental = createHostedDispatcher({ anonKey: 'valid-anon-key', inventory: inv, fetchFn: mockFetchAccidental });
+  const bypass02Res = await dispAccidental({ id: 'BYPASS-02', testUser: 'accidental@proof.invalid' });
+  assert.equal(bypass02Res.passed, false);
+  assert.ok(inv.isUserTracked('accidental-user-uuid'));
+
+  // 2. Client returning error on deleteUser fails cleanup closed
+  const failClient = {
+    async deleteUser() { return { data: null, error: { message: 'Database lock timeout' } }; },
+    async deleteTableRow() { return { data: null, error: null }; },
+    async deleteStorageObject() { return { data: null, error: null }; },
+    async getUserById() { return { data: { user: { id: 'user-r2-1' } }, error: null }; }
+  };
+  await assert.rejects(
+    async () => { await inv.executeCleanup({ adminClient: failClient, failClosed: true }); },
+    /CLEANUP_INCOMPLETE/
+  );
+
+  // 3. Client missing delete methods fails cleanup closed
+  const missingMethodsClient = {
+    async deleteUser() { return { data: null, error: null }; },
+    async getUserById() { return { data: { user: null }, error: { status: 404 } }; }
+  };
+  await assert.rejects(
+    async () => { await inv.executeCleanup({ adminClient: missingMethodsClient, failClosed: true }); },
+    /CLEANUP_INCOMPLETE/
+  );
+
+  // 4. Missing adminClient when resources are tracked fails closed
+  await assert.rejects(
+    async () => { await inv.executeCleanup({ adminClient: null, failClosed: true }); },
+    /CLEANUP_CLIENT_REQUIRED/
+  );
+});
+
+test('41. Task 06I-B1-H1-R2 (R2-06 & R2-09): Static check for canonical private_auth hooks and type-safe Storage RLS', async () => {
+  const fixturesPath = 'experiments/task06i/sql/testbed-fixtures.sql';
+  const fixturesSql = fs.readFileSync(fixturesPath, 'utf8');
+
+  // Verify hooks are in private_auth schema, NOT public (R2-06)
+  assert.ok(fixturesSql.includes('private_auth.custom_access_token_hook'), 'Must define private_auth.custom_access_token_hook');
+  assert.ok(fixturesSql.includes('private_auth.send_email_hook'), 'Must define private_auth.send_email_hook');
+  assert.ok(!fixturesSql.includes('CREATE OR REPLACE FUNCTION public.custom_access_token_hook'), 'Must NOT define hooks in public schema');
+  assert.ok(!fixturesSql.includes('CREATE OR REPLACE FUNCTION public.send_email_hook'), 'Must NOT define hooks in public schema');
+
+  // Verify Storage RLS policy uses type-safe owner_id = (auth.uid())::text (R2-09)
+  assert.ok(fixturesSql.includes('owner_id = (auth.uid())::text'), 'Must use type-safe owner_id = (auth.uid())::text');
+  assert.ok(!fixturesSql.includes('auth.uid() = owner'), 'Must NOT use deprecated auth.uid() = owner');
+});
+
+test('42. Task 06I-B1-H1-R2 (R2-07): Standard test password consistency across provisioning, seed spec, and login', () => {
+  const fixturesPath = 'experiments/task06i/sql/testbed-fixtures.sql';
+  const fixturesSql = fs.readFileSync(fixturesPath, 'utf8');
+
+  // Consistent password across runner and seed specification
+  assert.equal(getRunTestPassword(), DEFAULT_TEST_PASSWORD);
+  assert.ok(fixturesSql.includes(DEFAULT_TEST_PASSWORD), 'testbed-fixtures.sql must document the exact default test password');
+});
+
+test('43. Task 06I-B1-H1-R2 (R2-08): All 18 LIVE probes dispatchers implemented with real endpoints', async () => {
+  const allProbes = [
+    'BYPASS-01', 'BYPASS-02', 'BYPASS-03', 'BYPASS-04', 'BYPASS-05',
+    'HOOK-01', 'HOOK-02', 'HOOK-03', 'HOOK-04', 'HOOK-05', 'HOOK-06', 'HOOK-07',
+    'SESSION-01', 'SESSION-02', 'SESSION-03', 'SESSION-04', 'SESSION-05', 'SESSION-06'
+  ];
+
+  const mockAllFetch = async (url) => {
+    if (url.includes('grant_type=password')) {
+      return { status: 200, json: async () => ({ access_token: createMockJwt(), refresh_token: 'r-1', user: { id: 'u-1' }, session_id: 's-1' }) };
+    }
+    if (url.includes('grant_type=refresh_token')) {
+      return { status: 200, json: async () => ({ access_token: createMockJwt(), refresh_token: 'r-2' }) };
+    }
+    if (url.includes('/auth/v1/user')) {
+      return { status: 200, json: async () => ({ id: 'u-1' }) };
+    }
+    if (url.includes('/auth/v1/logout')) {
+      return { status: 204, json: async () => ({}) };
+    }
+    if (url.includes('/rest/v1/task06i_session_probe')) {
+      return { status: 200, json: async () => ([]) };
+    }
+    if (url.includes('/storage/v1/object/')) {
+      return { status: 200, json: async () => ({}) };
+    }
+    if (url.includes('/functions/v1/auth-user-probe')) {
+      return { status: 401, json: async () => ({ error_code: 'AuthSessionMissingError' }) };
+    }
+    return { status: 500, json: async () => ({ error_code: 'hook_error', message: '42501' }) };
+  };
+
+  const allCtx = createRunContext();
+  const allDisp = createHostedDispatcher({ anonKey: 'valid-anon-key', runContext: allCtx, fetchFn: mockAllFetch });
+  for (const id of allProbes) {
+    const outcome = await allDisp({ id, testUser: 'test@proof.invalid' });
+    assert.notEqual(outcome.status, 501, `Probe ${id} must not return 501`);
+  }
 });

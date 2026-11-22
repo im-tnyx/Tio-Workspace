@@ -1,15 +1,15 @@
-# Phase 1.2 Task 06I-B1-H1-R1 — Hosted Auth Security Verification Preparation
+# Phase 1.2 Task 06I-B1-H1-R2 — Critical Hosted Security Remediation
 
-> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R1. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Production Real Auth remains **STRICT NO-GO**.
+> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R2. All 9 security review findings across PR #37 are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Production Real Auth remains **STRICT NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **LOCAL PREPARATION & PREFLIGHT VERIFICATION COMPLETE (REVISION R1); PR #36 SQUASH MERGE VERIFIED AT `716fb32061ffb6012d17eae9453c822a281fe6f1`; 108/108 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; LIVE SUPABASE INVENTORY AUDITED (REAL `bsfwzvgynwriswapxpsp` READ-ONLY; TEMP `wvdabiwbaavfggcmpizd` ACTIVE_HEALTHY); BREVO AUDIT BASELINE RECORDED (0 AUTHENTICATED DOMAINS); STANDALONE DRY_RUN CLI ENTRYPOINT HARDENED; LIVE DISPATCHER CONTRACT DEFINED (`createHostedDispatcher`); DETERMINISTIC ID-BASED RUN INVENTORY IMPLEMENTED (`TestRunInventory`); COMPLETE TESTBED FIXTURE SPECIFICATION CREATED (`sql/testbed-fixtures.sql`); EVIDENCE CLASSIFICATION AUDITED (ALL 18 HOSTED PROBES MARKED `HOSTED_NOT_TESTED`; 0 HOSTED VERIFIED); TESTS 33-36 PASS; READY FOR INDEPENDENT REVIEW AND SEPARATE OWNER H1 LIVE AUTHORIZATION** |
-| Objective | Resolve the four independent reviewer findings on PR #37 (R1-01: LIVE CLI dispatcher contract, R1-02: complete TEMP testbed specification, R1-03: deterministic run-scoped identity cleanup, R1-04: accurate evidence classification). Maintain strict fail-closed safety and $0 cost ceiling. |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R1 slice |
+| Status | **LOCAL REMEDIATION COMPLETE (REVISION R2); ALL 9 REVIEW FINDINGS RESOLVED (R2-01 TO R2-09); 115/115 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; ALL 18 LIVE PROBES IMPLEMENTED WITH REAL ENDPOINTS (0 FALLBACK TO 501); REAL BASE64URL JWT CLAIM DECODING AND RFC 8176 AMR ENFORCED; RUN-SCOPED REFRESH TOKEN PROPAGATION; DETERMINISTIC ID-BASED INVENTORY WITH FAIL-CLOSED RESIDUAL RESOURCE DETECTION; FIXTURE SQL ALIGNED WITH CANONICAL PRIVATE_AUTH SCHEMA AND TYPE-SAFE STORAGE RLS; UNIFIED DEFAULT TEST PASSWORD; READY FOR INDEPENDENT RE-REVIEW AND SEPARATE OWNER H1 LIVE AUTHORIZATION** |
+| Objective | Remediate all 9 security review findings on PR #37 (R2-01 to R2-09), including the P1 complete implementation of all 18 LIVE probe dispatchers, real JWT claim extraction, run-scoped token propagation, robust cleanup verification, fixture SQL hook alignment, test password consistency, and type-safe storage policies. |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R2 slice |
 | Previous agent | Agent / Task 06I-B1-H1 author |
-| Last audited HEAD | `326ff34c13a5bd30fc85e2244e4de859a097aff2` (PR #37 initial commit) |
-| Tracking / approval | Task 06I-B1-H1-R1 remediation authorized by user prompt; LIVE hosted probe execution requires separate explicit owner authorization; mandates $0 cost ceiling and permanent immunity for `Tio-world` (`oykupyiitspujzpwwvuj`) and REAL `bsfwzvgynwriswapxpsp` |
+| Last audited HEAD | `edede7ebf565e4290543a120389d429aad92eae8` (PR #37 previous commit) |
+| Tracking / approval | Task 06I-B1-H1-R2 remediation authorized by user prompt; LIVE hosted probe execution requires separate explicit owner authorization; mandates $0 cost ceiling and permanent immunity for `Tio-world` (`oykupyiitspujzpwwvuj`) and REAL `bsfwzvgynwriswapxpsp` |
 | Branch | `test/task06i-b1-h1-hosted-security-preflight` |
 | Base SHA / inspected HEAD | `716fb32061ffb6012d17eae9453c822a281fe6f1` (`main`) |
 | Platform and file scope | Documentation, `.ai/` context, runner CLI hardening & LIVE dispatcher contract in `experiments/task06i/hosted-probe-runner.mjs`, testbed fixture specification in `experiments/task06i/sql/testbed-fixtures.sql`, and offline verification tests in `experiments/task06i/hosted-probe-runner.test.mjs`; zero client Expo UI, production schema, or live Auth mutations |
@@ -149,11 +149,85 @@ Audit of Brevo transactional email infrastructure indicates:
 
 ---
 
-## 6. Verification Matrix
+## 6. R2 Security Review Remediation Details (Resolving All 9 Findings)
+
+### R2-01 — High Severity: False-Positive Bypass Probes (`PRRT_kwDOVtCmZc66lOOK`)
+- **Vulnerability Remediated:** `createHostedDispatcher()` previously accepted any generic HTTP 4xx or 5xx as security proof and fabricated success metadata (`email_provider_disabled`, `signup_disabled`, `email_delivered: false`, `recovery_token: null`). Furthermore, GoTrue's `/auth/v1/recover` returns HTTP 200 with an empty body to prevent user enumeration regardless of whether mail is sent or suppressed.
+- **Enforced Verification:**
+  - `BYPASS-01`: Requires explicit provider error code `email_provider_disabled` or text `email provider is disabled`. Generic 4xx/5xx rejected.
+  - `BYPASS-02`: Requires explicit error code `signup_disabled` or text `signups not allowed`. If GoTrue accidentally returns HTTP 200, the created user UUID is immediately captured and registered in `inventory.registerSyntheticUser()` for teardown.
+  - `BYPASS-03`, `BYPASS-04`: Probes require observed hook rejection (`42501` or `hook_error`).
+  - `BYPASS-05`: HTTP 200 is explicitly rejected as proof of suppression. The probe strictly requires observed hook failure (`42501` or `send_email_hook` error).
+- **Offline Test Coverage:** Covered by Test 37 in `hosted-probe-runner.test.mjs`.
+
+### R2-02 — High Severity: Real JWT Claim Inspection & Redaction (`PRRT_kwDOVtCmZc66lOOM`)
+- **Vulnerability Remediated:** `HOOK-01` accepted any non-empty string and checked `body.user.app_metadata.amr_authenticated`, which client requests could spoof or which might not reflect actual minted token claims.
+- **Enforced Verification:**
+  - Implemented `parseAndValidateJwt(token, options)`: Decodes the base64url payload of minted access tokens.
+  - Validates `exp` (> current timestamp), `aud` (contains `'authenticated'`), and `iss`.
+  - Verifies `claims.amr_authenticated: true` injected directly into the minted token payload by `custom_access_token_hook`.
+  - Enforces RFC 8176 format for `claims.amr` (array of objects with `method: "password"`).
+  - Enforces complete redaction of all access tokens, refresh tokens, and credentials from log strings and error outputs.
+- **Offline Test Coverage:** Covered by Test 38 in `hosted-probe-runner.test.mjs`.
+
+### R2-03 — High Severity: Run-Scoped Credential State (`PRRT_kwDOVtCmZc66lOOP`)
+- **Vulnerability Remediated:** `HOOK-02` fabricated `amr_preserved: true` and did not test real token refresh using the credential issued in `HOOK-01`.
+- **Enforced Verification:**
+  - Created `createRunContext()`: Securely manages run-scoped state (`activeAccessToken`, `activeRefreshToken`, `activeSessionId`, `activeUserId`, `activeSeedPassword`).
+  - `HOOK-01` captures the genuine `refresh_token`, parses the real JWT, and populates `runContext`.
+  - `HOOK-02` consumes `runContext.activeRefreshToken`, issues `POST /auth/v1/token?grant_type=refresh_token`, and verifies that the refreshed JWT payload preserves `claims.amr_authenticated: true`.
+  - `runContext.clear()` is guaranteed to execute in `runner.mjs`'s `finally` block to zero out all tokens and state.
+- **Offline Test Coverage:** Covered by Test 39 in `hosted-probe-runner.test.mjs`.
+
+### R2-04 & R2-05 — Identity Tracking Integration & Robust Cleanup Verification (`PRRT_kwDOVtCmZc66lOOS`, `PRRT_kwDOVtCmZc66lOOU`)
+- **Vulnerability Remediated:** `TestRunInventory` was not integrated into runner dispatch; cleanup reported success even if deletion APIs failed or returned errors; untracked accounts could be affected.
+- **Enforced Verification:**
+  - `TestRunInventory` is integrated directly into the runner execution lifecycle (`runHostedProbeRunner`).
+  - Added session tracking (`inventory.registerSession()`) alongside users, database rows, and storage objects.
+  - Captures any accidental accounts created during bypass probes into the inventory.
+  - `executeCleanup()` explicitly checks `{ data, error }` envelopes from Supabase Admin methods (`deleteUser`, `remove`, `delete`).
+  - If a required deletion method is missing from `adminClient`, cleanup immediately fails closed with `CLEANUP_FAILED_MISSING_METHOD`.
+  - Affirmative post-cleanup check verifies 0 residual resources; fails closed with `CLEANUP_FAILED_RESIDUAL_RESOURCES` if any tracked resource persists.
+- **Offline Test Coverage:** Covered by Test 40 in `hosted-probe-runner.test.mjs`.
+
+### R2-06 — High Severity: Fixture SQL Hook Alignment (`PRRT_kwDOVtCmZc66lOOX`)
+- **Vulnerability Remediated:** `testbed-fixtures.sql` defined duplicate and conflicting `public.custom_access_token_hook` and `public.send_email_hook` functions with outdated claim structures.
+- **Enforced Verification:**
+  - Replaced definitions with canonical `private_auth` schema and least-privilege grants (`GRANT EXECUTE ON FUNCTION private_auth.* TO supabase_auth_admin`).
+  - Aligned claim injections with `claims.amr_authenticated` and RFC 8176 AMR object arrays.
+  - Management API PATCH section specifies exact URIs (`pg-functions://postgres/private_auth/...`).
+- **Offline Test Coverage:** Covered by Test 41 in `hosted-probe-runner.test.mjs`.
+
+### R2-07 — Test Password Mismatch (`PRRT_kwDOVtCmZc66lOOY`)
+- **Vulnerability Remediated:** Password inconsistency between seed spec and login probe runner.
+- **Enforced Verification:**
+  - Defined `DEFAULT_TEST_PASSWORD = 'TioTest#SecureRun2026!'` and `getRunTestPassword()` in `hosted-probe-runner.mjs`.
+  - Unified across `testbed-fixtures.sql`, `HOOK-01` login payload, and test suites.
+- **Offline Test Coverage:** Covered by Test 42 in `hosted-probe-runner.test.mjs`.
+
+### R2-08 — P1 Critical: All 18 LIVE Probes Implemented with Real Endpoints (`PRRT_kwDOVtCmZc66layA`)
+- **Vulnerability Remediated:** `createHostedDispatcher()` had only 7 probes implemented and 11 falling back to HTTP 501.
+- **Enforced Verification:**
+  - Implemented concrete HTTP dispatchers for all 18 probes:
+    - `BYPASS-01..05`: Dispatches against `/auth/v1/otp`, `/signup`, `/verify`, and `/recover`.
+    - `HOOK-01..07`: Dispatches real login, token refresh, OTP/recovery token denials, mixed/malformed AMR, and fail-closed exception tests.
+    - `SESSION-01..06`: Dispatches session minting, admin invalidation, `/auth/v1/user` rejection, PostgREST linger window test, Storage API linger window test, and Edge Function `getUser()` verification.
+  - Exactly 0 probes return HTTP 501 fallback.
+- **Offline Test Coverage:** Covered by Test 43 in `hosted-probe-runner.test.mjs`.
+
+### R2-09 — P2 Severity: Storage Policy Type Mismatch (`PRRT_kwDOVtCmZc66layC`)
+- **Vulnerability Remediated:** `testbed-fixtures.sql` compared `auth.uid() = owner` where `owner` was deprecated `text` and `auth.uid()` was `uuid`.
+- **Enforced Verification:**
+  - Updated storage RLS policies in `testbed-fixtures.sql` to type-safe `owner_id = (auth.uid())::text` in both `USING` and `WITH CHECK` clauses.
+- **Offline Test Coverage:** Covered by Test 41 in `hosted-probe-runner.test.mjs`.
+
+---
+
+## 7. Verification Matrix
 
 ```powershell
 node --test experiments/task06i/*.test.mjs
-# 108 passed, 0 failed, exit code 0
+# 115 passed, 0 failed, exit code 0
 
 node experiments/task06i/sql-contract-parity.mjs
 # Status: POSTGRES_VERIFIED, 18/18 matched parity, exit code 0
@@ -170,7 +244,7 @@ git diff --check origin/main...HEAD
 
 ---
 
-## 7. Exact TEMP-Only LIVE Execution Proposal (For Future Authorization)
+## 8. Exact TEMP-Only LIVE Execution Proposal (For Future Authorization)
 
 When the repository owner grants explicit written authorization for Task 06I-B1-H1 execution, the procedure will be:
 1. **Pre-Execution Check:** Verify CLI credentials, organization inventory (confirm 2 active projects), and confirm target is `wvdabiwbaavfggcmpizd`.
@@ -188,7 +262,7 @@ When the repository owner grants explicit written authorization for Task 06I-B1-
 
 ---
 
-## 8. Hard STOP Gate & Recommendation
+## 9. Hard STOP Gate & Recommendation
 
 - **Hard STOP Gate Honored:**
   - Zero hosted LIVE probes execute hue hain.
@@ -201,4 +275,4 @@ When the repository owner grants explicit written authorization for Task 06I-B1-
 
 **Recommendation:** **`READY_FOR_H1_LIVE_APPROVAL_REVIEW`**
 
-> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for R1-01, R1-02, R1-03, and R1-04 is complete and fully covered by offline regression tests (108/108 pass). Awaiting independent re-review from `im-tio`.
+> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all 9 review findings (R2-01 through R2-09) is complete and fully covered by offline regression tests (115/115 pass). All 18 LIVE probe dispatchers are implemented with zero fallback to 501. Awaiting independent re-review from `im-tio`.

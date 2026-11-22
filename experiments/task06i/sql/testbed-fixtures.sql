@@ -15,24 +15,44 @@
 --   "disable_signup": true,
 --   "jwt_exp": 300,
 --   "hook_custom_access_token_enabled": true,
---   "hook_custom_access_token_uri": "pg-functions://postgres/public/custom_access_token_hook",
+--   "hook_custom_access_token_uri": "pg-functions://postgres/private_auth/custom_access_token_hook",
 --   "hook_send_email_enabled": true,
---   "hook_send_email_uri": "pg-functions://postgres/public/send_email_hook"
+--   "hook_send_email_uri": "pg-functions://postgres/private_auth/send_email_hook"
 -- }
 -- -----------------------------------------------------------------------------
 
 -- -----------------------------------------------------------------------------
 -- 2. SECURITY HOOKS INSTALLATION (Canonical Implementations from hooks.sql)
+-- Schema: private_auth
+-- Security: SECURITY DEFINER, SET search_path = ''
+-- Roles: granted to supabase_auth_admin, revoked from public/anon/authenticated
+-- Resolves PRRT_kwDOVtCmZc66lOOX
 -- -----------------------------------------------------------------------------
 
--- Enable pgcrypto for UUID generation if needed
-CREATE EXTENSION IF NOT EXISTS pgcrypto;
+CREATE SCHEMA IF NOT EXISTS private_auth;
 
--- Deploy Custom Access Token Hook
-CREATE OR REPLACE FUNCTION public.custom_access_token_hook(event jsonb)
+-- Ensure required roles exist in any PostgreSQL environment (e.g. stock postgres container)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_auth_admin') THEN
+    CREATE ROLE supabase_auth_admin;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+    CREATE ROLE anon;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+    CREATE ROLE authenticated;
+  END IF;
+END $$;
+
+-- 1. Custom Access Token Hook
+-- Evaluates authentication_method and RFC 8176 AMR object array.
+-- Strictly permits ONLY method 'password' in AMR.
+-- Adds claims.amr_authenticated = 'true' upon success directly into server-owned claims.
+-- Fails closed with SQLSTATE 42501 on non-password or mixed AMR.
+CREATE OR REPLACE FUNCTION private_auth.custom_access_token_hook(event jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
-STABLE
 SECURITY DEFINER
 SET search_path = ''
 AS $$
@@ -40,131 +60,115 @@ DECLARE
   v_method text;
   v_claims jsonb;
   v_amr jsonb;
-  v_elem jsonb;
-  v_elem_method text;
-  v_has_password boolean := false;
-  v_has_prohibited boolean := false;
+  v_item jsonb;
+  v_has_password boolean := FALSE;
 BEGIN
-  IF event IS NULL OR jsonb_typeof(event) <> 'object' THEN
-    RAISE EXCEPTION 'Custom access token hook received null or non-object event'
-      USING ERRCODE = '42501';
-  END IF;
-
-  v_method := trim(event->>'authentication_method');
-  IF v_method IS NULL OR length(v_method) = 0 THEN
-    RAISE EXCEPTION 'Custom access token hook rejected missing authentication_method'
-      USING ERRCODE = '42501';
-  END IF;
-
-  IF v_method NOT IN ('password', 'token_refresh') THEN
-    RAISE EXCEPTION 'Custom access token hook rejected unauthorized authentication_method: %', v_method
+  v_method := event->>'authentication_method';
+  IF v_method IS NULL OR v_method NOT IN ('password', 'token_refresh') THEN
+    RAISE EXCEPTION 'authentication_method % not permitted by policy', v_method
       USING ERRCODE = '42501';
   END IF;
 
   v_claims := event->'claims';
   IF v_claims IS NULL OR jsonb_typeof(v_claims) <> 'object' THEN
-    RAISE EXCEPTION 'Custom access token hook rejected event with missing claims object'
+    RAISE EXCEPTION 'claims object missing or malformed'
       USING ERRCODE = '42501';
   END IF;
 
   v_amr := v_claims->'amr';
   IF v_amr IS NULL OR jsonb_typeof(v_amr) <> 'array' OR jsonb_array_length(v_amr) = 0 THEN
-    RAISE EXCEPTION 'Custom access token hook rejected missing or non-array AMR claims'
+    RAISE EXCEPTION 'amr missing or not an array'
       USING ERRCODE = '42501';
   END IF;
 
-  FOR v_elem IN SELECT * FROM jsonb_array_elements(v_amr)
-  LOOP
-    IF jsonb_typeof(v_elem) <> 'object' THEN
-      RAISE EXCEPTION 'Custom access token hook rejected malformed non-object AMR element'
+  FOR v_item IN SELECT * FROM jsonb_array_elements(v_amr) LOOP
+    IF jsonb_typeof(v_item) <> 'object' THEN
+      RAISE EXCEPTION 'malformed amr element: must be a JSON object'
         USING ERRCODE = '42501';
     END IF;
 
-    v_elem_method := trim(v_elem->>'method');
-    IF v_elem_method IS NULL OR length(v_elem_method) = 0 THEN
-      RAISE EXCEPTION 'Custom access token hook rejected AMR element missing string method property'
+    IF v_item->>'method' IS NULL OR trim(v_item->>'method') = '' THEN
+      RAISE EXCEPTION 'malformed amr method: string method property required'
         USING ERRCODE = '42501';
     END IF;
 
-    IF v_elem_method = 'password' THEN
-      v_has_password := true;
-    ELSIF v_elem_method IN ('otp', 'recovery', 'magiclink', 'invite', 'email_change', 'reauthentication', 'oauth', 'sso/saml') THEN
-      v_has_prohibited := true;
+    IF v_item->>'method' = 'password' THEN
+      v_has_password := TRUE;
     ELSE
-      v_has_prohibited := true;
+      -- Strict allowlist: Any non-password method (known disallowed or unknown) immediately fails closed
+      RAISE EXCEPTION 'prohibited amr method % in token session', v_item->>'method'
+        USING ERRCODE = '42501';
     END IF;
   END LOOP;
 
-  IF v_has_prohibited OR NOT v_has_password THEN
-    RAISE EXCEPTION 'Custom access token hook rejected token with invalid or mixed AMR: prohibited=%, has_password=%',
-      v_has_prohibited, v_has_password
+  IF NOT v_has_password THEN
+    RAISE EXCEPTION 'session lacks verified password origin'
       USING ERRCODE = '42501';
   END IF;
 
-  IF v_claims ? 'user_metadata' AND jsonb_typeof(v_claims->'user_metadata') = 'object' THEN
-    v_claims := jsonb_set(v_claims, '{user_metadata, amr_authenticated}', 'true'::jsonb, true);
-  ELSE
-    v_claims := jsonb_set(v_claims, '{user_metadata}', jsonb_build_object('amr_authenticated', true), true);
-  END IF;
-
-  RETURN jsonb_build_object('claims', v_claims);
+  -- Enrich claims with dedicated server-owned authorization claim directly under claims
+  v_claims := jsonb_set(v_claims, '{amr_authenticated}', '"true"'::jsonb, true);
+  event := jsonb_set(event, '{claims}', v_claims);
+  RETURN event;
 END;
 $$;
 
--- Deploy Send Email Hook
-CREATE OR REPLACE FUNCTION public.send_email_hook(event jsonb)
+-- 2. Send Email Hook (Strict Native Email Suppression & Canonical Normalization Policy)
+-- Intercepts outgoing email dispatch events.
+-- Strictly suppresses native recovery, signup, magiclink, invite, email_change, and reauthentication emails.
+-- Enforces canonical unpadded normalization policy: rejects blank or whitespace-padded action types with SQLSTATE 42501.
+CREATE OR REPLACE FUNCTION private_auth.send_email_hook(event jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
-STABLE
 SECURITY DEFINER
 SET search_path = ''
 AS $$
 DECLARE
   v_email_data jsonb;
-  v_raw_action text;
   v_action_type text;
 BEGIN
   IF event IS NULL OR jsonb_typeof(event) <> 'object' THEN
-    RAISE EXCEPTION 'Send Email Hook received null or non-object event'
+    RAISE EXCEPTION 'send_email_hook: invalid event payload'
       USING ERRCODE = '42501';
   END IF;
 
   v_email_data := event->'email_data';
   IF v_email_data IS NULL OR jsonb_typeof(v_email_data) <> 'object' THEN
-    RAISE EXCEPTION 'Send Email Hook rejected payload with missing or malformed email_data object'
+    RAISE EXCEPTION 'send_email_hook: missing or malformed email_data object'
       USING ERRCODE = '42501';
   END IF;
 
-  IF jsonb_typeof(v_email_data->'email_action_type') <> 'string' THEN
-    RAISE EXCEPTION 'Send Email Hook rejected missing or non-string email_action_type'
+  v_action_type := v_email_data->>'email_action_type';
+  -- Enforce canonical normalization policy: strictly reject missing, blank, or whitespace-padded action types
+  IF v_action_type IS NULL OR trim(v_action_type) = '' OR v_action_type <> trim(v_action_type) THEN
+    RAISE EXCEPTION 'send_email_hook: invalid, blank, or padded email_action_type'
       USING ERRCODE = '42501';
   END IF;
 
-  v_raw_action := v_email_data->>'email_action_type';
-  v_action_type := trim(v_raw_action);
-
-  IF v_raw_action <> v_action_type THEN
-    RAISE EXCEPTION 'Send Email Hook rejected whitespace-padded email_action_type: %', v_raw_action
+  -- Prohibit native recovery, signup, magiclink, invite, email_change, and reauthentication email dispatch
+  IF v_action_type IN ('recovery', 'signup', 'magiclink', 'invite', 'email_change', 'reauthentication') THEN
+    RAISE EXCEPTION 'send_email_hook: native % email dispatch suppressed by security policy', v_action_type
       USING ERRCODE = '42501';
   END IF;
 
-  IF v_action_type IN ('signup', 'recovery', 'magiclink', 'invite', 'email_change', 'reauthentication') THEN
-    RAISE EXCEPTION 'Send Email Hook suppressed prohibited native auth email: %', v_action_type
-      USING ERRCODE = '42501';
-  ELSIF v_action_type = 'custom_notification' THEN
+  -- Allowlist for permitted actions (synthetic test seam only; official Supabase GoTrue does not emit custom_notification natively)
+  IF v_action_type IN ('custom_notification') THEN
     RETURN '{}'::jsonb;
-  ELSE
-    RAISE EXCEPTION 'Send Email Hook rejected unknown or unauthorized email_action_type: %', v_action_type
-      USING ERRCODE = '42501';
   END IF;
+
+  -- Fail-closed on all unknown or unsupported action types
+  RAISE EXCEPTION 'send_email_hook: unrecognized email_action_type %', v_action_type
+    USING ERRCODE = '42501';
 END;
 $$;
 
--- Grant execution permissions to GoTrue Auth Admin
-GRANT EXECUTE ON FUNCTION public.custom_access_token_hook(jsonb) TO supabase_auth_admin;
-GRANT EXECUTE ON FUNCTION public.send_email_hook(jsonb) TO supabase_auth_admin;
-REVOKE EXECUTE ON FUNCTION public.custom_access_token_hook(jsonb) FROM public, anon, authenticated;
-REVOKE EXECUTE ON FUNCTION public.send_email_hook(jsonb) FROM public, anon, authenticated;
+-- 3. Least-Privilege Role Grants & Revocations
+GRANT USAGE ON SCHEMA private_auth TO supabase_auth_admin;
+GRANT EXECUTE ON FUNCTION private_auth.custom_access_token_hook(jsonb) TO supabase_auth_admin;
+GRANT EXECUTE ON FUNCTION private_auth.send_email_hook(jsonb) TO supabase_auth_admin;
+REVOKE ALL ON SCHEMA private_auth FROM public, anon, authenticated;
+REVOKE ALL ON FUNCTION private_auth.custom_access_token_hook(jsonb) FROM public, anon, authenticated;
+REVOKE ALL ON FUNCTION private_auth.send_email_hook(jsonb) FROM public, anon, authenticated;
 
 -- -----------------------------------------------------------------------------
 -- 3. TEST TABLE FIXTURE FOR SESSION-04 (PostgREST Stateless Linger Window)
@@ -196,6 +200,8 @@ GRANT ALL ON public.task06i_session_probe TO service_role;
 
 -- -----------------------------------------------------------------------------
 -- 4. STORAGE BUCKET FIXTURE FOR SESSION-05 (Storage API Linger Window)
+-- Uses type-safe owner_id = (auth.uid())::text per Supabase Storage Ownership docs
+-- Resolves PRRT_kwDOVtCmZc66layC
 -- -----------------------------------------------------------------------------
 
 INSERT INTO storage.buckets (id, name, public)
@@ -207,8 +213,8 @@ DROP POLICY IF EXISTS task06i_probe_storage_policy ON storage.objects;
 CREATE POLICY task06i_probe_storage_policy ON storage.objects
   FOR ALL
   TO authenticated
-  USING (bucket_id = 'task06i_probe_bucket' AND auth.uid() = owner)
-  WITH CHECK (bucket_id = 'task06i_probe_bucket' AND auth.uid() = owner);
+  USING (bucket_id = 'task06i_probe_bucket' AND owner_id = (auth.uid())::text)
+  WITH CHECK (bucket_id = 'task06i_probe_bucket' AND owner_id = (auth.uid())::text);
 
 -- -----------------------------------------------------------------------------
 -- 5. SEED USER PROVISIONING SPECIFICATION (Compatible with disable_signup=true)
@@ -218,8 +224,9 @@ CREATE POLICY task06i_probe_storage_policy ON storage.objects
 -- Body:
 -- {
 --   "email": "tio-test-user-06i@proof.invalid",
---   "password": "<seed_password>",
+--   "password": "TioTest#SecureRun2026!",
 --   "email_confirm": true,
 --   "user_metadata": { "test_run_id": "<runId>" }
 -- }
+-- Resolves PRRT_kwDOVtCmZc66lOOY
 -- -----------------------------------------------------------------------------
