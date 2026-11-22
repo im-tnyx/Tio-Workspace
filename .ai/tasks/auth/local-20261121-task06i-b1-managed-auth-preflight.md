@@ -1,15 +1,15 @@
-# Phase 1.2 Task 06I-B1-R8 — Authorized Security CI Workflow Integration
+# Phase 1.2 Task 06I-B1-R9 — Final CI Evidence Correction
 
-> **Preflight Report & Test Plan (Revision R8 — Authorized Security CI Workflow Integration).** Prepared under `AGENTS.md` operating rules. This document authorizes local investigation, documentation, offline test preparation, and authorized workflow integration only. It does not authorize creating or modifying a hosted Supabase project. Production Real Auth remains **NO-GO**.
+> **Preflight Report & Test Plan (Revision R9 — Final CI Evidence Correction).** Prepared under `AGENTS.md` operating rules. This document authorizes local investigation, documentation, offline test preparation, authorized workflow integration, and evidence corrections only. It does not authorize creating or modifying a hosted Supabase project. Production Real Auth remains **NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **PREFLIGHT COMPLETE (REVISION R8) — SECURITY CI WORKFLOW ADDED; AWAITING OWNER EXACT-SHA GUARD APPROVAL** |
-| Objective | Add owner-authorized dedicated Security CI workflow (`.github/workflows/security-experiments.yml`) for `experiments/task06i/**`, verify all local test suites, push to PR #35, and prepare exact new HEAD SHA package for owner trusted guard approval |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-R8 slice |
-| Previous agent | Agent / Task 06I-B1-R7 author |
-| Last commit agent | `fe1056b3213d1576fc3eb61725b2393d00168a97` (Task 06I-B1-R7 commit on PR #35) |
-| Tracking / approval | Task 06I-B1-R8 authorized by user prompt for workflow file addition; PR #35 active; owner mandates $0 cost and permanent immunity for `Tio-world`; hosted mutations strictly prohibited |
+| Status | **PREFLIGHT COMPLETE (REVISION R9) — SECURITY CI EXECUTED & PASSED; AWAITING OWNER EXACT-SHA GUARD APPROVAL** |
+| Objective | Address PR #35 review findings (resolve P3 stale CI evidence finding, document GitHub run 45005467981 pass on R8 HEAD, document App-owned Commit attribution guard failure at unauthorized guard modifications step, redefine BLK-05 as owner exact-SHA guard approval gate, and maintain hosted unverified status), maintain $0 cost and permanent immunity for `Tio-world`, and preserve branch protections |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-R9 slice |
+| Previous agent | Agent / Task 06I-B1-R8 author |
+| Last commit agent | `d1597b1b75e33267311fd9c4a4644d7555396b81` (Task 06I-B1-R8 commit on PR #35) |
+| Tracking / approval | Task 06I-B1-R9 authorized by user prompt; PR #35 active; owner mandates $0 cost and permanent immunity for `Tio-world`; hosted mutations strictly prohibited |
 | Branch | `docs/task06i-b1-managed-auth-preflight` |
 | Base SHA / inspected HEAD | `b7d4fda97979e734a85461e83bf119dbc1a9689c` (`main`, verified up to date with `origin/main`) |
 | Platform and file scope | Documentation, `.ai/` context, isolated offline preflight test harnesses under `experiments/task06i/`, and dedicated CI workflow `.github/workflows/security-experiments.yml`; zero client Expo UI, production schema, or live Auth changes |
@@ -258,12 +258,12 @@ node --test experiments/task06i/*.test.mjs
 - 15 Preflight Evaluator tests (18 requirements validated; empty, duplicate, missing, or unknown IDs rejected; `VERIFIED FAIL` and `BLOCKED` surface as blocking verdicts; `NOT TESTED` prevents completion; quota and existing project target strategies evaluated; production Auth unconditionally `NO-GO`).
 
 ### CI Status & Commit Attribution Guard Boundary
-- **Automated CI Integration Status:** **OPEN BLOCKER (BLK-05)**.
-- While offline tests run deterministically via `node --test experiments/task06i/*.test.mjs` (52/52 PASS) and shell contract tests pass (`npm test`, 22/22 PASS), automated execution inside GitHub Actions PR checks requires modifying or creating workflow files under `.github/workflows/` (e.g. `.github/workflows/security-experiments.yml`).
-- In this repository, `.github/workflows/*` is an explicitly guarded path under `scripts/check_guard_integrity.sh`. Any pull request modifying `.github/workflows/*` is automatically blocked by the App-owned `Commit attribution guard` (Run exit code 1) unless the repository owner sets the trusted environment variable `ATTRIBUTION_GUARD_CHANGE_APPROVED_PR_HEAD="35:<HEAD_SHA>"`.
-- Furthermore, modifying `package.json` to trigger existing workflows is inappropriate because `phase1-shell.yml` executes `npm run expo:check` (`expo install --check`), which fails due to upstream npm releases for Expo SDK 58 (`expo@~58.0.26`, `expo-router@~58.0.32`). Updating mobile dependencies is outside the authorized scope of Task 06I-B1 preflight.
-- Therefore, to preserve branch protections and prevent false-pass reporting, `.github/workflows/*` and `package.json` remain untouched on this branch, and automated CI integration is formally tracked as an open blocker awaiting owner-authorized workflow update.
-- Historical Task 06H offline test suite: `node --test experiments/task06h/*.test.mjs` → **115 passed, 0 failed (100% pass)**.
+- **Dedicated Security CI Workflow Created:** Per explicit owner authorization, `.github/workflows/security-experiments.yml` has been added to provide automated CI regression testing for `experiments/task06i/**` without triggering unrelated Expo SDK version checks.
+- **Automated CI Execution (PASSED):** Automated execution inside GitHub Actions PR checks succeeded on R8 HEAD (`d1597b1b75e33267311fd9c4a4644d7555396b81`): check `Task 06I Security Contract Tests` in GitHub Actions run [45005467981](https://github.com/im-tnyx/Tio-Workspace/actions/runs/45005467981/job/137155974729) **PASSED** with exit code 0 (52/52 tests passing).
+- **Commit Attribution Guard Boundary (FAILED - Expected Governance Gate):** In this repository, `.github/workflows/*` is an explicitly guarded path under `scripts/check_guard_integrity.sh`. The required App-owned `Commit attribution guard` (Run [45005465339](https://github.com/im-tnyx/Tio-Workspace/actions/runs/45005465339)) **FAILED** at step `Reject unauthorized guard modifications` because `.github/workflows/security-experiments.yml` is protected and trusted approval variable `ATTRIBUTION_GUARD_CHANGE_APPROVED_PR_HEAD` has not yet been set for the exact commit HEAD.
+- **BLK-05 Redefined:** BLK-05 is now an **owner exact-SHA guard approval blocker**, rather than a missing-security-CI blocker. Automated CI execution is verified and working; owner exact-SHA authorization in the trusted `attribution-guard-trusted` environment is required for the guard check to pass.
+- **Hosted Supabase Auth Status:** Hosted Supabase Auth execution remains **HOSTED UNVERIFIED / NOT TESTED**. Production Real Auth remains strictly **NO-GO**.
+- **Historical Test Suite:** Historical Task 06H offline test suite: `node --test experiments/task06h/*.test.mjs` → **115 passed, 0 failed (100% pass)**. Full repository verification: `npm run verify` → **22 shell contract tests passed, tokens clean, tsc clean, lint clean (100% pass)**.
 
 ---
 
@@ -541,13 +541,13 @@ Per [`docs/26-COMMIT-ATTRIBUTION-GUARD.md`](../../../docs/26-COMMIT-ATTRIBUTION-
 ## 9. STOP / GO Decision & Recommendations
 
 ### Final Assessment
-- **Task 06I-B1-R8 Preflight Deliverable:** **VERIFIED PASS** (Dedicated Security CI workflow added to `.github/workflows/security-experiments.yml` under explicit owner authorization; least-privilege permissions `contents: read`, Node 22 native test runner, zero Expo dependencies; 52 offline unit tests passing; 115 Task 06H tests passing; full repository verification passing; awaiting owner exact-SHA trusted approval for `Commit attribution guard`).
+- **Task 06I-B1-R9 Preflight Deliverable:** **VERIFIED PASS** (Security workflow `.github/workflows/security-experiments.yml` created and automated CI execution in GitHub run [45005467981](https://github.com/im-tnyx/Tio-Workspace/actions/runs/45005467981) passed on R8 HEAD; App-owned `Commit attribution guard` run [45005465339](https://github.com/im-tnyx/Tio-Workspace/actions/runs/45005465339) failed as expected pending owner exact-SHA approval; BLK-05 tracked as owner exact-SHA guard approval gate; all 52 offline contract tests passing; 115 Task 06H tests passing; full repository verification passing; hosted Supabase Auth remains NOT TESTED; production Real Auth strictly NO-GO).
 - **Disposable Hosted Project Execution:** **BLOCKED (STOP)** (Awaiting separate owner authorization and safe isolated target resolution).
 - **Managed Supabase Auth Feasibility:** **NOT VERIFIED ON HOSTED** (Documented capabilities indicate feasibility, but empirical hosted proof is mandatory).
 - **Production Real Auth:** **STRICT NO-GO**.
 
 ### Recommended Next Action
-1. Review this finalized Task 06I-B1-R8 preflight package and PR #35.
+1. Review this finalized Task 06I-B1-R9 preflight package and PR #35.
 2. Maintain `bsfwzvgynwriswapxpsp` and `oykupyiitspujzpwwvuj` as strictly READ-ONLY.
 3. Owner executes exact-SHA approval in trusted GitHub environment (`ATTRIBUTION_GUARD_CHANGE_APPROVED_PR_HEAD="35:<NEW_HEAD_SHA>"`).
 4. When the owner chooses to authorize future hosted feasibility testing, execute the 18-point Stage 06I-B1 test checklist against an authorized safe target under strict cleanup guarantees.
