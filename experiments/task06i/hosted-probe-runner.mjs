@@ -113,10 +113,20 @@ const SENSITIVE_KEY_SET = new Set([
 ]);
 
 /**
+ * Centrally determines whether a field or parameter name is sensitive.
+ * Resolves PRRT_kwDOVtCmZc66kR_F and PRRT_kwDOVtCmZc66kYUU.
+ */
+export function isSensitiveKey(key) {
+  if (typeof key !== 'string') return false;
+  const lower = key.toLowerCase();
+  return SENSITIVE_KEY_SET.has(lower) || SENSITIVE_KEY_SUBSTRINGS.some(sub => lower.includes(sub));
+}
+
+/**
  * Robustly parses and redacts sensitive key-value pairs from diagnostic strings.
  * Handles single/double quotes, unclosed quotes, escaped quotes (\", \'), internal whitespace,
  * ampersands, and unquoted values without leaking substrings.
- * Resolves PRRT_kwDOVtCmZc66jdT4 and PRRT_kwDOVtCmZc66joKm.
+ * Resolves PRRT_kwDOVtCmZc66jdT4, PRRT_kwDOVtCmZc66joKm, PRRT_kwDOVtCmZc66kR_F, PRRT_kwDOVtCmZc66kR_N, and PRRT_kwDOVtCmZc66kYUU.
  */
 export function redactSensitiveFields(str) {
   if (typeof str !== 'string') return str;
@@ -127,9 +137,7 @@ export function redactSensitiveFields(str) {
   let match;
 
   while ((match = keyRegex.exec(str)) !== null) {
-    const rawKey = match[1].toLowerCase();
-    const isSensitive = SENSITIVE_KEY_SET.has(rawKey) || SENSITIVE_KEY_SUBSTRINGS.some(sub => rawKey.includes(sub));
-    if (!isSensitive) {
+    if (!isSensitiveKey(match[1])) {
       continue;
     }
 
@@ -275,9 +283,7 @@ export function sanitizeData(data) {
   if (typeof data === 'object') {
     const sanitized = {};
     for (const [key, val] of Object.entries(data)) {
-      const lower = key.toLowerCase();
-      const isSensitive = SENSITIVE_KEY_SUBSTRINGS.some(term => lower.includes(term));
-      if (isSensitive) {
+      if (isSensitiveKey(key)) {
         sanitized[key] = '[REDACTED]';
       } else {
         sanitized[key] = sanitizeData(val);
@@ -449,6 +455,60 @@ function isValidHttpErrorStatus(status) {
 }
 
 /**
+ * Centrally normalizes and detects any observed token or credential issuance representation.
+ * Inspects:
+ * - rawOutcome.has_token === true
+ * - rawOutcome.access_token (non-empty string)
+ * - rawOutcome.refresh_token (non-empty string)
+ * - rawOutcome.token (non-empty string)
+ * - rawOutcome.tokens (non-empty string or object with access_token/refresh_token/token)
+ * Resolves PRRT_kwDOVtCmZc66kYUV.
+ */
+function extractObservedTokens(rawOutcome) {
+  if (rawOutcome === null || rawOutcome === undefined || typeof rawOutcome !== 'object') {
+    return null;
+  }
+
+  if (rawOutcome.has_token === true) {
+    return 'has_token: true';
+  }
+
+  if (isNonEmptyString(rawOutcome.access_token)) {
+    return 'access_token present';
+  }
+
+  if (isNonEmptyString(rawOutcome.refresh_token)) {
+    return 'refresh_token present';
+  }
+
+  if (isNonEmptyString(rawOutcome.token)) {
+    return 'token present';
+  }
+
+  if (rawOutcome.tokens !== null && rawOutcome.tokens !== undefined) {
+    if (typeof rawOutcome.tokens === 'string' && rawOutcome.tokens.trim().length > 0) {
+      return 'tokens string present';
+    }
+    if (typeof rawOutcome.tokens === 'object') {
+      if (isNonEmptyString(rawOutcome.tokens.access_token)) {
+        return 'tokens.access_token present';
+      }
+      if (isNonEmptyString(rawOutcome.tokens.refresh_token)) {
+        return 'tokens.refresh_token present';
+      }
+      if (isNonEmptyString(rawOutcome.tokens.token)) {
+        return 'tokens.token present';
+      }
+      if (Object.keys(rawOutcome.tokens).length > 0) {
+        return 'tokens object present';
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
  * Independently validates probe dispatcher outcome against canonical requirement contract.
  * Enforces:
  * 1. Output must be a non-null object with explicit boolean `passed`.
@@ -515,11 +575,12 @@ export function validateProbeOutcome(item, rawOutcome) {
         reason: `INVALID_HTTP_STATUS: BYPASS-01 expected HTTP 4xx/5xx error status, got ${status}`
       };
     }
-    if (rawOutcome.tokens || rawOutcome.has_token === true) {
+    const observedTokens = extractObservedTokens(rawOutcome);
+    if (observedTokens) {
       return {
         passed: false,
         status,
-        reason: 'SECURITY_INVARIANT_VIOLATION: BYPASS-01 issued tokens on disabled route'
+        reason: `SECURITY_INVARIANT_VIOLATION: BYPASS-01 issued tokens on disabled route (${observedTokens})`
       };
     }
     const hasAffirmativeEvidence =
@@ -552,11 +613,12 @@ export function validateProbeOutcome(item, rawOutcome) {
         reason: `INVALID_HTTP_STATUS: BYPASS-02 expected HTTP 4xx/5xx error status, got ${status}`
       };
     }
-    if (rawOutcome.tokens || rawOutcome.has_token === true || rawOutcome.user_created === true) {
+    const observedTokens = extractObservedTokens(rawOutcome);
+    if (observedTokens || rawOutcome.user_created === true) {
       return {
         passed: false,
         status,
-        reason: 'SECURITY_INVARIANT_VIOLATION: BYPASS-02 created user or issued tokens on disabled route'
+        reason: `SECURITY_INVARIANT_VIOLATION: BYPASS-02 created user or issued tokens on disabled route (${observedTokens || 'user_created: true'})`
       };
     }
     const hasAffirmativeEvidence =
@@ -575,11 +637,12 @@ export function validateProbeOutcome(item, rawOutcome) {
 
   if (item.id === 'BYPASS-03' || item.id === 'BYPASS-04') {
     // Direct native verify or magic link / invite / anonymous session must be rejected (500/400/403)
-    if (status === 200 || rawOutcome.tokens || rawOutcome.has_token === true) {
+    const observedTokens = extractObservedTokens(rawOutcome);
+    if (status === 200 || observedTokens) {
       return {
         passed: false,
         status,
-        reason: `SECURITY_INVARIANT_VIOLATION: ${item.id} received HTTP 200 or tokens on unauthorized route`
+        reason: `SECURITY_INVARIANT_VIOLATION: ${item.id} received HTTP 200 or tokens on unauthorized route (${observedTokens || 'status 200'})`
       };
     }
     if (!isValidHttpErrorStatus(status)) {
@@ -634,11 +697,8 @@ export function validateProbeOutcome(item, rawOutcome) {
         reason: `HTTP_STATUS_MISMATCH: HOOK-01 expected HTTP 200, got ${status}`
       };
     }
-    const hasValidToken =
-      (isNonEmptyObject(rawOutcome.tokens) && isNonEmptyString(rawOutcome.tokens.access_token)) ||
-      (isNonEmptyObject(rawOutcome.tokens) && rawOutcome.has_token === true) ||
-      isNonEmptyString(rawOutcome.access_token);
-    if (!hasValidToken) {
+    const observedTokens = extractObservedTokens(rawOutcome);
+    if (!observedTokens) {
       return {
         passed: false,
         status,
@@ -667,11 +727,8 @@ export function validateProbeOutcome(item, rawOutcome) {
         reason: `HTTP_STATUS_MISMATCH: HOOK-02 expected HTTP 200, got ${status}`
       };
     }
-    const hasValidToken =
-      (isNonEmptyObject(rawOutcome.tokens) && isNonEmptyString(rawOutcome.tokens.access_token)) ||
-      (isNonEmptyObject(rawOutcome.tokens) && rawOutcome.has_token === true) ||
-      isNonEmptyString(rawOutcome.access_token);
-    if (!hasValidToken) {
+    const observedTokens = extractObservedTokens(rawOutcome);
+    if (!observedTokens) {
       return {
         passed: false,
         status,
@@ -690,11 +747,12 @@ export function validateProbeOutcome(item, rawOutcome) {
 
   if (['HOOK-03', 'HOOK-04', 'HOOK-05', 'HOOK-06', 'HOOK-07'].includes(item.id)) {
     // Disallowed AMR / hook failure cases must reject token issuance (500/400/403)
-    if (status === 200 || rawOutcome.has_token === true || rawOutcome.tokens) {
+    const observedTokens = extractObservedTokens(rawOutcome);
+    if (status === 200 || observedTokens) {
       return {
         passed: false,
         status,
-        reason: `SECURITY_INVARIANT_VIOLATION: ${item.id} issued token or returned HTTP 200 on disallowed AMR / hook failure`
+        reason: `SECURITY_INVARIANT_VIOLATION: ${item.id} issued token or returned HTTP 200 on disallowed AMR / hook failure (${observedTokens || 'status 200'})`
       };
     }
     if (!isValidHttpErrorStatus(status)) {

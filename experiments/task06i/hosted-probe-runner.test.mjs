@@ -1354,6 +1354,32 @@ test('29. Quoted credentials with whitespace, ampersands, and escaped quotes are
   assert.ok(!serializedUnclosed.includes('unclosed\\"secret'), 'Unclosed secret password must not exist in serialized report');
   assert.equal(resultUnclosed.status, 'HALTED_ON_FAILURE');
   assert.match(resultUnclosed.abortReason, /password="\[REDACTED\]/);
+
+  // 5. End-to-end runner test with compound/prefixed/camelCase secret keys in dispatcher exception (PRRT_kwDOVtCmZc66kYUU)
+  const syntheticServiceKey = 'synthetic_service_role_secret_abc123';
+  const syntheticClientSec = 'synthetic_client_secret_xyz789';
+  const syntheticRefreshTok = 'synthetic_refresh_token_qwe456';
+
+  const mockDispatcherCompound = async () => {
+    throw new Error(`request failed SUPABASE_SERVICE_ROLE_KEY=${syntheticServiceKey} client_secret="${syntheticClientSec}" refreshToken=${syntheticRefreshTok}`);
+  };
+
+  const resultCompound = await runHostedProbeRunner({
+    projectRef: HARDCODED_TEMP_REF,
+    argv: ['--live'],
+    env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    mockDispatcher: mockDispatcherCompound,
+    sleepFn: async () => {}
+  });
+
+  const serializedCompound = JSON.stringify(resultCompound);
+  assert.ok(!serializedCompound.includes(syntheticServiceKey), 'SUPABASE_SERVICE_ROLE_KEY secret must not exist in serialized report');
+  assert.ok(!serializedCompound.includes(syntheticClientSec), 'client_secret must not exist in serialized report');
+  assert.ok(!serializedCompound.includes(syntheticRefreshTok), 'refreshToken must not exist in serialized report');
+  assert.equal(resultCompound.status, 'HALTED_ON_FAILURE');
+  assert.match(resultCompound.abortReason, /SUPABASE_SERVICE_ROLE_KEY=\[REDACTED\]/);
+  assert.match(resultCompound.abortReason, /client_secret="\[REDACTED\]"/);
+  assert.match(resultCompound.abortReason, /refreshToken=\[REDACTED\]/);
 });
 
 test('30. Timeout race evaluation confirms zero unhandled rejections and proper abort handling (PRRT_kwDOVtCmZc66jd3O)', async () => {
@@ -1453,4 +1479,89 @@ test('30. Timeout race evaluation confirms zero unhandled rejections and proper 
   } finally {
     process.removeListener('unhandledRejection', onUnhandled);
   }
+});
+
+test('31. Negative token-issuance probes reject top-level credentials and tokens fail-closed (PRRT_kwDOVtCmZc66kYUV)', async () => {
+  const hook03 = { id: 'HOOK-03', category: 'Token Hook', target: 'Auth API' };
+  const hook07 = { id: 'HOOK-07', category: 'Token Hook', target: 'Auth API' };
+  const bypass01 = { id: 'BYPASS-01', category: 'Native Bypass', target: 'Auth API' };
+  const bypass02 = { id: 'BYPASS-02', category: 'Native Bypass', target: 'Auth API' };
+  const bypass03 = { id: 'BYPASS-03', category: 'Native Bypass', target: 'Auth API' };
+  const bypass04 = { id: 'BYPASS-04', category: 'Native Bypass', target: 'Auth API' };
+
+  // 1. HOOK-03 rejects top-level access_token even with rejection_observed: true and error status
+  const resHook03 = validateProbeOutcome(hook03, {
+    passed: true,
+    status: 500,
+    rejection_observed: true,
+    access_token: 'synthetic-issued-token'
+  });
+  assert.equal(resHook03.passed, false);
+  assert.match(resHook03.reason, /SECURITY_INVARIANT_VIOLATION.*HOOK-03 issued token.*access_token present/);
+
+  // 2. HOOK-07 rejects top-level access_token
+  const resHook07 = validateProbeOutcome(hook07, {
+    passed: true,
+    status: 500,
+    rejection_observed: true,
+    access_token: 'synthetic-issued-token'
+  });
+  assert.equal(resHook07.passed, false);
+  assert.match(resHook07.reason, /SECURITY_INVARIANT_VIOLATION.*HOOK-07 issued token.*access_token present/);
+
+  // 3. BYPASS-01 rejects top-level access_token
+  const resBypass01 = validateProbeOutcome(bypass01, {
+    passed: true,
+    status: 403,
+    route_disabled: true,
+    access_token: 'synthetic-issued-token'
+  });
+  assert.equal(resBypass01.passed, false);
+  assert.match(resBypass01.reason, /SECURITY_INVARIANT_VIOLATION.*BYPASS-01 issued tokens.*access_token present/);
+
+  // 4. BYPASS-02 rejects top-level refresh_token
+  const resBypass02 = validateProbeOutcome(bypass02, {
+    passed: true,
+    status: 403,
+    signup_disabled: true,
+    refresh_token: 'synthetic-refresh-token'
+  });
+  assert.equal(resBypass02.passed, false);
+  assert.match(resBypass02.reason, /SECURITY_INVARIANT_VIOLATION.*BYPASS-02 created user or issued tokens.*refresh_token present/);
+
+  // 5. BYPASS-03 rejects top-level token
+  const resBypass03 = validateProbeOutcome(bypass03, {
+    passed: true,
+    status: 403,
+    rejection_observed: true,
+    token: 'synthetic-token'
+  });
+  assert.equal(resBypass03.passed, false);
+  assert.match(resBypass03.reason, /SECURITY_INVARIANT_VIOLATION.*BYPASS-03 received HTTP 200 or tokens.*token present/);
+
+  // 6. BYPASS-04 rejects nested tokens.access_token
+  const resBypass04 = validateProbeOutcome(bypass04, {
+    passed: true,
+    status: 403,
+    rejection_observed: true,
+    tokens: { access_token: 'synthetic-token' }
+  });
+  assert.equal(resBypass04.passed, false);
+  assert.match(resBypass04.reason, /SECURITY_INVARIANT_VIOLATION.*BYPASS-04 received HTTP 200 or tokens.*tokens\.access_token present/);
+
+  // 7. Legitimate negative cases without credentials pass when affirmative rejection is observed
+  const resValidHook03 = validateProbeOutcome(hook03, {
+    passed: true,
+    status: 500,
+    rejection_observed: true,
+    hook_rejected: true
+  });
+  assert.equal(resValidHook03.passed, true);
+
+  const resValidBypass01 = validateProbeOutcome(bypass01, {
+    passed: true,
+    status: 403,
+    route_disabled: true
+  });
+  assert.equal(resValidBypass01.passed, true);
 });

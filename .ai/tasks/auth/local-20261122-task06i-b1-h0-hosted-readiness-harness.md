@@ -314,13 +314,29 @@ All 8 review threads on PR #36 have been resolved with regression tests:
   3. SESSION-03 retains `session_not_found` as the standard GoTrue Auth HTTP API revocation error code.
 - **Tests:** `hosted-probe-runner.test.mjs` (Test 28: sub-test 8j asserting that `session_not_found` fails closed on SESSION-06 with `MISSING_EVIDENCE`).
 
+### 28. `PRRT_kwDOVtCmZc66kYUU` (R6-05) — Apply Unified Sensitive-Key Policy to Diagnostic Strings
+- **Root Cause:** In earlier commits, `redactSensitiveFields()` checked keys against `SENSITIVE_KEY_SET` using exact name lookups. When dispatcher exceptions contained compound, prefixed, or camelCase keys (e.g. `SUPABASE_SERVICE_ROLE_KEY=...`, `client_secret=...`, `refreshToken=...`), they were not matched and credentials leaked in `abortReason` and serialized reports, while structured objects were sanitized.
+- **Remediation:**
+  1. Created shared helper `isSensitiveKey(key)` using `SENSITIVE_KEY_SUBSTRINGS` (`secret`, `password`, `token`, `key`, `authorization`, `bearer`, `credential`, `service_role`, `refresh_token`, `access_token`, `apikey`, `api_key`).
+  2. Applied `isSensitiveKey(key)` identically to both diagnostic string parsing in `redactSensitiveFields()` and recursive object traversal in `sanitizeData()`.
+  3. Added an end-to-end runner regression test asserting zero leakage of `SUPABASE_SERVICE_ROLE_KEY`, `client_secret`, and `refreshToken` in serialized reports.
+- **Tests:** `hosted-probe-runner.test.mjs` (Test 29: sub-test 5 end-to-end runner test with compound/prefixed/camelCase secrets in dispatcher exception).
+
+### 29. `PRRT_kwDOVtCmZc66kYUV` (R6-06) — Reject Top-Level Credentials in Negative Token-Issuance Probes
+- **Root Cause:** In `validateProbeOutcome()`, negative probes (`HOOK-03..07`, `BYPASS-01..04`) only checked `rawOutcome.tokens` or `rawOutcome.has_token === true`. Top-level credentials such as `rawOutcome.access_token`, `rawOutcome.refresh_token`, or `rawOutcome.token` (which positive probes `HOOK-01` and `HOOK-02` accept as valid issuance evidence) were not inspected by negative probes, allowing a run to pass even if credentials were issued.
+- **Remediation:**
+  1. Implemented central normalizer `extractObservedTokens(rawOutcome)` that detects any token issuance representation: `has_token: true`, `access_token`, `refresh_token`, `token`, `tokens.access_token`, `tokens.refresh_token`, `tokens.token`, or non-empty `tokens`.
+  2. All negative probes (`BYPASS-01`, `BYPASS-02`, `BYPASS-03`, `BYPASS-04`, `HOOK-03`, `HOOK-04`, `HOOK-05`, `HOOK-06`, `HOOK-07`) fail closed with `SECURITY_INVARIANT_VIOLATION` if `extractObservedTokens(rawOutcome)` is truthy.
+  3. Positive probes (`HOOK-01`, `HOOK-02`) require `extractObservedTokens(rawOutcome)` to confirm token issuance.
+- **Tests:** `hosted-probe-runner.test.mjs` (Test 31: regression matrix covering HOOK-03, HOOK-07, BYPASS-01, BYPASS-02, BYPASS-03, BYPASS-04 with top-level and nested credentials).
+
 ---
 
 ## 5. Local Security Harness & Parity Verification Results (Phase E)
 
 | Test Suite / Script | Command | Cases / Result | Exit Code | Notes |
 |---|---|---|---|---|
-| Task 06I Security Suite | `node --test experiments/task06i/*.test.mjs` | **102 passed**, 0 failed | `0` | All 4 test files pass: allowlist (37), evaluator (15), probe runner (34), harness (16) |
+| Task 06I Security Suite | `node --test experiments/task06i/*.test.mjs` | **103 passed**, 0 failed | `0` | All 4 test files pass: allowlist (37), evaluator (15), probe runner (35), harness (16) |
 | PostgreSQL 17.11 Parity Check | `node experiments/task06i/sql-contract-parity.mjs` | **18 passed**, 0 failed | `0` | Live Docker PostgreSQL 17.11 with zero host ports; `ON_ERROR_STOP=1`; grants verified; `Status: POSTGRES_VERIFIED` |
 | Task 06H Historical Suite | `node --test experiments/task06h/*.test.mjs` | **115 passed**, 0 failed | `0` | Phase 1 Auth Shell contract baseline clean |
 | Workspace Repository Verification | `npm run verify` | **22 shell contract passed** | `0` | Tokens clean, `tsc` clean, `eslint` clean |
