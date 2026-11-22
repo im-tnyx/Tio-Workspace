@@ -445,14 +445,19 @@ export function verifyParityMatrix() {
         throw new Error('PostgreSQL container failed to become ready in time');
       }
 
-      // Deploy hooks.sql using ON_ERROR_STOP=1
+      // Deploy hooks.sql using ON_ERROR_STOP=1 (with retry to handle PostgreSQL init-shutdown/restart window)
       const sqlPath = join(__dirname, 'sql', 'hooks.sql');
       const sqlContent = readFileSync(sqlPath, 'utf8');
-      const deploy = spawnSync('docker', ['exec', '-i', containerName, 'psql', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'postgres'], {
-        input: sqlContent,
-        encoding: 'utf8',
-        timeout: 8000
-      });
+      let deploy;
+      for (let attempt = 0; attempt < 10; attempt++) {
+        deploy = spawnSync('docker', ['exec', '-i', containerName, 'psql', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'postgres'], {
+          input: sqlContent,
+          encoding: 'utf8',
+          timeout: 8000
+        });
+        if (deploy.status === 0) break;
+        sleepSync(500);
+      }
 
       if (deploy.status !== 0) {
         throw new Error(`Failed to deploy hooks.sql with ON_ERROR_STOP=1: ${deploy.stderr || deploy.stdout}`);

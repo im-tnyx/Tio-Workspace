@@ -223,13 +223,40 @@ All 8 review threads on PR #36 have been resolved with regression tests:
   2. Standalone CLI execution sets `process.exitCode = 1` and logs an error whenever `status !== 'POSTGRES_VERIFIED'` or `passedParity !== totalCases`.
 - **Tests:** `security-harness.test.mjs` (Tests 15, 16).
 
+### 18. `PRRT_kwDOVtCmZc66jdT2` (R4-01) — Actual Session Revocation Proof (SESSION-03 & SESSION-06)
+- **Root Cause:** In `validateProbeOutcome`, SESSION-03 accepted `bad_jwt`, `session expired`, and generic `session` error substrings as sufficient evidence of revocation, allowing invalid or expired tokens to masquerade as proof of remote session invalidation.
+- **Remediation:**
+  1. Rejection of False-Proof Errors: Explicitly reject `bad_jwt`, `jwt_expired`, `token_expired`, `invalid_jwt`, `malformed_jwt`, and generic non-revocation errors (`FALSE_PROOF_REJECTED`).
+  2. Pre-Reset Baseline Verification: Require proof that the exact same valid, unexpired session succeeded before password reset (`pre_reset_baseline_verified: true`).
+  3. Reset Operation Evidence: Require explicit observation that the password reset or session invalidation operation completed (`reset_completed: true`).
+  4. Session Correlation: Verify that pre-reset and post-reset observations belong to the exact same session via stable test identifier (`session_id` match / `same_session_correlated: true`).
+  5. Revocation-Specific Rejection: Require affirmative revocation-specific evidence (`error_code: 'session_not_found'` or `revocation_verified: true`).
+  6. Applied equivalent false-proof rejection checks to adjacent SESSION-06 (Edge Function session rejection).
+- **Tests:** `hosted-probe-runner.test.mjs` (Test 28: 8 sub-assertions covering bad_jwt, expired, missing baseline, failed reset, mismatched session, generic 403, valid correlation, and SESSION-06).
+
+### 19. `PRRT_kwDOVtCmZc66jdT4` (R4-02) — Complete Quoted Credential Redaction in sanitizeData
+- **Root Cause:** `sanitizeData()` regex for sensitive key-value pairs stopped at whitespace and ampersands, failing to redact quoted values with leading/trailing spaces (`password=" synthetic-review-password"`), internal spaces and ampersands (`password="alpha beta&gamma"`), single quotes (`access_token='...'`), or escaped quotes (`\"`).
+- **Remediation:**
+  1. Updated `sanitizeData()` with dedicated quoted regexes matching until the unescaped closing quote (supporting double and single quotes, leading/trailing whitespace, embedded `&`, and escaped `\"` / `\'`).
+  2. Added fail-closed unclosed-quote fallback stopping at line breaks, commas, brackets, or braces.
+  3. Verified that serialized runner report (including `results`, `abortReason`, and nested `outcome.body`) contains zero unredacted sensitive values.
+- **Tests:** `hosted-probe-runner.test.mjs` (Test 29).
+
+### 20. `PRRT_kwDOVtCmZc66jd3O` (R4-03) — Timeout Race Independent Evaluation & Zero Unhandled Rejections
+- **Root Cause & Finding:** Cursor Bugbot reported a potential unhandled Promise rejection if a dispatcher rejects after `Promise.race` timeout. Independent evaluation and Node specification confirm `Promise.race` registers rejection handlers on competing promises; nevertheless, an explicit `.catch(() => {})` handler was attached to `dispatchPromise` to provide an unconditional guarantee.
+- **Remediation:**
+  1. Attached `dispatchPromise.catch(() => {})` before `Promise.race([dispatchPromise, timeoutPromise])`.
+  2. Added retry handling in `sql-contract-parity.mjs` during PostgreSQL initialization-shutdown/restart transitions to prevent premature connection drops.
+  3. Created 4 focused regression tests evaluating all race combinations with a process-level `unhandledRejection` listener.
+- **Tests:** `hosted-probe-runner.test.mjs` (Test 30).
+
 ---
 
 ## 5. Local Security Harness & Parity Verification Results (Phase E)
 
 | Test Suite / Script | Command | Cases / Result | Exit Code | Notes |
 |---|---|---|---|---|
-| Task 06I Security Suite | `node --test experiments/task06i/*.test.mjs` | **99 passed**, 0 failed | `0` | All 4 test files pass: allowlist (37), evaluator (15), probe runner (31), harness (16) |
+| Task 06I Security Suite | `node --test experiments/task06i/*.test.mjs` | **102 passed**, 0 failed | `0` | All 4 test files pass: allowlist (37), evaluator (15), probe runner (34), harness (16) |
 | PostgreSQL 17.11 Parity Check | `node experiments/task06i/sql-contract-parity.mjs` | **18 passed**, 0 failed | `0` | Live Docker PostgreSQL 17.11 with zero host ports; `ON_ERROR_STOP=1`; grants verified; `Status: POSTGRES_VERIFIED` |
 | Task 06H Historical Suite | `node --test experiments/task06h/*.test.mjs` | **115 passed**, 0 failed | `0` | Phase 1 Auth Shell contract baseline clean |
 | Workspace Repository Verification | `npm run verify` | **22 shell contract passed** | `0` | Tokens clean, `tsc` clean, `eslint` clean |
