@@ -1,15 +1,15 @@
-# Phase 1.2 Task 06I-B1-R5 — Managed Auth Feasibility & Security Boundary Verification Preflight
+# Phase 1.2 Task 06I-B1-R6 — Managed Auth Feasibility & Security Boundary Verification Preflight
 
-> **Preflight Report & Test Plan (Revision R5 — Final Contract Corrections & Protected CI Approval Preparation).** Prepared under `AGENTS.md` operating rules. This document authorizes local investigation, documentation, offline test preparation, and read-only feasibility checks only. It does not authorize creating or modifying a hosted Supabase project. Production Real Auth remains **NO-GO**.
+> **Preflight Report & Test Plan (Revision R6 — Final Evidence Closure & Protected CI Activation Preparation).** Prepared under `AGENTS.md` operating rules. This document authorizes local investigation, documentation, offline test preparation, and read-only feasibility checks only. It does not authorize creating or modifying a hosted Supabase project. Production Real Auth remains **NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **PREFLIGHT COMPLETE (REVISION R5) — HOSTED PROVISIONING BLOCKED PENDING OWNER APPROVAL & SAFE TARGET RESOLUTION** |
-| Objective | Address PR #35 review findings (R5-01 strict unpadded action-type normalization parity, R5-02 hosted fail-closed evidence classification corrections, R5-03 test evidence count reconciliation, R5-04 BLK-05 protected CI workflow patch preparation), maintain $0 cost and permanent immunity for `Tio-world`, and preserve branch protections |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-R5 slice |
-| Previous agent | Agent / Task 06I-B1-R4 author |
-| Last commit agent | `c948d3bd9cb4b2a27d1400521fd89b08e48de51f` (Task 06I-B1-R4 commit on PR #35) |
-| Tracking / approval | Task 06I-B1-R5 authorized by user prompt; PR #35 active; owner mandates $0 cost and permanent immunity for `Tio-world`; hosted mutations strictly prohibited |
+| Status | **PREFLIGHT COMPLETE (REVISION R6) — HOSTED PROVISIONING BLOCKED PENDING OWNER APPROVAL & SAFE TARGET RESOLUTION** |
+| Objective | Address PR #35 review findings (R6-01 evidence integrity correction regarding unhandled hook exception aborts and explicit 5-point classification, R6-02 exact 10-step owner approval sequence for protected CI workflow via `ATTRIBUTION_GUARD_CHANGE_APPROVED_PR_HEAD`, R6-03 CI coverage tracking while keeping thread `PRRT_kwDOVtCmZc66VyCa` open, R6-04 offline test and verify reconciliation, R6-05 GitHub PR review update), maintain $0 cost and permanent immunity for `Tio-world`, and preserve branch protections |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-R6 slice |
+| Previous agent | Agent / Task 06I-B1-R5 author |
+| Last commit agent | `4c8d85e4e1104a079aa86a5ebf7fed3818afcd7d` (Task 06I-B1-R5 commit on PR #35) |
+| Tracking / approval | Task 06I-B1-R6 authorized by user prompt; PR #35 active; owner mandates $0 cost and permanent immunity for `Tio-world`; hosted mutations strictly prohibited |
 | Branch | `docs/task06i-b1-managed-auth-preflight` |
 | Base SHA / inspected HEAD | `b7d4fda97979e734a85461e83bf119dbc1a9689c` (`main`, verified up to date with `origin/main`) |
 | Platform and file scope | Documentation, `.ai/` context, isolated offline preflight test harnesses under `experiments/task06i/`; zero client Expo UI, production schema, or live Auth changes |
@@ -115,7 +115,12 @@ Analysis was conducted using Supabase CLI v2.121.0, current official documentati
   - `user_id` (UUID string)
   - `authentication_method` (string: `'password'`, `'token_refresh'`, `'otp'`, `'recovery'`, `'magiclink'`, `'anonymous'`, etc.)
   - `claims` (JSONB object containing standard JWT claims including `amr`)
-- **Fail-Closed Execution:** Official documentation and community findings confirm that when the Postgres hook function raises an unhandled exception (e.g. `RAISE EXCEPTION ... USING ERRCODE = '42501'`), Supabase Auth **fails closed**: the authentication transaction is aborted, returning HTTP `500 Internal Server Error (AuthApiError: Error invoking access token hook)` to the client, and **zero JWT access token or session is issued**.
+- **Fail-Closed Execution (Design Target vs Evidence Classification):**
+  - **Documented Provider Behavior / Design Target:** Official Supabase documentation and community reports specify that when the Postgres hook function raises an unhandled exception (e.g. `RAISE EXCEPTION ... USING ERRCODE = '42501'`), GoTrue aborts the authentication transaction, returns HTTP `500 Internal Server Error (AuthApiError: Error invoking access token hook)` to the client, and issues **zero JWT access token or session**.
+  - **Local GoTrue Runtime Evidence:** Hook rejection aborting token issuance was empirically verified against local Docker GoTrue in Task 06D/06H.
+  - **Offline JavaScript Contract Tests:** Evaluator contract (`experiments/task06i/hook-allowlist-contract.test.mjs`) verifies schema input parsing, RFC 8176 AMR traversal, and fail-closed error throwing offline (52/52 unit tests pass).
+  - **Hosted Unverified Status:** Whether managed Supabase Cloud reliably aborts token issuance on hook exception under all conditions (including function timeouts, network latency, or malformed JSON payloads) without failing open or falling back is **DOCUMENTED PROVIDER BEHAVIOR / HOSTED UNVERIFIED / NOT TESTED**. An unhandled Custom Access Token Hook exception is **NOT** independently proven to prevent hosted JWT issuance until empirical verification is completed on managed Supabase Cloud.
+  - **Mandatory Future Acceptance Target:** Zero access tokens or sessions issued when the hook function raises an unhandled exception or times out on managed Supabase Cloud.
 - **Managed Hosted Status:** Schema contract verified offline (16/16 tests pass); hosted execution status: `NOT TESTED`.
 
 ### 5. Strict RFC 8176 `amr[*].method` Traversal
@@ -426,8 +431,13 @@ Before executing any native bypass tests (`BYPASS-01` through `BYPASS-05`), the 
 
 ### Hook Failure and Fallback Behavior (Design Target / Documented Provider Behavior / Hosted Unverified)
 - **Custom Access Token Hook Failure (Documented Provider Behavior / Hosted Unverified):**
-  - **Design Target:** If the hook function throws an exception (`RAISE EXCEPTION ... USING ERRCODE = '42501'`) or times out (Supabase default timeout is 2 seconds for Postgres functions), Supabase GoTrue is documented to abort JWT issuance immediately and return HTTP 500 (`Error invoking access token hook`), issuing zero tokens.
-  - **Observed vs Hosted Evidence:** While hook denial was empirically observed in local Docker GoTrue (Task 06D/06H), timeout handling, malformed JSON abortion, and absence of fallback on managed Supabase Cloud infrastructure remain **DOCUMENTED PROVIDER BEHAVIOR / HOSTED UNVERIFIED / NOT TESTED** until proven in Stage 06I-B1.
+  - **Design Target / Mandatory Future Acceptance Target:** If the hook function throws an exception (`RAISE EXCEPTION ... USING ERRCODE = '42501'`) or times out (Supabase default timeout is 2 seconds for Postgres functions), Supabase GoTrue is documented to abort JWT issuance immediately and return HTTP 500 (`Error invoking access token hook`), issuing zero tokens.
+  - **Explicit Evidence Classification:**
+    1. *Local GoTrue Runtime Evidence:* Hook denial was empirically observed to abort session minting in local Docker GoTrue (Task 06D/06H).
+    2. *Offline JavaScript Contract Tests:* Input validation, AMR allowlist inspection, and error throwing are verified offline (`experiments/task06i/hook-allowlist-contract.test.mjs`).
+    3. *Documented Supabase Provider Behavior:* Official Supabase documentation specifies that unhandled hook exceptions abort authentication and return HTTP 500.
+    4. *Hosted Unverified Status:* Whether managed Supabase Cloud reliably aborts token issuance on hook exception under all failure modes without latency timeouts or failing open remains **DOCUMENTED PROVIDER BEHAVIOR / HOSTED UNVERIFIED / NOT TESTED** until empirically proven in Stage 06I-B1. An unhandled Custom Access Token Hook exception is **NOT** independently proven to prevent hosted JWT issuance until hosted empirical verification is completed.
+    5. *Mandatory Future Acceptance Criteria:* Zero access tokens or sessions issued when the hook function raises an unhandled exception or times out on managed Supabase Cloud.
 - **Send Email Hook Failure & Fallback (Documented Provider Behavior / Hosted Unverified):**
   - **Exception Abort (Design Target):** When `send_email_hook` raises an exception with SQLSTATE `42501`, GoTrue is documented to abort the authentication/recovery transaction and return an HTTP error (e.g. HTTP 500 / hook execution failure). Under this path, zero recovery tokens or emails should reach SMTP or the user.
   - **Hosted SMTP Fallback Unverified:** The assertion that GoTrue aborts without falling back to default SMTP delivery when the Send Email Hook fails or raises SQLSTATE 42501 is documented provider behavior, but remains **DOCUMENTED PROVIDER BEHAVIOR / HOSTED UNVERIFIED / NOT TESTED** until empirically validated on live managed Supabase infrastructure in Stage 06I-B1.
@@ -502,25 +512,36 @@ jobs:
 
 #### Required Owner Approval & Activation Procedure
 Per [`docs/26-COMMIT-ATTRIBUTION-GUARD.md`](../../../docs/26-COMMIT-ATTRIBUTION-GUARD.md) and `scripts/check_guard_integrity.sh`:
-1. **Independent Review:** The repository owner independently reviews the proposed `.github/workflows/security-experiments.yml` patch above.
-2. **Set Trusted Variable:** In **GitHub Repository Settings → Environments → `attribution-guard-trusted` → Environment variables**, the owner sets:
-   `ATTRIBUTION_GUARD_CHANGE_APPROVED_PR_HEAD="35:<CURRENT_40_CHAR_HEAD_SHA>"`
-3. **Commit & Push:** The approved workflow file is committed and pushed to `docs/task06i-b1-managed-auth-preflight`.
-4. **Guard Verification:** `scripts/check_guard_integrity.sh` verifies that the PR and HEAD match the variable, allowing the App-owned `Commit attribution guard` to pass.
-5. **Clear Variable:** Immediately upon merge or branch update, the owner removes or clears the environment variable.
+1. **Prepare Proposed Workflow Patch:** Prepare the proposed workflow patch (`.github/workflows/security-experiments.yml`) for independent owner review (as documented above).
+2. **Obtain Explicit Owner Authorization:** Obtain explicit owner authorization for the exact intended protected change before touching any workflow file.
+3. **Commit & Push Workflow Change:** Only after receiving explicit owner authorization, commit and push the workflow change to the PR branch `docs/task06i-b1-managed-auth-preflight`.
+4. **Retrieve New PR HEAD SHA:** Retrieve the NEW exact 40-character PR HEAD SHA from GitHub (`git rev-parse HEAD` or via GitHub API/UI).
+5. **Independent Final Review:** The repository owner independently reviews the final PR diff and the new HEAD commit.
+6. **Set Trusted Approval Variable:** In **GitHub Repository Settings → Environments → `attribution-guard-trusted` → Environment variables**, the owner sets the exact variable:
+   `ATTRIBUTION_GUARD_CHANGE_APPROVED_PR_HEAD="35:<NEW_40_CHAR_HEAD_SHA>"`
+7. **Rerun Attribution Guard:** Rerun or re-request the App-owned attribution guard check (`Commit attribution guard`) on that exact new HEAD.
+8. **Verify All Checks Pass:** Confirm the guard, workflow tests, and all required checks actually pass in GitHub Actions.
+9. **Follow Review & Merge Policy:** Follow standard review and owner merge approval policy (owner merge gate).
+10. **Clear Temporary Approval:** Immediately upon merge or if any further commit updates the branch, remove or clear `ATTRIBUTION_GUARD_CHANGE_APPROVED_PR_HEAD` in the trusted environment.
+
+> [!WARNING]
+> **Approval Sequence & Safeguard Rules:**
+> - **Never use an old/prior SHA for approval after workflow commit:** Committing the workflow generates a new commit with a new SHA; setting the approval variable to a prior SHA (e.g. the pre-commit HEAD) guarantees failure because `scripts/check_guard_integrity.sh` verifies `$approved_pr_head = "$pr_number:$head_sha"`.
+> - **Subsequent commits invalidate approval:** Any new commit changes the HEAD SHA and requires re-approval of the new SHA.
+> - **Strict Guard Integrity:** Do not attempt to bypass, weaken, or add wildcard exceptions to `scripts/check_guard_integrity.sh`.
 
 ---
 
 ## 9. STOP / GO Decision & Recommendations
 
 ### Final Assessment
-- **Task 06I-B1-R5 Preflight Deliverable:** **VERIFIED PASS** (Documentation audited, evidence classifications corrected, 18-point test matrices defined, hook registration and enablement contract explicitly specified, recovery endpoint response contract aligned, canonical unpadded action-type normalization verified in SQL & JS with fail-closed parity, hosted evidence labeled Hosted Unverified / NOT TESTED, protected CI workflow patch prepared for BLK-05, and 52 offline unit tests passing).
+- **Task 06I-B1-R6 Preflight Deliverable:** **VERIFIED PASS** (Documentation audited, evidence classifications corrected with explicit 5-point distinction between local runtime evidence, offline JS contract tests, documented provider behavior, hosted unverified status, and mandatory future acceptance criteria; unhandled token hook exception explicitly labeled NOT independently proven to prevent hosted JWT issuance; BLK-05 activation procedure corrected to exact 10-step sequence with explicit SHA ordering safeguards; 52 offline unit tests passing; full verification passing).
 - **Disposable Hosted Project Execution:** **BLOCKED (STOP)** (Awaiting separate owner authorization and safe isolated target resolution).
 - **Managed Supabase Auth Feasibility:** **NOT VERIFIED ON HOSTED** (Documented capabilities indicate feasibility, but empirical hosted proof is mandatory).
 - **Production Real Auth:** **STRICT NO-GO**.
 
 ### Recommended Next Action
-1. Review this finalized Task 06I-B1-R5 preflight package and PR #35.
+1. Review this finalized Task 06I-B1-R6 preflight package and PR #35.
 2. Maintain `bsfwzvgynwriswapxpsp` and `oykupyiitspujzpwwvuj` as strictly READ-ONLY.
 3. When the owner chooses to authorize future hosted feasibility testing, execute the 18-point Stage 06I-B1 test checklist against an authorized safe target under strict cleanup guarantees.
 
