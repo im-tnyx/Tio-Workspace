@@ -1,15 +1,15 @@
-# Phase 1.2 Task 06I-B1-H0-R1 — Security Remediation & Separate TEMP/REAL Environment Readiness
+# Phase 1.2 Task 06I-B1-H0-R2 — Final P1 Security Gate Closure & TEMP Lifecycle Preservation
 
-> **Target-Safety Decision Record, 8 PR #36 Remediation Proofs, Live Inventory Audit & TEMP Project Provisioning Package.** Prepared under `AGENTS.md` operating rules. This document establishes deterministic local security verification, remediates all 8 PR #36 review findings, audits Supabase organization inventory, and prepares the dry-run probe harness and TEMP project creation approval package. It does not authorize creating, modifying, or deleting any hosted Supabase project. Production Real Auth remains **NO-GO**.
+> **Target-Safety Decision Record, P1 Security Remediation Proofs, Live Inventory Audit & TEMP Project Provisioning Package.** Prepared under `AGENTS.md` operating rules. This document establishes deterministic local security verification, remediates all independent P1 review findings on PR #36 (immutable boundary, strict outcome validation, serialized JSON redaction), preserves the owner-directed TEMP lifecycle & deletion policy, audits Supabase organization inventory, and prepares the dry-run probe harness and TEMP project creation approval package. It does not authorize creating, modifying, or deleting any hosted Supabase project. Production Real Auth remains **NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **PR #36 REVIEW REMEDIATION (REVISION R1) COMPLETE; 81/81 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (ON_ERROR_STOP=1 + ROLE GRANTS VERIFIED); LIVE INVENTORY AUDITED (1 ACTIVE PROJECT, 1 FREE SLOT AVAILABLE); TEMP LIFECYCLE & DELETION POLICY FORMALIZED (OWNER DIRECTION); AWAITING OWNER APPROVAL FOR TEMP PROJECT CREATION** |
-| Objective | Remediate all 8 independent review findings on PR #36, update Supabase target architecture to cleanly separate REAL (`bsfwzvgynwriswapxpsp`) from disposable TEMP (`Tio-Tnyx-Auth-Temp`), formalize the TEMP project lifecycle & deletion policy per owner direction, verify live organization inventory via Supabase CLI, ensure zero host port exposure and zero fake passes, and prepare TEMP creation approval package without executing hosted mutations |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H0-R1 slice |
-| Previous agent | Agent / Task 06I-B1-H0 author |
-| Last audited HEAD | `2a8975f47265f0a8328f33f603d2cc9788bedc6c` (PR #36 initial commit) |
-| Tracking / approval | Task 06I-B1-H0-R1 authorized by user prompt; owner approves TEMP/REAL separation as target architecture; owner establishes TEMP Project Lifecycle & Deletion Policy; mandates $0 cost and permanent immunity for `Tio-world` and REAL `bsfwzvgynwriswapxpsp`; hosted mutations strictly prohibited |
+| Status | **PR #36 P1 SECURITY REMEDIATION (REVISION R2) COMPLETE; 90/90 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (ON_ERROR_STOP=1 + ROLE GRANTS VERIFIED); LIVE INVENTORY AUDITED (1 ACTIVE PROJECT, 1 FREE SLOT AVAILABLE); TEMP LIFECYCLE & DELETION POLICY FORMALIZED (OWNER DIRECTION); 3 P1 THREADS REMEDIATED WITH TESTS; AWAITING OWNER APPROVAL FOR TEMP PROJECT CREATION** |
+| Objective | Resolve the three independent P1 security findings on PR #36 (immutable project boundary, strict probe outcome validation, and serialized JSON secret redaction), preserve the codified TEMP lifecycle policy, maintain zero host port exposure, and verify all test suites without executing hosted mutations |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H0-R2 slice |
+| Previous agent | Agent / Task 06I-B1-H0-R1 author |
+| Last audited HEAD | `a1305e6ee7678de84a44a2b66de224e5c68b5ee1` (PR #36 post-H0-R1 commit) |
+| Tracking / approval | Task 06I-B1-H0-R2 authorized by user prompt; owner mandates resolving all 3 P1 findings without modifying production resources; owner preserves TEMP Project Lifecycle & Deletion Policy; mandates $0 cost and permanent immunity for `Tio-world` and REAL `bsfwzvgynwriswapxpsp`; hosted mutations strictly prohibited |
 | Branch | `docs/task06i-b1-h0-hosted-readiness-harness` |
 | Base SHA / inspected HEAD | `7150cec4c2e1e9aaa8e75d2cbcb3a23a6dca532e` (`main`, verified up to date with `origin/main`) |
 | Platform and file scope | Documentation, `.ai/` context, isolated offline and local PostgreSQL test harnesses under `experiments/task06i/`, and dry-run probe runner; zero client Expo UI, production schema, or live Auth changes |
@@ -133,15 +133,37 @@ All 8 review threads on PR #36 have been resolved with regression tests:
   3. Added deliberate mismatch regression test verifying that dropped claims, tampered claims, or non-empty Send Email Hook outputs fail parity.
 - **Test:** `security-harness.test.mjs` (Test 14).
 
-### 9. `PRRT_kwDOVtCmZc66i2Ff` — Hardcode Immutable Forbidden Projects and Prevent Env Bypass
-- **Root Cause:** `TIO_SUPABASE_REAL_REF` defaulted from `process.env.TIO_SUPABASE_REAL_REF` and `validateTargetProject` only compared against that reference without directly consulting `IMMUTABLE_FORBIDDEN_PROJECTS` or hardcoding `bsfwzvgynwriswapxpsp`.
+### 9. `PRRT_kwDOVtCmZc66i_Kb` (R2-01) — Immutable Forbidden Project Boundary
+- **Root Cause:** In JavaScript, `Object.freeze(new Set(...))` does not freeze Set entries; calling `.delete()` on the exported Set succeeded, allowing caller mutation to disable the protection boundary.
 - **Remediation:**
-  1. Explicitly hardcoded `HARDCODED_REAL_REF = 'bsfwzvgynwriswapxpsp'` and `HARDCODED_TIO_WORLD_REF = 'oykupyiitspujzpwwvuj'` in `hosted-probe-runner.mjs`.
-  2. Defined `IMMUTABLE_FORBIDDEN_PROJECTS = Object.freeze(new Set([HARDCODED_TIO_WORLD_REF, HARDCODED_REAL_REF]))`.
-  3. `validateTargetProject` directly evaluates `IMMUTABLE_FORBIDDEN_PROJECTS.has(normRef)` as its primary gate, throwing `CRITICAL_SECURITY_VIOLATION`.
-  4. Added check ensuring `tempRef` cannot spoof any immutable forbidden project.
-  5. Added regression test `2b. REAL project cannot be bypassed via env override or tempRef spoofing` asserting strict rejection of `bsfwzvgynwriswapxpsp`.
-- **Test:** `hosted-probe-runner.test.mjs` (Test 2b).
+  1. Removed exported mutable Set as an authoritative security boundary.
+  2. Implemented direct hardcoded identity comparisons (`HARDCODED_REAL_REF = 'bsfwzvgynwriswapxpsp'`, `HARDCODED_TIO_WORLD_REF = 'oykupyiitspujzpwwvuj'`) and an unexported private frozen array `INTERNAL_FORBIDDEN_REFS`.
+  3. Authoritative checks in `validateTargetProject` evaluate constants directly, making protection unconditionally immune to Set mutation, export tampering, env overrides, or `tempRef` spoofing.
+  4. Exported `IMMUTABLE_FORBIDDEN_PROJECTS` as an immutable lookup interface whose mutation methods (`delete`, `add`, `clear`) throw `TypeError`.
+- **Tests:** `hosted-probe-runner.test.mjs` (Tests 1, 2, 2b, 2c).
+
+### 10. `PRRT_kwDOVtCmZc66i_Kd` (R2-02) — Strict Probe Outcome Validation
+- **Root Cause:** The runner only checked `probeResult.passed === false`, so dispatcher results missing `passed` (e.g. `{ status: 500 }`) or returning false passes (e.g. `{ status: 200, passed: true }` on `BYPASS-01`) proceeded and reported `COMPLETED`.
+- **Remediation:**
+  1. Implemented `validateProbeOutcome(item, rawOutcome)` requiring explicit boolean `passed`. Missing, null, or non-boolean values fail closed immediately.
+  2. Independent requirement-specific expectation audit:
+     - `BYPASS-01` to `BYPASS-04`: Receiving HTTP 200 or tokens overrides `passed` to `false` (`HTTP_STATUS_MISMATCH` / `SECURITY_INVARIANT_VIOLATION`).
+     - `BYPASS-05`: Receiving recovery token or recovery email overrides to `false`.
+     - `HOOK-01` & `HOOK-02`: Must return HTTP 200 and issue token (`amr_authenticated`).
+     - `HOOK-03` to `HOOK-07`: Disallowed AMR must reject token issuance.
+     - `SESSION-01` to `SESSION-06`: Explicit session creation, revocation, and rejection validation.
+  3. Wrapped dispatcher in `try...catch` to catch exceptions/timeouts and fail closed (`DISPATCHER_EXCEPTION`).
+  4. Guaranteed that `COMPLETED` is returned only when 100% of the 18 planned cases execute and pass; partial execution returns `HALTED_ON_FAILURE`.
+- **Tests:** `hosted-probe-runner.test.mjs` (Tests 12, 13, 14, 15, 16, 17, 18, 19, 20).
+
+### 11. `PRRT_kwDOVtCmZc66i_Kf` (R2-03) — Serialized JSON Secret Redaction
+- **Root Cause:** String regexes did not recognize quoted JSON fields (e.g. `{"password":"PRIVATE_VALUE","refresh_token":"REFRESH_PRIVATE"}`), leaving secrets unredacted in JSON strings and serialized dispatcher response bodies (`outcome.body`).
+- **Remediation:**
+  1. Updated `sanitizeData` to detect structured JSON strings (starting with `{` or `[`), safely parse them with `JSON.parse`, recursively sanitize the structured object/array, and re-serialize to JSON.
+  2. Redacted sensitive keys across `password`, `refresh_token`, `access_token`, `service_role`, `api_key`, `authorization`, `bearer`, and `credential`.
+  3. Fail-closed regex redaction for unparseable/malformed JSON strings ensuring secret values are redacted even if JSON syntax is invalid.
+  4. Verified that sensitive values are completely absent from both sanitized string output and final runner `results`.
+- **Tests:** `hosted-probe-runner.test.mjs` (Tests 9, 9b, 21).
 
 ---
 
@@ -149,7 +171,7 @@ All 8 review threads on PR #36 have been resolved with regression tests:
 
 | Test Suite / Script | Command | Cases / Result | Exit Code | Notes |
 |---|---|---|---|---|
-| Task 06I Security Suite | `node --test experiments/task06i/*.test.mjs` | **81 passed**, 0 failed | `0` | All 4 test files pass: allowlist (37), evaluator (15), probe runner (15), harness (14) |
+| Task 06I Security Suite | `node --test experiments/task06i/*.test.mjs` | **90 passed**, 0 failed | `0` | All 4 test files pass: allowlist (37), evaluator (15), probe runner (24), harness (14) |
 | PostgreSQL 17.11 Parity Check | `node experiments/task06i/sql-contract-parity.mjs` | **18 passed**, 0 failed | `0` | Live Docker PostgreSQL 17.11 with zero host ports; `ON_ERROR_STOP=1`; grants verified |
 | Task 06H Historical Suite | `node --test experiments/task06h/*.test.mjs` | **115 passed**, 0 failed | `0` | Phase 1 Auth Shell contract baseline clean |
 | Workspace Repository Verification | `npm run verify` | **22 shell contract passed** | `0` | Tokens clean, `tsc` clean, `eslint` clean |
