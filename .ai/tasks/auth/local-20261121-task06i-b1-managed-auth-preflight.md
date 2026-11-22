@@ -1,15 +1,15 @@
-# Phase 1.2 Task 06I-B1-R6 — Managed Auth Feasibility & Security Boundary Verification Preflight
+# Phase 1.2 Task 06I-B1-R7 — Managed Auth Feasibility & Security Boundary Verification Preflight
 
-> **Preflight Report & Test Plan (Revision R6 — Final Evidence Closure & Protected CI Activation Preparation).** Prepared under `AGENTS.md` operating rules. This document authorizes local investigation, documentation, offline test preparation, and read-only feasibility checks only. It does not authorize creating or modifying a hosted Supabase project. Production Real Auth remains **NO-GO**.
+> **Preflight Report & Test Plan (Revision R7 — Recovery Contract Closure & CI Owner Approval Gate).** Prepared under `AGENTS.md` operating rules. This document authorizes local investigation, documentation, offline test preparation, and read-only feasibility checks only. It does not authorize creating or modifying a hosted Supabase project. Production Real Auth remains **NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **PREFLIGHT COMPLETE (REVISION R6) — HOSTED PROVISIONING BLOCKED PENDING OWNER APPROVAL & SAFE TARGET RESOLUTION** |
-| Objective | Address PR #35 review findings (R6-01 evidence integrity correction regarding unhandled hook exception aborts and explicit 5-point classification, R6-02 exact 10-step owner approval sequence for protected CI workflow via `ATTRIBUTION_GUARD_CHANGE_APPROVED_PR_HEAD`, R6-03 CI coverage tracking while keeping thread `PRRT_kwDOVtCmZc66VyCa` open, R6-04 offline test and verify reconciliation, R6-05 GitHub PR review update), maintain $0 cost and permanent immunity for `Tio-world`, and preserve branch protections |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-R6 slice |
-| Previous agent | Agent / Task 06I-B1-R5 author |
-| Last commit agent | `4c8d85e4e1104a079aa86a5ebf7fed3818afcd7d` (Task 06I-B1-R5 commit on PR #35) |
-| Tracking / approval | Task 06I-B1-R6 authorized by user prompt; PR #35 active; owner mandates $0 cost and permanent immunity for `Tio-world`; hosted mutations strictly prohibited |
+| Status | **PREFLIGHT COMPLETE (REVISION R7) — HOSTED PROVISIONING BLOCKED PENDING OWNER APPROVAL & SAFE TARGET RESOLUTION** |
+| Objective | Address PR #35 review findings (R7-01 recovery HTTP contract contradiction resolution distinguishing route reachability from HTTP response status, R7-02 offline vs hosted test evidence reconciliation, R7-03 PR review update and re-review request from im-tio, R7-04 Security CI workflow patch preparation for owner activation gate), maintain $0 cost and permanent immunity for `Tio-world`, and preserve branch protections |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-R7 slice |
+| Previous agent | Agent / Task 06I-B1-R6 author |
+| Last commit agent | `42a810159646d05c0dca64f7f925d783c06a2e92` (Task 06I-B1-R6 commit on PR #35) |
+| Tracking / approval | Task 06I-B1-R7 authorized by user prompt; PR #35 active; owner mandates $0 cost and permanent immunity for `Tio-world`; hosted mutations strictly prohibited |
 | Branch | `docs/task06i-b1-managed-auth-preflight` |
 | Base SHA / inspected HEAD | `b7d4fda97979e734a85461e83bf119dbc1a9689c` (`main`, verified up to date with `origin/main`) |
 | Platform and file scope | Documentation, `.ai/` context, isolated offline preflight test harnesses under `experiments/task06i/`; zero client Expo UI, production schema, or live Auth changes |
@@ -105,10 +105,16 @@ Analysis was conducted using Supabase CLI v2.121.0, current official documentati
 - **Managed Hosted Status:** Documented standard feature. **Empirical hosted verification status:** `NOT TESTED`.
 
 ### 3. Intercepting Native Password Recovery via Send Email Hook
-- **Documented Mechanism:** Supabase Auth Send Email Hook allows routing outgoing authentication emails to a custom HTTPS webhook or Edge Function instead of built-in SMTP.
-- **Handling of Recovery:** When `POST /auth/v1/recover` is invoked, Supabase generates the token/hash and sends an event with `email_action_type = "recovery"`.
-- **Security Boundary Nuance:** While the hook can drop/suppress the email to prevent dispatch, **the HTTP endpoint `POST /auth/v1/recover` itself remains reachable and returns 200 OK**. Therefore, Send Email Hook alone is not a complete route closure; secondary protection relies on Custom Access Token Hook blocking token redemption.
-- **Managed Hosted Status:** `NOT TESTED`.
+- **Documented Mechanism:** Supabase Auth Send Email Hook allows routing outgoing authentication emails to a custom PostgreSQL function or HTTPS webhook instead of built-in SMTP.
+- **Handling of Recovery:** When `POST /auth/v1/recover` is invoked, Supabase generates the token/hash and emits an event with `email_action_type = "recovery"`.
+- **SQL Hook Exception Contract:** In `private_auth.send_email_hook`, any event with `email_action_type = 'recovery'` raises an unhandled exception with SQLSTATE `42501` (`send_email_hook: native recovery email dispatch suppressed by security policy`).
+- **Endpoint Reachability vs HTTP Response Status Separation:**
+  1. *Public Endpoint Reachability:* The public HTTP route `POST /auth/v1/recover` remains accessible at the gateway and cannot be globally disabled via Supabase Auth configuration flags alone (unlike `disable_signup = true`).
+  2. *SQL Hook Exception Behavior:* The proposed `send_email_hook` intercepts `email_action_type = 'recovery'` and raises an unhandled SQL exception (`RAISE EXCEPTION ... USING ERRCODE = '42501'`) to suppress native recovery email dispatch.
+  3. *Expected HTTP Response Behaviors:* Depending on GoTrue version, error-handling mode, and anti-enumeration configuration, GoTrue may surface an explicit fail-closed HTTP error (e.g. HTTP `500 Internal Server Error / Error invoking email hook`) or absorb the hook exception into a generic response (such as HTTP `200 OK` for anti-enumeration). An HTTP 200 response is therefore documented only as a potential anti-enumeration provider behavior, not an assertion that recovery succeeded or that a token was delivered.
+  4. *Hosted-Unverified Behavior:* The exact HTTP status code returned by managed Supabase Cloud when `send_email_hook` raises SQLSTATE `42501` remains **DOCUMENTED PROVIDER BEHAVIOR / HOSTED UNVERIFIED / NOT TESTED**.
+  5. *Required Security Outcome:* Regardless of whether GoTrue returns HTTP 500 or absorbs the exception into HTTP 200, the mandatory security invariant is that **zero usable unauthorized recovery tokens or emails reach external networks or users**. Furthermore, if a recovery token were ever somehow minted or intercepted, secondary defense relies on the Custom Access Token Hook strictly rejecting recovery AMR methods on redemption.
+- **Managed Hosted Status:** Schema contract verified offline; hosted execution status: `NOT TESTED`.
 
 ### 4. Custom Access Token Hook Architecture & Fail-Closed Behavior
 - **Documented Event Signature:** Official Supabase contract passes `event JSONB` with three top-level keys:
@@ -203,7 +209,7 @@ The following reproducible test matrix defines the 18 security requirements acro
 | **BYPASS-02** | Native Bypass | `POST /auth/v1/signup` (direct signup) | `422 Unprocessable Entity (signup_disabled)` | **NOT TESTED** | `disable_signup: true` |
 | **BYPASS-03** | Native Bypass | `POST /auth/v1/verify` (type email / recovery) | `500 Error invoking access token hook` (0 token issued) | **NOT TESTED** | Custom Access Token Hook deployed to `private_auth` schema and registered/enabled via `hook_custom_access_token_enabled` |
 | **BYPASS-04** | Native Bypass | Magic Link, Invite & Anonymous endpoints | `500 Error invoking access token hook` (0 token issued) | **NOT TESTED** | Custom Access Token Hook deployed and registered/enabled via `hook_custom_access_token_enabled` |
-| **BYPASS-05** | Native Bypass | `POST /auth/v1/recover` (password recovery) | `500 Error invoking email hook` (or HTTP error fail-closed; zero recovery token delivered; Hosted Unverified) | **NOT TESTED** | Send Email Hook deployed to `private_auth` schema and registered/enabled via `hook_send_email_enabled` |
+| **BYPASS-05** | Native Bypass | `POST /auth/v1/recover` (password recovery) | HTTP `500 Error invoking email hook` (or generic anti-enumeration response; zero recovery token delivered; Hosted Unverified) | **NOT TESTED** | Send Email Hook deployed to `private_auth` schema and registered/enabled via `hook_send_email_enabled` |
 | **HOOK-01** | Token Hook | Legitimate Password Sign-In | `200 OK` with valid JWT (`amr: [{method: "password"}]`, root `claims.amr_authenticated = 'true'`) | **NOT TESTED** | Test user enrolled with password; Hook deployed and registered |
 | **HOOK-02** | Token Hook | Legitimate Password Token Refresh | `200 OK` with refreshed JWT (`amr: [{method: "password"}]`) | **NOT TESTED** | Active password session; Hook deployed and registered |
 | **HOOK-03** | Token Hook | OTP-Origin Token Refresh | `500 Error invoking access token hook` (SQLSTATE `42501`) | **NOT TESTED** | Simulated OTP session; Hook deployed and registered |
@@ -535,13 +541,13 @@ Per [`docs/26-COMMIT-ATTRIBUTION-GUARD.md`](../../../docs/26-COMMIT-ATTRIBUTION-
 ## 9. STOP / GO Decision & Recommendations
 
 ### Final Assessment
-- **Task 06I-B1-R6 Preflight Deliverable:** **VERIFIED PASS** (Documentation audited, evidence classifications corrected with explicit 5-point distinction between local runtime evidence, offline JS contract tests, documented provider behavior, hosted unverified status, and mandatory future acceptance criteria; unhandled token hook exception explicitly labeled NOT independently proven to prevent hosted JWT issuance; BLK-05 activation procedure corrected to exact 10-step sequence with explicit SHA ordering safeguards; 52 offline unit tests passing; full verification passing).
+- **Task 06I-B1-R7 Preflight Deliverable:** **VERIFIED PASS** (Documentation audited, recovery endpoint contract reconciled with clear separation of endpoint reachability, SQL hook exception, HTTP error / anti-enumeration behaviors, and hosted-unverified status; zero unauthorized token/email dispatch invariant enforced; BLK-05 activation procedure documented with exact SHA ordering safeguards; 52 offline unit tests passing; full repository verification passing).
 - **Disposable Hosted Project Execution:** **BLOCKED (STOP)** (Awaiting separate owner authorization and safe isolated target resolution).
 - **Managed Supabase Auth Feasibility:** **NOT VERIFIED ON HOSTED** (Documented capabilities indicate feasibility, but empirical hosted proof is mandatory).
 - **Production Real Auth:** **STRICT NO-GO**.
 
 ### Recommended Next Action
-1. Review this finalized Task 06I-B1-R6 preflight package and PR #35.
+1. Review this finalized Task 06I-B1-R7 preflight package and PR #35.
 2. Maintain `bsfwzvgynwriswapxpsp` and `oykupyiitspujzpwwvuj` as strictly READ-ONLY.
 3. When the owner chooses to authorize future hosted feasibility testing, execute the 18-point Stage 06I-B1 test checklist against an authorized safe target under strict cleanup guarantees.
 
