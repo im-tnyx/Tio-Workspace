@@ -346,6 +346,8 @@ test('12. Throttling interval is enforced between consecutive requests and legit
         pre_reset_baseline_verified: true,
         reset_completed: true,
         session_id: 'sess-test-123',
+        correlated_session_id: 'sess-test-123',
+        pre_session_id: 'sess-test-123',
         same_session_correlated: true,
         error_code: 'session_not_found'
       };
@@ -360,6 +362,8 @@ test('12. Throttling interval is enforced between consecutive requests and legit
         pre_reset_baseline_verified: true,
         reset_completed: true,
         session_id: 'sess-test-123',
+        correlated_session_id: 'sess-test-123',
+        pre_session_id: 'sess-test-123',
         same_session_correlated: true,
         rejection_observed: true,
         error_code: 'AuthSessionMissingError'
@@ -779,6 +783,8 @@ test('26. validateProbeOutcome rejects status 0, missing status, and false-posit
     pre_reset_baseline_verified: true,
     reset_completed: true,
     session_id: 'sess-test-123',
+    correlated_session_id: 'sess-test-123',
+    pre_session_id: 'sess-test-123',
     same_session_correlated: true,
     error_code: 'session_not_found'
   }).passed, true);
@@ -793,6 +799,8 @@ test('26. validateProbeOutcome rejects status 0, missing status, and false-posit
     pre_reset_baseline_verified: true,
     reset_completed: true,
     session_id: 'sess-test-123',
+    correlated_session_id: 'sess-test-123',
+    pre_session_id: 'sess-test-123',
     same_session_correlated: true,
     rejection_observed: true,
     error_code: 'AuthSessionMissingError'
@@ -901,34 +909,96 @@ test('28. Require actual session revocation proof and reject false-proof errors 
   assert.equal(resFailedReset.passed, false);
   assert.match(resFailedReset.reason, /MISSING_EVIDENCE.*invalidation operation completed/);
 
-  // 5. Mismatched session identity fails closed
-  const mismatchedSession = {
+  // 5. Correlation & pre-reset identity tests (PRRT_kwDOVtCmZc66joKl, PRRT_kwDOVtCmZc66kQA9)
+  // 5a. Missing explicit pre-reset identity fails closed
+  const noPreId03 = {
     passed: true,
     status: 403,
     pre_reset_baseline_verified: true,
     reset_completed: true,
-    session_id: 'sess-test-post',
-    correlated_session_id: 'sess-test-pre',
+    session_id: 'sess-B',
+    same_session_correlated: true,
     error_code: 'session_not_found'
   };
-  const resMismatch = validateProbeOutcome(session03, mismatchedSession);
-  assert.equal(resMismatch.passed, false);
-  assert.match(resMismatch.reason, /SESSION_CORRELATION_MISMATCH/);
+  const resNoPreId03 = validateProbeOutcome(session03, noPreId03);
+  assert.equal(resNoPreId03.passed, false);
+  assert.match(resNoPreId03.reason, /SESSION_CORRELATION_MISMATCH.*requires an explicit pre-reset session identifier/);
 
-  // 5b. Contradictory session IDs with same_session_correlated: true fails closed (PRRT_kwDOVtCmZc66joKl)
-  const contradictorySession03 = {
+  // 5b. session_id B, correlated_session_id B, pre_session_id A -> FAIL
+  const resContradictoryPre03 = validateProbeOutcome(session03, {
     passed: true,
     status: 403,
     pre_reset_baseline_verified: true,
     reset_completed: true,
-    session_id: 'sess-test-post',
-    correlated_session_id: 'sess-test-pre',
-    same_session_correlated: true, // boolean flag attempted override
+    session_id: 'sess-B',
+    correlated_session_id: 'sess-B',
+    pre_session_id: 'sess-A',
+    same_session_correlated: true,
     error_code: 'session_not_found'
-  };
-  const resContradictory03 = validateProbeOutcome(session03, contradictorySession03);
-  assert.equal(resContradictory03.passed, false);
-  assert.match(resContradictory03.reason, /SESSION_CORRELATION_MISMATCH.*does not match/);
+  });
+  assert.equal(resContradictoryPre03.passed, false);
+  assert.match(resContradictoryPre03.reason, /SESSION_CORRELATION_MISMATCH.*pre-reset session identifier 'sess-A' does not match post-reset session 'sess-B'/);
+
+  // 5c. session_id B, correlated_session_id A, pre_session_id B -> FAIL
+  const resContradictoryCorrelated03 = validateProbeOutcome(session03, {
+    passed: true,
+    status: 403,
+    pre_reset_baseline_verified: true,
+    reset_completed: true,
+    session_id: 'sess-B',
+    correlated_session_id: 'sess-A',
+    pre_session_id: 'sess-B',
+    same_session_correlated: true,
+    error_code: 'session_not_found'
+  });
+  assert.equal(resContradictoryCorrelated03.passed, false);
+  assert.match(resContradictoryCorrelated03.reason, /SESSION_CORRELATION_MISMATCH.*correlated_session_id 'sess-A' does not match post-reset session 'sess-B'/);
+
+  // 5d. same_session_correlated: true with contradictory IDs -> FAIL
+  const resContradictoryFlag03 = validateProbeOutcome(session03, {
+    passed: true,
+    status: 403,
+    pre_reset_baseline_verified: true,
+    reset_completed: true,
+    session_id: 'sess-B',
+    correlated_session_id: 'sess-A',
+    same_session_correlated: true,
+    error_code: 'session_not_found'
+  });
+  assert.equal(resContradictoryFlag03.passed, false);
+  assert.match(resContradictoryFlag03.reason, /SESSION_CORRELATION_MISMATCH/);
+
+  // 5e. Empty or malformed identifiers -> FAIL
+  assert.equal(validateProbeOutcome(session03, {
+    passed: true, status: 403, pre_reset_baseline_verified: true, reset_completed: true,
+    session_id: 'sess-B', pre_session_id: '', error_code: 'session_not_found'
+  }).passed, false);
+  assert.equal(validateProbeOutcome(session03, {
+    passed: true, status: 403, pre_reset_baseline_verified: true, reset_completed: true,
+    session_id: 'sess-B', correlated_session_id: '', error_code: 'session_not_found'
+  }).passed, false);
+  assert.equal(validateProbeOutcome(session03, {
+    passed: true, status: 403, pre_reset_baseline_verified: true, reset_completed: true,
+    session_id: 'sess-B', pre_session_id: 123, error_code: 'session_not_found'
+  }).passed, false);
+  assert.equal(validateProbeOutcome(session03, {
+    passed: true, status: 403, pre_reset_baseline_verified: true, reset_completed: true,
+    session_id: '', pre_session_id: 'sess-B', error_code: 'session_not_found'
+  }).passed, false);
+
+  // 5f. same_session_correlated: false -> FAIL
+  const resFalseFlag03 = validateProbeOutcome(session03, {
+    passed: true,
+    status: 403,
+    pre_reset_baseline_verified: true,
+    reset_completed: true,
+    session_id: 'sess-B',
+    pre_session_id: 'sess-B',
+    same_session_correlated: false,
+    error_code: 'session_not_found'
+  });
+  assert.equal(resFalseFlag03.passed, false);
+  assert.match(resFalseFlag03.reason, /SESSION_CORRELATION_MISMATCH.*flag indicates session mismatch/);
 
   // 6. Generic 401/403 without revocation evidence fails closed
   const generic403 = {
@@ -937,6 +1007,7 @@ test('28. Require actual session revocation proof and reject false-proof errors 
     pre_reset_baseline_verified: true,
     reset_completed: true,
     session_id: 'sess-test-1',
+    pre_session_id: 'sess-test-1',
     same_session_correlated: true,
     rejection_observed: true
     // omitted revocation_verified or error_code session_not_found
@@ -946,21 +1017,37 @@ test('28. Require actual session revocation proof and reject false-proof errors 
   assert.match(resGeneric.reason, /MISSING_EVIDENCE.*revocation-specific evidence/);
 
   // 7. Valid same-session before/after simulated revocation passes
-  const validRevocation = {
+  // 7a. session_id B, correlated_session_id B, pre_session_id B -> PASS
+  const validRevocationAll = {
     passed: true,
     status: 403,
     pre_reset_baseline_verified: true,
     reset_completed: true,
     session_id: 'sess-test-1',
+    correlated_session_id: 'sess-test-1',
+    pre_session_id: 'sess-test-1',
     same_session_correlated: true,
     error_code: 'session_not_found',
     revocation_verified: true
   };
-  const resValid = validateProbeOutcome(session03, validRevocation);
-  assert.equal(resValid.passed, true);
-  assert.equal(resValid.status, 403);
+  const resValidAll = validateProbeOutcome(session03, validRevocationAll);
+  assert.equal(resValidAll.passed, true);
+  assert.equal(resValidAll.status, 403);
 
-  // 8. SESSION-06 affirmative revocation proof & false-proof rejection checks (PRRT_kwDOVtCmZc66jlyg, PRRT_kwDOVtCmZc66joKl)
+  // 7b. session_id B, pre_session_id B -> PASS
+  const validRevocationPre = {
+    passed: true,
+    status: 403,
+    pre_reset_baseline_verified: true,
+    reset_completed: true,
+    session_id: 'sess-test-1',
+    pre_session_id: 'sess-test-1',
+    error_code: 'session_not_found',
+    revocation_verified: true
+  };
+  assert.equal(validateProbeOutcome(session03, validRevocationPre).passed, true);
+
+  // 8. SESSION-06 affirmative revocation proof & correlation checks (PRRT_kwDOVtCmZc66jlyg, PRRT_kwDOVtCmZc66joKl, PRRT_kwDOVtCmZc66kQA9)
   const session06 = { id: 'SESSION-06', category: 'Session & Consumer', target: 'Edge Function' };
 
   // 8a. AuthSessionMissingError alone without pre-reset baseline fails closed
@@ -976,7 +1063,7 @@ test('28. Require actual session revocation proof and reject false-proof errors 
     pre_reset_baseline_verified: true,
     reset_completed: true,
     session_id: 'sess-edge-1',
-    same_session_correlated: true
+    pre_session_id: 'sess-edge-1'
   });
   assert.equal(resEdgeBadJwt.passed, false);
   assert.match(resEdgeBadJwt.reason, /FALSE_PROOF_REJECTED.*bad_jwt/);
@@ -989,7 +1076,7 @@ test('28. Require actual session revocation proof and reject false-proof errors 
     pre_reset_baseline_verified: true,
     reset_completed: true,
     session_id: 'sess-edge-1',
-    same_session_correlated: true
+    pre_session_id: 'sess-edge-1'
   });
   assert.equal(resEdgeExpired.passed, false);
   assert.match(resEdgeExpired.reason, /FALSE_PROOF_REJECTED.*token_expired/);
@@ -1000,7 +1087,7 @@ test('28. Require actual session revocation proof and reject false-proof errors 
     status: 403,
     reset_completed: true,
     session_id: 'sess-edge-1',
-    same_session_correlated: true,
+    pre_session_id: 'sess-edge-1',
     error_code: 'AuthSessionMissingError'
   });
   assert.equal(resEdgeNoBase.passed, false);
@@ -1013,72 +1100,141 @@ test('28. Require actual session revocation proof and reject false-proof errors 
     pre_reset_baseline_verified: true,
     reset_completed: false,
     session_id: 'sess-edge-1',
-    same_session_correlated: true,
+    pre_session_id: 'sess-edge-1',
     error_code: 'AuthSessionMissingError'
   });
   assert.equal(resEdgeFailedReset.passed, false);
   assert.match(resEdgeFailedReset.reason, /MISSING_EVIDENCE.*invalidation operation completed/);
 
-  // 8f. Contradictory session IDs with same_session_correlated: true fails closed
-  const resEdgeMismatch = validateProbeOutcome(session06, {
+  // 8f. Correlation & pre-reset identity tests on SESSION-06 (R6-01 & R6-02)
+  // 8f-1. Missing explicit pre-reset identity fails closed
+  const resEdgeNoPreId = validateProbeOutcome(session06, {
     passed: true,
     status: 403,
     pre_reset_baseline_verified: true,
     reset_completed: true,
-    session_id: 'sess-edge-post',
-    correlated_session_id: 'sess-edge-pre',
+    session_id: 'sess-B',
     same_session_correlated: true,
     error_code: 'AuthSessionMissingError'
   });
-  assert.equal(resEdgeMismatch.passed, false);
-  assert.match(resEdgeMismatch.reason, /SESSION_CORRELATION_MISMATCH.*does not match/);
+  assert.equal(resEdgeNoPreId.passed, false);
+  assert.match(resEdgeNoPreId.reason, /SESSION_CORRELATION_MISMATCH.*requires an explicit pre-reset session identifier/);
 
-  // 8g. Missing same_session_correlated flag fails closed
-  const resEdgeNoFlag = validateProbeOutcome(session06, {
+  // 8f-2. session_id B, correlated_session_id B, pre_session_id A -> FAIL
+  const resEdgeContradictoryPre = validateProbeOutcome(session06, {
     passed: true,
     status: 403,
     pre_reset_baseline_verified: true,
     reset_completed: true,
-    session_id: 'sess-edge-1',
+    session_id: 'sess-B',
+    correlated_session_id: 'sess-B',
+    pre_session_id: 'sess-A',
+    same_session_correlated: true,
+    error_code: 'AuthSessionMissingError'
+  });
+  assert.equal(resEdgeContradictoryPre.passed, false);
+  assert.match(resEdgeContradictoryPre.reason, /SESSION_CORRELATION_MISMATCH.*pre-reset session identifier 'sess-A' does not match post-reset session 'sess-B'/);
+
+  // 8f-3. session_id B, correlated_session_id A, pre_session_id B -> FAIL
+  const resEdgeContradictoryCorrelated = validateProbeOutcome(session06, {
+    passed: true,
+    status: 403,
+    pre_reset_baseline_verified: true,
+    reset_completed: true,
+    session_id: 'sess-B',
+    correlated_session_id: 'sess-A',
+    pre_session_id: 'sess-B',
+    same_session_correlated: true,
+    error_code: 'AuthSessionMissingError'
+  });
+  assert.equal(resEdgeContradictoryCorrelated.passed, false);
+  assert.match(resEdgeContradictoryCorrelated.reason, /SESSION_CORRELATION_MISMATCH.*correlated_session_id 'sess-A' does not match post-reset session 'sess-B'/);
+
+  // 8f-4. same_session_correlated: true with contradictory IDs -> FAIL
+  const resEdgeContradictoryFlag = validateProbeOutcome(session06, {
+    passed: true,
+    status: 403,
+    pre_reset_baseline_verified: true,
+    reset_completed: true,
+    session_id: 'sess-B',
+    correlated_session_id: 'sess-A',
+    same_session_correlated: true,
+    error_code: 'AuthSessionMissingError'
+  });
+  assert.equal(resEdgeContradictoryFlag.passed, false);
+  assert.match(resEdgeContradictoryFlag.reason, /SESSION_CORRELATION_MISMATCH/);
+
+  // 8f-5. Empty or malformed identifiers -> FAIL
+  assert.equal(validateProbeOutcome(session06, {
+    passed: true, status: 403, pre_reset_baseline_verified: true, reset_completed: true,
+    session_id: 'sess-B', pre_session_id: '', error_code: 'AuthSessionMissingError'
+  }).passed, false);
+  assert.equal(validateProbeOutcome(session06, {
+    passed: true, status: 403, pre_reset_baseline_verified: true, reset_completed: true,
+    session_id: 'sess-B', correlated_session_id: '', error_code: 'AuthSessionMissingError'
+  }).passed, false);
+  assert.equal(validateProbeOutcome(session06, {
+    passed: true, status: 403, pre_reset_baseline_verified: true, reset_completed: true,
+    session_id: 'sess-B', pre_session_id: 123, error_code: 'AuthSessionMissingError'
+  }).passed, false);
+  assert.equal(validateProbeOutcome(session06, {
+    passed: true, status: 403, pre_reset_baseline_verified: true, reset_completed: true,
+    session_id: '', pre_session_id: 'sess-B', error_code: 'AuthSessionMissingError'
+  }).passed, false);
+
+  // 8f-6. same_session_correlated: false -> FAIL
+  const resEdgeFalseFlag = validateProbeOutcome(session06, {
+    passed: true,
+    status: 403,
+    pre_reset_baseline_verified: true,
+    reset_completed: true,
+    session_id: 'sess-B',
+    pre_session_id: 'sess-B',
     same_session_correlated: false,
     error_code: 'AuthSessionMissingError'
   });
-  assert.equal(resEdgeNoFlag.passed, false);
-  assert.match(resEdgeNoFlag.reason, /SESSION_CORRELATION_MISMATCH.*requires explicit same-session correlation/);
+  assert.equal(resEdgeFalseFlag.passed, false);
+  assert.match(resEdgeFalseFlag.reason, /SESSION_CORRELATION_MISMATCH.*flag indicates session mismatch/);
 
-  // 8h. Generic 403 without revocation evidence fails closed
+  // 8g. Generic 403 without revocation evidence fails closed
   const resEdgeGeneric = validateProbeOutcome(session06, {
     passed: true,
     status: 403,
     pre_reset_baseline_verified: true,
     reset_completed: true,
     session_id: 'sess-edge-1',
+    pre_session_id: 'sess-edge-1',
     same_session_correlated: true,
     rejection_observed: true
   });
   assert.equal(resEdgeGeneric.passed, false);
   assert.match(resEdgeGeneric.reason, /MISSING_EVIDENCE.*revocation-specific evidence/);
 
-  // 8i. Valid same-session baseline, reset completion, correlation, and AuthSessionMissingError passes
+  // 8h. Valid same-session baseline, reset completion, correlation, and AuthSessionMissingError passes
+  // (session_id B, correlated_session_id B, pre_session_id B -> PASS)
   const resEdgeValid = validateProbeOutcome(session06, {
     passed: true,
     status: 403,
     pre_reset_baseline_verified: true,
     reset_completed: true,
     session_id: 'sess-edge-1',
+    correlated_session_id: 'sess-edge-1',
+    pre_session_id: 'sess-edge-1',
     same_session_correlated: true,
     error_code: 'AuthSessionMissingError'
   });
   assert.equal(resEdgeValid.passed, true);
   assert.equal(resEdgeValid.status, 403);
 
-  // 8j. Valid same-session baseline, reset completion, correlation, and rejection_observed with revocation_verified passes
+  // 8i. Valid same-session baseline, reset completion, correlation, and rejection_observed with revocation_verified passes
   const resEdgeValid2 = validateProbeOutcome(session06, {
     passed: true,
     status: 401,
     pre_reset_baseline_verified: true,
     reset_completed: true,
     session_id: 'sess-edge-1',
+    correlated_session_id: 'sess-edge-1',
+    pre_session_id: 'sess-edge-1',
     same_session_correlated: true,
     rejection_observed: true,
     revocation_verified: true

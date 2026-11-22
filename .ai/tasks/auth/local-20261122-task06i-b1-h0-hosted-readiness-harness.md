@@ -1,14 +1,14 @@
-# Phase 1.2 Task 06I-B1-H0-R5 — SESSION-06 Revocation Proof, Strict Identity Correlation & Secret Redaction Closure
+# Phase 1.2 Task 06I-B1-H0-R6 — Close Final Session-Correlation Evidence Gap
 
-> **Target-Safety Decision Record, P1/P2 Security Proof Closure, Affirmative Evidence Contracts & Dispatcher Deadline Enforcement.** Prepared under `AGENTS.md` operating rules. This document establishes deterministic local security verification, remediates all review threads on PR #36 (including Revision R5: SESSION-06 affirmative revocation baseline and reset completion proof, strict session identity correlation rejecting contradictory IDs regardless of boolean flags, and parser-based secret redaction eliminating escaped-quote leakage), preserves the owner-directed TEMP lifecycle & deletion policy, audits Supabase organization inventory, and confirms zero host port exposure and zero hosted mutations. Production Real Auth remains **NO-GO**.
+> **Target-Safety Decision Record, P1/P2 Security Proof Closure, Affirmative Evidence Contracts & Dispatcher Deadline Enforcement.** Prepared under `AGENTS.md` operating rules. This document establishes deterministic local security verification, remediates all review threads on PR #36 (including Revision R6: independent validation of every supplied session identifier, strict requirement for an explicit pre-reset session identifier, and rejection of contradictory IDs fail-closed), preserves the owner-directed TEMP lifecycle & deletion policy, audits Supabase organization inventory, and confirms zero host port exposure and zero hosted mutations. Production Real Auth remains **NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **PR #36 SECURITY REMEDIATION (REVISION R5) COMPLETE; 102/102 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (ON_ERROR_STOP=1, NONZERO EXIT ON MISMATCH, ROLE GRANTS VERIFIED); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; LIVE INVENTORY AUDITED (2 ACTIVE PROJECTS: REAL `bsfwzvgynwriswapxpsp` + OWNER-CREATED TEMP `wvdabiwbaavfggcmpizd`); APPROVED TEMP REF `wvdabiwbaavfggcmpizd` ENFORCED (TEMP SPOOFING REJECTED); ALL 18 PROBE CASES REQUIRE AFFIRMATIVE OBSERVATIONS (STATUS 0 / MISSING STATUS / EMPTY PROOFS FAIL CLOSED); DISPATCHER TIMEOUT AND ABORTSIGNAL ENFORCED; COMPLETE RUNNER REPORT RECURSIVELY SANITIZED (PARSER-BASED ESCAPED QUOTE REDACTION); ALL 3 R5 REVIEW THREADS RESOLVED; AWAITING INDEPENDENT RE-REVIEW SIGN-OFF FROM IM-TIO** |
-| Objective | Resolve all three review threads on PR #36: require SESSION-06 affirmative revocation baseline and reset completion proof (`PRRT_kwDOVtCmZc66jlyg`), enforce strict session correlation rejecting contradictory IDs regardless of boolean flags (`PRRT_kwDOVtCmZc66joKl`), and eliminate escaped-quote credential leakage via parser-based redactor (`PRRT_kwDOVtCmZc66joKm`). |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H0-R5 slice |
-| Previous agent | Agent / Task 06I-B1-H0-R4 author |
-| Last audited HEAD | `53afec4df50710f43768cee5019cb02e3b525eb5` (PR #36 post-H0-R4 commit) |
+| Status | **PR #36 SECURITY REMEDIATION (REVISION R6) COMPLETE; 102/102 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (ON_ERROR_STOP=1, NONZERO EXIT ON MISMATCH, ROLE GRANTS VERIFIED); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; LIVE INVENTORY AUDITED (2 ACTIVE PROJECTS: REAL `bsfwzvgynwriswapxpsp` + OWNER-CREATED TEMP `wvdabiwbaavfggcmpizd`); APPROVED TEMP REF `wvdabiwbaavfggcmpizd` ENFORCED (TEMP SPOOFING REJECTED); ALL SUPPLIED SESSION IDENTIFIERS INDEPENDENTLY VALIDATED (CONTRADICTORY PRE/CORRELATED IDS FAIL CLOSED); EXPLICIT PRE-RESET IDENTITY REQUIRED; DISPATCHER TIMEOUT AND ABORTSIGNAL ENFORCED; COMPLETE RUNNER REPORT RECURSIVELY SANITIZED; ALL REVIEW THREADS RESOLVED; AWAITING INDEPENDENT RE-REVIEW SIGN-OFF FROM IM-TIO** |
+| Objective | Address review thread `PRRT_kwDOVtCmZc66kQA9` (P2): independently validate `session_id`, `correlated_session_id`, and `pre_session_id`; require an explicit pre-reset session identifier; reject contradictory IDs fail-closed (`SESSION_CORRELATION_MISMATCH`) across both SESSION-03 and SESSION-06; add comprehensive negative regressions. |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H0-R6 slice |
+| Previous agent | Agent / Task 06I-B1-H0-R5 author |
+| Last audited HEAD | `92548b4ddbac30c50680685c5fa676e820445c9a` (PR #36 post-H0-R5 commit) |
 | Tracking / approval | Task 06I-B1-H0-R2 authorized by user prompt; owner mandates resolving all 3 P1 findings without modifying production resources; owner preserves TEMP Project Lifecycle & Deletion Policy; mandates $0 cost and permanent immunity for `Tio-world` and REAL `bsfwzvgynwriswapxpsp`; hosted mutations strictly prohibited |
 | Branch | `docs/task06i-b1-h0-hosted-readiness-harness` |
 | Base SHA / inspected HEAD | `7150cec4c2e1e9aaa8e75d2cbcb3a23a6dca532e` (`main`, verified up to date with `origin/main`) |
@@ -277,6 +277,18 @@ All 8 review threads on PR #36 have been resolved with regression tests:
   4. Preserved `Bearer [REDACTED]` scheme formatting when sensitive keys are followed by Bearer authorization tokens.
 - **Tests:** `hosted-probe-runner.test.mjs` (Test 29: unit tests on `redactSensitiveFields`, `sanitizeData`, and end-to-end runner exceptions).
 
+### 24. `PRRT_kwDOVtCmZc66kQA9` (R6-01) — Validate Every Supplied Session Identifier & Require Explicit Pre-Reset Identity
+- **Root Cause:** In `validateSessionRevocationProof`, `const correlatedId = rawOutcome.correlated_session_id || rawOutcome.pre_session_id` allowed an adversarial or malformed outcome with `correlated_session_id: 'B'` and contradictory `pre_session_id: 'A'` to ignore `pre_session_id`, falsely passing verification. Furthermore, a boolean `same_session_correlated: true` flag alone without an explicit pre-reset identifier was previously accepted.
+- **Remediation:**
+  1. Independently inspect `session_id`, `correlated_session_id`, and `pre_session_id`.
+  2. Require `session_id` to be a valid, non-empty string.
+  3. Require an explicit pre-reset session identifier (`correlated_session_id` or `pre_session_id`); a boolean flag alone fails closed with `SESSION_CORRELATION_MISMATCH`.
+  4. Validate every provided identifier for correct string type and non-empty value (empty strings, whitespace-only strings, or non-string types fail closed).
+  5. Every supplied identifier must match `session_id` exactly. Contradictory identifiers (`session_id !== correlated_session_id` or `session_id !== pre_session_id`) fail closed.
+  6. `same_session_correlated: true` can never override contradictory or missing identifiers; `same_session_correlated: false` fails closed.
+  7. Shared validator `validateSessionRevocationProof()` enforces identical strict correlation rules across both `SESSION-03` and `SESSION-06`.
+- **Tests:** `hosted-probe-runner.test.mjs` (Test 28: sub-tests 5a–5f and 8f-1–8f-6 covering contradictory pre/correlated IDs, missing pre-reset identity, boolean bypass attempts, and malformed types).
+
 ---
 
 ## 5. Local Security Harness & Parity Verification Results (Phase E)
@@ -367,9 +379,9 @@ Live probe execution remains strictly **BLOCKED**. Future Task 06I-B1-H1 plan wi
 1. **Owner-Created TEMP Project Verified & Enforced:**
    - Owner created `Tio-Tnyx-Auth-Temp` (`wvdabiwbaavfggcmpizd`) in organization `llmbrmxhyirtoqndazpg` at region `ap-south-1` ($0 Free tier slot).
    - Configured in runner as immutable `HARDCODED_TEMP_REF`. Caller-controlled `tempRef` spoofing strictly rejected. LIVE probe execution disabled pending separate H1 authorization.
-2. **Review & PR Gate (Revision R5 Complete):**
+2. **Review & PR Gate (Revision R6 Complete):**
    - PR #36 updated on branch `docs/task06i-b1-h0-hosted-readiness-harness`.
-   - All review threads resolved with affirmative evidence and regression tests (including R5: PRRT_kwDOVtCmZc66jlyg, PRRT_kwDOVtCmZc66joKl, PRRT_kwDOVtCmZc66joKm).
+   - All review threads resolved with affirmative evidence and regression tests (including R6: PRRT_kwDOVtCmZc66kQA9).
    - Independent re-review requested from `im-tio`.
    - Do not merge automatically without explicit owner authorization.
 3. **TEMP Project Lifecycle & Deletion Policy Enforcement:**

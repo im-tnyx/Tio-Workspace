@@ -831,12 +831,14 @@ function validateSessionRevocationProof(item, rawOutcome, allowedStatuses, isRev
     };
   }
 
-  // 4. Strict Session Correlation (PRRT_kwDOVtCmZc66joKl):
+  // 4. Strict Session Correlation (PRRT_kwDOVtCmZc66joKl, PRRT_kwDOVtCmZc66kQA9):
   // - sessionId must be a non-empty string.
-  // - If correlatedId / pre_session_id is present, it MUST match sessionId exactly. Contradictory IDs fail closed.
-  // - Boolean same_session_correlated flag can never override contradictory identifiers.
+  // - Explicit pre-reset identity required (correlated_session_id or pre_session_id); a boolean flag alone is insufficient.
+  // - Every provided identifier must be validated for correct string type and non-empty value.
+  // - Every supplied pre-reset or correlated identifier must equal sessionId exactly. Contradictory IDs fail closed.
+  // - same_session_correlated: true can never override contradictory or missing identifiers.
+  // - same_session_correlated: false fails closed.
   const sessionId = rawOutcome.session_id;
-  const correlatedId = rawOutcome.correlated_session_id || rawOutcome.pre_session_id;
 
   if (!isNonEmptyString(sessionId)) {
     return {
@@ -846,23 +848,57 @@ function validateSessionRevocationProof(item, rawOutcome, allowedStatuses, isRev
     };
   }
 
-  if (correlatedId !== undefined && correlatedId !== null) {
-    if (!isNonEmptyString(correlatedId) || sessionId !== correlatedId) {
+  const hasCorrelatedId = rawOutcome.correlated_session_id !== undefined && rawOutcome.correlated_session_id !== null;
+  const hasPreSessionId = rawOutcome.pre_session_id !== undefined && rawOutcome.pre_session_id !== null;
+
+  if (!hasCorrelatedId && !hasPreSessionId) {
+    return {
+      passed: false,
+      status,
+      reason: `SESSION_CORRELATION_MISMATCH: ${item.id} requires an explicit pre-reset session identifier (correlated_session_id or pre_session_id); a boolean flag alone is insufficient`
+    };
+  }
+
+  if (hasCorrelatedId) {
+    if (!isNonEmptyString(rawOutcome.correlated_session_id)) {
       return {
         passed: false,
         status,
-        reason: `SESSION_CORRELATION_MISMATCH: ${item.id} pre-reset session identifier '${correlatedId}' does not match post-reset session '${sessionId}'`
+        reason: `SESSION_CORRELATION_MISMATCH: ${item.id} correlated_session_id must be a valid, non-empty string`
       };
     }
-  } else {
-    // If correlatedId is not explicitly passed as a separate property, require same_session_correlated: true
-    if (rawOutcome.same_session_correlated !== true) {
+    if (rawOutcome.correlated_session_id !== sessionId) {
       return {
         passed: false,
         status,
-        reason: `SESSION_CORRELATION_MISMATCH: ${item.id} requires explicit same-session correlation evidence between pre-reset and post-reset observations`
+        reason: `SESSION_CORRELATION_MISMATCH: ${item.id} correlated_session_id '${rawOutcome.correlated_session_id}' does not match post-reset session '${sessionId}'`
       };
     }
+  }
+
+  if (hasPreSessionId) {
+    if (!isNonEmptyString(rawOutcome.pre_session_id)) {
+      return {
+        passed: false,
+        status,
+        reason: `SESSION_CORRELATION_MISMATCH: ${item.id} pre_session_id must be a valid, non-empty string`
+      };
+    }
+    if (rawOutcome.pre_session_id !== sessionId) {
+      return {
+        passed: false,
+        status,
+        reason: `SESSION_CORRELATION_MISMATCH: ${item.id} pre-reset session identifier '${rawOutcome.pre_session_id}' does not match post-reset session '${sessionId}'`
+      };
+    }
+  }
+
+  if (rawOutcome.same_session_correlated === false) {
+    return {
+      passed: false,
+      status,
+      reason: `SESSION_CORRELATION_MISMATCH: ${item.id} same_session_correlated flag indicates session mismatch`
+    };
   }
 
   // 5. Provider-observed revocation rejection evidence
