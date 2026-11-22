@@ -4,7 +4,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **PR #36 P1 SECURITY REMEDIATION (REVISION R2) COMPLETE; 91/91 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (ON_ERROR_STOP=1 + ROLE GRANTS VERIFIED); LIVE INVENTORY AUDITED (2 ACTIVE PROJECTS: REAL `bsfwzvgynwriswapxpsp` + OWNER-CREATED TEMP `wvdabiwbaavfggcmpizd`); TEMP LIFECYCLE & DELETION POLICY PRESERVED; 3 P1 THREADS RESOLVED; AWAITING INDEPENDENT RE-REVIEW SIGN-OFF FROM IM-TIO** |
+| Status | **PR #36 P1 SECURITY REMEDIATION (REVISION R2) COMPLETE; 93/93 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (ON_ERROR_STOP=1 + ROLE GRANTS VERIFIED); LIVE INVENTORY AUDITED (2 ACTIVE PROJECTS: REAL `bsfwzvgynwriswapxpsp` + OWNER-CREATED TEMP `wvdabiwbaavfggcmpizd`); TEMP LIFECYCLE & DELETION POLICY PRESERVED; 14/14 REVIEW THREADS RESOLVED (INCLUDING 3 P1 THREADS + 2 BUGBOT THREADS); AWAITING INDEPENDENT RE-REVIEW SIGN-OFF FROM IM-TIO** |
 | Objective | Resolve the three independent P1 security findings on PR #36 (immutable project boundary, strict probe outcome validation, and serialized JSON secret redaction), configure verified owner TEMP project `wvdabiwbaavfggcmpizd`, preserve the codified TEMP lifecycle policy, maintain zero host port exposure, and verify all test suites without executing hosted mutations |
 | Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H0-R2 slice |
 | Previous agent | Agent / Task 06I-B1-H0-R1 author |
@@ -162,13 +162,29 @@ All 8 review threads on PR #36 have been resolved with regression tests:
   4. Verified that sensitive values are completely absent from both sanitized string output and final runner `results`.
 - **Tests:** `hosted-probe-runner.test.mjs` (Tests 9, 9b, 21).
 
+### 12. `PRRT_kwDOVtCmZc66jG6V` — Strict Evidence Validation for Token & Session Cases
+- **Root Cause:** In `validateProbeOutcome`, negative checks like `if (rawOutcome.has_token === false)` and `if (rawOutcome.session_created === false)` failed open when those properties were omitted (`undefined`).
+- **Remediation:**
+  1. Enforced positive explicit assertions: `HOOK-01` and `HOOK-02` require `rawOutcome.has_token === true` or explicit `rawOutcome.tokens` object.
+  2. `SESSION-01` requires explicit `rawOutcome.session_created === true`.
+  3. `SESSION-02` requires explicit `typeof rawOutcome.remaining_sessions === 'number' && rawOutcome.remaining_sessions === 0`.
+  4. `SESSION-04` and `SESSION-05` require explicit `rawOutcome.stateless_linger_documented === true` or documented evidence/note.
+- **Tests:** `hosted-probe-runner.test.mjs` (Tests 20, 22).
+
+### 13. `PRRT_kwDOVtCmZc66jG6Y` — Redact Leaked Secrets in Runner Halt Reason
+- **Root Cause:** In `runHostedProbeRunner`, `abortReason` was constructed directly from `validatedOutcome.reason` and returned in the final result object without passing through `sanitizeData`. An unhandled network exception containing credentials or tokens could leak into `result.abortReason`.
+- **Remediation:**
+  1. Wrapped `abortReason` construction with `sanitizeData(...)` at the failure site.
+  2. Enforced top-level `abortReason: sanitizeData(abortReason)` in the returned runner result object.
+- **Tests:** `hosted-probe-runner.test.mjs` (Test 23).
+
 ---
 
 ## 5. Local Security Harness & Parity Verification Results (Phase E)
 
 | Test Suite / Script | Command | Cases / Result | Exit Code | Notes |
 |---|---|---|---|---|
-| Task 06I Security Suite | `node --test experiments/task06i/*.test.mjs` | **91 passed**, 0 failed | `0` | All 4 test files pass: allowlist (37), evaluator (15), probe runner (25), harness (14) |
+| Task 06I Security Suite | `node --test experiments/task06i/*.test.mjs` | **93 passed**, 0 failed | `0` | All 4 test files pass: allowlist (37), evaluator (15), probe runner (27), harness (14) |
 | PostgreSQL 17.11 Parity Check | `node experiments/task06i/sql-contract-parity.mjs` | **18 passed**, 0 failed | `0` | Live Docker PostgreSQL 17.11 with zero host ports; `ON_ERROR_STOP=1`; grants verified |
 | Task 06H Historical Suite | `node --test experiments/task06h/*.test.mjs` | **115 passed**, 0 failed | `0` | Phase 1 Auth Shell contract baseline clean |
 | Workspace Repository Verification | `npm run verify` | **22 shell contract passed** | `0` | Tokens clean, `tsc` clean, `eslint` clean |
@@ -249,12 +265,13 @@ Live probe execution remains strictly **BLOCKED**. Future Task 06I-B1-H1 plan wi
 
 ## 8. Next Permissible Actions & Approval Gates
 
-1. **Owner Decision on TEMP Project Creation:**
-   - Authorize creating `Tio-Tnyx-Auth-Temp` in organization `llmbrmxhyirtoqndazpg` at region `ap-south-1` ($0 Free tier slot).
-   - If not approved, testing remains purely local.
+1. **Owner-Created TEMP Project Verified:**
+   - Owner created `Tio-Tnyx-Auth-Temp` (`wvdabiwbaavfggcmpizd`) in organization `llmbrmxhyirtoqndazpg` at region `ap-south-1` ($0 Free tier slot).
+   - Configured in runner as `HARDCODED_TEMP_REF`. LIVE probe execution disabled pending separate H1 authorization.
 2. **Review & PR Gate:**
    - PR #36 updated on branch `docs/task06i-b1-h0-hosted-readiness-harness`.
-   - Independent re-review requested from `im-tio` (all 8 threads resolved).
+   - All 14 review threads resolved (including 3 independent P1 findings and 2 Bugbot findings).
+   - Independent re-review requested from `im-tio`.
    - Do not merge automatically.
 3. **TEMP Project Lifecycle & Deletion Policy Enforcement:**
    - Follow Section 6: Preserve TEMP during test/review cycles, offer pause for retesting, and require explicit owner deletion authorization with full transparency. Production Auth remains strictly **NO-GO**.

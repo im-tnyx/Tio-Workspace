@@ -395,6 +395,9 @@ test('14. Runner halts immediately on Session & Consumer failure (SESSION-03) (P
       const isPasswordSuccess = item.id === 'HOOK-01' || item.id === 'HOOK-02';
       return { passed: true, status: isPasswordSuccess ? 200 : 500, has_token: isPasswordSuccess };
     }
+    if (item.id === 'SESSION-02') {
+      return { passed: true, status: 200, remaining_sessions: 0 };
+    }
     return { passed: true, status: 200, session_created: true };
   };
 
@@ -514,13 +517,15 @@ test('19. Partial execution never returns COMPLETED (PRRT_kwDOVtCmZc66i_Kd)', as
   assert.equal(result.totalExpected, 18);
 });
 
-test('20. Missing evidence on HOOK-01 fails closed (PRRT_kwDOVtCmZc66i_Kd)', () => {
+test('20. Missing evidence on HOOK-01 fails closed (PRRT_kwDOVtCmZc66i_Kd & PRRT_kwDOVtCmZc66jG6V)', () => {
   const item = { id: 'HOOK-01', category: 'Token Hook', target: 'Password Sign-In' };
-  // Legitimate sign-in returned 200 but has_token: false
-  const outcome = { passed: true, status: 200, has_token: false };
-  const validated = validateProbeOutcome(item, outcome);
-  assert.equal(validated.passed, false);
-  assert.match(validated.reason, /MISSING_EVIDENCE: HOOK-01/);
+  // Legitimate sign-in returned 200 but has_token is omitted or false
+  assert.equal(validateProbeOutcome(item, { passed: true, status: 200 }).passed, false);
+  assert.equal(validateProbeOutcome(item, { passed: true, status: 200, has_token: false }).passed, false);
+
+  const hook02 = { id: 'HOOK-02', category: 'Token Hook', target: 'Password Token Refresh' };
+  assert.equal(validateProbeOutcome(hook02, { passed: true, status: 200 }).passed, false);
+  assert.equal(validateProbeOutcome(hook02, { passed: true, status: 200, has_token: false }).passed, false);
 });
 
 test('21. Serialized secrets are absent from final runner evidence (PRRT_kwDOVtCmZc66i_Kf)', async () => {
@@ -552,4 +557,44 @@ test('21. Serialized secrets are absent from final runner evidence (PRRT_kwDOVtC
   assert.ok(!serializedResults.includes(secretPassword), 'Secret password must not exist in final runner results');
   assert.ok(!serializedResults.includes(secretRefreshToken), 'Secret refresh token must not exist in final runner results');
   assert.ok(serializedResults.includes('safe_diagnostic_info'), 'Harmless diagnostic info should be preserved');
+});
+
+test('22. Session cases fail closed without explicit evidence of session state (PRRT_kwDOVtCmZc66jG6V)', () => {
+  // SESSION-01 requires explicit session_created: true
+  const session01 = { id: 'SESSION-01', category: 'Session & Consumer' };
+  assert.equal(validateProbeOutcome(session01, { passed: true, status: 200 }).passed, false);
+  assert.equal(validateProbeOutcome(session01, { passed: true, status: 200, session_created: false }).passed, false);
+  assert.equal(validateProbeOutcome(session01, { passed: true, status: 200, session_created: true }).passed, true);
+
+  // SESSION-02 requires remaining_sessions: 0
+  const session02 = { id: 'SESSION-02', category: 'Session & Consumer' };
+  assert.equal(validateProbeOutcome(session02, { passed: true, status: 200 }).passed, false);
+  assert.equal(validateProbeOutcome(session02, { passed: true, status: 200, remaining_sessions: 1 }).passed, false);
+  assert.equal(validateProbeOutcome(session02, { passed: true, status: 200, remaining_sessions: 0 }).passed, true);
+
+  // SESSION-04 & SESSION-05 require stateless linger documentation/evidence
+  const session04 = { id: 'SESSION-04', category: 'Session & Consumer' };
+  assert.equal(validateProbeOutcome(session04, { passed: true, status: 200 }).passed, false);
+  assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, stateless_linger_documented: true }).passed, true);
+});
+
+test('23. Top-level abortReason is sanitized against leaked secrets (PRRT_kwDOVtCmZc66jG6Y)', async () => {
+  const secretKey = 'sbp_secret_sensitive_api_key_value_999';
+
+  const mockDispatcher = async () => {
+    throw new Error(`Dispatch failure with token: Bearer ${secretKey}`);
+  };
+
+  const result = await runHostedProbeRunner({
+    projectRef: VALID_TEMP_REF,
+    tempRef: VALID_TEMP_REF,
+    argv: ['--live'],
+    env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    mockDispatcher,
+    sleepFn: async () => {}
+  });
+
+  assert.equal(result.status, 'HALTED_ON_FAILURE');
+  assert.ok(!result.abortReason.includes(secretKey), 'Secret key must be redacted in abortReason');
+  assert.match(result.abortReason, /Bearer \[REDACTED\]/);
 });

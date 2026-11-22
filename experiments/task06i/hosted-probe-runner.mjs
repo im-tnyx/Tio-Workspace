@@ -389,22 +389,29 @@ export function validateProbeOutcome(item, rawOutcome) {
         reason: `HTTP_STATUS_MISMATCH: HOOK-01 expected HTTP 200, got ${status}`
       };
     }
-    if (rawOutcome.has_token === false) {
+    if (rawOutcome.has_token !== true && !rawOutcome.tokens) {
       return {
         passed: false,
         status,
-        reason: 'MISSING_EVIDENCE: HOOK-01 expected token issuance for valid password sign-in'
+        reason: 'MISSING_EVIDENCE: HOOK-01 expected explicit token issuance (has_token: true) for valid password sign-in'
       };
     }
   }
 
   if (item.id === 'HOOK-02') {
-    // Token refresh with password-origin AMR must succeed with HTTP 200
+    // Token refresh with password-origin AMR must succeed with HTTP 200 and issue fresh token
     if (status !== 200) {
       return {
         passed: false,
         status,
         reason: `HTTP_STATUS_MISMATCH: HOOK-02 expected HTTP 200, got ${status}`
+      };
+    }
+    if (rawOutcome.has_token !== true && !rawOutcome.tokens) {
+      return {
+        passed: false,
+        status,
+        reason: 'MISSING_EVIDENCE: HOOK-02 expected explicit token issuance (has_token: true) for token refresh'
       };
     }
   }
@@ -422,21 +429,21 @@ export function validateProbeOutcome(item, rawOutcome) {
 
   // 3. Session & Consumer Requirements
   if (item.id === 'SESSION-01') {
-    if (status !== 200 || rawOutcome.session_created === false) {
+    if (status !== 200 || rawOutcome.session_created !== true) {
       return {
         passed: false,
         status,
-        reason: `SESSION_FAILURE: SESSION-01 expected session creation, got status ${status}`
+        reason: `SESSION_FAILURE: SESSION-01 expected verified session creation (session_created: true), got status ${status}`
       };
     }
   }
 
   if (item.id === 'SESSION-02') {
-    if (status !== 200 || rawOutcome.remaining_sessions > 0) {
+    if (status !== 200 || typeof rawOutcome.remaining_sessions !== 'number' || rawOutcome.remaining_sessions !== 0) {
       return {
         passed: false,
         status,
-        reason: `SESSION_FAILURE: SESSION-02 expected session revocation, remaining: ${rawOutcome.remaining_sessions}`
+        reason: `SESSION_FAILURE: SESSION-02 expected verified session revocation (remaining_sessions: 0), got: ${rawOutcome.remaining_sessions}`
       };
     }
   }
@@ -448,6 +455,17 @@ export function validateProbeOutcome(item, rawOutcome) {
         passed: false,
         status,
         reason: 'SECURITY_INVARIANT_VIOLATION: SESSION-03 accepted revoked token with HTTP 200'
+      };
+    }
+  }
+
+  if (item.id === 'SESSION-04' || item.id === 'SESSION-05') {
+    // Stateless linger window documentation check
+    if (rawOutcome.stateless_linger_documented !== true && !rawOutcome.evidence && !rawOutcome.note) {
+      return {
+        passed: false,
+        status,
+        reason: `MISSING_EVIDENCE: ${item.id} requires verified stateless linger window documentation or evidence`
       };
     }
   }
@@ -551,7 +569,7 @@ export async function runHostedProbeRunner(options = {}) {
     // Stop and fail on ANY requirement failure across BYPASS, HOOK, or SESSION (PRRT_kwDOVtCmZc66iotG)
     if (validatedOutcome.passed !== true) {
       aborted = true;
-      abortReason = `CRITICAL_SECURITY_FAILURE: Case ${item.id} (${item.category}) failed validation! Reason: ${validatedOutcome.reason}`;
+      abortReason = sanitizeData(`CRITICAL_SECURITY_FAILURE: Case ${item.id} (${item.category}) failed validation! Reason: ${validatedOutcome.reason}`);
     }
 
     results.push({
@@ -575,7 +593,7 @@ export async function runHostedProbeRunner(options = {}) {
     totalExpected: plan.plannedCases.length,
     requestCount,
     aborted,
-    abortReason,
+    abortReason: sanitizeData(abortReason),
     results: sanitizeData(results)
   };
 }
