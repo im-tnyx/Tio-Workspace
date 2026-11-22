@@ -24,6 +24,19 @@ export const HARDCODED_TIO_WORLD_REF = 'oykupyiitspujzpwwvuj';
 export const HARDCODED_TEMP_REF = 'wvdabiwbaavfggcmpizd';
 export const DEFAULT_PROBE_TIMEOUT_MS = 5000;
 
+/**
+ * Brevo sender and domain readiness baseline audited for Phase 1.2.
+ * Documents observed read-only status without initiating mutations or email dispatch.
+ */
+export const BREVO_AUDIT_BASELINE = Object.freeze({
+  plan: 'Free',
+  dailyQuota: 300,
+  smtpRelayEnabled: true,
+  authenticatedSendingDomains: 0,
+  readinessStatus: 'UNAUTHENTICATED_SENDER_DOMAIN_BLOCKED',
+  deliveryPolicy: 'Transactional OTP delivery via external SMTP is BLOCKED until an authenticated domain is configured and owner-authorized; native email routes are suppressed fail-closed by Send Email Hook (SQLSTATE 42501).'
+});
+
 export const TIO_SUPABASE_REAL_REF = HARDCODED_REAL_REF;
 export const TIO_SUPABASE_TEMP_REF = process.env.TIO_SUPABASE_TEMP_REF || HARDCODED_TEMP_REF;
 
@@ -1210,5 +1223,19 @@ export async function runHostedProbeRunner(options = {}) {
     aborted,
     abortReason: abortReason,
     results: results
+  });
+}
+
+// Standalone CLI execution: defaults strictly to DRY_RUN
+if (process.argv[1] && process.argv[1].endsWith('hosted-probe-runner.mjs')) {
+  runHostedProbeRunner({
+    projectRef: HARDCODED_TEMP_REF
+  }).then(res => {
+    console.log(`[HOSTED PROBE RUNNER] Mode: ${res.mode} | Status: ${res.status} | Project: ${res.projectRef} | Planned Probes: ${res.plan?.totalProbes}`);
+    console.log(`[HOSTED PROBE RUNNER] Zero Network Requests Dispatched: ${res.zeroNetworkRequestsDispatched}`);
+    console.log(JSON.stringify(res, null, 2));
+  }).catch(err => {
+    console.error('CRITICAL_RUNNER_ERROR:', err.message);
+    process.exit(1);
   });
 }

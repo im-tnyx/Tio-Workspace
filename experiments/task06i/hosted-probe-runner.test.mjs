@@ -15,7 +15,8 @@ import {
   HARDCODED_TEMP_REF,
   DEFAULT_PROBE_TIMEOUT_MS,
   TIO_SUPABASE_REAL_REF,
-  TIO_SUPABASE_TEMP_REF
+  TIO_SUPABASE_TEMP_REF,
+  BREVO_AUDIT_BASELINE
 } from './hosted-probe-runner.mjs';
 
 const VALID_TEMP_REF = HARDCODED_TEMP_REF;
@@ -1824,4 +1825,57 @@ test('32. Strict positive access token issuance proof for HOOK-01 and HOOK-02 (P
     resultFpHook01.abortReason,
     /CRITICAL_SECURITY_FAILURE: Case HOOK-01 \(Token Hook\) failed validation.*requires explicit, non-empty access_token string/
   );
+});
+
+// ---------------------------------------------------------------------------
+// Task 06I-B1-H1: Hosted Security Preflight & Environment Readiness Tests
+// ---------------------------------------------------------------------------
+
+test('33. Task 06I-B1-H1: Hosted security preflight, Brevo audit baseline, and planned matrix readiness', async () => {
+  // 1. Approved disposable TEMP project ref check
+  assert.equal(HARDCODED_TEMP_REF, 'wvdabiwbaavfggcmpizd', 'HARDCODED_TEMP_REF must match owner-created TEMP project');
+  assert.notEqual(HARDCODED_TEMP_REF, HARDCODED_REAL_REF, 'TEMP ref must not equal protected REAL project');
+  assert.notEqual(HARDCODED_TEMP_REF, HARDCODED_TIO_WORLD_REF, 'TEMP ref must not equal immune Tio-world project');
+
+  // 2. Brevo sender & domain readiness audit baseline check
+  assert.equal(BREVO_AUDIT_BASELINE.plan, 'Free');
+  assert.equal(BREVO_AUDIT_BASELINE.dailyQuota, 300);
+  assert.equal(BREVO_AUDIT_BASELINE.smtpRelayEnabled, true);
+  assert.equal(BREVO_AUDIT_BASELINE.authenticatedSendingDomains, 0);
+  assert.equal(BREVO_AUDIT_BASELINE.readinessStatus, 'UNAUTHENTICATED_SENDER_DOMAIN_BLOCKED');
+  assert.match(BREVO_AUDIT_BASELINE.deliveryPolicy, /SQLSTATE 42501/);
+
+  // 3. Planned 18-case matrix structure and coverage
+  const plan = planProbeExecution(HARDCODED_TEMP_REF);
+  assert.equal(plan.totalProbes, 18, 'Must plan exactly 18 discrete probes');
+  assert.equal(plan.projectRef, HARDCODED_TEMP_REF);
+  assert.equal(plan.mode, 'PLANNED');
+
+  const categories = plan.plannedCases.reduce((acc, c) => {
+    acc[c.category] = (acc[c.category] || 0) + 1;
+    return acc;
+  }, {});
+
+  assert.equal(categories['Native Bypass'], 5, 'Must contain 5 Native Bypass cases (BYPASS-01..05)');
+  assert.equal(categories['Token Hook'], 7, 'Must contain 7 Token Hook cases (HOOK-01..07)');
+  assert.equal(categories['Session & Consumer'], 6, 'Must contain 6 Session & Consumer cases (SESSION-01..06)');
+
+  for (const c of plan.plannedCases) {
+    assert.ok(c.id, 'Case must have an ID');
+    assert.ok(c.category, 'Case must have a category');
+    assert.ok(c.target, 'Case must have a target');
+    assert.ok(c.expectedResponse, 'Case must specify expectedResponse');
+    assert.ok(c.testUser, 'Case must have a testUser');
+  }
+
+  // 4. Default DRY_RUN execution safety contract
+  const dryRunResult = await runHostedProbeRunner({
+    projectRef: HARDCODED_TEMP_REF
+  });
+
+  assert.equal(dryRunResult.status, 'DRY_RUN_COMPLETED');
+  assert.equal(dryRunResult.mode, 'DRY_RUN');
+  assert.equal(dryRunResult.projectRef, HARDCODED_TEMP_REF);
+  assert.equal(dryRunResult.zeroNetworkRequestsDispatched, true);
+  assert.equal(dryRunResult.plan.totalProbes, 18);
 });
