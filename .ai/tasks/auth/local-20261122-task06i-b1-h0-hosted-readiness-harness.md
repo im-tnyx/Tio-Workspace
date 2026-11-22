@@ -4,7 +4,7 @@
 
 | Field | Value |
 |---|---|
-| Status | **PR #36 REVIEW REMEDIATION (REVISION R1) COMPLETE; 80/80 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (ON_ERROR_STOP=1 + ROLE GRANTS VERIFIED); LIVE INVENTORY AUDITED (1 ACTIVE PROJECT, 1 FREE SLOT AVAILABLE); TEMP LIFECYCLE & DELETION POLICY FORMALIZED (OWNER DIRECTION); AWAITING OWNER APPROVAL FOR TEMP PROJECT CREATION** |
+| Status | **PR #36 REVIEW REMEDIATION (REVISION R1) COMPLETE; 81/81 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (ON_ERROR_STOP=1 + ROLE GRANTS VERIFIED); LIVE INVENTORY AUDITED (1 ACTIVE PROJECT, 1 FREE SLOT AVAILABLE); TEMP LIFECYCLE & DELETION POLICY FORMALIZED (OWNER DIRECTION); AWAITING OWNER APPROVAL FOR TEMP PROJECT CREATION** |
 | Objective | Remediate all 8 independent review findings on PR #36, update Supabase target architecture to cleanly separate REAL (`bsfwzvgynwriswapxpsp`) from disposable TEMP (`Tio-Tnyx-Auth-Temp`), formalize the TEMP project lifecycle & deletion policy per owner direction, verify live organization inventory via Supabase CLI, ensure zero host port exposure and zero fake passes, and prepare TEMP creation approval package without executing hosted mutations |
 | Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H0-R1 slice |
 | Previous agent | Agent / Task 06I-B1-H0 author |
@@ -133,13 +133,23 @@ All 8 review threads on PR #36 have been resolved with regression tests:
   3. Added deliberate mismatch regression test verifying that dropped claims, tampered claims, or non-empty Send Email Hook outputs fail parity.
 - **Test:** `security-harness.test.mjs` (Test 14).
 
+### 9. `PRRT_kwDOVtCmZc66i2Ff` — Hardcode Immutable Forbidden Projects and Prevent Env Bypass
+- **Root Cause:** `TIO_SUPABASE_REAL_REF` defaulted from `process.env.TIO_SUPABASE_REAL_REF` and `validateTargetProject` only compared against that reference without directly consulting `IMMUTABLE_FORBIDDEN_PROJECTS` or hardcoding `bsfwzvgynwriswapxpsp`.
+- **Remediation:**
+  1. Explicitly hardcoded `HARDCODED_REAL_REF = 'bsfwzvgynwriswapxpsp'` and `HARDCODED_TIO_WORLD_REF = 'oykupyiitspujzpwwvuj'` in `hosted-probe-runner.mjs`.
+  2. Defined `IMMUTABLE_FORBIDDEN_PROJECTS = Object.freeze(new Set([HARDCODED_TIO_WORLD_REF, HARDCODED_REAL_REF]))`.
+  3. `validateTargetProject` directly evaluates `IMMUTABLE_FORBIDDEN_PROJECTS.has(normRef)` as its primary gate, throwing `CRITICAL_SECURITY_VIOLATION`.
+  4. Added check ensuring `tempRef` cannot spoof any immutable forbidden project.
+  5. Added regression test `2b. REAL project cannot be bypassed via env override or tempRef spoofing` asserting strict rejection of `bsfwzvgynwriswapxpsp`.
+- **Test:** `hosted-probe-runner.test.mjs` (Test 2b).
+
 ---
 
 ## 5. Local Security Harness & Parity Verification Results (Phase E)
 
 | Test Suite / Script | Command | Cases / Result | Exit Code | Notes |
 |---|---|---|---|---|
-| Task 06I Security Suite | `node --test experiments/task06i/*.test.mjs` | **80 passed**, 0 failed | `0` | All 4 test files pass: allowlist (37), evaluator (15), probe runner (14), harness (14) |
+| Task 06I Security Suite | `node --test experiments/task06i/*.test.mjs` | **81 passed**, 0 failed | `0` | All 4 test files pass: allowlist (37), evaluator (15), probe runner (15), harness (14) |
 | PostgreSQL 17.11 Parity Check | `node experiments/task06i/sql-contract-parity.mjs` | **18 passed**, 0 failed | `0` | Live Docker PostgreSQL 17.11 with zero host ports; `ON_ERROR_STOP=1`; grants verified |
 | Task 06H Historical Suite | `node --test experiments/task06h/*.test.mjs` | **115 passed**, 0 failed | `0` | Phase 1 Auth Shell contract baseline clean |
 | Workspace Repository Verification | `npm run verify` | **22 shell contract passed** | `0` | Tokens clean, `tsc` clean, `eslint` clean |
