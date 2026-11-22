@@ -27,6 +27,31 @@ test('2. REAL project (Tio-Tnyx) is protected and permanently forbidden from tes
   );
 });
 
+test('2b. REAL project cannot be bypassed via env override or tempRef spoofing (PRRT_kwDOVtCmZc66i2Ff)', () => {
+  // Even if tempRef is passed as the REAL project ref, it must still be rejected
+  assert.throws(
+    () => validateTargetProject('bsfwzvgynwriswapxpsp', 'bsfwzvgynwriswapxpsp'),
+    /CRITICAL_SECURITY_VIOLATION.*protected REAL backend.*permanently forbidden/
+  );
+  // Even if Tio-world is set as tempRef, it must still be rejected
+  assert.throws(
+    () => validateTargetProject('oykupyiitspujzpwwvuj', 'oykupyiitspujzpwwvuj'),
+    /CRITICAL_SECURITY_VIOLATION.*Tio-world.*permanently forbidden/
+  );
+  // Even if tempRef attempts to configure protected projects with a different target
+  assert.throws(
+    () => validateTargetProject('some-other-target', 'bsfwzvgynwriswapxpsp'),
+    /CRITICAL_SECURITY_VIOLATION.*Configured TEMP ref 'bsfwzvgynwriswapxpsp' cannot be a protected or immune project/
+  );
+  assert.throws(
+    () => validateTargetProject('some-other-target', 'oykupyiitspujzpwwvuj'),
+    /CRITICAL_SECURITY_VIOLATION.*Configured TEMP ref 'oykupyiitspujzpwwvuj' cannot be a protected or immune project/
+  );
+  // IMMUTABLE_FORBIDDEN_PROJECTS set is directly populated and frozen
+  assert.ok(IMMUTABLE_FORBIDDEN_PROJECTS.has('bsfwzvgynwriswapxpsp'));
+  assert.ok(IMMUTABLE_FORBIDDEN_PROJECTS.has('oykupyiitspujzpwwvuj'));
+});
+
 test('3. Empty or unauthorized project refs are rejected', () => {
   assert.throws(
     () => validateTargetProject('', VALID_TEMP_REF),

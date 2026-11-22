@@ -14,13 +14,16 @@
 
 import { PREFLIGHT_REQUIREMENTS } from './preflight-evaluator.mjs';
 
-export const TIO_SUPABASE_REAL_REF = process.env.TIO_SUPABASE_REAL_REF || 'bsfwzvgynwriswapxpsp';
+export const HARDCODED_REAL_REF = 'bsfwzvgynwriswapxpsp';
+export const HARDCODED_TIO_WORLD_REF = 'oykupyiitspujzpwwvuj';
+
+export const TIO_SUPABASE_REAL_REF = HARDCODED_REAL_REF;
 export const TIO_SUPABASE_TEMP_REF = process.env.TIO_SUPABASE_TEMP_REF || '';
 
-export const IMMUTABLE_FORBIDDEN_PROJECTS = new Set([
-  'oykupyiitspujzpwwvuj', // Tio-world: PERMANENT IMMUNITY
-  TIO_SUPABASE_REAL_REF   // REAL Tio-Tnyx: protected production backend, permanently forbidden from test runs
-]);
+export const IMMUTABLE_FORBIDDEN_PROJECTS = Object.freeze(new Set([
+  HARDCODED_TIO_WORLD_REF, // Tio-world: PERMANENT IMMUNITY
+  HARDCODED_REAL_REF       // REAL Tio-Tnyx: protected production backend, permanently forbidden from test runs
+]));
 
 export const RESERVED_TEST_DOMAINS = ['.invalid', '.example', '.test', '.localhost'];
 
@@ -99,8 +102,8 @@ export function validateTestIdentity(email) {
 
 /**
  * Validates target project against security invariants and strict separation of REAL vs TEMP.
- * REAL project and Tio-world are permanently forbidden.
- * Resolves Phase D.
+ * REAL project (bsfwzvgynwriswapxpsp) and Tio-world (oykupyiitspujzpwwvuj) are permanently forbidden.
+ * Resolves Phase D and PRRT_kwDOVtCmZc66i2Ff.
  */
 export function validateTargetProject(projectRef, tempRef = TIO_SUPABASE_TEMP_REF) {
   if (!projectRef || typeof projectRef !== 'string' || !projectRef.trim()) {
@@ -109,22 +112,36 @@ export function validateTargetProject(projectRef, tempRef = TIO_SUPABASE_TEMP_RE
 
   const normRef = projectRef.trim().toLowerCase();
 
-  // 1. Permanent immunity check: Tio-world
-  if (normRef === 'oykupyiitspujzpwwvuj') {
-    throw new Error(
-      `CRITICAL_SECURITY_VIOLATION: Project '${normRef}' (Tio-world) is permanently forbidden and immune from testing!`
-    );
-  }
-
-  // 2. Permanent protection check: REAL project
-  if (normRef === TIO_SUPABASE_REAL_REF.toLowerCase()) {
+  // 1. Permanent immutable forbidden projects check (consults IMMUTABLE_FORBIDDEN_PROJECTS)
+  if (IMMUTABLE_FORBIDDEN_PROJECTS.has(normRef)) {
+    if (normRef === HARDCODED_TIO_WORLD_REF) {
+      throw new Error(
+        `CRITICAL_SECURITY_VIOLATION: Project '${normRef}' (Tio-world) is permanently forbidden and immune from testing!`
+      );
+    }
     throw new Error(
       `CRITICAL_SECURITY_VIOLATION: Project '${normRef}' is the protected REAL backend and is permanently forbidden from test targeting!`
     );
   }
 
-  // 3. Authorized TEMP testbed check
-  if (!tempRef || normRef !== tempRef.toLowerCase()) {
+  // 2. Extra guard: ensure env var cannot re-introduce any other forbidden ref
+  const envRealRef = (process.env.TIO_SUPABASE_REAL_REF || '').trim().toLowerCase();
+  if (envRealRef && normRef === envRealRef) {
+    throw new Error(
+      `CRITICAL_SECURITY_VIOLATION: Project '${normRef}' matches TIO_SUPABASE_REAL_REF and is permanently forbidden from test targeting!`
+    );
+  }
+
+  // 3. Prevent configured tempRef from spoofing immutable forbidden projects
+  const normTemp = (tempRef || TIO_SUPABASE_TEMP_REF || '').trim().toLowerCase();
+  if (IMMUTABLE_FORBIDDEN_PROJECTS.has(normTemp)) {
+    throw new Error(
+      `CRITICAL_SECURITY_VIOLATION: Configured TEMP ref '${normTemp}' cannot be a protected or immune project!`
+    );
+  }
+
+  // 4. Authorized TEMP testbed check
+  if (!normTemp || normRef !== normTemp) {
     throw new Error(
       `unauthorized_target: Project '${normRef}' is not the authorized TEMP testbed project`
     );
