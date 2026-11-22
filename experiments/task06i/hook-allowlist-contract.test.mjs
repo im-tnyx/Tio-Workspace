@@ -421,8 +421,8 @@ test('Boundary: anonymous and invite authentication methods fail closed', () => 
   }
 });
 
-// R3-01: Send Email Hook Suppression Contract Tests
-test('R3-01: Native recovery email dispatch is suppressed fail-closed (SQLSTATE 42501)', () => {
+// R3-01 / R4-01 / R4-02: Send Email Hook Suppression & Parity Contract Tests
+test('R4-01: Native recovery email dispatch is suppressed fail-closed (SQLSTATE 42501)', () => {
   const event = {
     user: { id: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4', email: 'user@example.invalid' },
     email_data: {
@@ -443,7 +443,7 @@ test('R3-01: Native recovery email dispatch is suppressed fail-closed (SQLSTATE 
   assert.equal(outcome.sqlstate, '42501');
 });
 
-test('R3-01: Native signup email dispatch is suppressed fail-closed (SQLSTATE 42501)', () => {
+test('R4-01: Native signup email dispatch is suppressed fail-closed (SQLSTATE 42501)', () => {
   const event = {
     user: { id: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4', email: 'user@example.invalid' },
     email_data: {
@@ -458,7 +458,7 @@ test('R3-01: Native signup email dispatch is suppressed fail-closed (SQLSTATE 42
   });
 });
 
-test('R3-01: Native magiclink email dispatch is suppressed fail-closed (SQLSTATE 42501)', () => {
+test('R4-01: Native magiclink email dispatch is suppressed fail-closed (SQLSTATE 42501)', () => {
   const event = {
     user: { id: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4', email: 'user@example.invalid' },
     email_data: {
@@ -473,13 +473,90 @@ test('R3-01: Native magiclink email dispatch is suppressed fail-closed (SQLSTATE
   });
 });
 
-test('R3-01: Send Email Hook fails closed on null or non-object payload', () => {
-  assert.throws(() => evaluateSendEmailHook(null), /invalid_hook_event/);
-  assert.throws(() => evaluateSendEmailHook([]), /invalid_hook_event/);
+test('R4-01: Native invite and email_change email dispatches are suppressed fail-closed (SQLSTATE 42501)', () => {
+  for (const action of ['invite', 'email_change']) {
+    const event = {
+      user: { id: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4', email: 'user@example.invalid' },
+      email_data: {
+        token: 'action-token-123456',
+        email_action_type: action
+      }
+    };
+    assert.throws(() => evaluateSendEmailHook(event), (err) => {
+      assert.match(err.message, new RegExp(`native_${action}_email_dispatch_suppressed`));
+      assert.equal(err.code, '42501');
+      return true;
+    });
+  }
 });
 
-test('R3-01: Send Email Hook fails closed on missing or malformed email_data', () => {
+test('R4-01 / R4-02: Send Email Hook fails closed on null or non-object payload', () => {
+  assert.throws(() => evaluateSendEmailHook(null), /invalid_hook_event/);
+  assert.throws(() => evaluateSendEmailHook([]), /invalid_hook_event/);
+  assert.throws(() => evaluateSendEmailHook('string-event'), /invalid_hook_event/);
+});
+
+test('R4-01 / R4-02: Send Email Hook fails closed on missing, null, or malformed email_data', () => {
   assert.throws(() => evaluateSendEmailHook({ user: {} }), /missing_email_data/);
   assert.throws(() => evaluateSendEmailHook({ user: {}, email_data: null }), /missing_email_data/);
+  assert.throws(() => evaluateSendEmailHook({ user: {}, email_data: 'not-an-object' }), /missing_email_data/);
+  assert.throws(() => evaluateSendEmailHook({ user: {}, email_data: [] }), /missing_email_data/);
+});
+
+test('R4-01 / R4-02: Send Email Hook fails closed on missing, blank, or whitespace email_action_type', () => {
   assert.throws(() => evaluateSendEmailHook({ user: {}, email_data: {} }), /missing_email_action_type/);
+  assert.throws(() => evaluateSendEmailHook({ user: {}, email_data: { email_action_type: '' } }), /missing_email_action_type/);
+  assert.throws(() => evaluateSendEmailHook({ user: {}, email_data: { email_action_type: '   ' } }), /missing_email_action_type/);
+  assert.throws(() => evaluateSendEmailHook({ user: {}, email_data: { email_action_type: 123 } }), /missing_email_action_type/);
+});
+
+test('R4-02: Send Email Hook strictly rejects undocumented aliases (event.email and event.action_type)', () => {
+  // event.email alias must NOT be accepted as email_data
+  const aliasEvent1 = {
+    user: { id: 'test' },
+    email: { email_action_type: 'recovery' }
+  };
+  assert.throws(() => evaluateSendEmailHook(aliasEvent1), /missing_email_data/);
+
+  // event.action_type alias must NOT be accepted as email_action_type
+  const aliasEvent2 = {
+    user: { id: 'test' },
+    email_data: {},
+    action_type: 'recovery'
+  };
+  assert.throws(() => evaluateSendEmailHook(aliasEvent2), /missing_email_action_type/);
+});
+
+test('R4-01 / R4-02: Unknown action types fail closed with SQLSTATE 42501', () => {
+  const unknownEvent = {
+    user: { id: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4' },
+    email_data: {
+      email_action_type: 'unknown_vendor_action'
+    }
+  };
+  assert.throws(() => evaluateSendEmailHook(unknownEvent), (err) => {
+    assert.match(err.message, /unrecognized_email_action_type_unknown_vendor_action/);
+    assert.equal(err.code, '42501');
+    return true;
+  });
+  const outcome = classifySendEmailOutcome(unknownEvent);
+  assert.equal(outcome.allowed, false);
+  assert.equal(outcome.result, 'SUPPRESSED_FAIL_CLOSED');
+  assert.equal(outcome.sqlstate, '42501');
+});
+
+test('R4-02: Permitted custom notification returns empty object {} matching SQL return value', () => {
+  const customEvent = {
+    user: { id: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4' },
+    email_data: {
+      email_action_type: 'custom_notification'
+    }
+  };
+  const result = evaluateSendEmailHook(customEvent);
+  assert.deepEqual(result, {});
+
+  const outcome = classifySendEmailOutcome(customEvent);
+  assert.equal(outcome.allowed, true);
+  assert.equal(outcome.result, 'ALLOWED');
+  assert.deepEqual(outcome.response, {});
 });

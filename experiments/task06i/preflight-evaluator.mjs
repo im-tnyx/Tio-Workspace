@@ -64,9 +64,9 @@ export const PREFLIGHT_REQUIREMENTS = [
     id: 'BYPASS-05',
     category: 'Native Bypass',
     target: 'POST /auth/v1/recover',
-    description: 'Direct native password recovery request; Send Email Hook must intercept and suppress recovery email dispatch; failure/fallback must not deliver usable token or route via default SMTP; purpose isolation preserved',
-    documentedCapability: 'Send Email Hook intercepts email_action_type = recovery; suppresses dispatch',
-    expectedResponse: '200 OK from endpoint, but Send Email Hook suppresses email delivery; hook failure fails closed (zero usable recovery token delivered)',
+    description: 'Direct native password recovery request; Send Email Hook intercepts and raises SQLSTATE 42501 exception to abort recovery dispatch; zero recovery token delivered; Hosted Unverified',
+    documentedCapability: 'Send Email Hook intercepts email_action_type = recovery and fails closed with SQLSTATE 42501',
+    expectedResponse: '500 Error invoking email hook (or HTTP error fail-closed; zero recovery token delivered; Hosted Unverified)',
     hostedExecutionStatus: 'NOT TESTED',
     prerequisite: 'Send Email Hook deployed to private_auth schema and registered/enabled via hook_send_email_enabled'
   },

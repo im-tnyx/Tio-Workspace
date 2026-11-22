@@ -107,14 +107,29 @@ export function evaluateCustomAccessTokenHook(event) {
   };
 }
 
+export const SUPPRESSED_EMAIL_ACTIONS = new Set([
+  'recovery',
+  'signup',
+  'magiclink',
+  'invite',
+  'email_change'
+]);
+
+export const PERMITTED_EMAIL_ACTIONS = new Set([
+  'custom_notification'
+]);
+
 /**
  * Send Email Hook specification evaluator.
  * Mirrors private_auth.send_email_hook(event jsonb) SQL function.
- * Enforces strict email suppression for native recovery and signup endpoints.
+ * Enforces strict email suppression for native recovery, signup, magiclink, invite, and email_change endpoints.
+ * Strictly validates that email_data is a non-null JSON object and email_action_type is a non-blank string.
+ * Disallows undocumented aliases (e.g. event.email or event.action_type).
+ * Fails closed with SQLSTATE 42501 on malformed payloads, suppressed native actions, or unknown action types.
  *
  * @param {object} event Provider hook input event
- * @returns {object} Response object if allowed
- * @throws {Error} Fail-closed exception with SQLSTATE 42501 if suppressed or malformed
+ * @returns {object} Response object ({}) matching '{}'::jsonb if allowed
+ * @throws {Error} Fail-closed exception with SQLSTATE 42501 if suppressed, unrecognized, or malformed
  */
 export function evaluateSendEmailHook(event) {
   if (!event || typeof event !== 'object' || Array.isArray(event)) {
@@ -123,28 +138,38 @@ export function evaluateSendEmailHook(event) {
     throw err;
   }
 
-  const emailData = event.email_data || event.email;
-  if (!emailData || typeof emailData !== 'object') {
+  const emailData = event.email_data;
+  if (!emailData || typeof emailData !== 'object' || Array.isArray(emailData)) {
     const err = new Error('missing_email_data: event must contain email_data object');
     err.code = '42501';
     throw err;
   }
 
-  const actionType = emailData.email_action_type || event.action_type;
-  if (!actionType || typeof actionType !== 'string') {
-    const err = new Error('missing_email_action_type: email_data must specify action type');
+  const actionType = emailData.email_action_type;
+  if (typeof actionType !== 'string' || !actionType.trim()) {
+    const err = new Error('missing_email_action_type: email_data must specify a non-empty string email_action_type');
     err.code = '42501';
     throw err;
   }
 
-  // Strict suppression list: native recovery, signup, magiclink, and invite dispatch
-  if (['recovery', 'signup', 'magiclink', 'invite'].includes(actionType)) {
-    const err = new Error(`native_${actionType}_email_dispatch_suppressed_by_security_policy`);
+  const normalizedAction = actionType.trim();
+
+  // Strict suppression list: native recovery, signup, magiclink, invite, and email_change dispatch
+  if (SUPPRESSED_EMAIL_ACTIONS.has(normalizedAction)) {
+    const err = new Error(`native_${normalizedAction}_email_dispatch_suppressed_by_security_policy`);
     err.code = '42501';
     throw err;
   }
 
-  return { status: 'ok' };
+  // Explicit allowlist: permitted future custom notification actions
+  if (PERMITTED_EMAIL_ACTIONS.has(normalizedAction)) {
+    return {};
+  }
+
+  // Fail-closed on all unknown or unsupported action types
+  const err = new Error(`unrecognized_email_action_type_${normalizedAction}`);
+  err.code = '42501';
+  throw err;
 }
 
 /**
@@ -179,7 +204,7 @@ export function classifySendEmailOutcome(event) {
       allowed: true,
       error: null,
       result: 'ALLOWED',
-      status: result.status
+      response: result
     };
   } catch (err) {
     return {

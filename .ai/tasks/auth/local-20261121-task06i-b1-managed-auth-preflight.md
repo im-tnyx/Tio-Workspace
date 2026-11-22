@@ -1,15 +1,15 @@
-# Phase 1.2 Task 06I-B1-R3 — Managed Auth Feasibility & Security Boundary Verification Preflight
+# Phase 1.2 Task 06I-B1-R4 — Managed Auth Feasibility & Security Boundary Verification Preflight
 
-> **Preflight Report & Test Plan (Revision R3 — Final Review Blockers Remediation).** Prepared under `AGENTS.md` operating rules. This document authorizes local investigation, documentation, offline test preparation, and read-only feasibility checks only. It does not authorize creating or modifying a hosted Supabase project. Production Real Auth remains **NO-GO**.
+> **Preflight Report & Test Plan (Revision R4 — Send Email Hook Security Contract Closure).** Prepared under `AGENTS.md` operating rules. This document authorizes local investigation, documentation, offline test preparation, and read-only feasibility checks only. It does not authorize creating or modifying a hosted Supabase project. Production Real Auth remains **NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **PREFLIGHT COMPLETE (REVISION R3) — HOSTED PROVISIONING BLOCKED PENDING OWNER APPROVAL & SAFE TARGET RESOLUTION** |
-| Objective | Address final PR #35 review findings (R3-01 Auth Hook registration & enablement contract, R3-02 CI guard coverage analysis, R3-03 regression evidence, and R3-04 workflow review), document permanent immunity for `Tio-world`, specify both Custom Access Token & Send Email Hooks, and maintain branch protections |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-R3 slice |
-| Previous agent | Agent / Task 06I-B1-R2 author |
-| Last commit agent | `de7f4928860f5616b50ce64c93348dd7dd383a4c` (Task 06I-B1-R2 commit on PR #35) |
-| Tracking / approval | Task 06I-B1-R3 authorized by user prompt; PR #35 active; owner mandates $0 cost and permanent immunity for `Tio-world`; hosted mutations strictly prohibited |
+| Status | **PREFLIGHT COMPLETE (REVISION R4) — HOSTED PROVISIONING BLOCKED PENDING OWNER APPROVAL & SAFE TARGET RESOLUTION** |
+| Objective | Address PR #35 review findings (R4-01 strict Send Email Hook validation, R4-02 SQL & JS contract parity, R4-03 recovery endpoint response contract, R4-04 hosted evidence integrity labeling, R4-05 CI security guard blocker), maintain $0 cost and permanent immunity for `Tio-world`, and preserve branch protections |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-R4 slice |
+| Previous agent | Agent / Task 06I-B1-R3 author |
+| Last commit agent | `0861ef9d90afa6ad7a6e9dfd529aa8a711fdb221` (Task 06I-B1-R3 commit on PR #35) |
+| Tracking / approval | Task 06I-B1-R4 authorized by user prompt; PR #35 active; owner mandates $0 cost and permanent immunity for `Tio-world`; hosted mutations strictly prohibited |
 | Branch | `docs/task06i-b1-managed-auth-preflight` |
 | Base SHA / inspected HEAD | `b7d4fda97979e734a85461e83bf119dbc1a9689c` (`main`, verified up to date with `origin/main`) |
 | Platform and file scope | Documentation, `.ai/` context, isolated offline preflight test harnesses under `experiments/task06i/`; zero client Expo UI, production schema, or live Auth changes |
@@ -198,7 +198,7 @@ The following reproducible test matrix defines the 18 security requirements acro
 | **BYPASS-02** | Native Bypass | `POST /auth/v1/signup` (direct signup) | `422 Unprocessable Entity (signup_disabled)` | **NOT TESTED** | `disable_signup: true` |
 | **BYPASS-03** | Native Bypass | `POST /auth/v1/verify` (type email / recovery) | `500 Error invoking access token hook` (0 token issued) | **NOT TESTED** | Custom Access Token Hook deployed to `private_auth` schema and registered/enabled via `hook_custom_access_token_enabled` |
 | **BYPASS-04** | Native Bypass | Magic Link, Invite & Anonymous endpoints | `500 Error invoking access token hook` (0 token issued) | **NOT TESTED** | Custom Access Token Hook deployed and registered/enabled via `hook_custom_access_token_enabled` |
-| **BYPASS-05** | Native Bypass | `POST /auth/v1/recover` (password recovery) | Send Email Hook intercepts and suppresses recovery email delivery; failure/fallback fails closed without usable token or default SMTP routing; purpose isolation preserved | **NOT TESTED** | Send Email Hook deployed to `private_auth` schema and registered/enabled via `hook_send_email_enabled` |
+| **BYPASS-05** | Native Bypass | `POST /auth/v1/recover` (password recovery) | `500 Error invoking email hook` (or HTTP error fail-closed; zero recovery token delivered; Hosted Unverified) | **NOT TESTED** | Send Email Hook deployed to `private_auth` schema and registered/enabled via `hook_send_email_enabled` |
 | **HOOK-01** | Token Hook | Legitimate Password Sign-In | `200 OK` with valid JWT (`amr: [{method: "password"}]`, root `claims.amr_authenticated = 'true'`) | **NOT TESTED** | Test user enrolled with password; Hook deployed and registered |
 | **HOOK-02** | Token Hook | Legitimate Password Token Refresh | `200 OK` with refreshed JWT (`amr: [{method: "password"}]`) | **NOT TESTED** | Active password session; Hook deployed and registered |
 | **HOOK-03** | Token Hook | OTP-Origin Token Refresh | `500 Error invoking access token hook` (SQLSTATE `42501`) | **NOT TESTED** | Simulated OTP session; Hook deployed and registered |
@@ -233,7 +233,7 @@ To eliminate ambiguity, all capabilities and assertions are categorized across t
 
 > [!IMPORTANT]
 > **Offline Contract Tests Are NOT Hosted Integration Proof:**
-> The 39 unit tests in `experiments/task06i/` verify only that the local JavaScript specification and SQL policy contract logic parse inputs, traverse RFC 8176 AMR arrays, and throw fail-closed SQLSTATE 42501 exceptions correctly. They **do not prove** that managed Supabase Cloud executes hooks without latency timeouts, preserves AMR arrays across repeated token refreshes, or reliably enforces Management API route disablements.
+> The 49 unit tests in `experiments/task06i/` verify only that the local JavaScript specification and SQL policy contract logic parse inputs, traverse RFC 8176 AMR arrays, and throw fail-closed SQLSTATE 42501 exceptions correctly. They **do not prove** that managed Supabase Cloud executes hooks without latency timeouts, preserves AMR arrays across repeated token refreshes, or reliably enforces Management API route disablements.
 
 ### Test Execution Results
 Executed test commands:
@@ -242,8 +242,8 @@ Executed test commands:
 node --test experiments/task06i/*.test.mjs
 ```
 
-**Results (44 passed, 0 failed):**
-- 29 Hook Contract tests (Fixtures 1–10; mixed AMR with `email/signup`, `sso/saml`, `email/change`, and unknown methods rejected; non-object elements rejected; missing/blank method rejected; server-owned `amr_authenticated` claim added regardless of `user_metadata` presence; Send Email Hook native recovery, signup, and magiclink email suppression verified fail-closed with SQLSTATE 42501; malformed/missing email payload rejected).
+**Results (49 passed, 0 failed):**
+- 34 Hook Contract tests (Fixtures 1–10; mixed AMR with `email/signup`, `sso/saml`, `email/change`, and unknown methods rejected; non-object elements rejected; missing/blank method rejected; server-owned `amr_authenticated` claim added regardless of `user_metadata` presence; Send Email Hook native recovery, signup, magiclink, invite, and email_change email suppression verified fail-closed with SQLSTATE 42501; malformed/missing/non-object `email_data` rejected; missing/blank `email_action_type` rejected; undocumented aliases `event.email` and `event.action_type` strictly rejected; unknown action types fail closed with SQLSTATE 42501; permitted `custom_notification` returns `{}`).
 - 15 Preflight Evaluator tests (18 requirements validated; empty, duplicate, missing, or unknown IDs rejected; `VERIFIED FAIL` and `BLOCKED` surface as blocking verdicts; `NOT TESTED` prevents completion; quota and existing project target strategies evaluated; production Auth unconditionally `NO-GO`).
 
 ### CI Status & Commit Attribution Guard Boundary
@@ -358,7 +358,7 @@ BEGIN
 END;
 $$;
 
--- 2. Send Email Hook (Strict Native Email Suppression)
+-- 2. Send Email Hook (Strict Native Email Suppression & Fail-Closed Policy)
 CREATE OR REPLACE FUNCTION private_auth.send_email_hook(event jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -366,6 +366,7 @@ SECURITY DEFINER
 SET search_path = ''
 AS $$
 DECLARE
+  v_email_data jsonb;
   v_action_type text;
 BEGIN
   IF event IS NULL OR jsonb_typeof(event) <> 'object' THEN
@@ -373,19 +374,32 @@ BEGIN
       USING ERRCODE = '42501';
   END IF;
 
-  v_action_type := event->'email_data'->>'email_action_type';
-  IF v_action_type IS NULL THEN
-    v_action_type := event->>'action_type';
+  v_email_data := event->'email_data';
+  IF v_email_data IS NULL OR jsonb_typeof(v_email_data) <> 'object' THEN
+    RAISE EXCEPTION 'send_email_hook: missing or malformed email_data object'
+      USING ERRCODE = '42501';
   END IF;
 
-  -- Prohibit native recovery, signup, magiclink, and invite email dispatch
-  IF v_action_type IN ('recovery', 'signup', 'magiclink', 'invite') THEN
+  v_action_type := v_email_data->>'email_action_type';
+  IF v_action_type IS NULL OR trim(v_action_type) = '' THEN
+    RAISE EXCEPTION 'send_email_hook: missing or blank email_action_type'
+      USING ERRCODE = '42501';
+  END IF;
+
+  -- Prohibit native recovery, signup, magiclink, invite, and email_change email dispatch
+  IF v_action_type IN ('recovery', 'signup', 'magiclink', 'invite', 'email_change') THEN
     RAISE EXCEPTION 'send_email_hook: native % email dispatch suppressed by security policy', v_action_type
       USING ERRCODE = '42501';
   END IF;
 
-  -- Return empty object for allowed dispatch (if any future custom action permitted)
-  RETURN '{}'::jsonb;
+  -- Allowlist for permitted future custom email actions (e.g. 'custom_notification')
+  IF v_action_type IN ('custom_notification') THEN
+    RETURN '{}'::jsonb;
+  END IF;
+
+  -- Fail-closed on all unknown or unsupported action types
+  RAISE EXCEPTION 'send_email_hook: unrecognized email_action_type %', v_action_type
+    USING ERRCODE = '42501';
 END;
 $$;
 
@@ -414,10 +428,11 @@ Before executing any native bypass tests (`BYPASS-01` through `BYPASS-05`), the 
   - If the hook function throws an exception (`RAISE EXCEPTION ... USING ERRCODE = '42501'`), Supabase GoTrue aborts JWT issuance immediately and returns HTTP 500 (`Error invoking access token hook`). ZERO tokens are issued.
   - If the hook times out (Supabase default timeout is 2 seconds for Postgres functions), GoTrue aborts and returns HTTP 500. ZERO tokens are issued.
   - If the hook returns malformed JSON or lacks required structure, GoTrue aborts. Fail-closed is absolute.
-- **Send Email Hook Failure & Fallback:**
-  - If the hook throws an exception, GoTrue aborts mail dispatch. ZERO emails are delivered to SMTP or user.
-  - If the hook absorbs/suppresses delivery (returning `{}` without external dispatch), GoTrue logs completion while zero emails or recovery tokens reach the user.
-  - Under either exception or suppression, no usable recovery token or magic link is ever delivered via native endpoints.
+- **Send Email Hook Failure & Fallback (Hosted Unverified / NOT TESTED):**
+  - **Exception Abort (Design Intent):** When `send_email_hook` raises an exception with SQLSTATE `42501`, GoTrue is documented to abort the authentication/recovery transaction and return an HTTP error (e.g. HTTP 500 / hook execution failure). Under this path, ZERO emails or recovery tokens are dispatched via SMTP or delivered to the user.
+  - **Hosted SMTP Fallback Unverified:** The assertion that GoTrue aborts without falling back to default SMTP delivery when the Send Email Hook fails or raises SQLSTATE 42501 is documented provider behavior, but remains **Hosted Unverified / NOT TESTED** until empirically validated on live managed Supabase infrastructure in Stage 06I-B1.
+  - **Absorption vs Error Response:** If GoTrue absorbs hook exceptions into an HTTP 200 generic response (for anti-enumeration purposes) or surfaces HTTP 500, both outcomes must ensure that zero usable tokens or emails reach external networks. This behavior remains **Hosted Unverified / NOT TESTED**.
+  - **Fail-Closed Guarantee:** Under no circumstance does an unhandled hook exception, timeout, or malformed payload fail open to native recovery token dispatch or unverified session issuance.
 
 ### Deterministic Test Identities
 - `synthetic-admin-test-1@example.invalid` (RFC 2606 non-routable domain)
@@ -443,13 +458,13 @@ The following items are explicit blockers that halt execution before any hosted 
 ## 9. STOP / GO Decision & Recommendations
 
 ### Final Assessment
-- **Task 06I-B1-R3 Preflight Deliverable:** **VERIFIED PASS** (Documentation audited, evidence classifications corrected, 18-point test matrices defined, hook registration and enablement contract explicitly specified, recovery endpoint bypass covered, residual JWT validity documented, and 44 offline unit tests passing).
+- **Task 06I-B1-R4 Preflight Deliverable:** **VERIFIED PASS** (Documentation audited, evidence classifications corrected, 18-point test matrices defined, hook registration and enablement contract explicitly specified, recovery endpoint response contract aligned, Send Email Hook SQL/JS contract parity verified fail-closed, and 49 offline unit tests passing).
 - **Disposable Hosted Project Execution:** **BLOCKED (STOP)** (Awaiting separate owner authorization and safe isolated target resolution).
 - **Managed Supabase Auth Feasibility:** **NOT VERIFIED ON HOSTED** (Documented capabilities indicate feasibility, but empirical hosted proof is mandatory).
 - **Production Real Auth:** **STRICT NO-GO**.
 
 ### Recommended Next Action
-1. Review this finalized Task 06I-B1-R3 preflight package and PR #35.
+1. Review this finalized Task 06I-B1-R4 preflight package and PR #35.
 2. Maintain `bsfwzvgynwriswapxpsp` and `oykupyiitspujzpwwvuj` as strictly READ-ONLY.
 3. When the owner chooses to authorize future hosted feasibility testing, execute the 18-point Stage 06I-B1 test checklist against an authorized safe target under strict cleanup guarantees.
 
