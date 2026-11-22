@@ -25,8 +25,18 @@ import {
   getRunTestPassword,
   createRunContext,
   validateProjectCredentialBinding,
+  createMockProjectKey,
   HOSTED_PROBE_SPECIFICATIONS
 } from './hosted-probe-runner.mjs';
+
+const defaultMockAdminClient = {
+  deleteUser: async (id) => ({ data: { user: { id } }, error: null }),
+  getUserById: async (id) => ({ data: null, error: { status: 404, message: 'User not found' } }),
+  invalidateSession: async (id) => ({ data: { id }, error: null }),
+  signOut: async (id) => ({ data: { id }, error: null })
+};
+const validTestAnonKey = createMockProjectKey(HARDCODED_TEMP_REF, 'anon');
+const validTestServiceRoleKey = createMockProjectKey(HARDCODED_TEMP_REF, 'service_role');
 
 function createMockJwt(claims = {}) {
   const header = { alg: 'HS256', typ: 'JWT' };
@@ -142,6 +152,7 @@ test('2c. LIVE mode runner rejects forbidden targets before any dispatcher call 
       tempRef: VALID_TEMP_REF,
       argv: ['--live'],
       env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
       mockDispatcher
     }),
     /CRITICAL_SECURITY_VIOLATION.*protected REAL backend/
@@ -153,6 +164,7 @@ test('2c. LIVE mode runner rejects forbidden targets before any dispatcher call 
       tempRef: VALID_TEMP_REF,
       argv: ['--live'],
       env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
       mockDispatcher
     }),
     /CRITICAL_SECURITY_VIOLATION.*Tio-world/
@@ -365,7 +377,7 @@ test('12. Throttling interval is enforced between consecutive requests and legit
       return { passed: true, status: 200, session_created: true, session_id: 'session-uuid-5678' };
     }
     if (item.id === 'SESSION-02') {
-      return { passed: true, status: 200, password_reset_completed: true, session_revoked: true, remaining_sessions: 0 };
+      return { passed: true, status: 200, password_reset_completed: true, session_revoked: true, session_revocation_verified: true, remaining_sessions: 0 };
     }
     if (item.id === 'SESSION-03') {
       return {
@@ -405,6 +417,7 @@ test('12. Throttling interval is enforced between consecutive requests and legit
     tempRef: VALID_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
     mockDispatcher,
     sleepFn: mockSleep
   });
@@ -446,6 +459,7 @@ test('13. Runner halts immediately on Token Hook failure (HOOK-01) (PRRT_kwDOVtC
     tempRef: VALID_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
     mockDispatcher,
     sleepFn: async () => {}
   });
@@ -490,7 +504,7 @@ test('14. Runner halts immediately on Session & Consumer failure (SESSION-03) (P
       return { passed: true, status: 200, session_created: true, session_id: 'sess-1' };
     }
     if (item.id === 'SESSION-02') {
-      return { passed: true, status: 200, password_reset_completed: true, session_revoked: true, remaining_sessions: 0 };
+      return { passed: true, status: 200, password_reset_completed: true, session_revoked: true, session_revocation_verified: true, remaining_sessions: 0 };
     }
     return { passed: true, status: 200, session_created: true, session_id: 'sess-default' };
   };
@@ -500,6 +514,7 @@ test('14. Runner halts immediately on Session & Consumer failure (SESSION-03) (P
     tempRef: VALID_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
     mockDispatcher,
     sleepFn: async () => {}
   });
@@ -526,6 +541,7 @@ test('15. Outcome without passed boolean fails closed (PRRT_kwDOVtCmZc66i_Kd)', 
     tempRef: VALID_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
     mockDispatcher: async () => ({ status: 500 }),
     sleepFn: async () => {}
   });
@@ -549,6 +565,7 @@ test('16. False passed:true on BYPASS-01 with status 200 is overridden to FAIL (
     tempRef: VALID_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
     mockDispatcher: async () => ({ status: 200, passed: true }),
     sleepFn: async () => {}
   });
@@ -575,6 +592,7 @@ test('18. Dispatcher exceptions and timeouts fail closed immediately (PRRT_kwDOV
     tempRef: VALID_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
     mockDispatcher,
     sleepFn: async () => {}
   });
@@ -607,6 +625,7 @@ test('19. Partial execution never returns COMPLETED (PRRT_kwDOVtCmZc66i_Kd)', as
     tempRef: VALID_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
     mockDispatcher,
     sleepFn: async () => {}
   });
@@ -651,6 +670,7 @@ test('21. Serialized secrets are absent from final runner evidence (PRRT_kwDOVtC
     tempRef: VALID_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
     mockDispatcher,
     sleepFn: async () => {}
   });
@@ -674,7 +694,7 @@ test('22. Session cases fail closed without explicit evidence of session state (
   assert.equal(validateProbeOutcome(session02, { passed: true, status: 200 }).passed, false);
   assert.equal(validateProbeOutcome(session02, { passed: true, status: 200, remaining_sessions: 1 }).passed, false);
   assert.equal(validateProbeOutcome(session02, { passed: true, status: 200, remaining_sessions: 0 }).passed, false);
-  assert.equal(validateProbeOutcome(session02, { passed: true, status: 200, remaining_sessions: 0, session_revoked: true, password_reset_completed: true }).passed, true);
+  assert.equal(validateProbeOutcome(session02, { passed: true, status: 200, remaining_sessions: 0, session_revoked: true, password_reset_completed: true, session_revocation_verified: true }).passed, true);
 
   // SESSION-04 & SESSION-05 require stateless linger documentation/evidence, status 200, and unexpired token
   const session04 = { id: 'SESSION-04', category: 'Session & Consumer' };
@@ -696,6 +716,7 @@ test('23. Top-level abortReason is sanitized against leaked secrets (PRRT_kwDOVt
     tempRef: VALID_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
     mockDispatcher,
     sleepFn: async () => {}
   });
@@ -720,6 +741,7 @@ test('24. Per-probe timeout halts runner on never-settling Promise and aborts su
     projectRef: HARDCODED_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
     mockDispatcher: neverSettlingDispatcher,
     probeTimeoutMs: 50, // fast bounded timeout for deterministic unit test
     sleepFn: async () => {}
@@ -748,6 +770,7 @@ test('25. LIVE mode rejects caller-controlled tempRef spoofing and unapproved ta
       tempRef: 'forged-attacker-project',
       argv: ['--live'],
       env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
       mockDispatcher
     }),
     /CRITICAL_SECURITY_VIOLATION.*tempRef spoofing rejected/
@@ -759,6 +782,7 @@ test('25. LIVE mode rejects caller-controlled tempRef spoofing and unapproved ta
       projectRef: 'forged-attacker-project',
       argv: ['--live'],
       env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
       mockDispatcher
     }),
     /unauthorized_target.*strictly requires approved owner TEMP project/
@@ -868,6 +892,8 @@ test('27. Complete returned report is recursively sanitized with zero credential
     projectRef: HARDCODED_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
+    adminClient: defaultMockAdminClient,
     mockDispatcher,
     sleepFn: async () => {}
   });
@@ -1356,6 +1382,8 @@ test('29. Quoted credentials with whitespace, ampersands, and escaped quotes are
     projectRef: HARDCODED_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
+    adminClient: defaultMockAdminClient,
     mockDispatcher,
     sleepFn: async () => {}
   });
@@ -1376,6 +1404,7 @@ test('29. Quoted credentials with whitespace, ampersands, and escaped quotes are
     projectRef: HARDCODED_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
     mockDispatcher: mockDispatcherUnclosed,
     sleepFn: async () => {}
   });
@@ -1398,6 +1427,7 @@ test('29. Quoted credentials with whitespace, ampersands, and escaped quotes are
     projectRef: HARDCODED_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
     mockDispatcher: mockDispatcherCompound,
     sleepFn: async () => {}
   });
@@ -1423,7 +1453,8 @@ test('30. Timeout race evaluation confirms zero unhandled rejections and proper 
     const liveOptions = {
       projectRef: HARDCODED_TEMP_REF,
       argv: ['--live'],
-      env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }
+      env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+      adminClient: defaultMockAdminClient
     };
 
     // Case 1: Dispatcher resolves before timeout
@@ -1845,6 +1876,7 @@ test('32. Strict positive access token issuance proof for HOOK-01 and HOOK-02 (P
     projectRef: HARDCODED_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
     mockDispatcher: mockDispatcherFalsePositive,
     sleepFn: async () => {}
   });
@@ -1972,7 +2004,7 @@ test('34. Task 06I-B1-H1-R1 (R1-01): LIVE dispatcher contract, boundary checks, 
 
   const dispatcher = createHostedDispatcher({
     projectRef: HARDCODED_TEMP_REF,
-    anonKey: 'valid-test-anon-key',
+    anonKey: validTestAnonKey,
     fetchFn: mockFetch
   });
 
@@ -1984,7 +2016,7 @@ test('34. Task 06I-B1-H1-R1 (R1-01): LIVE dispatcher contract, boundary checks, 
   assert.equal(outcomeBypass01.route_disabled, true);
   assert.equal(outcomeBypass01.error_code, 'email_provider_disabled');
   assert.equal(dispatchedRequests[0].url, `https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/otp`);
-  assert.equal(dispatchedRequests[0].init.headers.apikey, 'valid-test-anon-key');
+  assert.equal(dispatchedRequests[0].init.headers.apikey, validTestAnonKey);
 
   // Probe BYPASS-02 dispatch
   const outcomeBypass02 = await dispatcher({ id: 'BYPASS-02', testUser: 'probe-test@proof.invalid' }, {});
@@ -2007,6 +2039,7 @@ test('34. Task 06I-B1-H1-R1 (R1-01): LIVE dispatcher contract, boundary checks, 
         projectRef: HARDCODED_TEMP_REF,
         argv: ['--live'],
         env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
         mockDispatcher: null
       });
     },
@@ -2110,48 +2143,48 @@ test('36. Task 06I-B1-H1-R1 (R1-04): Evidence classification audit distinguishes
 test('37. Task 06I-B1-H1-R2 (R2-01): False-positive bypass probe prevention', async () => {
   // 1. Generic 400 on OTP rejected, route_disabled must be false
   const fetchOtp400 = async () => ({ status: 400, json: async () => ({ message: 'Bad request' }) });
-  const dispOtp400 = createHostedDispatcher({ anonKey: 'valid-anon-key', fetchFn: fetchOtp400 });
+  const dispOtp400 = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: fetchOtp400 });
   const outOtp400 = await dispOtp400({ id: 'BYPASS-01', testUser: 'test@proof.invalid' });
   assert.equal(outOtp400.passed, false);
   assert.equal(outOtp400.route_disabled, false);
 
   // 2. 422 on OTP with email_provider_disabled passes
   const fetchOtpDisabled = async () => ({ status: 422, json: async () => ({ error_code: 'email_provider_disabled', message: 'Email provider is disabled' }) });
-  const dispOtpDisabled = createHostedDispatcher({ anonKey: 'valid-anon-key', fetchFn: fetchOtpDisabled });
+  const dispOtpDisabled = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: fetchOtpDisabled });
   const outOtpDisabled = await dispOtpDisabled({ id: 'BYPASS-01', testUser: 'test@proof.invalid' });
   assert.equal(outOtpDisabled.passed, true);
   assert.equal(outOtpDisabled.route_disabled, true);
 
   // 3. 200 on /signup fails closed
   const fetchSignup200 = async () => ({ status: 200, json: async () => ({ id: 'usr-123' }) });
-  const dispSignup200 = createHostedDispatcher({ anonKey: 'valid-anon-key', fetchFn: fetchSignup200 });
+  const dispSignup200 = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: fetchSignup200 });
   const outSignup200 = await dispSignup200({ id: 'BYPASS-02', testUser: 'test@proof.invalid' });
   assert.equal(outSignup200.passed, false);
 
   // 4. Generic 400 password too short on /signup does NOT fabricate signup_disabled
   const fetchSignup400 = async () => ({ status: 400, json: async () => ({ message: 'Password is too short' }) });
-  const dispSignup400 = createHostedDispatcher({ anonKey: 'valid-anon-key', fetchFn: fetchSignup400 });
+  const dispSignup400 = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: fetchSignup400 });
   const outSignup400 = await dispSignup400({ id: 'BYPASS-02', testUser: 'test@proof.invalid' });
   assert.equal(outSignup400.passed, false);
   assert.equal(outSignup400.signup_disabled, false);
 
   // 5. 422 on /signup with signup_disabled passes
   const fetchSignupDisabled = async () => ({ status: 422, json: async () => ({ error_code: 'signup_disabled', message: 'Signups not allowed' }) });
-  const dispSignupDisabled = createHostedDispatcher({ anonKey: 'valid-anon-key', fetchFn: fetchSignupDisabled });
+  const dispSignupDisabled = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: fetchSignupDisabled });
   const outSignupDisabled = await dispSignupDisabled({ id: 'BYPASS-02', testUser: 'test@proof.invalid' });
   assert.equal(outSignupDisabled.passed, true);
   assert.equal(outSignupDisabled.signup_disabled, true);
 
   // 6. 200 on /recover fails (cannot prove email suppression due to anti-enumeration)
   const fetchRecover200 = async () => ({ status: 200, json: async () => ({}) });
-  const dispRecover200 = createHostedDispatcher({ anonKey: 'valid-anon-key', fetchFn: fetchRecover200 });
+  const dispRecover200 = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: fetchRecover200 });
   const outRecover200 = await dispRecover200({ id: 'BYPASS-05', testUser: 'test@proof.invalid' });
   assert.equal(outRecover200.passed, false);
   assert.equal(outRecover200.recovery_suppressed, false);
 
   // 7. 500 on /recover with 42501 / send_email_hook passes
   const fetchRecover500 = async () => ({ status: 500, json: async () => ({ message: 'send_email_hook: native recovery email dispatch suppressed (SQLSTATE 42501)' }) });
-  const dispRecover500 = createHostedDispatcher({ anonKey: 'valid-anon-key', fetchFn: fetchRecover500 });
+  const dispRecover500 = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: fetchRecover500 });
   const outRecover500 = await dispRecover500({ id: 'BYPASS-05', testUser: 'test@proof.invalid' });
   assert.equal(outRecover500.passed, true);
   assert.equal(outRecover500.recovery_suppressed, true);
@@ -2224,7 +2257,7 @@ test('39. Task 06I-B1-H1-R2 (R2-03): Run-scoped refresh token propagation & AMR 
     return { status: 400, json: async () => ({}) };
   };
 
-  const dispWithCtx = createHostedDispatcher({ anonKey: 'valid-anon-key', runContext: runCtx, fetchFn: mockFetchRefresh });
+  const dispWithCtx = createHostedDispatcher({ anonKey: validTestAnonKey, runContext: runCtx, fetchFn: mockFetchRefresh });
 
   // 1. HOOK-02 without activeRefreshToken returns 400 PREREQUISITE_MISSING
   const h2Missing = await dispWithCtx({ id: 'HOOK-02' });
@@ -2258,7 +2291,7 @@ test('40. Task 06I-B1-H1-R2 (R2-04 & R2-05): Inventory integration and robust cl
 
   // 1. Accidental user creation in BYPASS-02 is captured into inventory
   const mockFetchAccidental = async () => ({ status: 200, json: async () => ({ user: { id: 'accidental-user-uuid' } }) });
-  const dispAccidental = createHostedDispatcher({ anonKey: 'valid-anon-key', inventory: inv, fetchFn: mockFetchAccidental });
+  const dispAccidental = createHostedDispatcher({ anonKey: validTestAnonKey, inventory: inv, fetchFn: mockFetchAccidental });
   const bypass02Res = await dispAccidental({ id: 'BYPASS-02', testUser: 'accidental@proof.invalid' });
   assert.equal(bypass02Res.passed, false);
   assert.ok(inv.isUserTracked('accidental-user-uuid'));
@@ -2349,7 +2382,7 @@ test('43. Task 06I-B1-H1-R2 (R2-08): All 18 LIVE probes dispatchers implemented 
   };
 
   const allCtx = createRunContext();
-  const allDisp = createHostedDispatcher({ anonKey: 'valid-anon-key', runContext: allCtx, fetchFn: mockAllFetch });
+  const allDisp = createHostedDispatcher({ anonKey: validTestAnonKey, serviceRoleKey: validTestServiceRoleKey, runContext: allCtx, fetchFn: mockAllFetch });
   for (const id of allProbes) {
     const outcome = await allDisp({ id, testUser: 'test@proof.invalid' });
     assert.notEqual(outcome.status, 501, `Probe ${id} must not return 501`);
@@ -2383,7 +2416,7 @@ test('44. Task 06I-B1-H1-R3 (R3-01): OTP probes reject unsupported_grant_type as
   assert.match(resRec.reason, /FALSE_PROOF_REJECTED.*unsupported_grant_type/);
 
   // 2. Dispatcher returns PROVIDER_PRECONDITION_MISSING
-  const disp = createHostedDispatcher({ anonKey: 'anon-key', fetchFn: async () => ({ status: 400 }) });
+  const disp = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: async () => ({ status: 400 }) });
   const out03 = await disp(hook03);
   assert.equal(out03.status, 0);
   assert.equal(out03.passed, false);
@@ -2395,7 +2428,7 @@ test('45. Task 06I-B1-H1-R3 (R3-02): Client-controlled AMR injection rejected; P
   const hook06 = { id: 'HOOK-06', category: 'Token Hook' };
   const hook07 = { id: 'HOOK-07', category: 'Token Hook' };
 
-  const disp = createHostedDispatcher({ anonKey: 'anon-key', fetchFn: async () => ({ status: 400 }) });
+  const disp = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: async () => ({ status: 400 }) });
   for (const item of [hook05, hook06, hook07]) {
     const out = await disp(item);
     assert.equal(out.status, 0);
@@ -2454,7 +2487,7 @@ test('47. Task 06I-B1-H1-R3 (R3-04): Password reset strictly requires Admin priv
   assert.match(resFallback.reason, /SECURITY_INVARIANT_VIOLATION: SESSION-02 used logout fallback/);
 
   // Dispatcher requires serviceRoleKey for admin password reset
-  const dispWithoutAdmin = createHostedDispatcher({ anonKey: 'anon-key', serviceRoleKey: null });
+  const dispWithoutAdmin = createHostedDispatcher({ anonKey: validTestAnonKey, serviceRoleKey: null });
   const outNoAdmin = await dispWithoutAdmin(session02);
   assert.equal(outNoAdmin.passed, false);
   assert.match(outNoAdmin.error, /TIO_TEMP_SERVICE_ROLE_KEY/);
@@ -2488,7 +2521,7 @@ test('48. Task 06I-B1-H1-R3 (R3-05): Session identity correlation rejects user I
   runCtx.activeAccessToken = 'token-abc';
   runCtx.activeSessionId = 'sess-valid-uuid';
   const disp = createHostedDispatcher({
-    anonKey: 'anon-key',
+    anonKey: validTestAnonKey,
     runContext: runCtx,
     fetchFn: async () => ({ status: 404, json: async () => ({ message: 'Function not found' }) })
   });
@@ -2542,6 +2575,7 @@ test('50. Task 06I-B1-H1-R3 (R3-07): Cleanup execution lifecycle in try/finally 
     projectRef: HARDCODED_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
     inventory,
     adminClient: mockAdminClient,
     mockDispatcher,
@@ -2670,4 +2704,434 @@ test('54. Layer B 18-case readiness matrix taxonomy validation', () => {
   assert.equal(providerPrecondition.length, 5, 'Must have 5 PROVIDER_PRECONDITION_MISSING');
   assert.equal(blockedUnsupported.length, 3, 'Must have 3 BLOCKED_UNSUPPORTED');
   assert.equal(hostedVerified.length, 0, 'Must have 0 HOSTED_VERIFIED before live execution approval');
+});
+
+test('55. Task 06I-B1-H1-R4 (R4-01): Credential binding check fails closed on undecodable JWTs, opaque keys, missing ref/iss, and forged project claims', () => {
+  // 1. Opaque keys or malformed part counts throw OPAQUE_CREDENTIAL_UNSUPPORTED
+  assert.throws(
+    () => validateProjectCredentialBinding('sb_publishable_someopaqueapikey123', HARDCODED_TEMP_REF),
+    /OPAQUE_CREDENTIAL_UNSUPPORTED/
+  );
+  assert.throws(
+    () => validateProjectCredentialBinding('random-opaque-string', HARDCODED_TEMP_REF),
+    /OPAQUE_CREDENTIAL_UNSUPPORTED/
+  );
+  assert.throws(
+    () => validateProjectCredentialBinding('part1.part2', HARDCODED_TEMP_REF),
+    /OPAQUE_CREDENTIAL_UNSUPPORTED/
+  );
+
+  // 2. Undecodable base64url payload throws MALFORMED_CREDENTIAL_JWT
+  assert.throws(
+    () => validateProjectCredentialBinding('header.!!!invalid-base64!!!.sig', HARDCODED_TEMP_REF),
+    /MALFORMED_CREDENTIAL_JWT/
+  );
+
+  // 3. JWT without ref or iss throws CREDENTIAL_PROJECT_UNBOUND
+  const unboundPayload = Buffer.from(JSON.stringify({ role: 'anon', foo: 'bar' })).toString('base64url');
+  const unboundHeader = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  assert.throws(
+    () => validateProjectCredentialBinding(`${unboundHeader}.${unboundPayload}.sig`, HARDCODED_TEMP_REF),
+    /CREDENTIAL_PROJECT_UNBOUND/
+  );
+
+  // 4. JWT bound to forbidden REAL project throws CRITICAL_SECURITY_VIOLATION
+  const realKey = createMockProjectKey(HARDCODED_REAL_REF);
+  assert.throws(
+    () => validateProjectCredentialBinding(realKey, HARDCODED_TEMP_REF),
+    /CRITICAL_SECURITY_VIOLATION.*forbidden project/
+  );
+
+  // 5. JWT bound to forbidden Tio-world project throws CRITICAL_SECURITY_VIOLATION
+  const tioWorldKey = createMockProjectKey(HARDCODED_TIO_WORLD_REF);
+  assert.throws(
+    () => validateProjectCredentialBinding(tioWorldKey, HARDCODED_TEMP_REF),
+    /CRITICAL_SECURITY_VIOLATION.*forbidden project/
+  );
+
+  // 6. JWT bound to mismatched project throws CREDENTIAL_TARGET_MISMATCH
+  const mismatchedKey = createMockProjectKey('mismatchedref999');
+  assert.throws(
+    () => validateProjectCredentialBinding(mismatchedKey, HARDCODED_TEMP_REF),
+    /CREDENTIAL_TARGET_MISMATCH/
+  );
+
+  // 7. Legitimate key bound to expected TEMP project succeeds
+  const validKey = createMockProjectKey(HARDCODED_TEMP_REF);
+  assert.equal(validateProjectCredentialBinding(validKey, HARDCODED_TEMP_REF), true);
+});
+
+test('56. Task 06I-B1-H1-R4 (R4-02): LIVE runner fails preflight if cleanup capability is missing; failed cleanup overrides probe success', async () => {
+  const liveEnv = { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' };
+  const dummyDispatcher = async () => ({ passed: true, status: 200, evidence: 'ok' });
+
+  // 1. Missing adminClient in LIVE mode throws CLEANUP_CAPABILITY_REQUIRED before executing any probes
+  let probesExecuted = false;
+  await assert.rejects(
+    async () => {
+      await runHostedProbeRunner({
+        projectRef: HARDCODED_TEMP_REF,
+        argv: ['--live'],
+        env: liveEnv,
+        adminClient: null,
+        mockDispatcher: async () => {
+          probesExecuted = true;
+          return { passed: true, status: 200 };
+        }
+      });
+    },
+    /CLEANUP_CAPABILITY_REQUIRED.*LIVE mode requires verified adminClient/
+  );
+  assert.equal(probesExecuted, false, 'Probes must not be executed when cleanup capability is missing');
+
+  // 2. adminClient missing deleteUser method throws CLEANUP_CAPABILITY_REQUIRED
+  await assert.rejects(
+    async () => {
+      await runHostedProbeRunner({
+        projectRef: HARDCODED_TEMP_REF,
+        argv: ['--live'],
+        env: liveEnv,
+        adminClient: { getUserById: async () => ({}) },
+        mockDispatcher: dummyDispatcher
+      });
+    },
+    /CLEANUP_CAPABILITY_REQUIRED.*adminClient must implement deleteUser and getUserById methods/
+  );
+
+  // 3. Failed cleanup overrides passing probes and marks overall run HALTED_ON_FAILURE
+  const invWithResidual = new TestRunInventory('test-run-residual-override');
+  invWithResidual.registerCreatedUser({ id: 'residual-user-fail', email: 'residual@proof.invalid' });
+
+  const failingCleanupAdmin = {
+    deleteUser: async () => ({ data: null, error: { message: 'Database lock timeout on delete' } }),
+    getUserById: async () => ({ data: { user: { id: 'residual-user-fail' } }, error: null }),
+    invalidateSession: async () => ({ data: null, error: null }),
+    signOut: async () => ({ data: null, error: null })
+  };
+
+  const resultFailedCleanup = await runHostedProbeRunner({
+    projectRef: HARDCODED_TEMP_REF,
+    argv: ['--live'],
+    env: liveEnv,
+    inventory: invWithResidual,
+    adminClient: failingCleanupAdmin,
+    mockDispatcher: async (item) => {
+      // Return passing outcomes for each probe
+      if (item.id === 'BYPASS-01') return { passed: true, status: 422, route_disabled: true, error_code: 'email_provider_disabled' };
+      if (item.id === 'BYPASS-02') return { passed: true, status: 422, signup_disabled: true, error_code: 'signup_disabled' };
+      if (item.id === 'BYPASS-03' || item.id === 'BYPASS-04') return { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' };
+      if (item.id === 'BYPASS-05') return { passed: true, status: 500, recovery_suppressed: true, zero_email_delivered: true };
+      if (item.id === 'HOOK-01') return { passed: true, status: 200, has_token: true, amr_authenticated: true, session_id: 'session-uuid-5678', tokens: { access_token: createMockJwt() } };
+      if (item.id === 'HOOK-02') return { passed: true, status: 200, has_token: true, amr_preserved: true, tokens: { access_token: createMockJwt() } };
+      if (['HOOK-03', 'HOOK-04', 'HOOK-05', 'HOOK-06', 'HOOK-07'].includes(item.id)) return { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' };
+      if (item.id === 'SESSION-01') return { passed: true, status: 200, session_created: true, session_id: 'session-uuid-5678' };
+      if (item.id === 'SESSION-02') return { passed: true, status: 200, password_reset_completed: true, session_revoked: true, session_revocation_verified: true, remaining_sessions: 0 };
+      if (item.id === 'SESSION-03') return { passed: true, status: 403, pre_reset_baseline_verified: true, reset_completed: true, session_id: 'session-uuid-5678', correlated_session_id: 'session-uuid-5678', pre_session_id: 'session-uuid-5678', same_session_correlated: true, error_code: 'session_not_found' };
+      if (item.id === 'SESSION-04' || item.id === 'SESSION-05') return { passed: true, status: 200, token_unexpired: true, stateless_linger_documented: true, note: 'linger window verified' };
+      if (item.id === 'SESSION-06') return { passed: true, status: 403, pre_reset_baseline_verified: true, reset_completed: true, session_id: 'session-uuid-5678', correlated_session_id: 'session-uuid-5678', pre_session_id: 'session-uuid-5678', same_session_correlated: true, error_code: 'AuthSessionMissingError' };
+      return { passed: true, status: 200 };
+    },
+    sleepFn: async () => {}
+  });
+
+  assert.equal(resultFailedCleanup.status, 'HALTED_ON_FAILURE');
+  assert.equal(resultFailedCleanup.aborted, true);
+  assert.match(resultFailedCleanup.abortReason, /CLEANUP_FAILURE.*Residual users/i);
+  assert.equal(resultFailedCleanup.cleanupReport.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+});
+
+test('57. Task 06I-B1-H1-R4 (R4-03): Password reset in SESSION-02 requires affirmative proof of session revocation; surviving session fails closed', async () => {
+  const session02 = { id: 'SESSION-02', category: 'Session & Consumer' };
+
+  // 1. Password reset succeeded (HTTP 200) but remaining_sessions is 1 (session survived!) -> fails closed
+  const resSurviving = validateProbeOutcome(session02, {
+    passed: true,
+    status: 200,
+    password_reset_completed: true,
+    session_revoked: false,
+    remaining_sessions: 1,
+    session_revocation_verified: false
+  });
+  assert.equal(resSurviving.passed, false);
+  assert.match(resSurviving.reason, /SESSION_FAILURE: SESSION-02 requires affirmative proof of session revocation/);
+
+  // 2. Password reset succeeded without session_revocation_verified -> fails closed
+  const resUnverified = validateProbeOutcome(session02, {
+    passed: true,
+    status: 200,
+    password_reset_completed: true,
+    session_revoked: true,
+    remaining_sessions: 0,
+    session_revocation_verified: false
+  });
+  assert.equal(resUnverified.passed, false);
+  assert.match(resUnverified.reason, /SESSION_FAILURE: SESSION-02 requires affirmative proof of session revocation/);
+
+  // 3. createHostedDispatcher detects surviving session regression when pre-reset token still succeeds with HTTP 200
+  const runCtx = createRunContext();
+  runCtx.activeUserId = 'user-test-reset-123';
+  runCtx.activeAccessToken = createMockJwt();
+
+  const mockFetchSurviving = async (url) => {
+    if (url.includes('/auth/v1/admin/users/')) {
+      return { status: 200, json: async () => ({ id: 'user-test-reset-123' }) };
+    }
+    if (url.includes('/auth/v1/user')) {
+      // Session survived! Still returns 200!
+      return { status: 200, json: async () => ({ id: 'user-test-reset-123' }) };
+    }
+    return { status: 400, json: async () => ({}) };
+  };
+
+  const dispSurviving = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    serviceRoleKey: validTestServiceRoleKey,
+    runContext: runCtx,
+    fetchFn: mockFetchSurviving
+  });
+
+  const outSurviving = await dispSurviving(session02);
+  assert.equal(outSurviving.passed, false);
+  assert.equal(outSurviving.remaining_sessions, 1);
+  assert.equal(outSurviving.session_revoked, false);
+  assert.match(outSurviving.error, /SECURITY_REGRESSION.*session was not revoked/);
+
+  // 4. When /auth/v1/user returns 401 on pre-reset token, session revocation is verified
+  const mockFetchRevoked = async (url) => {
+    if (url.includes('/auth/v1/admin/users/')) {
+      return { status: 200, json: async () => ({ id: 'user-test-reset-123' }) };
+    }
+    if (url.includes('/auth/v1/user')) {
+      return { status: 401, json: async () => ({ message: 'Invalid token' }) };
+    }
+    return { status: 400, json: async () => ({}) };
+  };
+
+  const dispRevoked = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    serviceRoleKey: validTestServiceRoleKey,
+    runContext: runCtx,
+    fetchFn: mockFetchRevoked
+  });
+
+  const outRevoked = await dispRevoked(session02);
+  assert.equal(outRevoked.passed, true);
+  assert.equal(outRevoked.remaining_sessions, 0);
+  assert.equal(outRevoked.session_revoked, true);
+  assert.equal(outRevoked.session_revocation_verified, true);
+});
+
+test('58. Task 06I-B1-H1-R4 (R4-04): SESSION-06 and SESSION-03 reject generic 401/403 Forbidden without provider-observed revocation error', async () => {
+  const session06 = { id: 'SESSION-06', category: 'Session & Consumer' };
+  const session03 = { id: 'SESSION-03', category: 'Session & Consumer' };
+
+  // 1. Generic 403 Forbidden without AuthSessionMissingError does NOT pass in createHostedDispatcher for SESSION-06
+  const runCtx = createRunContext();
+  runCtx.activeAccessToken = createMockJwt();
+  runCtx.activeSessionId = 'sess-active-6';
+  runCtx.preInvalidationSessionValid = true;
+  runCtx.passwordResetCompleted = true;
+
+  const mockFetchGenericForbidden = async (url) => {
+    if (url.includes('/functions/v1/auth-user-probe')) {
+      return { status: 403, json: async () => ({ message: 'Forbidden' }) };
+    }
+    if (url.includes('/auth/v1/user')) {
+      return { status: 403, json: async () => ({ message: 'Forbidden' }) };
+    }
+    return { status: 400, json: async () => ({}) };
+  };
+
+  const disp = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtx,
+    fetchFn: mockFetchGenericForbidden
+  });
+
+  const out06 = await disp(session06);
+  assert.equal(out06.passed, false, 'Generic 403 Forbidden must not pass SESSION-06');
+  assert.equal(out06.revocation_verified, false);
+  assert.notEqual(out06.error_code, 'AuthSessionMissingError', 'Must not synthesize AuthSessionMissingError');
+  assert.equal(out06.error, 'Forbidden');
+
+  // 2. Generic 403 Forbidden in SESSION-03 does NOT pass
+  const out03 = await disp(session03);
+  assert.equal(out03.passed, false, 'Generic 403 Forbidden must not pass SESSION-03');
+  assert.equal(out03.revocation_verified, false);
+  assert.notEqual(out03.error_code, 'session_not_found', 'Must not synthesize session_not_found');
+
+  // 3. Genuine AuthSessionMissingError in SESSION-06 passes
+  const mockFetchGenuineError = async (url) => {
+    if (url.includes('/functions/v1/auth-user-probe')) {
+      return { status: 401, json: async () => ({ error_code: 'AuthSessionMissingError', message: 'Session is revoked or missing' }) };
+    }
+    return { status: 400, json: async () => ({}) };
+  };
+
+  const dispGenuine = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtx,
+    fetchFn: mockFetchGenuineError
+  });
+
+  const outGenuine06 = await dispGenuine(session06);
+  assert.equal(outGenuine06.passed, true);
+  assert.equal(outGenuine06.error_code, 'AuthSessionMissingError');
+  assert.equal(outGenuine06.revocation_verified, true);
+});
+
+test('59. Task 06I-B1-H1-R4 (R4-05): Session cleanup fails closed when session invalidation method is missing or returns error', async () => {
+  const inv = new TestRunInventory('test-run-session-cleanup');
+  inv.registerSession('session-uuid-active-1');
+
+  // 1. adminClient lacking invalidateSession and signOut fails cleanup closed
+  const clientNoInvalidation = {
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => ({ data: null, error: { status: 404 } })
+  };
+
+  const reportNoMethod = await inv.executeCleanup({ adminClient: clientNoInvalidation, failClosed: false });
+  assert.equal(reportNoMethod.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(reportNoMethod.residualResources.some(r => r.type === 'sessions' && r.error.includes('MISSING_SESSION_INVALIDATION_METHOD')));
+
+  // 2. adminClient returning error on invalidateSession fails cleanup closed
+  const clientErrorInvalidation = {
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    invalidateSession: async (id) => ({ data: null, error: { message: `Gateway timeout invalidating session ${id}` } })
+  };
+
+  const reportError = await inv.executeCleanup({ adminClient: clientErrorInvalidation, failClosed: false });
+  assert.equal(reportError.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(reportError.residualResources.some(r => r.type === 'session' && r.id === 'session-uuid-active-1'));
+
+  // 3. Working session invalidation succeeds
+  const clientSuccess = {
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    invalidateSession: async (id) => ({ data: { id }, error: null })
+  };
+
+  const reportSuccess = await inv.executeCleanup({ adminClient: clientSuccess, failClosed: false });
+  assert.equal(reportSuccess.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(reportSuccess.sessionsRevoked, 1);
+});
+
+test('60. Task 06I-B1-H1-R4 (R4-06): User absence verification detects data.id, data.user.id, and treats 503/network error as verification failure', async () => {
+  // 1. Detects existing user in standard Supabase GoTrue shape { data: { id: userId }, error: null }
+  const inv1 = new TestRunInventory('test-user-verify-shape');
+  inv1.registerCreatedUser({ id: 'user-standard-shape-1', email: 'shape1@proof.invalid' });
+
+  const clientShape1 = {
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => ({ data: { id: 'user-standard-shape-1', email: 'shape1@proof.invalid' }, error: null })
+  };
+
+  const report1 = await inv1.executeCleanup({ adminClient: clientShape1, failClosed: false });
+  assert.equal(report1.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(report1.residualUsers.some(u => u.id === 'user-standard-shape-1' && u.reason === 'STILL_EXISTS_IN_DATABASE'));
+
+  // 2. Detects existing user in nested shape { data: { user: { id: userId } }, error: null }
+  const inv2 = new TestRunInventory('test-user-verify-shape-2');
+  inv2.registerCreatedUser({ id: 'user-nested-shape-2', email: 'shape2@proof.invalid' });
+
+  const clientShape2 = {
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => ({ data: { user: { id: 'user-nested-shape-2' } }, error: null })
+  };
+
+  const report2 = await inv2.executeCleanup({ adminClient: clientShape2, failClosed: false });
+  assert.equal(report2.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(report2.residualUsers.some(u => u.id === 'user-nested-shape-2' && u.reason === 'STILL_EXISTS_IN_DATABASE'));
+
+  // 3. HTTP 503 or network error during absence check fails closed (NOT accepted as absence)
+  const inv3 = new TestRunInventory('test-user-verify-503');
+  inv3.registerCreatedUser({ id: 'user-503-fail', email: 'fail503@proof.invalid' });
+
+  const client503 = {
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => ({ data: null, error: { status: 503, message: 'Service Unavailable' } })
+  };
+
+  const report3 = await inv3.executeCleanup({ adminClient: client503, failClosed: false });
+  assert.equal(report3.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(report3.residualUsers.some(u => u.id === 'user-503-fail' && u.error.includes('VERIFY_FAILED: Non-404 error')));
+
+  // 4. Explicit 404 user_not_found confirms verified absence
+  const inv4 = new TestRunInventory('test-user-verify-404');
+  inv4.registerCreatedUser({ id: 'user-404-absent', email: 'absent@proof.invalid' });
+
+  const client404 = {
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => ({ data: null, error: { status: 404, message: 'User not found' } })
+  };
+
+  const report4 = await inv4.executeCleanup({ adminClient: client404, failClosed: false });
+  assert.equal(report4.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(report4.usersDeleted, 1);
+  assert.equal(report4.residualUsers.length, 0);
+});
+
+test('61. Task 06I-B1-H1-R4 (R4-07): JWT AMR validation strictly matches SQL hook allowlist (rejects missing AMR, string arrays, and mixed/unknown methods)', () => {
+  // 1. Missing amr claim fails closed
+  const noAmrJwt = createMockJwt({ amr: undefined });
+  const resNoAmr = parseAndValidateJwt(noAmrJwt);
+  assert.equal(resNoAmr.valid, false);
+  assert.match(resNoAmr.reason, /MISSING_AMR/);
+
+  // 2. Empty amr array fails closed
+  const emptyAmrJwt = createMockJwt({ amr: [] });
+  const resEmptyAmr = parseAndValidateJwt(emptyAmrJwt);
+  assert.equal(resEmptyAmr.valid, false);
+  assert.match(resEmptyAmr.reason, /MALFORMED_AMR/);
+
+  // 3. String array ['password'] is rejected (must be JSON object array matching RFC 8176)
+  const stringAmrJwt = createMockJwt({ amr: ['password'] });
+  const resStringAmr = parseAndValidateJwt(stringAmrJwt);
+  assert.equal(resStringAmr.valid, false);
+  assert.match(resStringAmr.reason, /MALFORMED_AMR_ELEMENT.*strings prohibited/);
+
+  // 4. Unknown method [{ method: 'webauthn' }] fails closed
+  const unknownAmrJwt = createMockJwt({ amr: [{ method: 'webauthn' }] });
+  const resUnknownAmr = parseAndValidateJwt(unknownAmrJwt);
+  assert.equal(resUnknownAmr.valid, false);
+  assert.match(resUnknownAmr.reason, /PROHIBITED_AMR_METHOD.*only 'password' allowed/);
+
+  // 5. Mixed methods [{ method: 'password' }, { method: 'otp' }] fail closed
+  const mixedAmrJwt = createMockJwt({ amr: [{ method: 'password' }, { method: 'otp' }] });
+  const resMixedAmr = parseAndValidateJwt(mixedAmrJwt);
+  assert.equal(resMixedAmr.valid, false);
+  assert.match(resMixedAmr.reason, /PROHIBITED_AMR_METHOD.*only 'password' allowed/);
+
+  // 6. Valid RFC 8176 object array [{ method: 'password' }] succeeds
+  const validAmrJwt = createMockJwt({ amr: [{ method: 'password', timestamp: Math.floor(Date.now() / 1000) }] });
+  const resValid = parseAndValidateJwt(validAmrJwt);
+  assert.equal(resValid.valid, true);
+});
+
+test('62. Task 06I-B1-H1-R4 (R4-08): Send Email Hook suppression (42501) cannot be accepted as Custom Access Token Hook proof in BYPASS-04', async () => {
+  const bypass04 = { id: 'BYPASS-04', category: 'Native Bypass' };
+
+  // 1. createHostedDispatcher returns PROVIDER_PRECONDITION_MISSING because email suppression prevents obtaining redemption token
+  const disp = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    fetchFn: async () => ({ status: 200 })
+  });
+
+  const outcome = await disp(bypass04);
+  assert.equal(outcome.passed, false);
+  assert.equal(outcome.hook_rejected, false);
+  assert.equal(outcome.email_suppressed, true);
+  assert.match(outcome.error, /PROVIDER_PRECONDITION_MISSING.*email delivery is suppressed/);
+
+  // 2. validateProbeOutcome rejects outcomes claiming Send Email Hook suppression as access token hook proof
+  const resSuppressionClaim = validateProbeOutcome(bypass04, {
+    passed: true,
+    status: 500,
+    hook_rejected: true,
+    email_suppressed: true,
+    error: 'send_email_hook: native magiclink email dispatch suppressed'
+  });
+  assert.equal(resSuppressionClaim.passed, false);
+  assert.match(resSuppressionClaim.reason, /FALSE_PROOF_REJECTED.*BYPASS-04 email hook suppression cannot be accepted as proof/);
 });

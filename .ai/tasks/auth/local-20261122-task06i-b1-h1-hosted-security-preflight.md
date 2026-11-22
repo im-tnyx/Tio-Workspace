@@ -1,10 +1,10 @@
-# Phase 1.2 Task 06I-B1-H1-R3 — Hosted Evidence Integrity & Security Boundary Closure
+# Phase 1.2 Task 06I-B1-H1-R4 — Security Evidence, Credential Binding & Cleanup Closure
 
 > **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R3. All 10 security review findings across PR #37 (from reviewer `im-tio` and `Cursor Bugbot`) are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **LOCAL REMEDIATION COMPLETE (REVISION R3); ALL 10 REVIEW FINDINGS RESOLVED (R3-01 TO R3-10); 58/58 RUNNER TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; LAYER B 18-CASE MATRIX AUDITED (10 IMPLEMENTED_OFFLINE_TESTED, 5 PROVIDER_PRECONDITION_MISSING, 3 BLOCKED_UNSUPPORTED, 0 HOSTED_VERIFIED); STRICT JWT PARSING WITHOUT BYPASS; NO PLACEHOLDER SESSIONS; NO LOGOUT FALLBACK; STRICT CREDENTIAL BOUNDARY VALIDATION; SEED USERS PRESERVED; CLEANUP IN FINALLY LIFECYCLE; DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
+| Status | **LOCAL REMEDIATION COMPLETE (REVISION R4); ALL 8 REVIEW FINDINGS RESOLVED (R4-01 TO R4-08); 66/66 RUNNER TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; LAYER B 18-CASE MATRIX AUDITED (10 IMPLEMENTED_OFFLINE_TESTED, 5 PROVIDER_PRECONDITION_MISSING, 3 BLOCKED_UNSUPPORTED, 0 HOSTED_VERIFIED); STRICT JWT PARSING & AMR ALLOWLIST MATCHING SQL HOOK; FAIL-CLOSED CREDENTIAL BINDING; MANDATORY LIVE CLEANUP PREREQUISITE & FAILURE OVERRIDE; SESSION-02 AFFIRMATIVE REVOCATION VERIFICATION; SESSION-06 GENUINE ERROR REQUIREMENT; TRACKED SESSION INVALIDATION; NORMALIZED USER ABSENCE DETECTION; DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
 | Objective | Remediate all 10 security review findings on PR #37 (R3-01 to R3-10) without executing any live hosted mutations, resolving OTP grant-type preconditions, client AMR injection limitations, stateless linger proof integrity, password reset admin requirements, genuine session ID extraction, bypass pre-validation distinction, deterministic cleanup integration, strict JWT parsing, seed user preservation, and production credential boundary protection. |
 | Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R3 slice |
 | Previous agent | Agent / Task 06I-B1-H1-R2 author |
@@ -184,13 +184,77 @@ In accordance with findings R3-01, R3-02, R3-05, and R3-06, each probe case is s
 
 ---
 
+
+---
+
+## 5b. R4 Review Finding Remediations (Resolving All 8 Threads from Bugbot & Codex)
+
+### R4-01 — Credential Binding Check Fails Open (`PRRT_kwDOVtCmZc66l_lG`, Bugbot High)
+- **Vulnerability:** `validateProjectCredentialBinding` accepted credentials it could not bind to TEMP: malformed/undecodable base64url payloads returned `true`, non-JWT or opaque keys returned `true`, and JWTs without `ref`/`iss` returned `true`.
+- **Remediation:**
+  1. Fail closed on empty/non-string keys (`MISSING_CREDENTIAL`).
+  2. Require exactly 3-part JWTs; opaque or non-3-part keys throw `OPAQUE_CREDENTIAL_UNSUPPORTED` because they cannot be cryptographically inspected without contacting Supabase.
+  3. Header and payload base64url JSON parsing failure throws `MALFORMED_CREDENTIAL_JWT`.
+  4. Missing `ref` and missing `iss` throws `CREDENTIAL_PROJECT_UNBOUND`.
+  5. Forbidden projects (`bsfwzvgynwriswapxpsp`, `oykupyiitspujzpwwvuj`) throw `CRITICAL_SECURITY_VIOLATION`.
+  6. Mismatched target ref throws `CREDENTIAL_TARGET_MISMATCH`.
+
+### R4-02 — LIVE Cleanup Skipped Without Admin Client (`PRRT_kwDOVtCmZc66l_lK`, Bugbot Med)
+- **Vulnerability:** In `runHostedProbeRunner`, if `isLive` and `options.adminClient` was missing, the runner proceeded with probes and skipped cleanup. Also, cleanup failures were ignored in the final status, allowing `COMPLETED` and exit code 0.
+- **Remediation:**
+  1. In `runHostedProbeRunner`, if `isLive`: `adminClient` is a mandatory preflight prerequisite. Missing `adminClient` or missing methods (`deleteUser`, `getUserById`) throws `CLEANUP_CAPABILITY_REQUIRED` before dispatching any probes.
+  2. Cleanup failures (`CLEANUP_FAILED_RESIDUAL_RESOURCES`, `CLEANUP_FAILED`) force `aborted: true` and status `HALTED_ON_FAILURE`.
+  3. CLI runner strictly requires `TIO_TEMP_SERVICE_ROLE_KEY` to construct `adminClient` with user deletion and session invalidation, and exits nonzero if cleanup fails.
+
+### R4-03 — Password Reset Does Not Prove Session Revocation (`PRRT_kwDOVtCmZc66l_wm`, Codex P2)
+- **Vulnerability:** In `SESSION-02`, password-update HTTP 200 alone was treated as proof of session revocation, reporting `session_revoked: true, remaining_sessions: 0` without verifying revocation.
+- **Remediation:**
+  1. In `createHostedDispatcher` for `SESSION-02`, separately record `password_reset_completed: true`.
+  2. Probe `/auth/v1/user` using the pre-reset access token: if HTTP 401/403 is observed, session revocation is verified (`remaining_sessions: 0`, `session_revocation_verified: true`). If HTTP 200 is observed, a security regression is reported (`remaining_sessions: 1`, `passed: false`).
+  3. In `validateProbeOutcome`, require affirmative session revocation verification (`session_revocation_verified: true`, `remaining_sessions: 0`, `session_revoked: true`). Surviving sessions fail closed.
+
+### R4-04 — Require Provider-Observed Revocation Errors in SESSION-06 (`PRRT_kwDOVtCmZc66l_wn`, Codex P2)
+- **Vulnerability:** Generic HTTP 401/403 (e.g. `{ message: 'Forbidden' }`) caused `createHostedDispatcher` to synthesize `AuthSessionMissingError` on `SESSION-06` and `session_not_found` on `SESSION-03`.
+- **Remediation:**
+  1. Prohibit synthesizing error codes. Inspect `body.error_code` and `body.message` directly.
+  2. Accept only genuine provider-observed revocation codes (`AuthSessionMissingError` for `SESSION-06`, `session_not_found` for `SESSION-03`).
+  3. Generic 401/403 Forbidden without provider-observed revocation error fails closed.
+
+### R4-05 — Fail Cleanup When Tracked Sessions Cannot Be Invalidated (`PRRT_kwDOVtCmZc66l_wo`, Codex P2)
+- **Vulnerability:** When `trackedSessions` had active sessions, `executeCleanup` did nothing if `adminClient` lacked session invalidation methods and reported `CLEANUP_VERIFIED_SUCCESS`. The standalone CLI adapter also lacked session invalidation.
+- **Remediation:**
+  1. In `executeCleanup`, if `trackedSessions.size > 0` and `adminClient` lacks `invalidateSession` and `signOut`, record residual resource failure (`MISSING_SESSION_INVALIDATION_METHOD`) and fail closed (`CLEANUP_FAILED_RESIDUAL_RESOURCES`).
+  2. In standalone CLI runner, wire `invalidateSession` and `signOut` via `DELETE /auth/v1/admin/users/sessions/{sessionId}`.
+
+### R4-06 — Require Affirmative User Absence During Cleanup Verification (`PRRT_kwDOVtCmZc66l_wq`, Codex P2)
+- **Vulnerability:** `getUserById` responses returning `{ data: { id: userId }, error: null }` were missed by `userStillExists` checks. In addition, `{ data: null, error: { status: 503 } }` was mistakenly treated as confirmed absence.
+- **Remediation:**
+  1. Normalize Supabase response shapes: inspect `data.user.id`, `data.id`, and top-level `id`. Any matching ID marks the user as `STILL_EXISTS_IN_DATABASE`.
+  2. When `check.error` is present, require explicit 404 / `user_not_found`. Any 5xx or network error pushes to `residualUsers` as `VERIFY_FAILED`.
+
+### R4-07 — Match JWT AMR Validation to the SQL Hook's Strict Allowlist (`PRRT_kwDOVtCmZc66l_ws`, Codex P2)
+- **Vulnerability:** `parseAndValidateJwt` allowed missing `amr`, string arrays `['password']`, or unknown methods alongside password.
+- **Remediation:**
+  1. Require mandatory RFC 8176 `amr` claim (missing or null throws `MISSING_AMR`).
+  2. Require non-empty array of JSON objects (string elements strictly prohibited).
+  3. Require non-empty string `method` property on every item.
+  4. Exclusively allow `'password'` method for password-authenticated tokens (matching canonical `private_auth.custom_access_token_hook`). Any unknown or disallowed method throws `PROHIBITED_AMR_METHOD`.
+
+### R4-08 — Distinguish Email-Hook Suppression from Access-Token-Hook Rejection (`PRRT_kwDOVtCmZc66l_wu`, Codex P2)
+- **Vulnerability:** In `BYPASS-04`, Send Email Hook `42501` suppression on `/auth/v1/magiclink` was accepted as proof of Custom Access Token Hook rejection.
+- **Remediation:**
+  1. Send Email Hook suppression only proves email delivery was suppressed; it does not exercise the Custom Access Token Hook which runs during token redemption.
+  2. Because email delivery is suppressed fail-closed, no magiclink token can be delivered or redeemed.
+  3. `createHostedDispatcher` returns `PROVIDER_PRECONDITION_MISSING: Magic link token cannot be obtained because email delivery is suppressed fail-closed...`.
+  4. `validateProbeOutcome` explicitly rejects email suppression claims as proof of Custom Access Token Hook rejection (`FALSE_PROOF_REJECTED`).
+
 ## 6. Verification Evidence Matrix
 
 All verification checks were run locally and passed completely:
 
 ```bash
 node --test experiments/task06i/hosted-probe-runner.test.mjs
-# 58 passed, 0 failed, exit code 0
+# 66 passed, 0 failed, exit code 0
 
 node experiments/task06i/sql-contract-parity.mjs
 # Status: POSTGRES_VERIFIED, 18/18 matched parity, exit code 0

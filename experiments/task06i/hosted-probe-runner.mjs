@@ -729,6 +729,21 @@ export function validateProbeOutcome(item, rawOutcome) {
         reason: `FALSE_PROOF_REJECTED: ${item.id} rejected due to upstream GoTrue pre-validation ('${rawOutcome.error_code || rawOutcome.error || status}') before reaching custom_access_token_hook (R3-06)`
       };
     }
+    // Reject email-hook suppression as proof of access-token-hook rejection (R4-08)
+    if (item.id === 'BYPASS-04') {
+      const isEmailSuppression =
+        rawOutcome.email_suppressed === true ||
+        errMsg.includes('send_email_hook') ||
+        errMsg.includes('email dispatch suppressed') ||
+        errMsg.includes('email delivery');
+      if (isEmailSuppression) {
+        return {
+          passed: false,
+          status,
+          reason: 'FALSE_PROOF_REJECTED: BYPASS-04 email hook suppression cannot be accepted as proof of Custom Access Token Hook rejection (R4-08)'
+        };
+      }
+    }
     const hasAffirmativeEvidence =
       rawOutcome.hook_rejected === true ||
       rawOutcome.rejection_observed === true ||
@@ -954,15 +969,16 @@ export function validateProbeOutcome(item, rawOutcome) {
         reason: 'SESSION_FAILURE: SESSION-02 requires explicit password reset completion (R3-04)'
       };
     }
+    // Strict session revocation verification: require affirmative provider evidence (R4-03)
     const hasRevocationEvidence =
-      typeof rawOutcome.remaining_sessions === 'number' &&
       rawOutcome.remaining_sessions === 0 &&
-      (rawOutcome.session_revoked === true || rawOutcome.sessions_invalidated === true);
+      (rawOutcome.session_revoked === true || rawOutcome.sessions_invalidated === true) &&
+      (rawOutcome.session_revocation_verified === true || rawOutcome.invalidation_completed === true);
     if (!hasRevocationEvidence) {
       return {
         passed: false,
         status,
-        reason: `SESSION_FAILURE: SESSION-02 expected verified session revocation (remaining_sessions: 0 and session_revoked: true), got remaining: ${rawOutcome.remaining_sessions}`
+        reason: `SESSION_FAILURE: SESSION-02 requires affirmative proof of session revocation after password update (got remaining_sessions: ${rawOutcome.remaining_sessions}, session_revoked: ${rawOutcome.session_revoked}). Surviving sessions fail closed (R4-03).`
       };
     }
   }
@@ -1174,10 +1190,16 @@ function validateSessionRevocationProof(item, rawOutcome, allowedStatuses, isRev
       item,
       rawOutcome,
       [401, 403, 500],
-      (outcome) =>
-        (outcome.revocation_verified === true && (outcome.session_revoked === true || outcome.rejection_observed === true)) ||
-        (isNonEmptyString(outcome.error_code) && outcome.error_code === 'AuthSessionMissingError') ||
-        (isNonEmptyString(outcome.error) && outcome.error.includes('AuthSessionMissingError'))
+      (outcome) => {
+        const errCode = outcome.error_code || '';
+        const errMsg = (outcome.error || '').toLowerCase();
+        // Provider-observed revocation error (R4-04): Accept AuthSessionMissingError
+        return (
+          errCode === 'AuthSessionMissingError' ||
+          errMsg.includes('authsessionmissingerror') ||
+          (outcome.revocation_verified === true && (outcome.session_revoked === true || outcome.rejection_observed === true) && errCode !== 'session_not_found')
+        );
+      }
     );
     if (err) return err;
   }
@@ -1410,18 +1432,30 @@ export class TestRunInventory {
       }
     }
 
-    // 3. Invalidate tracked sessions if client provides session invalidation
-    for (const sessionId of this.trackedSessions) {
-      try {
-        if (typeof adminClient.invalidateSession === 'function') {
-          await adminClient.invalidateSession(sessionId);
-          report.sessionsRevoked++;
-        } else if (typeof adminClient.signOut === 'function') {
-          await adminClient.signOut(sessionId);
-          report.sessionsRevoked++;
+    // 3. Invalidate tracked sessions if client provides session invalidation (R4-05)
+    if (this.trackedSessions.size > 0 && typeof adminClient.invalidateSession !== 'function' && typeof adminClient.signOut !== 'function') {
+      report.residualResources.push({
+        type: 'sessions',
+        count: this.trackedSessions.size,
+        error: 'MISSING_SESSION_INVALIDATION_METHOD: adminClient lacks invalidateSession or signOut method'
+      });
+    } else {
+      for (const sessionId of this.trackedSessions) {
+        try {
+          let res;
+          if (typeof adminClient.invalidateSession === 'function') {
+            res = await adminClient.invalidateSession(sessionId);
+          } else if (typeof adminClient.signOut === 'function') {
+            res = await adminClient.signOut(sessionId);
+          }
+          if (res && res.error) {
+            report.residualResources.push({ type: 'session', id: sessionId, error: res.error.message || String(res.error) });
+          } else {
+            report.sessionsRevoked++;
+          }
+        } catch (err) {
+          report.residualResources.push({ type: 'session', id: sessionId, error: err.message });
         }
-      } catch (err) {
-        report.residualResources.push({ type: 'session', id: sessionId, error: err.message });
       }
     }
 
@@ -1443,7 +1477,7 @@ export class TestRunInventory {
       }
     }
 
-    // 5. Affirmative post-cleanup verification for created users
+    // 5. Affirmative post-cleanup verification for created users (R4-06)
     if (this.createdUsers.size > 0 && typeof adminClient.getUserById !== 'function') {
       report.residualResources.push({ type: 'verification', error: 'MISSING_GET_USER_BY_ID_METHOD' });
     } else {
@@ -1451,17 +1485,51 @@ export class TestRunInventory {
         if (typeof adminClient.getUserById === 'function') {
           try {
             const check = await adminClient.getUserById(userId);
-            const userStillExists =
-              (check?.data?.user && check.data.user.id === userId) ||
-              (!check?.error && check?.data?.user) ||
-              (check && !check.notFound && !check.error && check.id === userId);
-
-            if (userStillExists) {
+            // Detect user existence across all response shapes (data.user.id, data.id, top-level id) (R4-06)
+            const returnedUser = check?.data?.user || check?.data || (check && !check.error && check.id ? check : null);
+            const foundId = returnedUser?.id;
+            if (foundId && String(foundId) === String(userId)) {
               report.residualUsers.push({ id: userId, email: userObj.email, reason: 'STILL_EXISTS_IN_DATABASE' });
+              continue;
             }
+
+            // If check returns error, require explicit 404 not-found; any 5xx/network error fails verification (R4-06)
+            if (check?.error) {
+              const err = check.error;
+              const isExplicit404 =
+                err.status === 404 ||
+                err.code === 404 ||
+                err.code === 'user_not_found' ||
+                (typeof err.message === 'string' && err.message.toLowerCase().includes('not found')) ||
+                (typeof err.msg === 'string' && err.msg.toLowerCase().includes('not found'));
+
+              if (!isExplicit404) {
+                report.residualUsers.push({
+                  id: userId,
+                  email: userObj.email,
+                  error: `VERIFY_FAILED: Non-404 error during absence check: ${err.message || err.msg || String(err)}`
+                });
+              }
+              continue;
+            }
+
+            // Confirmed null/notFound absence
+            if (check?.notFound === true || check === null || check?.data === null) {
+              continue;
+            }
+
+            // Inconclusive response structure
+            report.residualUsers.push({
+              id: userId,
+              email: userObj.email,
+              error: 'VERIFY_FAILED: Inconclusive response from getUserById; cannot verify user absence'
+            });
           } catch (err) {
-            const is404 = err?.status === 404 || (err?.message && err.message.toLowerCase().includes('not found'));
-            if (!is404) {
+            const isExplicit404 =
+              err?.status === 404 ||
+              err?.code === 404 ||
+              (typeof err?.message === 'string' && err.message.toLowerCase().includes('not found'));
+            if (!isExplicit404) {
               report.residualUsers.push({ id: userId, email: userObj.email, error: `VERIFY_FAILED: ${err.message}` });
             }
           }
@@ -1571,26 +1639,25 @@ export function parseAndValidateJwt(token, { expectedIssuer, expectedAudience = 
     };
   }
 
-  if (payload.amr !== undefined) {
-    if (!Array.isArray(payload.amr) || payload.amr.length === 0) {
-      return { valid: false, reason: 'MALFORMED_AMR: amr claim must be a non-empty array', payload };
+  // RFC 8176 AMR claim validation strictly matching canonical SQL hook contract (R4-07)
+  if (payload.amr === undefined || payload.amr === null) {
+    return { valid: false, reason: 'MISSING_AMR: JWT payload claims lack RFC 8176 amr array', payload };
+  }
+  if (!Array.isArray(payload.amr) || payload.amr.length === 0) {
+    return { valid: false, reason: 'MALFORMED_AMR: amr claim must be a non-empty array', payload };
+  }
+
+  for (const item of payload.amr) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      return { valid: false, reason: 'MALFORMED_AMR_ELEMENT: each amr item must be a JSON object (strings prohibited)', payload };
     }
-    const prohibitedMethods = ['otp', 'recovery', 'magiclink', 'invite', 'email_change', 'reauthentication', 'oauth', 'sso/saml'];
-    let hasPassword = false;
-    for (const item of payload.amr) {
-      const method = typeof item === 'string' ? item : item?.method;
-      if (!method || typeof method !== 'string') {
-        return { valid: false, reason: 'MALFORMED_AMR_ELEMENT: amr element missing string method property', payload };
-      }
-      if (method === 'password') {
-        hasPassword = true;
-      }
-      if (prohibitedMethods.includes(method)) {
-        return { valid: false, reason: `PROHIBITED_AMR_METHOD: JWT amr contains disallowed method '${method}'`, payload };
-      }
+    const method = item.method;
+    if (typeof method !== 'string' || !method.trim()) {
+      return { valid: false, reason: 'MALFORMED_AMR_METHOD: amr element missing non-empty string method property', payload };
     }
-    if (!hasPassword) {
-      return { valid: false, reason: 'PASSWORD_AMR_MISSING: JWT amr lacks verified password method', payload };
+    // Canonical SQL hook strictly allowlists ONLY 'password' method for password/refresh tokens
+    if (method.trim() !== 'password') {
+      return { valid: false, reason: `PROHIBITED_AMR_METHOD: JWT amr contains disallowed method '${method}' (only 'password' allowed)`, payload };
     }
   }
 
@@ -1629,31 +1696,67 @@ export function validateProjectCredentialBinding(key, expectedProjectRef = HARDC
   }
   const trimmed = key.trim();
   const parts = trimmed.split('.');
-  if (parts.length === 3) {
-    let payload;
-    try {
-      payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-    } catch {
-      return true;
-    }
-    if (payload && typeof payload === 'object') {
-      let detectedRef = payload.ref;
-      if (!detectedRef && typeof payload.iss === 'string') {
-        const m = payload.iss.match(/https?:\/\/([^.]+)\.supabase\.co/);
-        if (m && m[1]) detectedRef = m[1];
-      }
-      if (detectedRef) {
-        const normDetected = detectedRef.trim().toLowerCase();
-        if (normDetected === HARDCODED_REAL_REF || normDetected === HARDCODED_TIO_WORLD_REF || isForbiddenProject(normDetected)) {
-          throw new Error(`CRITICAL_SECURITY_VIOLATION: Credential belongs to forbidden project '${normDetected}'! Production credential cannot be forwarded to testbed.`);
-        }
-        if (expectedProjectRef && normDetected !== expectedProjectRef.trim().toLowerCase()) {
-          throw new Error(`CREDENTIAL_TARGET_MISMATCH: Credential ref '${normDetected}' does not match expected target '${expectedProjectRef}'. Forwarding prohibited.`);
-        }
-      }
-    }
+  if (parts.length !== 3) {
+    throw new Error(
+      `OPAQUE_CREDENTIAL_UNSUPPORTED: Credential must be a 3-part project JWT (anon or service_role); opaque or malformed keys (${parts.length} parts) cannot be cryptographically bound to target project '${expectedProjectRef}'.`
+    );
   }
+
+  let header, payload;
+  try {
+    header = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
+    payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+  } catch (err) {
+    throw new Error(`MALFORMED_CREDENTIAL_JWT: Failed to decode credential base64url JSON: ${err.message}`);
+  }
+
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('INVALID_CREDENTIAL_PAYLOAD: Credential payload must be a JSON object');
+  }
+
+  let detectedRef = payload.ref;
+  if (!detectedRef && typeof payload.iss === 'string') {
+    const m = payload.iss.match(/https?:\/\/([^.]+)\.supabase\.co/);
+    if (m && m[1]) detectedRef = m[1];
+  }
+
+  if (!detectedRef || typeof detectedRef !== 'string') {
+    throw new Error(
+      `CREDENTIAL_PROJECT_UNBOUND: Credential payload lacks project ref or Supabase issuer binding; cannot bind to '${expectedProjectRef}'.`
+    );
+  }
+
+  const normDetected = detectedRef.trim().toLowerCase();
+  if (normDetected === HARDCODED_REAL_REF || normDetected === HARDCODED_TIO_WORLD_REF || isForbiddenProject(normDetected)) {
+    throw new Error(
+      `CRITICAL_SECURITY_VIOLATION: Credential belongs to forbidden project '${normDetected}'! Production credential cannot be forwarded to testbed.`
+    );
+  }
+
+  const normExpected = (expectedProjectRef || HARDCODED_TEMP_REF).trim().toLowerCase();
+  if (normDetected !== normExpected) {
+    throw new Error(
+      `CREDENTIAL_TARGET_MISMATCH: Credential ref '${normDetected}' does not match expected target '${normExpected}'. Forwarding prohibited.`
+    );
+  }
+
   return true;
+}
+
+/**
+ * Standard test helper to create valid mock project keys (anon or service_role) bound to a project ref.
+ * Exported for internal tests and runner usage.
+ */
+export function createMockProjectKey(ref = HARDCODED_TEMP_REF, role = 'anon') {
+  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const payload = Buffer.from(JSON.stringify({
+    ref,
+    role,
+    iss: `https://${ref}.supabase.co/auth/v1`,
+    iat: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + 3600
+  })).toString('base64url');
+  return `${header}.${payload}.mock_sig`;
 }
 
 /**
@@ -2016,26 +2119,16 @@ export function createHostedDispatcher({
       }
 
       case 'BYPASS-04': {
-        // Disabled magiclink route returns 422 or 404 upstream before hook execution (R3-06).
-        const res = await fetchFn(`${baseUrl}/auth/v1/magiclink`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ email: testUser }),
-          signal
-        });
-        const body = await parseResponseBody(res);
-        const errText = (body?.msg || body?.message || body?.error_description || body?.error || '').toLowerCase();
-        const hookRejected =
-          res.status >= 400 &&
-          (body?.error_code === 'hook_error' || errText.includes('42501') || errText.includes('error invoking access token hook'));
+        // Magic Link token issuance occurs via token redemption, which requires a valid delivered magic link token.
+        // On this testbed, send_email_hook suppresses magic link email delivery (42501), so no redemption token can be obtained.
+        // Email suppression cannot be accepted as proof of Custom Access Token Hook rejection (R4-08).
         return {
-          passed: res.status !== 200 && hookRejected === true,
-          status: res.status,
-          hook_rejected: hookRejected,
-          tokens: extractObservedTokens(body) ? body : null,
-          error: hookRejected
-            ? (body?.msg || body?.message || 'Hook rejected magiclink')
-            : 'PROVIDER_PRECONDITION_MISSING: Magic link route rejected upstream before Custom Access Token Hook invocation (R3-06)'
+          passed: false,
+          status: 0,
+          hook_rejected: false,
+          email_suppressed: true,
+          error: 'PROVIDER_PRECONDITION_MISSING: Magic link token cannot be obtained because email delivery is suppressed fail-closed. Email suppression cannot prove Custom Access Token Hook rejection. Hook contract is verified offline via Layer A PostgreSQL parity (POSTGRES_VERIFIED).',
+          reason: 'PROVIDER_PRECONDITION_MISSING: Magic link redemption token unavailable due to fail-closed email suppression'
         };
       }
 
@@ -2326,14 +2419,51 @@ export function createHostedDispatcher({
           ctx.activeSeedPassword = newPassword;
         }
 
+        // Affirmative verification of session revocation: pre-reset token MUST be verified as revoked (R4-03)
+        let sessionRevocationVerified = false;
+        let remainingSessions = null;
+        let verifyError = null;
+
+        if (resetSucceeded && ctx?.activeAccessToken) {
+          try {
+            const probeRes = await fetchFn(`${baseUrl}/auth/v1/user`, {
+              method: 'GET',
+              headers: {
+                apikey: anonKey,
+                Authorization: `Bearer ${ctx.activeAccessToken}`
+              },
+              signal
+            });
+            if (probeRes.status === 401 || probeRes.status === 403) {
+              sessionRevocationVerified = true;
+              remainingSessions = 0;
+            } else if (probeRes.status === 200) {
+              sessionRevocationVerified = false;
+              remainingSessions = 1;
+              verifyError = 'SECURITY_REGRESSION: Admin password update returned HTTP 200, but pre-reset session token remained valid (HTTP 200 on /auth/v1/user); session was not revoked!';
+            } else {
+              sessionRevocationVerified = false;
+              verifyError = `REVOCATION_CHECK_INCONCLUSIVE: Unexpected status ${probeRes.status} during post-reset session verification`;
+            }
+          } catch (err) {
+            verifyError = `REVOCATION_CHECK_FAILED: ${err.message}`;
+          }
+        } else if (resetSucceeded) {
+          verifyError = 'PREREQUISITE_MISSING: Cannot verify session revocation without activeAccessToken from HOOK-01';
+        }
+
+        const isRevoked = resetSucceeded && sessionRevocationVerified && remainingSessions === 0;
+
         return {
-          passed: resetSucceeded,
+          passed: isRevoked,
           status: res.status,
-          session_revoked: resetSucceeded,
-          remaining_sessions: 0,
           password_reset_completed: resetSucceeded,
-          invalidation_completed: resetSucceeded,
-          logout_fallback: false
+          session_revoked: sessionRevocationVerified,
+          remaining_sessions: remainingSessions,
+          session_revocation_verified: sessionRevocationVerified,
+          invalidation_completed: isRevoked,
+          logout_fallback: false,
+          error: verifyError || (resetSucceeded ? null : (body?.msg || body?.message || 'Admin password update failed'))
         };
       }
 
@@ -2361,8 +2491,14 @@ export function createHostedDispatcher({
           signal
         });
         const body = await parseResponseBody(res);
-        const isRevocationError = res.status === 401 || res.status === 403;
-        const errCode = body?.error_code || (isRevocationError ? 'session_not_found' : null);
+        const errCode = body?.error_code || body?.code || null;
+        const errMsg = (body?.msg || body?.message || body?.error_description || body?.error || '').toLowerCase();
+        // Provider-observed revocation error (R4-04): Do NOT synthesize error code for generic 401/403
+        const isRevocationError =
+          (res.status === 401 || res.status === 403) &&
+          (errCode === 'session_not_found' ||
+           errCode === 'AuthSessionMissingError' ||
+           (errCode !== 'bad_jwt' && (errMsg.includes('session not found') || errMsg.includes('session is revoked') || errMsg.includes('session_not_found'))));
 
         return {
           passed: isRevocationError && ctx?.preInvalidationSessionValid === true && ctx?.passwordResetCompleted === true,
@@ -2375,7 +2511,7 @@ export function createHostedDispatcher({
           revocation_verified: isRevocationError,
           session_revoked: isRevocationError,
           error_code: errCode,
-          error: body?.msg || body?.message || errCode
+          error: body?.msg || body?.message || (isRevocationError ? null : (res.status === 401 || res.status === 403 ? 'GENERIC_UNAUTHORIZED: HTTP 401/403 without provider-observed session revocation error' : null))
         };
       }
 
@@ -2512,8 +2648,16 @@ export function createHostedDispatcher({
           };
         }
 
-        const isRevocationError = res.status === 401 || res.status === 403;
-        const errCode = body?.error_code || (isRevocationError ? 'AuthSessionMissingError' : null);
+        const errCode = body?.error_code || body?.code || null;
+        const errMsg = (body?.msg || body?.message || body?.error_description || body?.error || '').toLowerCase();
+        // Provider-observed revocation error (R4-04): Accept ONLY genuine AuthSessionMissingError or session_not_found
+        // Reject generic 401/403 without synthesizing AuthSessionMissingError!
+        const isRevocationError =
+          (res.status === 401 || res.status === 403 || res.status === 500) &&
+          (errCode === 'AuthSessionMissingError' ||
+           errCode === 'session_not_found' ||
+           errMsg.includes('authsessionmissingerror') ||
+           errMsg.includes('session not found'));
 
         return {
           passed: isRevocationError && ctx?.preInvalidationSessionValid === true && ctx?.passwordResetCompleted === true,
@@ -2526,7 +2670,7 @@ export function createHostedDispatcher({
           revocation_verified: isRevocationError,
           session_revoked: isRevocationError,
           error_code: errCode,
-          error: body?.msg || body?.message || errCode
+          error: body?.msg || body?.message || (isRevocationError ? null : (res.status === 401 || res.status === 403 ? 'GENERIC_UNAUTHORIZED: Edge Function returned generic 401/403 without AuthSessionMissingError' : null))
         };
       }
 
@@ -2597,6 +2741,20 @@ export async function runHostedProbeRunner(options = {}) {
   const adminClient = options.adminClient || null;
   let cleanupReport = null;
   let cleanupExecuted = false;
+
+  // LIVE mode requires verified adminClient with cleanup capabilities (R4-02)
+  if (isLive) {
+    if (!adminClient) {
+      throw new Error(
+        'CLEANUP_CAPABILITY_REQUIRED: LIVE mode requires verified adminClient with deleteUser, getUserById, and session invalidation capability'
+      );
+    }
+    if (typeof adminClient.deleteUser !== 'function' || typeof adminClient.getUserById !== 'function') {
+      throw new Error(
+        'CLEANUP_CAPABILITY_REQUIRED: LIVE adminClient must implement deleteUser and getUserById methods'
+      );
+    }
+  }
 
   async function performCleanup() {
     if (cleanupExecuted) return;
@@ -2691,12 +2849,19 @@ export async function runHostedProbeRunner(options = {}) {
       });
     }
 
-    // Execute cleanup at end of test run (PRRT_kwDOVtCmZc66lo-q, R3-07)
+    // Execute cleanup at end of test run (PRRT_kwDOVtCmZc66lo-q, R3-07, R4-02)
     await performCleanup();
 
-    // Status is COMPLETED only if zero cases failed and all planned cases executed
+    // In LIVE mode, cleanup failure must override probe success (R4-02)
+    const cleanupSuccess = !isLive || (cleanupReport && cleanupReport.status === 'CLEANUP_VERIFIED_SUCCESS');
+    if (isLive && !cleanupSuccess) {
+      aborted = true;
+      abortReason = `CLEANUP_FAILURE: Test run cleanup did not verify complete resource removal. Status: ${cleanupReport?.status || 'UNKNOWN'}. Residual users: ${cleanupReport?.residualUsers?.length || 0}, Residual resources: ${cleanupReport?.residualResources?.length || 0}. Error: ${cleanupReport?.error || 'Unverified cleanup'}`;
+    }
+
+    // Status is COMPLETED only if zero cases failed, all planned cases executed, and cleanup verified
     const allCasesExecuted = results.length === plan.plannedCases.length;
-    const allPassed = !aborted && allCasesExecuted && results.every(r => r.outcome && r.outcome.passed === true);
+    const allPassed = !aborted && allCasesExecuted && cleanupSuccess && results.every(r => r.outcome && r.outcome.passed === true);
 
     return sanitizeData({
       status: allPassed ? 'COMPLETED' : 'HALTED_ON_FAILURE',
@@ -2793,41 +2958,61 @@ if (process.argv[1] && process.argv[1].endsWith('hosted-probe-runner.mjs')) {
       runContext
     });
 
-    let adminClient = null;
-    if (serviceRoleKey) {
-      adminClient = {
-        async deleteUser(userId) {
-          const res = await fetch(`https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/admin/users/${userId}`, {
-            method: 'DELETE',
-            headers: {
-              apikey: serviceRoleKey,
-              Authorization: `Bearer ${serviceRoleKey}`
-            }
-          });
-          if (!res.ok) {
-            const body = await res.json().catch(() => ({}));
-            return { error: body?.msg || body?.message || `HTTP_${res.status}` };
-          }
-          return { data: { user: { id: userId } }, error: null };
-        },
-        async getUserById(userId) {
-          const res = await fetch(`https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/admin/users/${userId}`, {
-            method: 'GET',
-            headers: {
-              apikey: serviceRoleKey,
-              Authorization: `Bearer ${serviceRoleKey}`
-            }
-          });
-          if (res.status === 404) return { data: null, error: { message: 'User not found', status: 404 } };
-          if (!res.ok) {
-            const body = await res.json().catch(() => ({}));
-            return { data: null, error: body };
-          }
-          const data = await res.json();
-          return { data, error: null };
-        }
-      };
+    if (!serviceRoleKey) {
+      console.error('MISSING_HOSTED_CREDENTIALS: LIVE mode against TEMP project strictly requires TIO_TEMP_SERVICE_ROLE_KEY to construct adminClient for resource cleanup and SESSION-02 (R4-02).');
+      process.exit(1);
     }
+
+    const adminClient = {
+      async deleteUser(userId) {
+        const res = await fetch(`https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/admin/users/${userId}`, {
+          method: 'DELETE',
+          headers: {
+            apikey: serviceRoleKey,
+            Authorization: `Bearer ${serviceRoleKey}`
+          }
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          return { error: body?.msg || body?.message || `HTTP_${res.status}` };
+        }
+        return { data: { user: { id: userId } }, error: null };
+      },
+      async getUserById(userId) {
+        const res = await fetch(`https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/admin/users/${userId}`, {
+          method: 'GET',
+          headers: {
+            apikey: serviceRoleKey,
+            Authorization: `Bearer ${serviceRoleKey}`
+          }
+        });
+        if (res.status === 404) return { data: null, error: { message: 'User not found', status: 404 } };
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          return { data: null, error: body };
+        }
+        const data = await res.json();
+        return { data, error: null };
+      },
+      async invalidateSession(sessionId) {
+        const res = await fetch(`https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/admin/users/sessions/${sessionId}`, {
+          method: 'DELETE',
+          headers: {
+            apikey: serviceRoleKey,
+            Authorization: `Bearer ${serviceRoleKey}`
+          }
+        });
+        if (res.status === 404) return { data: null, error: null };
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          return { error: body?.msg || body?.message || `HTTP_${res.status}` };
+        }
+        return { data: { id: sessionId }, error: null };
+      },
+      async signOut(sessionId) {
+        return this.invalidateSession(sessionId);
+      }
+    };
 
     runHostedProbeRunner({
       projectRef: HARDCODED_TEMP_REF,
@@ -2840,7 +3025,7 @@ if (process.argv[1] && process.argv[1].endsWith('hosted-probe-runner.mjs')) {
     }).then(res => {
       console.log(`[HOSTED PROBE RUNNER] Mode: ${res.mode} | Status: ${res.status} | Project: ${res.projectRef} | Executed: ${res.totalExecuted}`);
       console.log(JSON.stringify(res, null, 2));
-      if (res.status !== 'COMPLETED') {
+      if (res.status !== 'COMPLETED' || (res.cleanupReport && res.cleanupReport.status !== 'CLEANUP_VERIFIED_SUCCESS')) {
         process.exit(1);
       }
     }).catch(err => {
