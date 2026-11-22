@@ -1241,9 +1241,24 @@ test('28. Require actual session revocation proof and reject false-proof errors 
   });
   assert.equal(resEdgeValid2.passed, true);
   assert.equal(resEdgeValid2.status, 401);
+
+  // 8j. Auth API error code session_not_found fails closed on SESSION-06 (PRRT_kwDOVtCmZc66kR_R)
+  const resEdgeSessionNotFound = validateProbeOutcome(session06, {
+    passed: true,
+    status: 403,
+    pre_reset_baseline_verified: true,
+    reset_completed: true,
+    session_id: 'sess-edge-1',
+    correlated_session_id: 'sess-edge-1',
+    pre_session_id: 'sess-edge-1',
+    same_session_correlated: true,
+    error_code: 'session_not_found'
+  });
+  assert.equal(resEdgeSessionNotFound.passed, false);
+  assert.match(resEdgeSessionNotFound.reason, /MISSING_EVIDENCE.*revocation-specific evidence/);
 });
 
-test('29. Quoted credentials with whitespace, ampersands, and escaped quotes are completely redacted (PRRT_kwDOVtCmZc66jdT4, PRRT_kwDOVtCmZc66joKm)', async () => {
+test('29. Quoted credentials with whitespace, ampersands, and escaped quotes are completely redacted (PRRT_kwDOVtCmZc66jdT4, PRRT_kwDOVtCmZc66joKm, PRRT_kwDOVtCmZc66kR_F, PRRT_kwDOVtCmZc66kR_N)', async () => {
   const secretWithLeadingSpace = ' synthetic-review-password';
   const secretWithAmpersand = 'alpha beta&gamma';
   const singleQuotedToken = 'synthetic access token';
@@ -1253,6 +1268,17 @@ test('29. Quoted credentials with whitespace, ampersands, and escaped quotes are
   assert.equal(redactSensitiveFields('password="my\\"secret'), 'password="[REDACTED]');
   assert.equal(redactSensitiveFields("access_token='my\\'token"), "access_token='[REDACTED]");
   assert.equal(redactSensitiveFields('details: password="my\\"secret and next'), 'details: password="[REDACTED]');
+
+  // Compound secret keys (PRRT_kwDOVtCmZc66kR_F)
+  assert.equal(redactSensitiveFields('client_secret="my-client-secret"'), 'client_secret="[REDACTED]"');
+  assert.equal(redactSensitiveFields('id_token="my-id-token"'), 'id_token="[REDACTED]"');
+  assert.equal(redactSensitiveFields("jwt_secret='my-jwt-secret'"), "jwt_secret='[REDACTED]'");
+  assert.equal(redactSensitiveFields('auth_token=my-unquoted-token and more'), 'auth_token=[REDACTED] and more');
+  assert.equal(redactSensitiveFields('payload: {"client_secret":"sec123","id_token":"tok456"}'), 'payload: {"client_secret":"[REDACTED]","id_token":"[REDACTED]"}');
+
+  // Escaped quote parity & inner escaped quotes (PRRT_kwDOVtCmZc66kR_N)
+  assert.equal(redactSensitiveFields('password=\\"my\\\\\\"inner\\\\\\"secret\\"'), 'password=\\"[REDACTED]\\"');
+  assert.equal(redactSensitiveFields('password=\\"my\\\\\\"inner secret and more'), 'password=\\"[REDACTED]');
 
   // 2. Unit tests on sanitizeData string handling directly
   const s1 = `Error('request failed password="${secretWithLeadingSpace}"')`;
@@ -1279,6 +1305,17 @@ test('29. Quoted credentials with whitespace, ampersands, and escaped quotes are
   assert.equal(sanitizeData(s6), 'password="[REDACTED]');
   const s7 = "access_token='my\\'token";
   assert.equal(sanitizeData(s7), "access_token='[REDACTED]");
+
+  // Compound secret keys & escaped quotes in sanitizeData (PRRT_kwDOVtCmZc66kR_F, PRRT_kwDOVtCmZc66kR_N)
+  const sCompound = 'client_secret="sec123" and id_token="tok456"';
+  assert.equal(sanitizeData(sCompound), 'client_secret="[REDACTED]" and id_token="[REDACTED]"');
+  const sEscapedInner = 'Error: password=\\"my\\\\\\"secret\\"';
+  assert.equal(sanitizeData(sEscapedInner), 'Error: password=\\"[REDACTED]\\"');
+  const objCompound = { client_secret: 'sec123', nested: { id_token: 'tok456', ok: 'fine' } };
+  const sanitizedObj = sanitizeData(objCompound);
+  assert.equal(sanitizedObj.client_secret, '[REDACTED]');
+  assert.equal(sanitizedObj.nested.id_token, '[REDACTED]');
+  assert.equal(sanitizedObj.nested.ok, 'fine');
 
   // 3. End-to-end runner test with quoted exception from dispatcher
   const mockDispatcher = async () => {

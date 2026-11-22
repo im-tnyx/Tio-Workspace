@@ -128,7 +128,8 @@ export function redactSensitiveFields(str) {
 
   while ((match = keyRegex.exec(str)) !== null) {
     const rawKey = match[1].toLowerCase();
-    if (!SENSITIVE_KEY_SET.has(rawKey)) {
+    const isSensitive = SENSITIVE_KEY_SET.has(rawKey) || SENSITIVE_KEY_SUBSTRINGS.some(sub => rawKey.includes(sub));
+    if (!isSensitive) {
       continue;
     }
 
@@ -169,20 +170,26 @@ export function redactSensitiveFields(str) {
       let valueClosed = false;
       let startVal = i;
       while (i < str.length) {
-        if (isEscapedQuote) {
-          if (str[i] === '\\' && str[i + 1] === quoteChar) {
-            valueClosed = true;
-            i += 2;
-            break;
+        if (str[i] === quoteChar) {
+          let backslashCount = 0;
+          let b = i - 1;
+          while (b >= startVal && str[b] === '\\') {
+            backslashCount++;
+            b--;
           }
-        } else {
-          if (str[i] === quoteChar) {
-            let backslashCount = 0;
-            let b = i - 1;
-            while (b >= startVal && str[b] === '\\') {
-              backslashCount++;
-              b--;
+          if (isEscapedQuote) {
+            // For opening \" or \', the closing delimiter has an odd number of backslashes (at least 1),
+            // and the preceding backslashes must be paired (even number of backslash pairs).
+            // E.g., \" (1 backslash) closes, but \\\" (3 backslashes = 1 pair + 1) is an inner escaped quote.
+            const isOdd = backslashCount % 2 === 1;
+            const backslashPairs = Math.floor((backslashCount - 1) / 2);
+            if (isOdd && backslashPairs % 2 === 0) {
+              valueClosed = true;
+              i++;
+              break;
             }
+          } else {
+            // For opening " or ', the closing delimiter is preceded by an even number of backslashes (e.g. 0 backslashes)
             if (backslashCount % 2 === 0) {
               valueClosed = true;
               i++;
@@ -948,8 +955,7 @@ function validateSessionRevocationProof(item, rawOutcome, allowedStatuses, isRev
       (outcome) =>
         (outcome.revocation_verified === true && (outcome.session_revoked === true || outcome.rejection_observed === true)) ||
         (isNonEmptyString(outcome.error_code) && outcome.error_code === 'AuthSessionMissingError') ||
-        (isNonEmptyString(outcome.error) && outcome.error.includes('AuthSessionMissingError')) ||
-        outcome.error_code === 'session_not_found'
+        (isNonEmptyString(outcome.error) && outcome.error.includes('AuthSessionMissingError'))
     );
     if (err) return err;
   }

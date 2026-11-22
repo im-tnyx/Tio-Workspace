@@ -289,6 +289,31 @@ All 8 review threads on PR #36 have been resolved with regression tests:
   7. Shared validator `validateSessionRevocationProof()` enforces identical strict correlation rules across both `SESSION-03` and `SESSION-06`.
 - **Tests:** `hosted-probe-runner.test.mjs` (Test 28: sub-tests 5a–5f and 8f-1–8f-6 covering contradictory pre/correlated IDs, missing pre-reset identity, boolean bypass attempts, and malformed types).
 
+### 25. `PRRT_kwDOVtCmZc66kR_F` (R6-02) — Compound Secret Keys Redaction in Strings
+- **Root Cause:** `redactSensitiveFields()` only checked `SENSITIVE_KEY_SET.has(rawKey)`, which required exact key name matches. Diagnostic strings containing compound keys such as `client_secret=...`, `id_token=...`, `jwt_secret=...`, or `auth_token=...` were not recognized and retained their values.
+- **Remediation:**
+  1. Added compound key detection using `SENSITIVE_KEY_SUBSTRINGS.some(sub => rawKey.includes(sub))` alongside `SENSITIVE_KEY_SET.has(rawKey)`.
+  2. Recognizes compound keys containing `secret`, `password`, `token`, `key`, `authorization`, `bearer`, `credential`, `service_role`, `refresh_token`, `access_token`, `apikey`, or `api_key`.
+  3. Integrated with both parser-based string redaction and recursive object sanitization.
+- **Tests:** `hosted-probe-runner.test.mjs` (Test 29: unit tests verifying redaction of `client_secret`, `id_token`, `jwt_secret`, `auth_token`, and JSON-embedded compound keys).
+
+### 26. `PRRT_kwDOVtCmZc66kR_N` (R6-03) — Escaped Quote Delimiter Parity
+- **Root Cause:** In strings where a sensitive value opened with an escaped quote (`password=\"...`), `redactSensitiveFields()` checked `str[i] === '\\' && str[i + 1] === quoteChar` without checking backslash parity. When a value contained an inner escaped quote (`\\\"`), it treated the inner quote as the closing delimiter, prematurely truncating redaction and leaking the remaining secret.
+- **Remediation:**
+  1. Implemented backslash parity for escaped quote delimiters (`isEscapedQuote === true`).
+  2. The closing delimiter requires an odd number of backslashes (at least 1 attached to the quote, `backslashCount % 2 === 1`) and an even number of preceding backslash pairs (`Math.floor((backslashCount - 1) / 2) % 2 === 0`).
+  3. Inner escaped quotes (`\\\"`, 3 backslashes = 1 pair + 1) are recognized as inner content and do not close the value.
+  4. Preserved unescaped quote parity (`backslashCount % 2 === 0`) for strings opening with bare quotes.
+- **Tests:** `hosted-probe-runner.test.mjs` (Test 29: unit tests verifying complete redaction of values containing inner escaped quotes, closed and unclosed).
+
+### 27. `PRRT_kwDOVtCmZc66kR_R` (R6-04) — Reject Auth API Error Codes on SESSION-06
+- **Root Cause:** In `validateSessionRevocationProof()`, the evidence callback for SESSION-06 accepted `outcome.error_code === 'session_not_found'`. SESSION-06 tests Edge Function session rejection (`auth.getUser()`), where Edge Functions return `AuthSessionMissingError` or require `revocation_verified: true` with `rejection_observed: true`. Accepting the Auth HTTP API code `session_not_found` allowed an Auth API probe outcome to satisfy the Edge Function requirement without proving Edge Function rejection.
+- **Remediation:**
+  1. Removed `outcome.error_code === 'session_not_found'` from the SESSION-06 validation callback.
+  2. SESSION-06 strictly requires Edge Function specific evidence: `AuthSessionMissingError` or `revocation_verified: true` with `rejection_observed: true` / `session_revoked: true`.
+  3. SESSION-03 retains `session_not_found` as the standard GoTrue Auth HTTP API revocation error code.
+- **Tests:** `hosted-probe-runner.test.mjs` (Test 28: sub-test 8j asserting that `session_not_found` fails closed on SESSION-06 with `MISSING_EVIDENCE`).
+
 ---
 
 ## 5. Local Security Harness & Parity Verification Results (Phase E)
