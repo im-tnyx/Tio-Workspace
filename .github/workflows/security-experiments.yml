@@ -1,0 +1,40 @@
+name: Security experiment checks
+
+on:
+  pull_request:
+    paths:
+      - 'experiments/task06i/**'
+      - '.github/workflows/security-experiments.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'experiments/task06i/**'
+      - '.github/workflows/security-experiments.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-experiments-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Task 06I Security Contract Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Run Task 06I security tests
+        run: node --test experiments/task06i/*.test.mjs

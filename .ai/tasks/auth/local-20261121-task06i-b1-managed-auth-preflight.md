@@ -1,18 +1,18 @@
-# Phase 1.2 Task 06I-B1-R7 — Managed Auth Feasibility & Security Boundary Verification Preflight
+# Phase 1.2 Task 06I-B1-R8 — Authorized Security CI Workflow Integration
 
-> **Preflight Report & Test Plan (Revision R7 — Recovery Contract Closure & CI Owner Approval Gate).** Prepared under `AGENTS.md` operating rules. This document authorizes local investigation, documentation, offline test preparation, and read-only feasibility checks only. It does not authorize creating or modifying a hosted Supabase project. Production Real Auth remains **NO-GO**.
+> **Preflight Report & Test Plan (Revision R8 — Authorized Security CI Workflow Integration).** Prepared under `AGENTS.md` operating rules. This document authorizes local investigation, documentation, offline test preparation, and authorized workflow integration only. It does not authorize creating or modifying a hosted Supabase project. Production Real Auth remains **NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **PREFLIGHT COMPLETE (REVISION R7) — HOSTED PROVISIONING BLOCKED PENDING OWNER APPROVAL & SAFE TARGET RESOLUTION** |
-| Objective | Address PR #35 review findings (R7-01 recovery HTTP contract contradiction resolution distinguishing route reachability from HTTP response status, R7-02 offline vs hosted test evidence reconciliation, R7-03 PR review update and re-review request from im-tio, R7-04 Security CI workflow patch preparation for owner activation gate), maintain $0 cost and permanent immunity for `Tio-world`, and preserve branch protections |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-R7 slice |
-| Previous agent | Agent / Task 06I-B1-R6 author |
-| Last commit agent | `42a810159646d05c0dca64f7f925d783c06a2e92` (Task 06I-B1-R6 commit on PR #35) |
-| Tracking / approval | Task 06I-B1-R7 authorized by user prompt; PR #35 active; owner mandates $0 cost and permanent immunity for `Tio-world`; hosted mutations strictly prohibited |
+| Status | **PREFLIGHT COMPLETE (REVISION R8) — SECURITY CI WORKFLOW ADDED; AWAITING OWNER EXACT-SHA GUARD APPROVAL** |
+| Objective | Add owner-authorized dedicated Security CI workflow (`.github/workflows/security-experiments.yml`) for `experiments/task06i/**`, verify all local test suites, push to PR #35, and prepare exact new HEAD SHA package for owner trusted guard approval |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-R8 slice |
+| Previous agent | Agent / Task 06I-B1-R7 author |
+| Last commit agent | `fe1056b3213d1576fc3eb61725b2393d00168a97` (Task 06I-B1-R7 commit on PR #35) |
+| Tracking / approval | Task 06I-B1-R8 authorized by user prompt for workflow file addition; PR #35 active; owner mandates $0 cost and permanent immunity for `Tio-world`; hosted mutations strictly prohibited |
 | Branch | `docs/task06i-b1-managed-auth-preflight` |
 | Base SHA / inspected HEAD | `b7d4fda97979e734a85461e83bf119dbc1a9689c` (`main`, verified up to date with `origin/main`) |
-| Platform and file scope | Documentation, `.ai/` context, isolated offline preflight test harnesses under `experiments/task06i/`; zero client Expo UI, production schema, or live Auth changes |
+| Platform and file scope | Documentation, `.ai/` context, isolated offline preflight test harnesses under `experiments/task06i/`, and dedicated CI workflow `.github/workflows/security-experiments.yml`; zero client Expo UI, production schema, or live Auth changes |
 | Created / updated | 2026-11-22 |
 
 ---
@@ -467,11 +467,11 @@ The following items are explicit blockers that halt execution before any hosted 
 | **BLK-02** (Target Safety & Production Boundary) | Explicit owner approval is required before any hosted project modification or testing. Production project `bsfwzvgynwriswapxpsp` and `Tio-world` remain strictly READ-ONLY. | Prevents accidental configuration mutations or production destruction. | Bounded owner authorization required before any future hosted execution. Deleting or regenerating production project is NOT approved at this stage. If no safe isolated hosted target exists, hosted testing is BLOCKED (`NO_SAFE_HOSTED_TARGET`). |
 | **BLK-03** (Hosted Empirical Gap) | Management API parameter behavior, recovery email suppression, and AMR refresh behavior remain unverified on live infrastructure. | Cannot declare Option B feasible without empirical proof. | Authorize Stage 06I-B1 test execution under separate future gate. |
 | **BLK-04** (Production Auth Gate) | Pinned GoTrue security vulnerabilities (AUTH-12, AUTH-17, AUTH-22) remain open in native runtime. | Production Auth cannot be safely enabled. | Production Auth remains strictly **NO-GO**. |
-| **BLK-05** (Guard-Protected CI Workflow Approval) | Adding automated CI for `experiments/task06i` modifies `.github/workflows/*`, which is strictly protected by `scripts/check_guard_integrity.sh`. | Prevents unreviewed workflow modifications from running without owner authorization. | **OPEN BLOCKER.** Minimal proposed workflow patch prepared below. Required owner approval procedure: Owner independently reviews workflow patch, sets trusted environment variable `ATTRIBUTION_GUARD_CHANGE_APPROVED_PR_HEAD="35:<CURRENT_40_CHAR_HEAD_SHA>"`, applies patch, verifies guard passes, and clears variable immediately after merge. |
+| **BLK-05** (Guard-Protected CI Workflow Approval) | Adding automated CI for `experiments/task06i` modifies `.github/workflows/*`, which is strictly protected by `scripts/check_guard_integrity.sh`. | Prevents unreviewed workflow modifications from running without owner authorization. | **OWNER AUTHORIZED IN TASK 06I-B1-R8.** Workflow added at `.github/workflows/security-experiments.yml`. Awaiting owner exact-SHA approval in trusted environment (`ATTRIBUTION_GUARD_CHANGE_APPROVED_PR_HEAD="35:<NEW_HEAD_SHA>"`). |
 
-### Proposed CI Workflow Patch for BLK-05 (Awaiting Owner Review & Authorization)
+### CI Workflow Integration for BLK-05 (Owner Authorized in Task 06I-B1-R8)
 
-To provide automated CI regression protection for `experiments/task06i/**` without triggering unrelated Expo SDK version checks in `phase1-shell.yml`, the following minimal standalone workflow is proposed for `.github/workflows/security-experiments.yml`:
+To provide automated CI regression protection for `experiments/task06i/**` without triggering unrelated Expo SDK version checks in `phase1-shell.yml`, the dedicated standalone workflow has been added at `.github/workflows/security-experiments.yml`:
 
 ```yaml
 name: Security experiment checks
@@ -541,15 +541,16 @@ Per [`docs/26-COMMIT-ATTRIBUTION-GUARD.md`](../../../docs/26-COMMIT-ATTRIBUTION-
 ## 9. STOP / GO Decision & Recommendations
 
 ### Final Assessment
-- **Task 06I-B1-R7 Preflight Deliverable:** **VERIFIED PASS** (Documentation audited, recovery endpoint contract reconciled with clear separation of endpoint reachability, SQL hook exception, HTTP error / anti-enumeration behaviors, and hosted-unverified status; zero unauthorized token/email dispatch invariant enforced; BLK-05 activation procedure documented with exact SHA ordering safeguards; 52 offline unit tests passing; full repository verification passing).
+- **Task 06I-B1-R8 Preflight Deliverable:** **VERIFIED PASS** (Dedicated Security CI workflow added to `.github/workflows/security-experiments.yml` under explicit owner authorization; least-privilege permissions `contents: read`, Node 22 native test runner, zero Expo dependencies; 52 offline unit tests passing; 115 Task 06H tests passing; full repository verification passing; awaiting owner exact-SHA trusted approval for `Commit attribution guard`).
 - **Disposable Hosted Project Execution:** **BLOCKED (STOP)** (Awaiting separate owner authorization and safe isolated target resolution).
 - **Managed Supabase Auth Feasibility:** **NOT VERIFIED ON HOSTED** (Documented capabilities indicate feasibility, but empirical hosted proof is mandatory).
 - **Production Real Auth:** **STRICT NO-GO**.
 
 ### Recommended Next Action
-1. Review this finalized Task 06I-B1-R7 preflight package and PR #35.
+1. Review this finalized Task 06I-B1-R8 preflight package and PR #35.
 2. Maintain `bsfwzvgynwriswapxpsp` and `oykupyiitspujzpwwvuj` as strictly READ-ONLY.
-3. When the owner chooses to authorize future hosted feasibility testing, execute the 18-point Stage 06I-B1 test checklist against an authorized safe target under strict cleanup guarantees.
+3. Owner executes exact-SHA approval in trusted GitHub environment (`ATTRIBUTION_GUARD_CHANGE_APPROVED_PR_HEAD="35:<NEW_HEAD_SHA>"`).
+4. When the owner chooses to authorize future hosted feasibility testing, execute the 18-point Stage 06I-B1 test checklist against an authorized safe target under strict cleanup guarantees.
 
 ---
 
