@@ -1,14 +1,14 @@
-# Phase 1.2 Task 06I-B1-H0-R3 — Final Security Proof Gate Closure
+# Phase 1.2 Task 06I-B1-H0-R5 — SESSION-06 Revocation Proof, Strict Identity Correlation & Secret Redaction Closure
 
-> **Target-Safety Decision Record, P1/P2 Security Proof Closure, Affirmative Evidence Contracts & Dispatcher Deadline Enforcement.** Prepared under `AGENTS.md` operating rules. This document establishes deterministic local security verification, remediates all six open review threads on PR #36 (approved TEMP target enforcement, affirmative evidence for all 18 cases, per-probe dispatcher timeout with AbortSignal, standalone PostgreSQL parity nonzero exit codes, and complete report secret sanitization), preserves the owner-directed TEMP lifecycle & deletion policy, audits Supabase organization inventory, and confirms zero host port exposure and zero hosted mutations. Production Real Auth remains **NO-GO**.
+> **Target-Safety Decision Record, P1/P2 Security Proof Closure, Affirmative Evidence Contracts & Dispatcher Deadline Enforcement.** Prepared under `AGENTS.md` operating rules. This document establishes deterministic local security verification, remediates all review threads on PR #36 (including Revision R5: SESSION-06 affirmative revocation baseline and reset completion proof, strict session identity correlation rejecting contradictory IDs regardless of boolean flags, and parser-based secret redaction eliminating escaped-quote leakage), preserves the owner-directed TEMP lifecycle & deletion policy, audits Supabase organization inventory, and confirms zero host port exposure and zero hosted mutations. Production Real Auth remains **NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **PR #36 SECURITY REMEDIATION (REVISION R3) COMPLETE; 99/99 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (ON_ERROR_STOP=1, NONZERO EXIT ON MISMATCH, ROLE GRANTS VERIFIED); LIVE INVENTORY AUDITED (2 ACTIVE PROJECTS: REAL `bsfwzvgynwriswapxpsp` + OWNER-CREATED TEMP `wvdabiwbaavfggcmpizd`); APPROVED TEMP REF `wvdabiwbaavfggcmpizd` ENFORCED (TEMP SPOOFING REJECTED); ALL 18 PROBE CASES REQUIRE AFFIRMATIVE OBSERVATIONS (STATUS 0 / MISSING STATUS / EMPTY PROOFS FAIL CLOSED); DISPATCHER TIMEOUT AND ABORTSIGNAL ENFORCED; COMPLETE RUNNER REPORT RECURSIVELY SANITIZED; ALL 6 OPEN REVIEW THREADS RESOLVED; AWAITING INDEPENDENT RE-REVIEW SIGN-OFF FROM IM-TIO** |
-| Objective | Resolve all six open review threads on PR #36 (PRRT_kwDOVtCmZc66jOw4, PRRT_kwDOVtCmZc66jLk1, PRRT_kwDOVtCmZc66jNbH, PRRT_kwDOVtCmZc66jOw5, PRRT_kwDOVtCmZc66jLk5, PRRT_kwDOVtCmZc66jLk3), ensure the Auth security harness never reports successful hosted verification without valid affirmative evidence, enforce bounded timeouts on never-settling dispatchers, and verify standalone parity exit codes |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H0-R3 slice |
-| Previous agent | Agent / Task 06I-B1-H0-R2 author |
-| Last audited HEAD | `77984fae1a119f01f6bad1281495ecf563570a7d` (PR #36 post-H0-R2 commit) |
+| Status | **PR #36 SECURITY REMEDIATION (REVISION R5) COMPLETE; 102/102 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (ON_ERROR_STOP=1, NONZERO EXIT ON MISMATCH, ROLE GRANTS VERIFIED); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; LIVE INVENTORY AUDITED (2 ACTIVE PROJECTS: REAL `bsfwzvgynwriswapxpsp` + OWNER-CREATED TEMP `wvdabiwbaavfggcmpizd`); APPROVED TEMP REF `wvdabiwbaavfggcmpizd` ENFORCED (TEMP SPOOFING REJECTED); ALL 18 PROBE CASES REQUIRE AFFIRMATIVE OBSERVATIONS (STATUS 0 / MISSING STATUS / EMPTY PROOFS FAIL CLOSED); DISPATCHER TIMEOUT AND ABORTSIGNAL ENFORCED; COMPLETE RUNNER REPORT RECURSIVELY SANITIZED (PARSER-BASED ESCAPED QUOTE REDACTION); ALL 3 R5 REVIEW THREADS RESOLVED; AWAITING INDEPENDENT RE-REVIEW SIGN-OFF FROM IM-TIO** |
+| Objective | Resolve all three review threads on PR #36: require SESSION-06 affirmative revocation baseline and reset completion proof (`PRRT_kwDOVtCmZc66jlyg`), enforce strict session correlation rejecting contradictory IDs regardless of boolean flags (`PRRT_kwDOVtCmZc66joKl`), and eliminate escaped-quote credential leakage via parser-based redactor (`PRRT_kwDOVtCmZc66joKm`). |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H0-R5 slice |
+| Previous agent | Agent / Task 06I-B1-H0-R4 author |
+| Last audited HEAD | `53afec4df50710f43768cee5019cb02e3b525eb5` (PR #36 post-H0-R4 commit) |
 | Tracking / approval | Task 06I-B1-H0-R2 authorized by user prompt; owner mandates resolving all 3 P1 findings without modifying production resources; owner preserves TEMP Project Lifecycle & Deletion Policy; mandates $0 cost and permanent immunity for `Tio-world` and REAL `bsfwzvgynwriswapxpsp`; hosted mutations strictly prohibited |
 | Branch | `docs/task06i-b1-h0-hosted-readiness-harness` |
 | Base SHA / inspected HEAD | `7150cec4c2e1e9aaa8e75d2cbcb3a23a6dca532e` (`main`, verified up to date with `origin/main`) |
@@ -250,6 +250,33 @@ All 8 review threads on PR #36 have been resolved with regression tests:
   3. Created 4 focused regression tests evaluating all race combinations with a process-level `unhandledRejection` listener.
 - **Tests:** `hosted-probe-runner.test.mjs` (Test 30).
 
+### 21. `PRRT_kwDOVtCmZc66jlyg` (R5-01) — SESSION-06 Affirmative Revocation Proof & Baseline Enforcement
+- **Root Cause:** In `validateProbeOutcome`, SESSION-06 accepted `AuthSessionMissingError` alone as sufficient evidence of revocation without proving that the token was valid before reset, allowing never-authenticated requests to pass as revocation proof.
+- **Remediation:**
+  1. Refactored session validation into a shared helper `validateSessionRevocationProof()` used by both SESSION-03 and SESSION-06.
+  2. Mandatory Pre-Reset Baseline: Requires explicit proof that the exact same valid, unexpired token succeeded before invalidation (`pre_reset_baseline_verified: true`). Fails closed with `MISSING_EVIDENCE` if absent.
+  3. Reset Operation Proof: Requires explicit evidence that the password reset or session invalidation completed (`reset_completed: true`).
+  4. False-Proof Rejection: Strictly rejects `bad_jwt`, `jwt_expired`, `token_expired`, `invalid_jwt`, `malformed_jwt`, etc. (`FALSE_PROOF_REJECTED`).
+  5. Positive Revocation Evidence: Requires affirmative provider rejection (`AuthSessionMissingError` or `revocation_verified: true, rejection_observed: true`).
+- **Tests:** `hosted-probe-runner.test.mjs` (Test 28: 10 focused sub-tests).
+
+### 22. `PRRT_kwDOVtCmZc66joKl` (R5-02) — Contradictory Session IDs Must Fail Closed
+- **Root Cause:** In `validateSessionRevocationProof`, the expression `same_session_correlated === true || (isNonEmptyString(correlatedId) && sessionId === correlatedId)` allowed an adversarial dispatcher to pass contradictory session IDs (`session_id !== correlated_session_id`) and still pass validation simply by asserting `same_session_correlated: true`.
+- **Remediation:**
+  1. Enforced strict identity equality: If `correlatedId` is present, `sessionId === correlatedId` is required unconditionally.
+  2. The boolean flag `same_session_correlated` can NEVER override contradictory session identifiers. Mismatched IDs fail closed with `SESSION_CORRELATION_MISMATCH`.
+  3. Validated non-empty string types for both session IDs.
+- **Tests:** `hosted-probe-runner.test.mjs` (Test 28: sub-tests 5b and 8f).
+
+### 23. `PRRT_kwDOVtCmZc66joKm` (R5-03) — Eliminate Escaped-Quote Credential Leakage via Dedicated Parser
+- **Root Cause:** Regex-based sanitization using `(?:\\)?["']` incorrectly handled escaped quotes (`\"`, `\'`) in unclosed or malformed diagnostic strings, treating escaped quotes as unescaped delimiters and leaking secret substrings.
+- **Remediation:**
+  1. Implemented parser-based `redactSensitiveFields()` scanning for sensitive key prefixes, recognizing single/double quotes, checking parity of preceding backslashes (`backslashCount % 2 === 0`), and properly closing valid escaped-quote values (`"[REDACTED]"` / `'[REDACTED]'`).
+  2. For unclosed/ambiguous quoted values, redacts the entire affected diagnostic string until safe boundaries (line breaks, commas, brackets, braces, or ampersands).
+  3. Integrated `redactSensitiveFields()` into `sanitizeData()` across all diagnostic strings, nested objects, arrays, and serialized error messages.
+  4. Preserved `Bearer [REDACTED]` scheme formatting when sensitive keys are followed by Bearer authorization tokens.
+- **Tests:** `hosted-probe-runner.test.mjs` (Test 29: unit tests on `redactSensitiveFields`, `sanitizeData`, and end-to-end runner exceptions).
+
 ---
 
 ## 5. Local Security Harness & Parity Verification Results (Phase E)
@@ -340,9 +367,9 @@ Live probe execution remains strictly **BLOCKED**. Future Task 06I-B1-H1 plan wi
 1. **Owner-Created TEMP Project Verified & Enforced:**
    - Owner created `Tio-Tnyx-Auth-Temp` (`wvdabiwbaavfggcmpizd`) in organization `llmbrmxhyirtoqndazpg` at region `ap-south-1` ($0 Free tier slot).
    - Configured in runner as immutable `HARDCODED_TEMP_REF`. Caller-controlled `tempRef` spoofing strictly rejected. LIVE probe execution disabled pending separate H1 authorization.
-2. **Review & PR Gate (Revision R3 Complete):**
+2. **Review & PR Gate (Revision R5 Complete):**
    - PR #36 updated on branch `docs/task06i-b1-h0-hosted-readiness-harness`.
-   - All six open review threads resolved with affirmative evidence and regression tests (PRRT_kwDOVtCmZc66jOw4, PRRT_kwDOVtCmZc66jLk1, PRRT_kwDOVtCmZc66jNbH, PRRT_kwDOVtCmZc66jOw5, PRRT_kwDOVtCmZc66jLk5, PRRT_kwDOVtCmZc66jLk3).
+   - All review threads resolved with affirmative evidence and regression tests (including R5: PRRT_kwDOVtCmZc66jlyg, PRRT_kwDOVtCmZc66joKl, PRRT_kwDOVtCmZc66joKm).
    - Independent re-review requested from `im-tio`.
    - Do not merge automatically without explicit owner authorization.
 3. **TEMP Project Lifecycle & Deletion Policy Enforcement:**

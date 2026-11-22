@@ -106,12 +106,130 @@ const SENSITIVE_KEY_SUBSTRINGS = [
 ];
 
 const SENSITIVE_KEY_NAMES = 'api_key|apikey|secret|password|token_hash|token|service_role|refresh_token|access_token|authorization|credential';
+const SENSITIVE_KEY_SET = new Set([
+  'api_key', 'apikey', 'secret', 'password', 'token_hash',
+  'token', 'service_role', 'refresh_token', 'access_token',
+  'authorization', 'credential'
+]);
+
+/**
+ * Robustly parses and redacts sensitive key-value pairs from diagnostic strings.
+ * Handles single/double quotes, unclosed quotes, escaped quotes (\", \'), internal whitespace,
+ * ampersands, and unquoted values without leaking substrings.
+ * Resolves PRRT_kwDOVtCmZc66jdT4 and PRRT_kwDOVtCmZc66joKm.
+ */
+export function redactSensitiveFields(str) {
+  if (typeof str !== 'string') return str;
+
+  const keyRegex = /(?:["']?([a-zA-Z0-9_-]+)["']?)\s*[:=]\s*/g;
+  let result = '';
+  let lastIndex = 0;
+  let match;
+
+  while ((match = keyRegex.exec(str)) !== null) {
+    const rawKey = match[1].toLowerCase();
+    if (!SENSITIVE_KEY_SET.has(rawKey)) {
+      continue;
+    }
+
+    result += str.slice(lastIndex, match.index);
+    let prefix = match[0]; // e.g. 'password=' or '"password": '
+
+    let i = match.index + prefix.length;
+
+    // Check if followed by Bearer scheme (PRRT_kwDOVtCmZc66ij55)
+    const bearerMatch = str.slice(i).match(/^Bearer\s+/i);
+    if (bearerMatch) {
+      prefix += bearerMatch[0];
+      i += bearerMatch[0].length;
+    }
+
+    // Check if already redacted
+    if (str.startsWith('[REDACTED]', i) || str.startsWith('"[REDACTED]"', i) || str.startsWith("'[REDACTED]'", i)) {
+      result += prefix;
+      lastIndex = i;
+      keyRegex.lastIndex = i;
+      continue;
+    }
+
+    let quoteChar = null;
+    let isEscapedQuote = false;
+
+    // Check if opening quote or escaped quote
+    if (str[i] === '"' || str[i] === "'") {
+      quoteChar = str[i];
+      i++;
+    } else if (str[i] === '\\' && (str[i + 1] === '"' || str[i + 1] === "'")) {
+      isEscapedQuote = true;
+      quoteChar = str[i + 1];
+      i += 2;
+    }
+
+    if (quoteChar !== null) {
+      let valueClosed = false;
+      let startVal = i;
+      while (i < str.length) {
+        if (isEscapedQuote) {
+          if (str[i] === '\\' && str[i + 1] === quoteChar) {
+            valueClosed = true;
+            i += 2;
+            break;
+          }
+        } else {
+          if (str[i] === quoteChar) {
+            let backslashCount = 0;
+            let b = i - 1;
+            while (b >= startVal && str[b] === '\\') {
+              backslashCount++;
+              b--;
+            }
+            if (backslashCount % 2 === 0) {
+              valueClosed = true;
+              i++;
+              break;
+            }
+          }
+        }
+        if (str[i] === '\n' || str[i] === '\r') {
+          break;
+        }
+        i++;
+      }
+
+      const quotePrefix = isEscapedQuote ? `\\${quoteChar}` : quoteChar;
+      const quoteSuffix = isEscapedQuote ? `\\${quoteChar}` : quoteChar;
+
+      if (valueClosed) {
+        result += `${prefix}${quotePrefix}[REDACTED]${quoteSuffix}`;
+      } else {
+        // Unclosed quoted value: redact entire value until newline / comma / brace / bracket / & / end
+        while (i < str.length && !/[\r\n,&}]/.test(str[i])) {
+          i++;
+        }
+        const quotePrefix = isEscapedQuote ? `\\${quoteChar}` : quoteChar;
+        result += `${prefix}${quotePrefix}[REDACTED]`;
+      }
+    } else {
+      // Unquoted value: ends at whitespace, comma, bracket, brace, quote, or &
+      while (i < str.length && !/[\s"',}&\]]/.test(str[i])) {
+        i++;
+      }
+      result += `${prefix}[REDACTED]`;
+    }
+
+    lastIndex = i;
+    keyRegex.lastIndex = i;
+  }
+
+  result += str.slice(lastIndex);
+  return result;
+}
 
 /**
  * Sanitizes strings, objects, or arrays to redact secrets before logging or storage.
  * Handles structured JSON strings, JWTs, bearer headers, key/secret parameters, query strings,
  * quoted values with spaces/ampersands/escaped quotes, nested objects/arrays, and serialized response bodies.
- * Resolves PRRT_kwDOVtCmZc66ij55, PRRT_kwDOVtCmZc66i_Kf, PRRT_kwDOVtCmZc66jG6Y, and PRRT_kwDOVtCmZc66jdT4.
+ * Resolves PRRT_kwDOVtCmZc66ij55, PRRT_kwDOVtCmZc66i_Kf, PRRT_kwDOVtCmZc66jG6Y, PRRT_kwDOVtCmZc66jdT4, and PRRT_kwDOVtCmZc66joKm.
  */
 export function sanitizeData(data) {
   if (data === null || data === undefined) return data;
@@ -131,22 +249,16 @@ export function sanitizeData(data) {
       }
     }
 
-    // 2. Comprehensive string redactions (PRRT_kwDOVtCmZc66jdT4)
-    return data
+    // 2. Comprehensive string redactions (PRRT_kwDOVtCmZc66jdT4 & PRRT_kwDOVtCmZc66joKm)
+    const withoutBearerOrJwt = data
       // Redact Bearer authorization headers
       .replace(/Bearer\s+[^\s"';,]+/gi, 'Bearer [REDACTED]')
       // Redact full JWTs (header.payload.signature)
       .replace(/eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g, '[REDACTED_JWT]')
       // Redact URL query parameters (including URL-encoded characters)
-      .replace(new RegExp(`([?&](?:${SENSITIVE_KEY_NAMES})=)([^&\\s]+)`, 'gi'), '$1[REDACTED]')
-      // Redact double-quoted values (handles leading/trailing spaces, internal whitespace, &, escaped quotes \", etc.)
-      .replace(new RegExp(`((?:["']?(?:${SENSITIVE_KEY_NAMES})["']?)\\s*[:=]\\s*(?:\\\\)?")((?:\\\\.|[^"\\\\])*)(?:\\\\)?"`, 'gi'), '$1[REDACTED]"')
-      // Redact single-quoted values (handles leading/trailing spaces, internal whitespace, &, escaped quotes \', etc.)
-      .replace(new RegExp(`((?:["']?(?:${SENSITIVE_KEY_NAMES})["']?)\\s*[:=]\\s*(?:\\\\)?')((?:\\\\.|[^'\\\\])*)(?:\\\\)?'`, 'gi'), "$1[REDACTED]'")
-      // Redact unquoted sensitive values (stopping at whitespace, comma, bracket, brace, quote, or &)
-      .replace(new RegExp(`((?:["']?(?:${SENSITIVE_KEY_NAMES})["']?)\\s*[:=]\\s*)(?!(?:\\\\)?["'])(?!(?:Bearer\\s+)?\\[REDACTED\\])[^"\\s',}&]+`, 'gi'), '$1[REDACTED]')
-      // Fail-closed fallback: unclosed quotes (e.g. key="unclosed secret until newline, comma, brace, bracket, or &)
-      .replace(new RegExp(`((?:["']?(?:${SENSITIVE_KEY_NAMES})["']?)\\s*[:=]\\s*(?:\\\\)?["'])(?!\\[REDACTED\\])[^\\r\\n,&{}]+`, 'gi'), '$1[REDACTED]');
+      .replace(new RegExp(`([?&](?:${SENSITIVE_KEY_NAMES})=)([^&\\s]+)`, 'gi'), '$1[REDACTED]');
+
+    return redactSensitiveFields(withoutBearerOrJwt);
   }
 
   if (Array.isArray(data)) {
@@ -640,99 +752,142 @@ export function validateProbeOutcome(item, rawOutcome) {
     }
   }
 
+/**
+ * Shared validator for session revocation requirements (SESSION-03 & SESSION-06).
+ * Enforces:
+ * 1. HTTP error status within allowed set (401/403/404 for SESSION-03; 401/403/500 for SESSION-06). Rejects HTTP 200.
+ * 2. Strict rejection of false-proof errors (bad_jwt, jwt_expired, token_expired, invalid_jwt, malformed_jwt, etc.).
+ * 3. Verified pre-reset baseline proving a valid unexpired session before invalidation.
+ * 4. Explicit evidence that password reset / session invalidation operation completed.
+ * 5. Strict session identity correlation (exact ID equality; boolean flag cannot override contradictory IDs).
+ * 6. Provider-observed revocation rejection evidence (session_not_found, AuthSessionMissingError, etc.).
+ * Resolves PRRT_kwDOVtCmZc66jLk1, PRRT_kwDOVtCmZc66jdT2, PRRT_kwDOVtCmZc66jlyg, and PRRT_kwDOVtCmZc66joKl.
+ */
+function validateSessionRevocationProof(item, rawOutcome, allowedStatuses, isRevocationEvidenceValid) {
+  const status = rawOutcome.status;
+
+  if (status === 200) {
+    return {
+      passed: false,
+      status,
+      reason: `SECURITY_INVARIANT_VIOLATION: ${item.id} accepted revoked token/session with HTTP 200`
+    };
+  }
+
+  if (!allowedStatuses.includes(status)) {
+    return {
+      passed: false,
+      status,
+      reason: `HTTP_STATUS_MISMATCH: ${item.id} expected HTTP ${allowedStatuses.join('/')} rejection on revoked session, got ${status}`
+    };
+  }
+
+  // 1. Reject false-proof errors: invalid, expired, or malformed JWT errors do NOT prove revocation of a valid session
+  const errorCode = (rawOutcome.error_code || '').toLowerCase();
+  const errorMsg = (rawOutcome.error || '').toLowerCase();
+  const isFalseProofError =
+    errorCode === 'bad_jwt' ||
+    errorCode === 'jwt_expired' ||
+    errorCode === 'token_expired' ||
+    errorCode === 'invalid_jwt' ||
+    errorCode === 'malformed_jwt' ||
+    errorMsg.includes('bad_jwt') ||
+    errorMsg.includes('expired') ||
+    errorMsg.includes('malformed') ||
+    errorMsg.includes('invalid jwt') ||
+    errorMsg.includes('invalid token') ||
+    errorMsg.includes('signature');
+
+  if (isFalseProofError) {
+    return {
+      passed: false,
+      status,
+      reason: `FALSE_PROOF_REJECTED: ${item.id} rejection due to '${rawOutcome.error_code || rawOutcome.error}'. Invalid, expired, or malformed JWT errors do not demonstrate remote session invalidation.`
+    };
+  }
+
+  // 2. Pre-reset baseline proof: require proof that the exact same valid, unexpired token/session succeeded BEFORE invalidation
+  const hasPreResetBaseline =
+    rawOutcome.pre_reset_baseline_verified === true ||
+    rawOutcome.pre_invalidation_valid === true;
+  if (!hasPreResetBaseline) {
+    return {
+      passed: false,
+      status,
+      reason: `MISSING_EVIDENCE: ${item.id} requires verified pre-reset session baseline proving valid unexpired session before invalidation`
+    };
+  }
+
+  // 3. Reset / invalidation operation evidence: password reset or session invalidation operation completed
+  const hasResetCompleted =
+    rawOutcome.reset_completed === true ||
+    rawOutcome.invalidation_completed === true ||
+    rawOutcome.password_reset_completed === true;
+  if (!hasResetCompleted) {
+    return {
+      passed: false,
+      status,
+      reason: `MISSING_EVIDENCE: ${item.id} requires evidence that password reset or session invalidation operation completed`
+    };
+  }
+
+  // 4. Strict Session Correlation (PRRT_kwDOVtCmZc66joKl):
+  // - sessionId must be a non-empty string.
+  // - If correlatedId / pre_session_id is present, it MUST match sessionId exactly. Contradictory IDs fail closed.
+  // - Boolean same_session_correlated flag can never override contradictory identifiers.
+  const sessionId = rawOutcome.session_id;
+  const correlatedId = rawOutcome.correlated_session_id || rawOutcome.pre_session_id;
+
+  if (!isNonEmptyString(sessionId)) {
+    return {
+      passed: false,
+      status,
+      reason: `SESSION_CORRELATION_MISMATCH: ${item.id} requires a valid, non-empty session_id identifier`
+    };
+  }
+
+  if (correlatedId !== undefined && correlatedId !== null) {
+    if (!isNonEmptyString(correlatedId) || sessionId !== correlatedId) {
+      return {
+        passed: false,
+        status,
+        reason: `SESSION_CORRELATION_MISMATCH: ${item.id} pre-reset session identifier '${correlatedId}' does not match post-reset session '${sessionId}'`
+      };
+    }
+  } else {
+    // If correlatedId is not explicitly passed as a separate property, require same_session_correlated: true
+    if (rawOutcome.same_session_correlated !== true) {
+      return {
+        passed: false,
+        status,
+        reason: `SESSION_CORRELATION_MISMATCH: ${item.id} requires explicit same-session correlation evidence between pre-reset and post-reset observations`
+      };
+    }
+  }
+
+  // 5. Provider-observed revocation rejection evidence
+  if (!isRevocationEvidenceValid(rawOutcome)) {
+    return {
+      passed: false,
+      status,
+      reason: `MISSING_EVIDENCE: ${item.id} requires affirmative revocation-specific evidence (e.g. error_code: "session_not_found", "AuthSessionMissingError", or revocation_verified: true)`
+    };
+  }
+
+  return null;
+}
+
   if (item.id === 'SESSION-03') {
-    // Revoked token at /auth/v1/user must be rejected (401/403/404) (PRRT_kwDOVtCmZc66jLk1, PRRT_kwDOVtCmZc66jdT2)
-    if (status === 200) {
-      return {
-        passed: false,
-        status,
-        reason: 'SECURITY_INVARIANT_VIOLATION: SESSION-03 accepted revoked token with HTTP 200'
-      };
-    }
-    if (![401, 403, 404].includes(status)) {
-      return {
-        passed: false,
-        status,
-        reason: `HTTP_STATUS_MISMATCH: SESSION-03 expected HTTP 401, 403, or 404 on revoked token, got ${status}`
-      };
-    }
-
-    // 1. Reject false-proof errors: invalid, expired, or malformed JWT errors do NOT prove revocation of a valid session
-    const errorCode = (rawOutcome.error_code || '').toLowerCase();
-    const errorMsg = (rawOutcome.error || '').toLowerCase();
-    const isFalseProofError =
-      errorCode === 'bad_jwt' ||
-      errorCode === 'jwt_expired' ||
-      errorCode === 'token_expired' ||
-      errorCode === 'invalid_jwt' ||
-      errorCode === 'malformed_jwt' ||
-      errorMsg.includes('bad_jwt') ||
-      errorMsg.includes('expired') ||
-      errorMsg.includes('malformed') ||
-      errorMsg.includes('invalid jwt') ||
-      errorMsg.includes('invalid token') ||
-      errorMsg.includes('signature');
-
-    if (isFalseProofError) {
-      return {
-        passed: false,
-        status,
-        reason: `FALSE_PROOF_REJECTED: SESSION-03 rejection due to '${rawOutcome.error_code || rawOutcome.error}'. Invalid, expired, or malformed JWT errors do not demonstrate remote session invalidation.`
-      };
-    }
-
-    // 2. Pre-reset baseline proof: require proof that the exact same valid, unexpired token/session succeeded BEFORE invalidation
-    const hasPreResetBaseline =
-      rawOutcome.pre_reset_baseline_verified === true ||
-      rawOutcome.pre_invalidation_valid === true;
-    if (!hasPreResetBaseline) {
-      return {
-        passed: false,
-        status,
-        reason: 'MISSING_EVIDENCE: SESSION-03 requires verified pre-reset baseline proving valid unexpired session before invalidation'
-      };
-    }
-
-    // 3. Reset / invalidation operation evidence: password reset or session invalidation operation completed
-    const hasResetCompleted =
-      rawOutcome.reset_completed === true ||
-      rawOutcome.invalidation_completed === true ||
-      rawOutcome.password_reset_completed === true;
-    if (!hasResetCompleted) {
-      return {
-        passed: false,
-        status,
-        reason: 'MISSING_EVIDENCE: SESSION-03 requires evidence that password reset or session invalidation operation completed'
-      };
-    }
-
-    // 4. Session correlation: verify pre-reset and post-reset observations belong to the same session via stable identifier
-    const sessionId = rawOutcome.session_id;
-    const correlatedId = rawOutcome.correlated_session_id || rawOutcome.pre_session_id;
-    const isSessionCorrelated =
-      isNonEmptyString(sessionId) &&
-      (rawOutcome.same_session_correlated === true || (isNonEmptyString(correlatedId) && sessionId === correlatedId));
-
-    if (!isSessionCorrelated) {
-      return {
-        passed: false,
-        status,
-        reason: 'SESSION_CORRELATION_MISMATCH: SESSION-03 requires same-session correlation between pre-reset baseline and post-reset rejection'
-      };
-    }
-
-    // 5. Revocation-specific post-reset proof
-    const hasRevocationEvidence =
-      rawOutcome.revocation_verified === true ||
-      rawOutcome.session_revoked === true ||
-      rawOutcome.error_code === 'session_not_found';
-    if (!hasRevocationEvidence) {
-      return {
-        passed: false,
-        status,
-        reason: 'MISSING_EVIDENCE: SESSION-03 requires affirmative revocation-specific evidence (e.g. error_code: "session_not_found" or revocation_verified: true)'
-      };
-    }
+    const err = validateSessionRevocationProof(
+      item,
+      rawOutcome,
+      [401, 403, 404],
+      (outcome) =>
+        outcome.revocation_verified === true ||
+        outcome.session_revoked === true ||
+        outcome.error_code === 'session_not_found'
+    );
+    if (err) return err;
   }
 
   if (item.id === 'SESSION-04' || item.id === 'SESSION-05') {
@@ -750,58 +905,17 @@ export function validateProbeOutcome(item, rawOutcome) {
   }
 
   if (item.id === 'SESSION-06') {
-    // Edge Function must reject revoked session (401/403/500) (PRRT_kwDOVtCmZc66jLk1, PRRT_kwDOVtCmZc66jdT2)
-    if (status === 200) {
-      return {
-        passed: false,
-        status,
-        reason: 'SECURITY_INVARIANT_VIOLATION: SESSION-06 accepted revoked session in Edge Function with HTTP 200'
-      };
-    }
-    if (![401, 403, 500].includes(status)) {
-      return {
-        passed: false,
-        status,
-        reason: `HTTP_STATUS_MISMATCH: SESSION-06 expected HTTP 401, 403, or 500 rejection, got ${status}`
-      };
-    }
-
-    // Reject false-proof errors: invalid, expired, or malformed JWT errors do NOT prove revocation of a valid session
-    const errorCode = (rawOutcome.error_code || '').toLowerCase();
-    const errorMsg = (rawOutcome.error || '').toLowerCase();
-    const isFalseProofError =
-      errorCode === 'bad_jwt' ||
-      errorCode === 'jwt_expired' ||
-      errorCode === 'token_expired' ||
-      errorCode === 'invalid_jwt' ||
-      errorCode === 'malformed_jwt' ||
-      errorMsg.includes('bad_jwt') ||
-      errorMsg.includes('expired') ||
-      errorMsg.includes('malformed') ||
-      errorMsg.includes('invalid jwt') ||
-      errorMsg.includes('invalid token') ||
-      errorMsg.includes('signature');
-
-    if (isFalseProofError) {
-      return {
-        passed: false,
-        status,
-        reason: `FALSE_PROOF_REJECTED: SESSION-06 rejection due to '${rawOutcome.error_code || rawOutcome.error}'. Invalid, expired, or malformed JWT does not demonstrate Edge Function revoked-session enforcement.`
-      };
-    }
-
-    const hasRevocationEvidence =
-      (rawOutcome.revocation_verified === true && (rawOutcome.session_revoked === true || rawOutcome.rejection_observed === true)) ||
-      (isNonEmptyString(rawOutcome.error_code) && rawOutcome.error_code === 'AuthSessionMissingError') ||
-      (isNonEmptyString(rawOutcome.error) && rawOutcome.error.includes('AuthSessionMissingError'));
-
-    if (!hasRevocationEvidence) {
-      return {
-        passed: false,
-        status,
-        reason: 'MISSING_EVIDENCE: SESSION-06 requires affirmative observation of Edge Function session rejection (rejection_observed: true with revocation_verified: true, or AuthSessionMissingError)'
-      };
-    }
+    const err = validateSessionRevocationProof(
+      item,
+      rawOutcome,
+      [401, 403, 500],
+      (outcome) =>
+        (outcome.revocation_verified === true && (outcome.session_revoked === true || outcome.rejection_observed === true)) ||
+        (isNonEmptyString(outcome.error_code) && outcome.error_code === 'AuthSessionMissingError') ||
+        (isNonEmptyString(outcome.error) && outcome.error.includes('AuthSessionMissingError')) ||
+        outcome.error_code === 'session_not_found'
+    );
+    if (err) return err;
   }
 
   return {

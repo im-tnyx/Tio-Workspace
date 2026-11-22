@@ -5,6 +5,7 @@ import {
   validateTestIdentity,
   determineRunnerMode,
   sanitizeData,
+  redactSensitiveFields,
   planProbeExecution,
   runHostedProbeRunner,
   validateProbeOutcome,
@@ -353,7 +354,16 @@ test('12. Throttling interval is enforced between consecutive requests and legit
       return { passed: true, status: 200, stateless_linger_documented: true, note: 'stateless linger window verified and documented' };
     }
     if (item.id === 'SESSION-06') {
-      return { passed: true, status: 403, rejection_observed: true, error_code: 'AuthSessionMissingError' };
+      return {
+        passed: true,
+        status: 403,
+        pre_reset_baseline_verified: true,
+        reset_completed: true,
+        session_id: 'sess-test-123',
+        same_session_correlated: true,
+        rejection_observed: true,
+        error_code: 'AuthSessionMissingError'
+      };
     }
     return { passed: false, status: 500, reason: 'unrecognized probe case' };
   };
@@ -777,7 +787,16 @@ test('26. validateProbeOutcome rejects status 0, missing status, and false-posit
   const session06 = { id: 'SESSION-06', category: 'Session & Consumer' };
   assert.equal(validateProbeOutcome(session06, { passed: true, status: 0 }).passed, false);
   assert.equal(validateProbeOutcome(session06, { passed: true, status: 403 }).passed, false);
-  assert.equal(validateProbeOutcome(session06, { passed: true, status: 403, rejection_observed: true, error_code: 'AuthSessionMissingError' }).passed, true);
+  assert.equal(validateProbeOutcome(session06, {
+    passed: true,
+    status: 403,
+    pre_reset_baseline_verified: true,
+    reset_completed: true,
+    session_id: 'sess-test-123',
+    same_session_correlated: true,
+    rejection_observed: true,
+    error_code: 'AuthSessionMissingError'
+  }).passed, true);
 
   // HOOK-01 with empty object or empty array for tokens
   const hook01 = { id: 'HOOK-01', category: 'Token Hook' };
@@ -866,7 +885,7 @@ test('28. Require actual session revocation proof and reject false-proof errors 
   };
   const resMissingBase = validateProbeOutcome(session03, missingBaseline);
   assert.equal(resMissingBase.passed, false);
-  assert.match(resMissingBase.reason, /MISSING_EVIDENCE.*pre-reset baseline/);
+  assert.match(resMissingBase.reason, /MISSING_EVIDENCE.*pre-reset.*baseline/);
 
   // 4. Failed reset operation fails closed
   const failedReset = {
@@ -895,6 +914,21 @@ test('28. Require actual session revocation proof and reject false-proof errors 
   const resMismatch = validateProbeOutcome(session03, mismatchedSession);
   assert.equal(resMismatch.passed, false);
   assert.match(resMismatch.reason, /SESSION_CORRELATION_MISMATCH/);
+
+  // 5b. Contradictory session IDs with same_session_correlated: true fails closed (PRRT_kwDOVtCmZc66joKl)
+  const contradictorySession03 = {
+    passed: true,
+    status: 403,
+    pre_reset_baseline_verified: true,
+    reset_completed: true,
+    session_id: 'sess-test-post',
+    correlated_session_id: 'sess-test-pre',
+    same_session_correlated: true, // boolean flag attempted override
+    error_code: 'session_not_found'
+  };
+  const resContradictory03 = validateProbeOutcome(session03, contradictorySession03);
+  assert.equal(resContradictory03.passed, false);
+  assert.match(resContradictory03.reason, /SESSION_CORRELATION_MISMATCH.*does not match/);
 
   // 6. Generic 401/403 without revocation evidence fails closed
   const generic403 = {
@@ -926,26 +960,145 @@ test('28. Require actual session revocation proof and reject false-proof errors 
   assert.equal(resValid.passed, true);
   assert.equal(resValid.status, 403);
 
-  // 8. Adjacent SESSION-06 false-proof rejection checks
+  // 8. SESSION-06 affirmative revocation proof & false-proof rejection checks (PRRT_kwDOVtCmZc66jlyg, PRRT_kwDOVtCmZc66joKl)
   const session06 = { id: 'SESSION-06', category: 'Session & Consumer', target: 'Edge Function' };
-  const resEdgeBadJwt = validateProbeOutcome(session06, { passed: true, status: 401, error_code: 'bad_jwt' });
+
+  // 8a. AuthSessionMissingError alone without pre-reset baseline fails closed
+  const resEdgeAlone = validateProbeOutcome(session06, { passed: true, status: 403, error_code: 'AuthSessionMissingError' });
+  assert.equal(resEdgeAlone.passed, false);
+  assert.match(resEdgeAlone.reason, /MISSING_EVIDENCE.*pre-reset session baseline/);
+
+  // 8b. Previously invalid JWT (bad_jwt) fails closed
+  const resEdgeBadJwt = validateProbeOutcome(session06, {
+    passed: true,
+    status: 401,
+    error_code: 'bad_jwt',
+    pre_reset_baseline_verified: true,
+    reset_completed: true,
+    session_id: 'sess-edge-1',
+    same_session_correlated: true
+  });
   assert.equal(resEdgeBadJwt.passed, false);
   assert.match(resEdgeBadJwt.reason, /FALSE_PROOF_REJECTED.*bad_jwt/);
 
-  const resEdgeExpired = validateProbeOutcome(session06, { passed: true, status: 401, error_code: 'token_expired' });
+  // 8c. Expired JWT fails closed
+  const resEdgeExpired = validateProbeOutcome(session06, {
+    passed: true,
+    status: 401,
+    error_code: 'token_expired',
+    pre_reset_baseline_verified: true,
+    reset_completed: true,
+    session_id: 'sess-edge-1',
+    same_session_correlated: true
+  });
   assert.equal(resEdgeExpired.passed, false);
   assert.match(resEdgeExpired.reason, /FALSE_PROOF_REJECTED.*token_expired/);
 
-  const resEdgeValid = validateProbeOutcome(session06, { passed: true, status: 403, error_code: 'AuthSessionMissingError' });
+  // 8d. Missing pre-reset baseline fails closed
+  const resEdgeNoBase = validateProbeOutcome(session06, {
+    passed: true,
+    status: 403,
+    reset_completed: true,
+    session_id: 'sess-edge-1',
+    same_session_correlated: true,
+    error_code: 'AuthSessionMissingError'
+  });
+  assert.equal(resEdgeNoBase.passed, false);
+  assert.match(resEdgeNoBase.reason, /MISSING_EVIDENCE.*pre-reset session baseline/);
+
+  // 8e. Failed reset operation fails closed
+  const resEdgeFailedReset = validateProbeOutcome(session06, {
+    passed: true,
+    status: 403,
+    pre_reset_baseline_verified: true,
+    reset_completed: false,
+    session_id: 'sess-edge-1',
+    same_session_correlated: true,
+    error_code: 'AuthSessionMissingError'
+  });
+  assert.equal(resEdgeFailedReset.passed, false);
+  assert.match(resEdgeFailedReset.reason, /MISSING_EVIDENCE.*invalidation operation completed/);
+
+  // 8f. Contradictory session IDs with same_session_correlated: true fails closed
+  const resEdgeMismatch = validateProbeOutcome(session06, {
+    passed: true,
+    status: 403,
+    pre_reset_baseline_verified: true,
+    reset_completed: true,
+    session_id: 'sess-edge-post',
+    correlated_session_id: 'sess-edge-pre',
+    same_session_correlated: true,
+    error_code: 'AuthSessionMissingError'
+  });
+  assert.equal(resEdgeMismatch.passed, false);
+  assert.match(resEdgeMismatch.reason, /SESSION_CORRELATION_MISMATCH.*does not match/);
+
+  // 8g. Missing same_session_correlated flag fails closed
+  const resEdgeNoFlag = validateProbeOutcome(session06, {
+    passed: true,
+    status: 403,
+    pre_reset_baseline_verified: true,
+    reset_completed: true,
+    session_id: 'sess-edge-1',
+    same_session_correlated: false,
+    error_code: 'AuthSessionMissingError'
+  });
+  assert.equal(resEdgeNoFlag.passed, false);
+  assert.match(resEdgeNoFlag.reason, /SESSION_CORRELATION_MISMATCH.*requires explicit same-session correlation/);
+
+  // 8h. Generic 403 without revocation evidence fails closed
+  const resEdgeGeneric = validateProbeOutcome(session06, {
+    passed: true,
+    status: 403,
+    pre_reset_baseline_verified: true,
+    reset_completed: true,
+    session_id: 'sess-edge-1',
+    same_session_correlated: true,
+    rejection_observed: true
+  });
+  assert.equal(resEdgeGeneric.passed, false);
+  assert.match(resEdgeGeneric.reason, /MISSING_EVIDENCE.*revocation-specific evidence/);
+
+  // 8i. Valid same-session baseline, reset completion, correlation, and AuthSessionMissingError passes
+  const resEdgeValid = validateProbeOutcome(session06, {
+    passed: true,
+    status: 403,
+    pre_reset_baseline_verified: true,
+    reset_completed: true,
+    session_id: 'sess-edge-1',
+    same_session_correlated: true,
+    error_code: 'AuthSessionMissingError'
+  });
   assert.equal(resEdgeValid.passed, true);
+  assert.equal(resEdgeValid.status, 403);
+
+  // 8j. Valid same-session baseline, reset completion, correlation, and rejection_observed with revocation_verified passes
+  const resEdgeValid2 = validateProbeOutcome(session06, {
+    passed: true,
+    status: 401,
+    pre_reset_baseline_verified: true,
+    reset_completed: true,
+    session_id: 'sess-edge-1',
+    same_session_correlated: true,
+    rejection_observed: true,
+    revocation_verified: true
+  });
+  assert.equal(resEdgeValid2.passed, true);
+  assert.equal(resEdgeValid2.status, 401);
 });
 
-test('29. Quoted credentials with whitespace, ampersands, and escaped quotes are completely redacted (PRRT_kwDOVtCmZc66jdT4)', async () => {
+test('29. Quoted credentials with whitespace, ampersands, and escaped quotes are completely redacted (PRRT_kwDOVtCmZc66jdT4, PRRT_kwDOVtCmZc66joKm)', async () => {
   const secretWithLeadingSpace = ' synthetic-review-password';
   const secretWithAmpersand = 'alpha beta&gamma';
   const singleQuotedToken = 'synthetic access token';
 
-  // Unit tests on sanitizeData string handling directly
+  // 1. Direct unit tests on redactSensitiveFields parser
+  assert.equal(redactSensitiveFields('password="my\\"secret\\"done"'), 'password="[REDACTED]"');
+  assert.equal(redactSensitiveFields('password="my\\"secret'), 'password="[REDACTED]');
+  assert.equal(redactSensitiveFields("access_token='my\\'token"), "access_token='[REDACTED]");
+  assert.equal(redactSensitiveFields('details: password="my\\"secret and next'), 'details: password="[REDACTED]');
+
+  // 2. Unit tests on sanitizeData string handling directly
   const s1 = `Error('request failed password="${secretWithLeadingSpace}"')`;
   assert.equal(sanitizeData(s1), 'Error(\'request failed password="[REDACTED]"\')');
   assert.ok(!sanitizeData(s1).includes(secretWithLeadingSpace));
@@ -963,7 +1116,15 @@ test('29. Quoted credentials with whitespace, ampersands, and escaped quotes are
   assert.ok(!sanitizedS4.includes(secretWithLeadingSpace));
   assert.ok(!sanitizedS4.includes(singleQuotedToken));
 
-  // End-to-end runner test with quoted exception from dispatcher
+  // Escaped and unclosed quote tests (PRRT_kwDOVtCmZc66joKm)
+  const s5 = 'password="my\\"secret"';
+  assert.equal(sanitizeData(s5), 'password="[REDACTED]"');
+  const s6 = 'password="my\\"secret';
+  assert.equal(sanitizeData(s6), 'password="[REDACTED]');
+  const s7 = "access_token='my\\'token";
+  assert.equal(sanitizeData(s7), "access_token='[REDACTED]");
+
+  // 3. End-to-end runner test with quoted exception from dispatcher
   const mockDispatcher = async () => {
     throw new Error(`request failed password="${secretWithLeadingSpace}" access_token='${singleQuotedToken}'`);
   };
@@ -982,6 +1143,24 @@ test('29. Quoted credentials with whitespace, ampersands, and escaped quotes are
   assert.equal(result.status, 'HALTED_ON_FAILURE');
   assert.match(result.abortReason, /password="\[REDACTED\]"/);
   assert.match(result.abortReason, /access_token='\[REDACTED\]'/);
+
+  // 4. End-to-end runner test with unclosed escaped quote exception from dispatcher (PRRT_kwDOVtCmZc66joKm)
+  const mockDispatcherUnclosed = async () => {
+    throw new Error(`request failed password="unclosed\\"secret`);
+  };
+
+  const resultUnclosed = await runHostedProbeRunner({
+    projectRef: HARDCODED_TEMP_REF,
+    argv: ['--live'],
+    env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    mockDispatcher: mockDispatcherUnclosed,
+    sleepFn: async () => {}
+  });
+
+  const serializedUnclosed = JSON.stringify(resultUnclosed);
+  assert.ok(!serializedUnclosed.includes('unclosed\\"secret'), 'Unclosed secret password must not exist in serialized report');
+  assert.equal(resultUnclosed.status, 'HALTED_ON_FAILURE');
+  assert.match(resultUnclosed.abortReason, /password="\[REDACTED\]/);
 });
 
 test('30. Timeout race evaluation confirms zero unhandled rejections and proper abort handling (PRRT_kwDOVtCmZc66jd3O)', async () => {
