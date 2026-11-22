@@ -1,14 +1,14 @@
-# Phase 1.2 Task 06I-B1-H0-R2 — Final P1 Security Gate Closure & TEMP Lifecycle Preservation
+# Phase 1.2 Task 06I-B1-H0-R3 — Final Security Proof Gate Closure
 
-> **Target-Safety Decision Record, P1 Security Remediation Proofs, Live Inventory Audit & TEMP Project Provisioning Package.** Prepared under `AGENTS.md` operating rules. This document establishes deterministic local security verification, remediates all independent P1 review findings on PR #36 (immutable boundary, strict outcome validation, serialized JSON redaction), preserves the owner-directed TEMP lifecycle & deletion policy, audits Supabase organization inventory, and prepares the dry-run probe harness and TEMP project creation approval package. It does not authorize creating, modifying, or deleting any hosted Supabase project. Production Real Auth remains **NO-GO**.
+> **Target-Safety Decision Record, P1/P2 Security Proof Closure, Affirmative Evidence Contracts & Dispatcher Deadline Enforcement.** Prepared under `AGENTS.md` operating rules. This document establishes deterministic local security verification, remediates all six open review threads on PR #36 (approved TEMP target enforcement, affirmative evidence for all 18 cases, per-probe dispatcher timeout with AbortSignal, standalone PostgreSQL parity nonzero exit codes, and complete report secret sanitization), preserves the owner-directed TEMP lifecycle & deletion policy, audits Supabase organization inventory, and confirms zero host port exposure and zero hosted mutations. Production Real Auth remains **NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **PR #36 P1 SECURITY REMEDIATION (REVISION R2) COMPLETE; 93/93 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (ON_ERROR_STOP=1 + ROLE GRANTS VERIFIED); LIVE INVENTORY AUDITED (2 ACTIVE PROJECTS: REAL `bsfwzvgynwriswapxpsp` + OWNER-CREATED TEMP `wvdabiwbaavfggcmpizd`); TEMP LIFECYCLE & DELETION POLICY PRESERVED; 14/14 REVIEW THREADS RESOLVED (INCLUDING 3 P1 THREADS + 2 BUGBOT THREADS); AWAITING INDEPENDENT RE-REVIEW SIGN-OFF FROM IM-TIO** |
-| Objective | Resolve the three independent P1 security findings on PR #36 (immutable project boundary, strict probe outcome validation, and serialized JSON secret redaction), configure verified owner TEMP project `wvdabiwbaavfggcmpizd`, preserve the codified TEMP lifecycle policy, maintain zero host port exposure, and verify all test suites without executing hosted mutations |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H0-R2 slice |
-| Previous agent | Agent / Task 06I-B1-H0-R1 author |
-| Last audited HEAD | `a1305e6ee7678de84a44a2b66de224e5c68b5ee1` (PR #36 post-H0-R1 commit) |
+| Status | **PR #36 SECURITY REMEDIATION (REVISION R3) COMPLETE; 99/99 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (ON_ERROR_STOP=1, NONZERO EXIT ON MISMATCH, ROLE GRANTS VERIFIED); LIVE INVENTORY AUDITED (2 ACTIVE PROJECTS: REAL `bsfwzvgynwriswapxpsp` + OWNER-CREATED TEMP `wvdabiwbaavfggcmpizd`); APPROVED TEMP REF `wvdabiwbaavfggcmpizd` ENFORCED (TEMP SPOOFING REJECTED); ALL 18 PROBE CASES REQUIRE AFFIRMATIVE OBSERVATIONS (STATUS 0 / MISSING STATUS / EMPTY PROOFS FAIL CLOSED); DISPATCHER TIMEOUT AND ABORTSIGNAL ENFORCED; COMPLETE RUNNER REPORT RECURSIVELY SANITIZED; ALL 6 OPEN REVIEW THREADS RESOLVED; AWAITING INDEPENDENT RE-REVIEW SIGN-OFF FROM IM-TIO** |
+| Objective | Resolve all six open review threads on PR #36 (PRRT_kwDOVtCmZc66jOw4, PRRT_kwDOVtCmZc66jLk1, PRRT_kwDOVtCmZc66jNbH, PRRT_kwDOVtCmZc66jOw5, PRRT_kwDOVtCmZc66jLk5, PRRT_kwDOVtCmZc66jLk3), ensure the Auth security harness never reports successful hosted verification without valid affirmative evidence, enforce bounded timeouts on never-settling dispatchers, and verify standalone parity exit codes |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H0-R3 slice |
+| Previous agent | Agent / Task 06I-B1-H0-R2 author |
+| Last audited HEAD | `77984fae1a119f01f6bad1281495ecf563570a7d` (PR #36 post-H0-R2 commit) |
 | Tracking / approval | Task 06I-B1-H0-R2 authorized by user prompt; owner mandates resolving all 3 P1 findings without modifying production resources; owner preserves TEMP Project Lifecycle & Deletion Policy; mandates $0 cost and permanent immunity for `Tio-world` and REAL `bsfwzvgynwriswapxpsp`; hosted mutations strictly prohibited |
 | Branch | `docs/task06i-b1-h0-hosted-readiness-harness` |
 | Base SHA / inspected HEAD | `7150cec4c2e1e9aaa8e75d2cbcb3a23a6dca532e` (`main`, verified up to date with `origin/main`) |
@@ -171,12 +171,57 @@ All 8 review threads on PR #36 have been resolved with regression tests:
   4. `SESSION-04` and `SESSION-05` require explicit `rawOutcome.stateless_linger_documented === true` or documented evidence/note.
 - **Tests:** `hosted-probe-runner.test.mjs` (Tests 20, 22).
 
-### 13. `PRRT_kwDOVtCmZc66jG6Y` — Redact Leaked Secrets in Runner Halt Reason
+### 13. `PRRT_kwDOVtCmZc66jG6Y` / `PRRT_kwDOVtCmZc66jLk3` — Redact Leaked Secrets in Runner Halt Reason & Complete Report
 - **Root Cause:** In `runHostedProbeRunner`, `abortReason` was constructed directly from `validatedOutcome.reason` and returned in the final result object without passing through `sanitizeData`. An unhandled network exception containing credentials or tokens could leak into `result.abortReason`.
 - **Remediation:**
   1. Wrapped `abortReason` construction with `sanitizeData(...)` at the failure site.
   2. Enforced top-level `abortReason: sanitizeData(abortReason)` in the returned runner result object.
-- **Tests:** `hosted-probe-runner.test.mjs` (Test 23).
+  3. Wrapped the entire returned runner report object with `sanitizeData(runnerReport)` guaranteeing zero credential leakage across any top-level or nested field.
+- **Tests:** `hosted-probe-runner.test.mjs` (Tests 23, 27).
+
+### 14. `PRRT_kwDOVtCmZc66jOw4` (R3-01) — Approved TEMP Target Enforcement & Anti-Spoofing
+- **Root Cause:** `validateTargetProject` accepted caller-supplied `tempRef` as an authoritative allowlist. In LIVE mode, an attacker or test caller could supply `projectRef: 'other-project', tempRef: 'other-project'` and target an unapproved project.
+- **Remediation:**
+  1. In LIVE mode (`isLive === true`), `validateTargetProject` strictly requires the owner-approved hardcoded TEMP project ref `HARDCODED_TEMP_REF = 'wvdabiwbaavfggcmpizd'`.
+  2. Caller-controlled `tempRef` spoofing is unconditionally rejected with `CRITICAL_SECURITY_VIOLATION`.
+  3. Environment-variable overrides (`TIO_SUPABASE_TEMP_REF`) cannot target unapproved projects in LIVE mode.
+  4. Non-approved project references in LIVE mode fail closed with `unauthorized_target`.
+  5. Arbitrary references are strictly confined to non-live, explicitly isolated unit test mode (`options.allowIsolatedTestRef`).
+- **Tests:** `hosted-probe-runner.test.mjs` (Tests 4b, 25).
+
+### 15. `PRRT_kwDOVtCmZc66jLk1` & `PRRT_kwDOVtCmZc66jNbH` (R3-02) — Affirmative Evidence for All 18 Preflight Cases
+- **Root Cause:** `validateProbeOutcome` did not validate HTTP status positively (e.g. status 0 or missing status was accepted on `SESSION-03` and `SESSION-06`), and truthy evidence checks treated empty objects `{}` or empty arrays `[]` as proof of token issuance or linger documentation.
+- **Remediation:**
+  1. Enforced that status must be a positive integer (`status > 0 && Number.isInteger(status)`); status 0 or missing status immediately fails closed with `INVALID_HTTP_STATUS`.
+  2. Implemented strict requirement-specific affirmative observations for all 18 cases:
+     - `BYPASS-01`: Requires 4xx/5xx status, rejects HTTP 200/tokens, requires affirmative `route_disabled: true` or error code.
+     - `BYPASS-02`: Requires 4xx/5xx status, rejects HTTP 200/tokens/user_created, requires affirmative `signup_disabled: true` or error code.
+     - `BYPASS-03` / `BYPASS-04`: Requires 4xx/5xx status, rejects HTTP 200/tokens, requires affirmative `hook_rejected: true` or 42501 error.
+     - `BYPASS-05`: Rejects email delivery/token, requires affirmative `recovery_suppressed: true` without assuming HTTP status proves non-delivery.
+     - `HOOK-01` / `HOOK-02`: Requires exact HTTP 200, non-empty tokens object (`tokens.access_token` string), rejects empty objects `{}` or arrays `[]`, requires verified AMR.
+     - `HOOK-03`..`HOOK-07`: Requires 4xx/5xx status, rejects HTTP 200/tokens, requires affirmative `hook_rejected: true`.
+     - `SESSION-01`: Requires exact HTTP 200, explicit `session_created: true` AND verified session row (`session_id` non-empty string or `sessions_count >= 1`).
+     - `SESSION-02`: Requires exact HTTP 200, `remaining_sessions === 0`, and explicit `session_revoked: true`.
+     - `SESSION-03`: Requires HTTP 401/403/404, rejects HTTP 200/status 0, requires affirmative `rejection_observed: true` or `error_code`.
+     - `SESSION-04` / `SESSION-05`: Requires `stateless_linger_documented: true` AND non-empty note/evidence string or object; rejects empty `{}` or `[]`.
+     - `SESSION-06`: Requires HTTP 401/403/500, rejects HTTP 200/status 0, requires affirmative `rejection_observed: true` or `AuthSessionMissingError`.
+- **Tests:** `hosted-probe-runner.test.mjs` (Tests 12, 13, 14, 19, 20, 22, 26).
+
+### 16. `PRRT_kwDOVtCmZc66jOw5` (R3-03) — Dispatcher Timeout & AbortSignal Enforcement
+- **Root Cause:** `runHostedProbeRunner` directly awaited `mockDispatcher` without a deadline. A dispatcher returning a never-settling Promise caused the probe runner to hang indefinitely.
+- **Remediation:**
+  1. Enforced a bounded per-probe deadline (`probeTimeoutMs = DEFAULT_PROBE_TIMEOUT_MS = 5000ms`, configurable for tests).
+  2. Created an `AbortController` per probe and passed `{ signal: controller.signal }` to the dispatcher.
+  3. Raced `mockDispatcher` against a timeout Promise: on timeout, `controller.abort()` is triggered and the probe fails closed with `PROBE_TIMEOUT`.
+  4. On timeout, the runner halts immediately (`aborted = true`), prevents any subsequent probe dispatch, and records `HALTED_ON_FAILURE`.
+- **Tests:** `hosted-probe-runner.test.mjs` (Test 24).
+
+### 17. `PRRT_kwDOVtCmZc66jLk5` (R3-04) — Standalone PostgreSQL Parity Exit Status & Aggregate Failure
+- **Root Cause:** In `sql-contract-parity.mjs`, parity mismatches printed error messages but the script exited with code 0. Furthermore, `verifyParityMatrix` returned `status: 'POSTGRES_VERIFIED'` even when comparisons failed.
+- **Remediation:**
+  1. Updated `verifyParityMatrix`: returns `status: 'POSTGRES_VERIFIED'` only when 100% of comparisons match (`passedParity === totalCases && totalCases > 0`); returns `status: 'PARITY_FAILED'` on any mismatch; returns `status: 'POSTGRES_NOT_EXECUTED'` when Docker is unavailable.
+  2. Standalone CLI execution sets `process.exitCode = 1` and logs an error whenever `status !== 'POSTGRES_VERIFIED'` or `passedParity !== totalCases`.
+- **Tests:** `security-harness.test.mjs` (Tests 15, 16).
 
 ---
 
@@ -184,8 +229,8 @@ All 8 review threads on PR #36 have been resolved with regression tests:
 
 | Test Suite / Script | Command | Cases / Result | Exit Code | Notes |
 |---|---|---|---|---|
-| Task 06I Security Suite | `node --test experiments/task06i/*.test.mjs` | **93 passed**, 0 failed | `0` | All 4 test files pass: allowlist (37), evaluator (15), probe runner (27), harness (14) |
-| PostgreSQL 17.11 Parity Check | `node experiments/task06i/sql-contract-parity.mjs` | **18 passed**, 0 failed | `0` | Live Docker PostgreSQL 17.11 with zero host ports; `ON_ERROR_STOP=1`; grants verified |
+| Task 06I Security Suite | `node --test experiments/task06i/*.test.mjs` | **99 passed**, 0 failed | `0` | All 4 test files pass: allowlist (37), evaluator (15), probe runner (31), harness (16) |
+| PostgreSQL 17.11 Parity Check | `node experiments/task06i/sql-contract-parity.mjs` | **18 passed**, 0 failed | `0` | Live Docker PostgreSQL 17.11 with zero host ports; `ON_ERROR_STOP=1`; grants verified; `Status: POSTGRES_VERIFIED` |
 | Task 06H Historical Suite | `node --test experiments/task06h/*.test.mjs` | **115 passed**, 0 failed | `0` | Phase 1 Auth Shell contract baseline clean |
 | Workspace Repository Verification | `npm run verify` | **22 shell contract passed** | `0` | Tokens clean, `tsc` clean, `eslint` clean |
 | Base-to-HEAD Diff Check | `git diff --check origin/main...HEAD` | Clean, 0 whitespace errors | `0` | Zero trailing whitespace |
@@ -265,13 +310,13 @@ Live probe execution remains strictly **BLOCKED**. Future Task 06I-B1-H1 plan wi
 
 ## 8. Next Permissible Actions & Approval Gates
 
-1. **Owner-Created TEMP Project Verified:**
+1. **Owner-Created TEMP Project Verified & Enforced:**
    - Owner created `Tio-Tnyx-Auth-Temp` (`wvdabiwbaavfggcmpizd`) in organization `llmbrmxhyirtoqndazpg` at region `ap-south-1` ($0 Free tier slot).
-   - Configured in runner as `HARDCODED_TEMP_REF`. LIVE probe execution disabled pending separate H1 authorization.
-2. **Review & PR Gate:**
+   - Configured in runner as immutable `HARDCODED_TEMP_REF`. Caller-controlled `tempRef` spoofing strictly rejected. LIVE probe execution disabled pending separate H1 authorization.
+2. **Review & PR Gate (Revision R3 Complete):**
    - PR #36 updated on branch `docs/task06i-b1-h0-hosted-readiness-harness`.
-   - All 14 review threads resolved (including 3 independent P1 findings and 2 Bugbot findings).
+   - All six open review threads resolved with affirmative evidence and regression tests (PRRT_kwDOVtCmZc66jOw4, PRRT_kwDOVtCmZc66jLk1, PRRT_kwDOVtCmZc66jNbH, PRRT_kwDOVtCmZc66jOw5, PRRT_kwDOVtCmZc66jLk5, PRRT_kwDOVtCmZc66jLk3).
    - Independent re-review requested from `im-tio`.
-   - Do not merge automatically.
+   - Do not merge automatically without explicit owner authorization.
 3. **TEMP Project Lifecycle & Deletion Policy Enforcement:**
    - Follow Section 6: Preserve TEMP during test/review cycles, offer pause for retesting, and require explicit owner deletion authorization with full transparency. Production Auth remains strictly **NO-GO**.

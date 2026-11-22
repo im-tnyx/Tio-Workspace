@@ -12,11 +12,12 @@ import {
   HARDCODED_REAL_REF,
   HARDCODED_TIO_WORLD_REF,
   HARDCODED_TEMP_REF,
+  DEFAULT_PROBE_TIMEOUT_MS,
   TIO_SUPABASE_REAL_REF,
   TIO_SUPABASE_TEMP_REF
 } from './hosted-probe-runner.mjs';
 
-const VALID_TEMP_REF = 'temp-auth-testbed-12345';
+const VALID_TEMP_REF = HARDCODED_TEMP_REF;
 
 // ---------------------------------------------------------------------------
 // R2-01: Immutable Forbidden Project Boundary Tests
@@ -307,29 +308,46 @@ test('12. Throttling interval is enforced between consecutive requests and legit
   };
 
   let probeCount = 0;
-  // Dispatcher returns legitimate statuses for each respective requirement
+  // Dispatcher returns legitimate statuses and affirmative observations for each respective requirement (PRRT_kwDOVtCmZc66jLk1 & PRRT_kwDOVtCmZc66jNbH)
   const mockDispatcher = async (item) => {
     probeCount++;
-    if (item.id === 'HOOK-01' || item.id === 'HOOK-02') {
-      return { passed: true, status: 200, has_token: true };
+    if (item.id === 'BYPASS-01') {
+      return { passed: true, status: 422, route_disabled: true, error_code: 'email_provider_disabled' };
+    }
+    if (item.id === 'BYPASS-02') {
+      return { passed: true, status: 422, signup_disabled: true, error_code: 'signup_disabled' };
+    }
+    if (item.id === 'BYPASS-03' || item.id === 'BYPASS-04') {
+      return { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' };
+    }
+    if (item.id === 'BYPASS-05') {
+      return { passed: true, status: 500, recovery_suppressed: true, zero_email_delivered: true };
+    }
+    if (item.id === 'HOOK-01') {
+      return { passed: true, status: 200, has_token: true, amr_authenticated: true, tokens: { access_token: 'fake.jwt.token' } };
+    }
+    if (item.id === 'HOOK-02') {
+      return { passed: true, status: 200, has_token: true, amr_preserved: true, tokens: { access_token: 'fresh.jwt.token' } };
+    }
+    if (['HOOK-03', 'HOOK-04', 'HOOK-05', 'HOOK-06', 'HOOK-07'].includes(item.id)) {
+      return { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' };
     }
     if (item.id === 'SESSION-01') {
-      return { passed: true, status: 200, session_created: true };
+      return { passed: true, status: 200, session_created: true, session_id: 'sess-test-123' };
     }
     if (item.id === 'SESSION-02') {
-      return { passed: true, status: 200, remaining_sessions: 0 };
+      return { passed: true, status: 200, session_revoked: true, remaining_sessions: 0 };
+    }
+    if (item.id === 'SESSION-03') {
+      return { passed: true, status: 403, rejection_observed: true, error_code: 'session_not_found' };
     }
     if (item.id === 'SESSION-04' || item.id === 'SESSION-05') {
-      return { passed: true, status: 200, note: 'stateless linger window documented' };
+      return { passed: true, status: 200, stateless_linger_documented: true, note: 'stateless linger window verified and documented' };
     }
-    if (item.id === 'SESSION-03' || item.id === 'SESSION-06') {
-      return { passed: true, status: 403 };
+    if (item.id === 'SESSION-06') {
+      return { passed: true, status: 403, rejection_observed: true, error_code: 'AuthSessionMissingError' };
     }
-    if (item.id === 'BYPASS-01' || item.id === 'BYPASS-02') {
-      return { passed: true, status: 422 };
-    }
-    // BYPASS-03..05, HOOK-03..07
-    return { passed: true, status: 500 };
+    return { passed: false, status: 500, reason: 'unrecognized probe case' };
   };
 
   const result = await runHostedProbeRunner({
@@ -358,10 +376,19 @@ test('13. Runner halts immediately on Token Hook failure (HOOK-01) (PRRT_kwDOVtC
     if (item.id === 'HOOK-01') {
       return { passed: false, status: 500, message: 'HOOK-01 failed: token claims missing amr_authenticated' };
     }
-    if (item.id.startsWith('BYPASS-')) {
-      return { passed: true, status: item.id === 'BYPASS-01' || item.id === 'BYPASS-02' ? 422 : 500 };
+    if (item.id === 'BYPASS-01') {
+      return { passed: true, status: 422, route_disabled: true, error_code: 'email_provider_disabled' };
     }
-    return { passed: true, status: 200, has_token: true };
+    if (item.id === 'BYPASS-02') {
+      return { passed: true, status: 422, signup_disabled: true, error_code: 'signup_disabled' };
+    }
+    if (item.id === 'BYPASS-03' || item.id === 'BYPASS-04') {
+      return { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' };
+    }
+    if (item.id === 'BYPASS-05') {
+      return { passed: true, status: 500, recovery_suppressed: true, zero_email_delivered: true };
+    }
+    return { passed: true, status: 200, has_token: true, amr_authenticated: true, tokens: { access_token: 'fake.jwt' } };
   };
 
   const result = await runHostedProbeRunner({
@@ -388,17 +415,34 @@ test('14. Runner halts immediately on Session & Consumer failure (SESSION-03) (P
     if (item.id === 'SESSION-03') {
       return { passed: false, status: 200, message: 'SESSION-03 failed: revoked token was accepted' };
     }
-    if (item.id.startsWith('BYPASS-')) {
-      return { passed: true, status: item.id === 'BYPASS-01' || item.id === 'BYPASS-02' ? 422 : 500 };
+    if (item.id === 'BYPASS-01') {
+      return { passed: true, status: 422, route_disabled: true, error_code: 'email_provider_disabled' };
     }
-    if (item.id.startsWith('HOOK-')) {
-      const isPasswordSuccess = item.id === 'HOOK-01' || item.id === 'HOOK-02';
-      return { passed: true, status: isPasswordSuccess ? 200 : 500, has_token: isPasswordSuccess };
+    if (item.id === 'BYPASS-02') {
+      return { passed: true, status: 422, signup_disabled: true, error_code: 'signup_disabled' };
+    }
+    if (item.id === 'BYPASS-03' || item.id === 'BYPASS-04') {
+      return { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' };
+    }
+    if (item.id === 'BYPASS-05') {
+      return { passed: true, status: 500, recovery_suppressed: true, zero_email_delivered: true };
+    }
+    if (item.id === 'HOOK-01') {
+      return { passed: true, status: 200, has_token: true, amr_authenticated: true, tokens: { access_token: 'fake.jwt' } };
+    }
+    if (item.id === 'HOOK-02') {
+      return { passed: true, status: 200, has_token: true, amr_preserved: true, tokens: { access_token: 'fresh.jwt' } };
+    }
+    if (['HOOK-03', 'HOOK-04', 'HOOK-05', 'HOOK-06', 'HOOK-07'].includes(item.id)) {
+      return { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' };
+    }
+    if (item.id === 'SESSION-01') {
+      return { passed: true, status: 200, session_created: true, session_id: 'sess-1' };
     }
     if (item.id === 'SESSION-02') {
-      return { passed: true, status: 200, remaining_sessions: 0 };
+      return { passed: true, status: 200, session_revoked: true, remaining_sessions: 0 };
     }
-    return { passed: true, status: 200, session_created: true };
+    return { passed: true, status: 200, session_created: true, session_id: 'sess-default' };
   };
 
   const result = await runHostedProbeRunner({
@@ -499,7 +543,13 @@ test('19. Partial execution never returns COMPLETED (PRRT_kwDOVtCmZc66i_Kd)', as
       // Abort or fail on case 3
       return { passed: false, status: 500, reason: 'Simulated network drop' };
     }
-    return { passed: true, status: item.id.startsWith('BYPASS-') ? 422 : 200 };
+    if (item.id === 'BYPASS-01') {
+      return { passed: true, status: 422, route_disabled: true, error_code: 'email_provider_disabled' };
+    }
+    if (item.id === 'BYPASS-02') {
+      return { passed: true, status: 422, signup_disabled: true, error_code: 'signup_disabled' };
+    }
+    return { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' };
   };
 
   const result = await runHostedProbeRunner({
@@ -536,6 +586,8 @@ test('21. Serialized secrets are absent from final runner evidence (PRRT_kwDOVtC
     return {
       passed: true,
       status: 422,
+      route_disabled: true,
+      error_code: 'email_provider_disabled',
       body: JSON.stringify({
         password: secretPassword,
         refresh_token: secretRefreshToken,
@@ -559,23 +611,27 @@ test('21. Serialized secrets are absent from final runner evidence (PRRT_kwDOVtC
   assert.ok(serializedResults.includes('safe_diagnostic_info'), 'Harmless diagnostic info should be preserved');
 });
 
-test('22. Session cases fail closed without explicit evidence of session state (PRRT_kwDOVtCmZc66jG6V)', () => {
-  // SESSION-01 requires explicit session_created: true
+test('22. Session cases fail closed without explicit evidence of session state (PRRT_kwDOVtCmZc66jG6V & PRRT_kwDOVtCmZc66jNbH)', () => {
+  // SESSION-01 requires explicit session_created: true AND session row evidence
   const session01 = { id: 'SESSION-01', category: 'Session & Consumer' };
   assert.equal(validateProbeOutcome(session01, { passed: true, status: 200 }).passed, false);
   assert.equal(validateProbeOutcome(session01, { passed: true, status: 200, session_created: false }).passed, false);
-  assert.equal(validateProbeOutcome(session01, { passed: true, status: 200, session_created: true }).passed, true);
+  assert.equal(validateProbeOutcome(session01, { passed: true, status: 200, session_created: true }).passed, false);
+  assert.equal(validateProbeOutcome(session01, { passed: true, status: 200, session_created: true, session_id: 'sess-1' }).passed, true);
 
-  // SESSION-02 requires remaining_sessions: 0
+  // SESSION-02 requires remaining_sessions: 0 AND session_revoked: true
   const session02 = { id: 'SESSION-02', category: 'Session & Consumer' };
   assert.equal(validateProbeOutcome(session02, { passed: true, status: 200 }).passed, false);
   assert.equal(validateProbeOutcome(session02, { passed: true, status: 200, remaining_sessions: 1 }).passed, false);
-  assert.equal(validateProbeOutcome(session02, { passed: true, status: 200, remaining_sessions: 0 }).passed, true);
+  assert.equal(validateProbeOutcome(session02, { passed: true, status: 200, remaining_sessions: 0 }).passed, false);
+  assert.equal(validateProbeOutcome(session02, { passed: true, status: 200, remaining_sessions: 0, session_revoked: true }).passed, true);
 
-  // SESSION-04 & SESSION-05 require stateless linger documentation/evidence
+  // SESSION-04 & SESSION-05 require stateless linger documentation/evidence (non-empty string or object)
   const session04 = { id: 'SESSION-04', category: 'Session & Consumer' };
   assert.equal(validateProbeOutcome(session04, { passed: true, status: 200 }).passed, false);
-  assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, stateless_linger_documented: true }).passed, true);
+  assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, stateless_linger_documented: true }).passed, false);
+  assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, stateless_linger_documented: true, note: '' }).passed, false);
+  assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, stateless_linger_documented: true, note: 'linger window verified' }).passed, true);
 });
 
 test('23. Top-level abortReason is sanitized against leaked secrets (PRRT_kwDOVtCmZc66jG6Y)', async () => {
@@ -597,4 +653,155 @@ test('23. Top-level abortReason is sanitized against leaked secrets (PRRT_kwDOVt
   assert.equal(result.status, 'HALTED_ON_FAILURE');
   assert.ok(!result.abortReason.includes(secretKey), 'Secret key must be redacted in abortReason');
   assert.match(result.abortReason, /Bearer \[REDACTED\]/);
+});
+
+test('24. Per-probe timeout halts runner on never-settling Promise and aborts subsequent probes (PRRT_kwDOVtCmZc66jOw5)', async () => {
+  let calls = 0;
+  let receivedSignal = null;
+
+  const neverSettlingDispatcher = async (item, { signal }) => {
+    calls++;
+    receivedSignal = signal;
+    // Return a promise that never settles (neither resolves nor rejects)
+    return new Promise(() => {});
+  };
+
+  const result = await runHostedProbeRunner({
+    projectRef: HARDCODED_TEMP_REF,
+    argv: ['--live'],
+    env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    mockDispatcher: neverSettlingDispatcher,
+    probeTimeoutMs: 50, // fast bounded timeout for deterministic unit test
+    sleepFn: async () => {}
+  });
+
+  assert.equal(result.status, 'HALTED_ON_FAILURE');
+  assert.equal(result.aborted, true);
+  assert.equal(calls, 1, 'Only one probe should dispatch; subsequent probes must be blocked');
+  assert.ok(receivedSignal && receivedSignal.aborted, 'AbortSignal should be triggered on timeout');
+  assert.match(result.abortReason, /PROBE_TIMEOUT/);
+  assert.equal(result.results[0].outcome.passed, false);
+  assert.match(result.results[0].outcome.reason, /PROBE_TIMEOUT/);
+});
+
+test('25. LIVE mode rejects caller-controlled tempRef spoofing and unapproved target refs (PRRT_kwDOVtCmZc66jOw4)', async () => {
+  let dispatcherCalled = false;
+  const mockDispatcher = async () => {
+    dispatcherCalled = true;
+    return { passed: true, status: 200 };
+  };
+
+  // Case A: Caller passes forged target and matching forged tempRef in LIVE mode
+  await assert.rejects(
+    () => runHostedProbeRunner({
+      projectRef: 'forged-attacker-project',
+      tempRef: 'forged-attacker-project',
+      argv: ['--live'],
+      env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+      mockDispatcher
+    }),
+    /CRITICAL_SECURITY_VIOLATION.*tempRef spoofing rejected/
+  );
+
+  // Case B: Caller passes forged target with default tempRef in LIVE mode
+  await assert.rejects(
+    () => runHostedProbeRunner({
+      projectRef: 'forged-attacker-project',
+      argv: ['--live'],
+      env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+      mockDispatcher
+    }),
+    /unauthorized_target.*strictly requires approved owner TEMP project/
+  );
+
+  // Case C: Environment variable override cannot bypass approved TEMP ref in LIVE mode
+  const originalEnv = process.env.TIO_SUPABASE_TEMP_REF;
+  try {
+    process.env.TIO_SUPABASE_TEMP_REF = 'forged-attacker-project';
+    await assert.rejects(
+      () => runHostedProbeRunner({
+        projectRef: 'forged-attacker-project',
+        argv: ['--live'],
+        env: {
+          TASK06I_HOSTED_PROBE_AUTHORIZED: 'true',
+          TIO_SUPABASE_TEMP_REF: 'forged-attacker-project'
+        },
+        mockDispatcher
+      }),
+      /unauthorized_target.*strictly requires approved owner TEMP project/
+    );
+  } finally {
+    if (originalEnv === undefined) {
+      delete process.env.TIO_SUPABASE_TEMP_REF;
+    } else {
+      process.env.TIO_SUPABASE_TEMP_REF = originalEnv;
+    }
+  }
+
+  assert.equal(dispatcherCalled, false, 'No dispatcher calls should occur on unauthorized target');
+});
+
+test('26. validateProbeOutcome rejects status 0, missing status, and false-positive booleans without evidence (PRRT_kwDOVtCmZc66jLk1 & PRRT_kwDOVtCmZc66jNbH)', () => {
+  // SESSION-03 with status 0
+  const session03 = { id: 'SESSION-03', category: 'Session & Consumer' };
+  assert.equal(validateProbeOutcome(session03, { passed: true, status: 0 }).passed, false);
+  assert.match(validateProbeOutcome(session03, { passed: true, status: 0 }).reason, /INVALID_HTTP_STATUS/);
+
+  // SESSION-03 with missing status
+  assert.equal(validateProbeOutcome(session03, { passed: true }).passed, false);
+
+  // SESSION-03 with status 403 but missing rejection evidence
+  assert.equal(validateProbeOutcome(session03, { passed: true, status: 403 }).passed, false);
+  assert.match(validateProbeOutcome(session03, { passed: true, status: 403 }).reason, /MISSING_EVIDENCE/);
+
+  // SESSION-03 with status 403 and affirmative rejection evidence passes
+  assert.equal(validateProbeOutcome(session03, { passed: true, status: 403, rejection_observed: true }).passed, true);
+
+  // SESSION-06 with status 0
+  const session06 = { id: 'SESSION-06', category: 'Session & Consumer' };
+  assert.equal(validateProbeOutcome(session06, { passed: true, status: 0 }).passed, false);
+  assert.equal(validateProbeOutcome(session06, { passed: true, status: 403 }).passed, false);
+  assert.equal(validateProbeOutcome(session06, { passed: true, status: 403, rejection_observed: true }).passed, true);
+
+  // HOOK-01 with empty object or empty array for tokens
+  const hook01 = { id: 'HOOK-01', category: 'Token Hook' };
+  assert.equal(validateProbeOutcome(hook01, { passed: true, status: 200, has_token: true, tokens: {} }).passed, false);
+  assert.equal(validateProbeOutcome(hook01, { passed: true, status: 200, has_token: true, tokens: [] }).passed, false);
+  assert.equal(validateProbeOutcome(hook01, { passed: true, status: 200, has_token: true, tokens: { access_token: 'valid.token' }, amr_authenticated: true }).passed, true);
+
+  // SESSION-04 with empty note / empty object evidence
+  const session04 = { id: 'SESSION-04', category: 'Session & Consumer' };
+  assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, stateless_linger_documented: true, note: '' }).passed, false);
+  assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, stateless_linger_documented: true, evidence: {} }).passed, false);
+  assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, stateless_linger_documented: true, note: 'linger window verified' }).passed, true);
+
+  // BYPASS-05 recovery suppression without affirmative evidence
+  const bypass05 = { id: 'BYPASS-05', category: 'Native Bypass' };
+  assert.equal(validateProbeOutcome(bypass05, { passed: true, status: 500 }).passed, false);
+  assert.match(validateProbeOutcome(bypass05, { passed: true, status: 500 }).reason, /MISSING_EVIDENCE/);
+  assert.equal(validateProbeOutcome(bypass05, { passed: true, status: 500, recovery_suppressed: true }).passed, true);
+});
+
+test('27. Complete returned report is recursively sanitized with zero credential leakage (PRRT_kwDOVtCmZc66jLk3)', async () => {
+  const secretPassword = 'my-secret-synthetic-review-password';
+  const secretToken = 'my-secret-synthetic-review-token';
+
+  const mockDispatcher = async () => {
+    const err = new Error(`request failed password=${secretPassword} access_token=${secretToken}`);
+    throw err;
+  };
+
+  const result = await runHostedProbeRunner({
+    projectRef: HARDCODED_TEMP_REF,
+    argv: ['--live'],
+    env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    mockDispatcher,
+    sleepFn: async () => {}
+  });
+
+  const serializedReport = JSON.stringify(result);
+  assert.ok(!serializedReport.includes(secretPassword), 'Secret password must not exist anywhere in returned report');
+  assert.ok(!serializedReport.includes(secretToken), 'Secret token must not exist anywhere in returned report');
+  assert.match(result.abortReason, /password=\[REDACTED\]/);
+  assert.match(result.abortReason, /access_token=\[REDACTED\]/);
 });

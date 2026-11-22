@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import {
   evaluateNativeRouteDisablement,
   evaluateHookFailureSemantics,
@@ -321,4 +322,33 @@ test('14. Parity comparator detects deliberate successful-result output mismatch
 
   // Mismatch 3: Send Email Hook non-empty response instead of {}
   assert.equal(isDeepEqual({}, { unexpected_field: true }), false);
+});
+
+test('15. Parity matrix status calculation distinguishes POSTGRES_VERIFIED from PARITY_FAILED and POSTGRES_NOT_EXECUTED (PRRT_kwDOVtCmZc66jLk5)', () => {
+  const parity = verifyParityMatrix();
+  if (parity.dockerAvailable) {
+    if (parity.passedParity === parity.totalCases && parity.totalCases > 0) {
+      assert.equal(parity.status, 'POSTGRES_VERIFIED');
+    } else {
+      assert.equal(parity.status, 'PARITY_FAILED');
+    }
+  } else {
+    assert.equal(parity.status, 'POSTGRES_NOT_EXECUTED');
+    assert.equal(parity.passedParity, 0);
+  }
+});
+
+test('16. Standalone CLI parity command sets nonzero exit code on mismatch or incomplete execution (PRRT_kwDOVtCmZc66jLk5)', () => {
+  const res = spawnSync(process.execPath, ['experiments/task06i/sql-contract-parity.mjs'], {
+    encoding: 'utf8',
+    timeout: 30000
+  });
+
+  if (res.stdout && res.stdout.includes('Status: POSTGRES_VERIFIED')) {
+    assert.equal(res.status, 0);
+    assert.match(res.stdout, /Cases Evaluated: 18, Matched Parity: 18/);
+  } else {
+    assert.notEqual(res.status, 0, 'Exit code must be nonzero when parity is not verified');
+    assert.match(res.stderr, /ERROR: Standalone contract parity check failed/);
+  }
 });

@@ -493,11 +493,15 @@ export function verifyParityMatrix() {
       }
     }
 
+    const passedParity = results.filter(r => r.parityMatches).length;
+    const isFullPass = passedParity === results.length && results.length > 0;
+    const status = isFullPass ? 'POSTGRES_VERIFIED' : 'PARITY_FAILED';
+
     return {
       dockerAvailable: true,
-      status: 'POSTGRES_VERIFIED',
+      status,
       totalCases: results.length,
-      passedParity: results.filter(r => r.parityMatches).length,
+      passedParity,
       grantsVerification,
       results
     };
@@ -540,5 +544,11 @@ if (process.argv[1] && process.argv[1].endsWith('sql-contract-parity.mjs')) {
     if (!r.parityMatches) {
       console.error('Mismatch details:', JSON.stringify(r, null, 2));
     }
+  }
+
+  // Standalone command fails with nonzero exit code on parity mismatch or missing PostgreSQL (PRRT_kwDOVtCmZc66jLk5)
+  if (res.status !== 'POSTGRES_VERIFIED' || res.passedParity !== res.totalCases) {
+    process.exitCode = 1;
+    console.error(`ERROR: Standalone contract parity check failed with status: ${res.status} (${res.passedParity}/${res.totalCases} passed)`);
   }
 }
