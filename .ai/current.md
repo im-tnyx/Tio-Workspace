@@ -4,9 +4,9 @@
 
 | Field | Value |
 |---|---|
-| Status | **Phase 1.2 Task 06I-B1-H0 (Managed Auth Hosted-Proof Readiness & Local Security Harness) active on branch `docs/task06i-b1-h0-hosted-readiness-harness`. PR #35 merged into `main` at commit `7150cec4c2e1e9aaa8e75d2cbcb3a23a6dca532e`. Dedicated Security CI workflow `.github/workflows/security-experiments.yml` is active and passing on `main` (run 45008498574). Target-safety decision record resolves Task 06I-A vs Task 06I-B1 testbed conflict. Complete 12-area security harness and 100% PostgreSQL 17.11 vs JS parity verifier implemented under `experiments/task06i/`. Fail-closed hosted probe runner prepared with default DRY_RUN, rate limiting, and permanent immunity for `Tio-world`. Hosted Supabase Auth remains NOT TESTED. Production Auth strictly NO-GO.** |
-| Active Task | [Task 06I-B1-H0](tasks/auth/local-20261122-task06i-b1-h0-hosted-readiness-harness.md) (Managed Auth Hosted-Proof Readiness & Local Security Harness) on branch `docs/task06i-b1-h0-hosted-readiness-harness`. PR #35 (Task 06I-B1 preflight & security CI contracts) merged into `main` at `7150cec4c2e1e9aaa8e75d2cbcb3a23a6dca532e`. PR #34 (Task 06I-A strict Auth architecture) merged into `main` at commit `b7d4fda97979e734a85461e83bf119dbc1a9689c`. PR #33 (Task 06H-E runtime integration) merged at `317b4d4793368e6a9a2907d504044e876acfaab0`. PR #32 (Task 06H-D Compose prototype) merged at `17964889363ddb96431d758088826136a300c914`. Historical Task 06G local Auth evidence is archived at [archive/2026/local-20261118-task06g-local-auth-evidence.md](archive/2026/local-20261118-task06g-local-auth-evidence.md). [Task 06F](tasks/auth/local-20261117-managed-auth-boundary-cutover.md), Tasks 06A–06E, and earlier tasks remain merged historical evidence. [Task 03 documentation record](archive/2026/local-20261116-otp-first-architecture.md) remains archived. |
-| Active Scope / Owner | Task 06I-B1-H0 local security harness, SQL parity verification, and dry-run probe runner completed. Zero hosted mutations executed. Owner retains Auth policy, hosted settings, privacy, security, spending and merge decisions. Hosted Supabase project `bsfwzvgynwriswapxpsp` strictly READ-ONLY and OUT OF SCOPE. |
+| Status | **Phase 1.2 Task 06I-B1-H0-R1 (Security Remediation & Separate TEMP/REAL Environment Readiness) active on branch `docs/task06i-b1-h0-hosted-readiness-harness`. PR #36 open targeting `main`. All 8 PR #36 review findings remediated with regression tests. Supabase live inventory audited (1 active project `bsfwzvgynwriswapxpsp`, 1 available slot). Architecture updated to cleanly separate protected REAL (`bsfwzvgynwriswapxpsp`) from disposable TEMP (`Tio-Tnyx-Auth-Temp`, creation pending owner approval). 80/80 task06i unit tests pass; 18/18 PostgreSQL 17.11 parity pass with `ON_ERROR_STOP=1` and role grants verified. Hosted Supabase Auth remains NOT TESTED. Production Auth strictly NO-GO.** |
+| Active Task | [Task 06I-B1-H0-R1](tasks/auth/local-20261122-task06i-b1-h0-hosted-readiness-harness.md) (Security Remediation & Separate TEMP/REAL Environment Readiness) on branch `docs/task06i-b1-h0-hosted-readiness-harness`. PR #36 open at [PR #36](https://github.com/im-tnyx/Tio-Workspace/pull/36). PR #35 (Task 06I-B1 preflight & security CI contracts) merged into `main` at `7150cec4c2e1e9aaa8e75d2cbcb3a23a6dca532e`. PR #34 (Task 06I-A strict Auth architecture) merged into `main` at commit `b7d4fda97979e734a85461e83bf119dbc1a9689c`. |
+| Active Scope / Owner | Task 06I-B1-H0-R1 remediation of 8 review findings, live inventory audit, and TEMP/REAL separation completed. Zero hosted mutations executed. Owner retains Auth policy, hosted settings, privacy, security, spending and merge decisions. Hosted Supabase project `bsfwzvgynwriswapxpsp` strictly READ-ONLY and permanently forbidden from test targeting. |
 | Branch | `docs/task06i-b1-h0-hosted-readiness-harness`. |
 | Verified merged `main` | Verified `main` HEAD is `7150cec4c2e1e9aaa8e75d2cbcb3a23a6dca532e` (squash merge commit of PR #35). Previous verified `main` was `b7d4fda97979e734a85461e83bf119dbc1a9689c` (PR #34). Earlier historical merge was `317b4d4793368e6a9a2907d504044e876acfaab0` (PR #33). |
 | Completed PRs | [#11](https://github.com/im-tnyx/Tio-Workspace/pull/11), [#12](https://github.com/im-tnyx/Tio-Workspace/pull/12), [#13](https://github.com/im-tnyx/Tio-Workspace/pull/13), [#14](https://github.com/im-tnyx/Tio-Workspace/pull/14), [#15](https://github.com/im-tnyx/Tio-Workspace/pull/15), [#17](https://github.com/im-tnyx/Tio-Workspace/pull/17), [#18](https://github.com/im-tnyx/Tio-Workspace/pull/18), [#21](https://github.com/im-tnyx/Tio-Workspace/pull/21), [#22](https://github.com/im-tnyx/Tio-Workspace/pull/22), [#23](https://github.com/im-tnyx/Tio-Workspace/pull/23), [#24](https://github.com/im-tnyx/Tio-Workspace/pull/24), [#25](https://github.com/im-tnyx/Tio-Workspace/pull/25), [#26](https://github.com/im-tnyx/Tio-Workspace/pull/26), [#27](https://github.com/im-tnyx/Tio-Workspace/pull/27), [#28](https://github.com/im-tnyx/Tio-Workspace/pull/28), [#29](https://github.com/im-tnyx/Tio-Workspace/pull/29), [#30](https://github.com/im-tnyx/Tio-Workspace/pull/30), [#32](https://github.com/im-tnyx/Tio-Workspace/pull/32), [#33](https://github.com/im-tnyx/Tio-Workspace/pull/33), [#34](https://github.com/im-tnyx/Tio-Workspace/pull/34), and [#35](https://github.com/im-tnyx/Tio-Workspace/pull/35) **merged**; [#31](https://github.com/im-tnyx/Tio-Workspace/pull/31) **open** |
@@ -45,25 +45,29 @@ Owner additionally requested **Platform, OS version, App build, Avatar, Plan** o
 
 ## Next safe action
 
-Task 06I-B1 was merged into `main` via PR #35 at `7150cec4c2e1e9aaa8e75d2cbcb3a23a6dca532e`. Task 06I-B1-H0 (Managed Auth Hosted-Proof Readiness & Local Security Harness) has been completed at [Task 06I-B1-H0](tasks/auth/local-20261122-task06i-b1-h0-hosted-readiness-harness.md) on branch `docs/task06i-b1-h0-hosted-readiness-harness`:
-1. **Target-Safety Decision Record:**
-   - Evaluated conflict between Task 06I-A (disposable project requiring quota/cost) and Task 06I-B1 ($0 existing testbed).
-   - Deleting or regenerating `bsfwzvgynwriswapxpsp` (Tio-Tnyx) is strictly NOT approved.
-   - Permanent immunity for `Tio-world` (`oykupyiitspujzpwwvuj`) is hardcoded in `IMMUTABLE_FORBIDDEN_PROJECTS`.
-   - Hosted execution is paused pending explicit owner authorization.
-2. **Local Security Proof & Parity Harness:**
-   - 12-area security contract harness implemented in `experiments/task06i/security-harness.mjs` (route disablement, hooks, token refresh, AMR, timeout, session revocation, multi-consumer differences).
-   - 100% exact parity achieved between PostgreSQL 17.11 (`postgres:17` with zero host port exposure) and JavaScript evaluator across all 18 cases in `experiments/task06i/sql-contract-parity.mjs`.
-3. **Hosted Probe Runner Specification:**
-   - Implemented `experiments/task06i/hosted-probe-runner.mjs` with default `DRY_RUN`, explicit target allowlist, secret redaction, reserved test-domain validation, rate limiting, and stop-on-first-failure.
-4. **Validation Evidence:**
-   - 76/76 task06i unit tests pass (`node --test experiments/task06i/*.test.mjs`).
+Task 06I-B1 was merged into `main` via PR #35 at `7150cec4c2e1e9aaa8e75d2cbcb3a23a6dca532e`. Task 06I-B1-H0-R1 (Security Remediation & Separate TEMP/REAL Environment Readiness) has been completed at [Task 06I-B1-H0-R1](tasks/auth/local-20261122-task06i-b1-h0-hosted-readiness-harness.md) on branch `docs/task06i-b1-h0-hosted-readiness-harness`:
+1. **Remediation of 8 Review Findings:**
+   - Fake LIVE success removed; missing dispatcher in LIVE mode fails closed with `NO_HOSTED_DISPATCHER` (PRRT_kwDOVtCmZc66ij5y).
+   - Portable Node.js sleep (`sleepSync`) replaced PowerShell readiness poll in Docker container startup (PRRT_kwDOVtCmZc66ij5z).
+   - Docker unavailability correctly yields `status: 'POSTGRES_NOT_EXECUTED'` and `passedParity: 0` (PRRT_kwDOVtCmZc66ij51).
+   - Comprehensive secret redaction for query parameters, Bearer headers, and nested objects (PRRT_kwDOVtCmZc66ij55).
+   - 1000ms request interval throttling enforced in probe execution loop via injectable scheduler (PRRT_kwDOVtCmZc66ij56).
+   - Stop gate halts immediately on ANY security failure across BYPASS, HOOK, or SESSION (PRRT_kwDOVtCmZc66iotG).
+   - `psql` executed with `-v ON_ERROR_STOP=1`; fixture roles provisioned; least-privilege grants verified (PRRT_kwDOVtCmZc66iotJ).
+   - Deep equality output comparison on successful JSON results; deliberate mismatch detection verified (PRRT_kwDOVtCmZc66iotM).
+2. **Revised Supabase TEMP/REAL Architecture:**
+   - Live Supabase inventory audited: 1 active project (`bsfwzvgynwriswapxpsp` [Tio-Tnyx] REAL), 1 free slot available under Free tier quota.
+   - REAL (`bsfwzvgynwriswapxpsp`) is permanently protected and forbidden from test targeting.
+   - Proposed disposable testbed `Tio-Tnyx-Auth-Temp` prepared in a Creation Approval Package ($0 cost, region `ap-south-1`).
+   - Project creation paused awaiting explicit owner authorization.
+3. **Validation Evidence:**
+   - 80/80 task06i unit tests pass (`node --test experiments/task06i/*.test.mjs`).
+   - 18/18 live PostgreSQL 17.11 parity tests pass with zero host port exposure.
    - 115/115 task06h unit tests pass (`node --test experiments/task06h/*.test.mjs`).
    - 22/22 shell contract tests pass; `npm run verify` passes with exit code 0; `git diff --check` clean.
-   - Zero workflow modifications; Commit attribution guard preserved.
-5. **Hard STOP Gate Honored:** Zero cloud projects created, zero Management API PATCHes executed, zero migrations deployed, zero live emails dispatched. Production project `bsfwzvgynwriswapxpsp` and `Tio-world` strictly read-only and untouched.
+4. **Hard STOP Gate Honored:** Zero cloud projects created, zero Management API PATCHes executed, zero migrations deployed, zero live emails dispatched. Production project `bsfwzvgynwriswapxpsp` and `Tio-world` strictly read-only and untouched.
 
-The next permissible action is owner review of PR for Task 06I-B1-H0 and owner decision on whether to maintain local harness or authorize a hosted test run. Production Auth remains strictly **NO-GO**.
+The next permissible action is owner review of PR #36 and decision on whether to approve creation of disposable testbed `Tio-Tnyx-Auth-Temp`. Production Auth remains strictly **NO-GO**.
 
 ### Empirical Security Gates & Current Architecture Baseline
 

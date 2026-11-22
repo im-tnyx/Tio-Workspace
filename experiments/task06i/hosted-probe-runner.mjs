@@ -1,25 +1,25 @@
-// Hosted Probe Runner Specification & Harness for Task 06I-B1-H0
+// Hosted Probe Runner Specification & Harness for Task 06I-B1-H0-R1
 // Prepares the opt-in, fail-closed hosted test runner for future authorized testing.
 // Enforces strict safety gates:
-// 1. Immutable forbidden list: Tio-world (oykupyiitspujzpwwvuj) is hard-blocked permanently.
-// 2. Explicit target allowlist: only authorized testbed projects allowed.
+// 1. Immutable forbidden list: Tio-world (oykupyiitspujzpwwvuj) and REAL project (bsfwzvgynwriswapxpsp) are permanently blocked.
+// 2. Explicit target allowlist: only verified TEMP project allowed (via TIO_SUPABASE_TEMP_REF).
 // 3. Separate authorization gate: requires both --live flag and TASK06I_HOSTED_PROBE_AUTHORIZED="true".
 // 4. Default mode: DRY_RUN (zero network requests, zero Supabase mutations).
-// 5. Secret redaction: zero tokens, keys, or passwords logged.
+// 5. Secret redaction: zero tokens, keys, passwords, query parameters, or bearer credentials logged.
 // 6. Test-only identities: restricted to reserved *.invalid / *.test domains.
-// 7. Rate limiter: budget max 25 requests, 1 req/sec throttling.
-// 8. Immediate STOP on first critical bypass failure.
-// 9. Zero automated project deletion.
-// 10. No fallback to Tio-world under any error or condition.
+// 7. Rate limiter: budget max 25 requests, 1000ms minimum interval throttling enforced via injectable scheduler.
+// 8. Immediate STOP on ANY security failure (BYPASS, HOOK, or SESSION).
+// 9. Zero fake LIVE success: missing dispatcher in LIVE mode immediately fails closed.
+// 10. Zero automated project deletion and zero fallback to Tio-world.
 
 import { PREFLIGHT_REQUIREMENTS } from './preflight-evaluator.mjs';
 
-export const IMMUTABLE_FORBIDDEN_PROJECTS = new Set([
-  'oykupyiitspujzpwwvuj' // Tio-world: PERMANENT IMMUNITY
-]);
+export const TIO_SUPABASE_REAL_REF = process.env.TIO_SUPABASE_REAL_REF || 'bsfwzvgynwriswapxpsp';
+export const TIO_SUPABASE_TEMP_REF = process.env.TIO_SUPABASE_TEMP_REF || '';
 
-export const AUTHORIZED_TARGET_PROJECTS = new Set([
-  'bsfwzvgynwriswapxpsp' // Tio-Tnyx: sole candidate testbed (subject to separate owner authorization)
+export const IMMUTABLE_FORBIDDEN_PROJECTS = new Set([
+  'oykupyiitspujzpwwvuj', // Tio-world: PERMANENT IMMUNITY
+  TIO_SUPABASE_REAL_REF   // REAL Tio-Tnyx: protected production backend, permanently forbidden from test runs
 ]);
 
 export const RESERVED_TEST_DOMAINS = ['.invalid', '.example', '.test', '.localhost'];
@@ -31,14 +31,22 @@ export const RATE_LIMIT_CONFIG = {
 
 /**
  * Sanitizes strings, objects, or arrays to redact secrets before logging or storage.
+ * Handles JWTs, bearer headers, key/secret parameters, query strings, and nested data.
+ * Resolves PRRT_kwDOVtCmZc66ij55.
  */
 export function sanitizeData(data) {
   if (data === null || data === undefined) return data;
 
   if (typeof data === 'string') {
     return data
+      // Redact Bearer authorization headers first
+      .replace(/Bearer\s+[^\s"';,]+/gi, 'Bearer [REDACTED]')
+      // Redact full JWTs (header.payload.signature)
       .replace(/eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g, '[REDACTED_JWT]')
-      .replace(/(?:api_key|apikey|secret|password|token_hash|token|service_role)=['"]?[^'"\s&]+['"]?/gi, '$1=[REDACTED]');
+      // Redact URL query parameters (e.g. ?token=..., &password=...)
+      .replace(/([?&](?:token|token_hash|secret|password|api_key|apikey|service_role)=)([^&\s]+)/gi, '$1[REDACTED]')
+      // Redact key=value pairs in text
+      .replace(/((?:api_key|apikey|secret|password|token_hash|token|service_role)\s*[:=]\s*['"]?)[^'"\s&,]+/gi, '$1[REDACTED]');
   }
 
   if (Array.isArray(data)) {
@@ -55,7 +63,8 @@ export function sanitizeData(data) {
         lower.includes('token') ||
         lower.includes('key') ||
         lower.includes('authorization') ||
-        lower.includes('bearer')
+        lower.includes('bearer') ||
+        lower.includes('credential')
       ) {
         sanitized[key] = '[REDACTED]';
       } else {
@@ -89,26 +98,35 @@ export function validateTestIdentity(email) {
 }
 
 /**
- * Validates target project against security invariants and explicit allowlists.
+ * Validates target project against security invariants and strict separation of REAL vs TEMP.
+ * REAL project and Tio-world are permanently forbidden.
+ * Resolves Phase D.
  */
-export function validateTargetProject(projectRef) {
-  if (!projectRef || typeof projectRef !== 'string') {
-    throw new Error('invalid_project_ref: projectRef is required');
+export function validateTargetProject(projectRef, tempRef = TIO_SUPABASE_TEMP_REF) {
+  if (!projectRef || typeof projectRef !== 'string' || !projectRef.trim()) {
+    throw new Error('invalid_project_ref: target projectRef is required and cannot be empty');
   }
 
   const normRef = projectRef.trim().toLowerCase();
 
-  // 1. Permanent immunity check
-  if (IMMUTABLE_FORBIDDEN_PROJECTS.has(normRef)) {
+  // 1. Permanent immunity check: Tio-world
+  if (normRef === 'oykupyiitspujzpwwvuj') {
     throw new Error(
       `CRITICAL_SECURITY_VIOLATION: Project '${normRef}' (Tio-world) is permanently forbidden and immune from testing!`
     );
   }
 
-  // 2. Explicit allowlist check
-  if (!AUTHORIZED_TARGET_PROJECTS.has(normRef)) {
+  // 2. Permanent protection check: REAL project
+  if (normRef === TIO_SUPABASE_REAL_REF.toLowerCase()) {
     throw new Error(
-      `unauthorized_target: Project '${normRef}' is not in AUTHORIZED_TARGET_PROJECTS allowlist`
+      `CRITICAL_SECURITY_VIOLATION: Project '${normRef}' is the protected REAL backend and is permanently forbidden from test targeting!`
+    );
+  }
+
+  // 3. Authorized TEMP testbed check
+  if (!tempRef || normRef !== tempRef.toLowerCase()) {
+    throw new Error(
+      `unauthorized_target: Project '${normRef}' is not the authorized TEMP testbed project`
     );
   }
 
@@ -134,7 +152,8 @@ export function determineRunnerMode(argv = [], env = process.env) {
  * Plans probe execution for the 18 preflight requirements.
  */
 export function planProbeExecution(projectRef, options = {}) {
-  const validatedRef = validateTargetProject(projectRef);
+  const tempRef = options.tempRef || TIO_SUPABASE_TEMP_REF;
+  const validatedRef = validateTargetProject(projectRef, tempRef);
   const testUser = options.testEmail || `test-probe-${Date.now()}@auth-proof.invalid`;
   validateTestIdentity(testUser);
 
@@ -143,9 +162,8 @@ export function planProbeExecution(projectRef, options = {}) {
     category: req.category,
     target: req.target,
     expectedResponse: req.expectedResponse,
-    plannedAction: `Simulate/execute HTTP probe against ${req.target} on project ${validatedRef}`,
-    testUser,
-    criticalBypass: req.category === 'Native Bypass'
+    plannedAction: `Execute probe against ${req.target} on TEMP project ${validatedRef}`,
+    testUser
   }));
 
   return {
@@ -159,21 +177,24 @@ export function planProbeExecution(projectRef, options = {}) {
 
 /**
  * Simulates or executes probe runner with rate-limiting, stop-on-failure, and secret sanitization.
+ * Resolves PRRT_kwDOVtCmZc66ij5y, PRRT_kwDOVtCmZc66ij56, and PRRT_kwDOVtCmZc66iotG.
  */
 export async function runHostedProbeRunner(options = {}) {
   const {
     projectRef,
+    tempRef = TIO_SUPABASE_TEMP_REF,
     argv = process.argv,
     env = process.env,
     testEmail = 'tio-test-user-06i@proof.invalid',
-    mockDispatcher = null
+    mockDispatcher = null,
+    sleepFn = (ms) => new Promise(r => setTimeout(r, ms))
   } = options;
 
   const mode = determineRunnerMode(argv, env);
-  const validatedRef = validateTargetProject(projectRef);
+  const validatedRef = validateTargetProject(projectRef, tempRef);
   validateTestIdentity(testEmail);
 
-  const plan = planProbeExecution(validatedRef, { testEmail });
+  const plan = planProbeExecution(validatedRef, { testEmail, tempRef });
   const results = [];
   let aborted = false;
   let abortReason = null;
@@ -190,34 +211,37 @@ export async function runHostedProbeRunner(options = {}) {
     };
   }
 
-  // LIVE mode (or mocked dispatcher in test)
-  for (const item of plan.plannedCases) {
+  // LIVE mode validation: Require an authorized network dispatcher. Zero fake passes. (PRRT_kwDOVtCmZc66ij5y)
+  if (typeof mockDispatcher !== 'function') {
+    throw new Error(
+      'NO_HOSTED_DISPATCHER: live hosted execution requires a configured network dispatcher; synthetic placeholder execution prohibited'
+    );
+  }
+
+  // LIVE probe loop
+  for (let i = 0; i < plan.plannedCases.length; i++) {
+    const item = plan.plannedCases[i];
     if (aborted) break;
 
+    // Budget enforcement
     if (requestCount >= RATE_LIMIT_CONFIG.maxTotalRequests) {
       aborted = true;
       abortReason = `Rate limit budget exceeded (${RATE_LIMIT_CONFIG.maxTotalRequests} requests)`;
       break;
     }
 
-    requestCount++;
-
-    let probeResult;
-    if (mockDispatcher) {
-      probeResult = await mockDispatcher(item, validatedRef);
-    } else {
-      // In real runner without mock, this would call fetch() with throttling
-      probeResult = {
-        status: 500,
-        body: 'LIVE_PROBE_PLACEHOLDER',
-        passed: true
-      };
+    // Interval throttling enforcement (PRRT_kwDOVtCmZc66ij56)
+    if (i > 0 && RATE_LIMIT_CONFIG.minIntervalMs > 0) {
+      await sleepFn(RATE_LIMIT_CONFIG.minIntervalMs);
     }
 
-    // Critical bypass detection
-    if (item.criticalBypass && probeResult.passed === false) {
+    requestCount++;
+    const probeResult = await mockDispatcher(item, validatedRef);
+
+    // Stop and fail on ANY requirement failure across BYPASS, HOOK, or SESSION (PRRT_kwDOVtCmZc66iotG)
+    if (probeResult.passed === false) {
       aborted = true;
-      abortReason = `CRITICAL_BYPASS_FAILURE: ${item.id} failed fail-closed check! Halting execution immediately.`;
+      abortReason = `CRITICAL_SECURITY_FAILURE: Case ${item.id} (${item.category}) failed check! Halting execution immediately.`;
     }
 
     results.push({

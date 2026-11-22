@@ -12,7 +12,7 @@ import {
   classifyHookOutcome,
   classifySendEmailOutcome
 } from './hook-allowlist-contract.mjs';
-import { verifyParityMatrix, executeJsCase } from './sql-contract-parity.mjs';
+import { verifyParityMatrix, executeJsCase, isDeepEqual } from './sql-contract-parity.mjs';
 
 test('1. Native OTP route disablement contract (BYPASS-01)', () => {
   // Disablement active: returns 422 email_provider_disabled
@@ -271,8 +271,54 @@ test('12. JWT consumer differences across Auth, Data API, Storage, and Edge Func
   assert.equal(edgeGetUserRes.lingeringRisk, false);
 });
 
-test('13. SQL/JS Parity matrix evaluates with 100% agreement', () => {
+test('13. SQL/JS Parity matrix evaluates with 100% agreement when Docker is available', () => {
   const parity = verifyParityMatrix();
-  assert.equal(parity.totalCases, 18);
-  assert.equal(parity.passedParity, 18);
+  if (parity.dockerAvailable) {
+    assert.equal(parity.status, 'POSTGRES_VERIFIED');
+    assert.equal(parity.totalCases, 18);
+    assert.equal(parity.passedParity, 18);
+    assert.equal(parity.grantsVerification.verified, true);
+    assert.equal(parity.grantsVerification.grants.supabase_auth_admin.custom_access_token_hook, true);
+    assert.equal(parity.grantsVerification.grants.anon.custom_access_token_hook, false);
+    assert.equal(parity.grantsVerification.grants.public.custom_access_token_hook, false);
+  } else {
+    assert.equal(parity.status, 'POSTGRES_NOT_EXECUTED');
+    assert.equal(parity.passedParity, 0);
+  }
+});
+
+test('14. Parity comparator detects deliberate successful-result output mismatches (PRRT_kwDOVtCmZc66iotM)', () => {
+  const baselineAllowedOutput = {
+    user_id: '11111111-1111-1111-1111-111111111111',
+    authentication_method: 'password',
+    claims: {
+      sub: '11111111-1111-1111-1111-111111111111',
+      amr: [{ method: 'password', timestamp: 1700000000 }],
+      amr_authenticated: 'true'
+    }
+  };
+
+  // Mismatch 1: dropped claim
+  const droppedClaimOutput = {
+    user_id: '11111111-1111-1111-1111-111111111111',
+    authentication_method: 'password',
+    claims: {
+      amr: [{ method: 'password', timestamp: 1700000000 }],
+      amr_authenticated: 'true'
+    }
+  };
+  assert.equal(isDeepEqual(baselineAllowedOutput, droppedClaimOutput), false);
+
+  // Mismatch 2: wrong claim value
+  const wrongClaimOutput = {
+    ...baselineAllowedOutput,
+    claims: {
+      ...baselineAllowedOutput.claims,
+      amr_authenticated: 'false'
+    }
+  };
+  assert.equal(isDeepEqual(baselineAllowedOutput, wrongClaimOutput), false);
+
+  // Mismatch 3: Send Email Hook non-empty response instead of {}
+  assert.equal(isDeepEqual({}, { unexpected_field: true }), false);
 });

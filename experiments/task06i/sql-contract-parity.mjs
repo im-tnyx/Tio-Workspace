@@ -1,13 +1,14 @@
-// Local executable SQL-to-JavaScript contract parity verifier
+// Local executable SQL-to-JavaScript contract parity verifier for Task 06I
 // Verifies that private_auth.custom_access_token_hook and private_auth.send_email_hook
 // in PostgreSQL behave identically to evaluateCustomAccessTokenHook and evaluateSendEmailHook.
 // When Docker is available, executes against an isolated, unexposed container (0 published ports).
-// When Docker is unavailable, records the environment limitation truthfully.
+// When Docker is unavailable, records status as POSTGRES_NOT_EXECUTED with passedParity: 0 (never claims JS as PG pass).
 
-import { execFileSync, spawnSync } from 'child_process';
+import { spawnSync } from 'child_process';
 import { readFileSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
+import assert from 'assert';
 import {
   evaluateCustomAccessTokenHook,
   evaluateSendEmailHook
@@ -15,6 +16,31 @@ import {
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
+
+/**
+ * Portable synchronous sleep for Node.js across all platforms (Linux/Windows/macOS).
+ * Does not depend on PowerShell or shell binaries.
+ */
+export function sleepSync(ms) {
+  try {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+  } catch {
+    const end = Date.now() + ms;
+    while (Date.now() < end) { /* busy wait fallback */ }
+  }
+}
+
+/**
+ * Deep equality check for normalized JSON output comparison.
+ */
+export function isDeepEqual(a, b) {
+  try {
+    assert.deepStrictEqual(a, b);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export const PARITY_TEST_CASES = [
   // Custom Access Token Hook cases
@@ -293,7 +319,7 @@ export function executePostgresCase(containerName, testCase) {
     END $$;
   `;
 
-  const res = spawnSync('docker', ['exec', '-i', containerName, 'psql', '-U', 'postgres', '-d', 'postgres', '-c', query], {
+  const res = spawnSync('docker', ['exec', '-i', containerName, 'psql', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'postgres', '-c', query], {
     encoding: 'utf8',
     timeout: 5000
   });
@@ -339,52 +365,118 @@ export function executePostgresCase(containerName, testCase) {
 }
 
 /**
- * Runs parity verification across all defined test cases.
+ * Validates least-privilege grants and revocations on PostgreSQL schema and functions.
+ * Resolves PRRT_kwDOVtCmZc66iotJ.
+ */
+export function verifyRoleGrantsAndRevocations(containerName) {
+  const query = `
+    SELECT
+      has_function_privilege('supabase_auth_admin', 'private_auth.custom_access_token_hook(jsonb)', 'EXECUTE') AS admin_can_token,
+      has_function_privilege('supabase_auth_admin', 'private_auth.send_email_hook(jsonb)', 'EXECUTE') AS admin_can_email,
+      has_function_privilege('anon', 'private_auth.custom_access_token_hook(jsonb)', 'EXECUTE') AS anon_can_token,
+      has_function_privilege('anon', 'private_auth.send_email_hook(jsonb)', 'EXECUTE') AS anon_can_email,
+      has_function_privilege('authenticated', 'private_auth.custom_access_token_hook(jsonb)', 'EXECUTE') AS auth_can_token,
+      has_function_privilege('authenticated', 'private_auth.send_email_hook(jsonb)', 'EXECUTE') AS auth_can_email,
+      has_function_privilege('public', 'private_auth.custom_access_token_hook(jsonb)', 'EXECUTE') AS public_can_token,
+      has_function_privilege('public', 'private_auth.send_email_hook(jsonb)', 'EXECUTE') AS public_can_email;
+  `;
+
+  const res = spawnSync('docker', ['exec', '-i', containerName, 'psql', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'postgres', '-t', '-A', '-F', ',', '-c', query], {
+    encoding: 'utf8',
+    timeout: 5000
+  });
+
+  if (res.status !== 0) {
+    throw new Error(`Failed to query role grants: ${res.stderr || res.stdout}`);
+  }
+
+  const parts = res.stdout.trim().split(',');
+  const [adminToken, adminEmail, anonToken, anonEmail, authToken, authEmail, publicToken, publicEmail] = parts;
+
+  const valid = (
+    adminToken === 't' &&
+    adminEmail === 't' &&
+    anonToken === 'f' &&
+    anonEmail === 'f' &&
+    authToken === 'f' &&
+    authEmail === 'f' &&
+    publicToken === 'f' &&
+    publicEmail === 'f'
+  );
+
+  return {
+    verified: valid,
+    grants: {
+      supabase_auth_admin: { custom_access_token_hook: adminToken === 't', send_email_hook: adminEmail === 't' },
+      anon: { custom_access_token_hook: anonToken === 't', send_email_hook: anonEmail === 't' },
+      authenticated: { custom_access_token_hook: authToken === 't', send_email_hook: authEmail === 't' },
+      public: { custom_access_token_hook: publicToken === 't', send_email_hook: publicEmail === 't' }
+    }
+  };
+}
+
+/**
+ * Runs parity verification across all defined test cases with deep normalized JSON comparison.
  */
 export function verifyParityMatrix() {
   const dockerReady = isDockerAvailable();
   const results = [];
   let containerName = null;
+  let grantsVerification = null;
 
   if (dockerReady) {
     containerName = `task06i-parity-${Date.now()}`;
     try {
-      // Start isolated container with ZERO published ports
-      spawnSync('docker', ['run', '-d', '--rm', '--name', containerName, '-e', 'POSTGRES_PASSWORD=secret', 'postgres:17'], { timeout: 8000 });
-      // Wait for postgres to be ready
+      // Start isolated container with ZERO published ports (30s timeout)
+      const runRes = spawnSync('docker', ['run', '-d', '--rm', '--name', containerName, '-e', 'POSTGRES_PASSWORD=secret', 'postgres:17'], { timeout: 30000 });
+      if (runRes.status !== 0) {
+        throw new Error(`Failed to start postgres container: ${runRes.stderr || runRes.stdout}`);
+      }
+
+      // Wait for postgres to be ready using portable Node.js sleep
       let ready = false;
-      for (let i = 0; i < 10; i++) {
+      for (let i = 0; i < 20; i++) {
         const ping = spawnSync('docker', ['exec', '-i', containerName, 'pg_isready', '-U', 'postgres'], { timeout: 2000 });
         if (ping.status === 0) { ready = true; break; }
-        spawnSync('powershell', ['-Command', 'Start-Sleep -Milliseconds 400']);
+        sleepSync(400); // portable sleep
       }
 
       if (!ready) {
         throw new Error('PostgreSQL container failed to become ready in time');
       }
 
-      // Deploy hooks.sql
+      // Deploy hooks.sql using ON_ERROR_STOP=1
       const sqlPath = join(__dirname, 'sql', 'hooks.sql');
       const sqlContent = readFileSync(sqlPath, 'utf8');
-      const deploy = spawnSync('docker', ['exec', '-i', containerName, 'psql', '-U', 'postgres', '-d', 'postgres'], {
+      const deploy = spawnSync('docker', ['exec', '-i', containerName, 'psql', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'postgres'], {
         input: sqlContent,
         encoding: 'utf8',
-        timeout: 5000
+        timeout: 8000
       });
 
       if (deploy.status !== 0) {
-        throw new Error(`Failed to deploy hooks.sql: ${deploy.stderr || deploy.stdout}`);
+        throw new Error(`Failed to deploy hooks.sql with ON_ERROR_STOP=1: ${deploy.stderr || deploy.stdout}`);
       }
 
-      // Execute each case
+      // Verify least-privilege role grants & revocations
+      grantsVerification = verifyRoleGrantsAndRevocations(containerName);
+      if (!grantsVerification.verified) {
+        throw new Error(`Role grants/revocations verification failed: ${JSON.stringify(grantsVerification)}`);
+      }
+
+      // Execute each case and deep-compare complete output
       for (const tc of PARITY_TEST_CASES) {
         const jsOutcome = executeJsCase(tc);
         const pgOutcome = executePostgresCase(containerName, tc);
 
-        const parityMatches = (
-          jsOutcome.allowed === pgOutcome.allowed &&
-          (jsOutcome.allowed ? (pgOutcome.result?.claims?.amr_authenticated === 'true' || tc.hook === 'send_email_hook') : (pgOutcome.sqlstate === '42501' && jsOutcome.code === '42501'))
-        );
+        let parityMatches = false;
+        if (jsOutcome.allowed && pgOutcome.allowed) {
+          // Deep compare complete normalized JSON output (PRRT_kwDOVtCmZc66iotM)
+          parityMatches = isDeepEqual(jsOutcome.result, pgOutcome.result);
+        } else if (!jsOutcome.allowed && !pgOutcome.allowed) {
+          // Ensure both fail closed with exact SQLSTATE 42501
+          parityMatches = (pgOutcome.sqlstate === '42501' && jsOutcome.code === '42501');
+        }
 
         results.push({
           name: tc.name,
@@ -400,26 +492,37 @@ export function verifyParityMatrix() {
         spawnSync('docker', ['rm', '-f', containerName], { timeout: 5000 });
       }
     }
-  } else {
-    // Docker not available: run JS evaluation only and document runtime environment limitation
-    for (const tc of PARITY_TEST_CASES) {
-      const jsOutcome = executeJsCase(tc);
-      results.push({
-        name: tc.name,
-        hook: tc.hook,
-        jsOutcome,
-        pgOutcome: null,
-        parityMatches: jsOutcome.allowed === tc.expectedAllowed,
-        verifiedInPostgres: false,
-        reason: 'Docker runtime unavailable in execution environment'
-      });
-    }
+
+    return {
+      dockerAvailable: true,
+      status: 'POSTGRES_VERIFIED',
+      totalCases: results.length,
+      passedParity: results.filter(r => r.parityMatches).length,
+      grantsVerification,
+      results
+    };
+  }
+
+  // Docker not available: record POSTGRES_NOT_EXECUTED and DO NOT claim parity passes (PRRT_kwDOVtCmZc66ij51)
+  for (const tc of PARITY_TEST_CASES) {
+    const jsOutcome = executeJsCase(tc);
+    results.push({
+      name: tc.name,
+      hook: tc.hook,
+      jsOutcome,
+      pgOutcome: null,
+      parityMatches: false, // not verified in postgres
+      verifiedInPostgres: false,
+      reason: 'Docker runtime unavailable in execution environment'
+    });
   }
 
   return {
-    dockerAvailable: dockerReady,
+    dockerAvailable: false,
+    status: 'POSTGRES_NOT_EXECUTED',
     totalCases: results.length,
-    passedParity: results.filter(r => r.parityMatches).length,
+    passedParity: 0, // Explicitly 0 passes when PostgreSQL did not run
+    grantsVerification: null,
     results
   };
 }
@@ -428,10 +531,11 @@ if (process.argv[1] && process.argv[1].endsWith('sql-contract-parity.mjs')) {
   console.log('Running SQL vs JavaScript contract parity check...');
   const res = verifyParityMatrix();
   console.log(`Docker Available: ${res.dockerAvailable}`);
+  console.log(`Status: ${res.status}`);
   console.log(`Cases Evaluated: ${res.totalCases}, Matched Parity: ${res.passedParity}`);
   for (const r of res.results) {
     const status = r.parityMatches ? 'PASS' : 'FAIL';
-    const runtime = r.verifiedInPostgres ? 'POSTGRES 17.11' : 'OFFLINE JS ONLY';
+    const runtime = r.verifiedInPostgres ? 'POSTGRES 17.11' : 'POSTGRES NOT EXECUTED';
     console.log(`[${status}] [${runtime}] ${r.name}`);
     if (!r.parityMatches) {
       console.error('Mismatch details:', JSON.stringify(r, null, 2));

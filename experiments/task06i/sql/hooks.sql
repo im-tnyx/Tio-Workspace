@@ -5,6 +5,20 @@
 
 CREATE SCHEMA IF NOT EXISTS private_auth;
 
+-- Ensure required roles exist in any PostgreSQL environment (e.g. stock postgres container)
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_auth_admin') THEN
+    CREATE ROLE supabase_auth_admin;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'anon') THEN
+    CREATE ROLE anon;
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
+    CREATE ROLE authenticated;
+  END IF;
+END $$;
+
 -- 1. Custom Access Token Hook
 -- Evaluates authentication_method and RFC 8176 AMR object array.
 -- Strictly permits ONLY method 'password' in AMR.
@@ -123,13 +137,6 @@ END;
 $$;
 
 -- 3. Least-Privilege Role Grants & Revocations
-DO $$
-BEGIN
-  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'supabase_auth_admin') THEN
-    CREATE ROLE supabase_auth_admin;
-  END IF;
-END $$;
-
 GRANT USAGE ON SCHEMA private_auth TO supabase_auth_admin;
 GRANT EXECUTE ON FUNCTION private_auth.custom_access_token_hook(jsonb) TO supabase_auth_admin;
 GRANT EXECUTE ON FUNCTION private_auth.send_email_hook(jsonb) TO supabase_auth_admin;

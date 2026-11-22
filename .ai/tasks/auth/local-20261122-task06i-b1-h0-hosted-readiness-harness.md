@@ -1,15 +1,15 @@
-# Phase 1.2 Task 06I-B1-H0 — Managed Auth Hosted-Proof Readiness & Local Security Harness
+# Phase 1.2 Task 06I-B1-H0-R1 — Security Remediation & Separate TEMP/REAL Environment Readiness
 
-> **Target-Safety Decision Record, Local Executable Security Proof & Hosted Probe Runner Specification.** Prepared under `AGENTS.md` operating rules. This document establishes deterministic local security verification and prepares the dry-run probe harness for future testing. It does not authorize creating, modifying, or deleting any hosted Supabase project. Production Real Auth remains **NO-GO**.
+> **Target-Safety Decision Record, 8 PR #36 Remediation Proofs, Live Inventory Audit & TEMP Project Provisioning Package.** Prepared under `AGENTS.md` operating rules. This document establishes deterministic local security verification, remediates all 8 PR #36 review findings, audits Supabase organization inventory, and prepares the dry-run probe harness and TEMP project creation approval package. It does not authorize creating, modifying, or deleting any hosted Supabase project. Production Real Auth remains **NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **LOCAL SECURITY HARNESS & PARITY PROOF COMPLETE; HOSTED PROBE RUNNER SPECIFIED (DRY-RUN DEFAULT); AWAITING OWNER HOSTED DECISION** |
-| Objective | Resolve the test-target architecture conflict between Task 06I-A (disposable project) and Task 06I-B1 ($0 existing testbed), extend local executable test harness across all 12 security contract areas, execute 100% PL/pgSQL vs JavaScript parity proof against PostgreSQL 17.11 without port exposure, prepare opt-in fail-closed hosted probe runner, and align `.ai/` context post-PR #35 merge |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H0 slice |
-| Previous agent | Agent / Task 06I-B1-R9 author |
-| Last commit agent | `7150cec4c2e1e9aaa8e75d2cbcb3a23a6dca532e` (PR #35 squash merge commit on `main`) |
-| Tracking / approval | Task 06I-B1-H0 authorized by user prompt; owner mandates $0 cost and permanent immunity for `Tio-world`; hosted mutations strictly prohibited |
+| Status | **PR #36 REVIEW REMEDIATION (REVISION R1) COMPLETE; 80/80 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (ON_ERROR_STOP=1 + ROLE GRANTS VERIFIED); LIVE INVENTORY AUDITED (1 ACTIVE PROJECT, 1 FREE SLOT AVAILABLE); AWAITING OWNER APPROVAL FOR TEMP PROJECT CREATION** |
+| Objective | Remediate all 8 independent review findings on PR #36, update Supabase target architecture to cleanly separate REAL (`bsfwzvgynwriswapxpsp`) from disposable TEMP (`Tio-Tnyx-Auth-Temp`), verify live organization inventory via Supabase CLI, ensure zero host port exposure and zero fake passes, and prepare TEMP creation approval package without executing hosted mutations |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H0-R1 slice |
+| Previous agent | Agent / Task 06I-B1-H0 author |
+| Last audited HEAD | `2a8975f47265f0a8328f33f603d2cc9788bedc6c` (PR #36 initial commit) |
+| Tracking / approval | Task 06I-B1-H0-R1 authorized by user prompt; owner approves TEMP/REAL separation as target architecture; mandates $0 cost and permanent immunity for `Tio-world`; hosted mutations strictly prohibited |
 | Branch | `docs/task06i-b1-h0-hosted-readiness-harness` |
 | Base SHA / inspected HEAD | `7150cec4c2e1e9aaa8e75d2cbcb3a23a6dca532e` (`main`, verified up to date with `origin/main`) |
 | Platform and file scope | Documentation, `.ai/` context, isolated offline and local PostgreSQL test harnesses under `experiments/task06i/`, and dry-run probe runner; zero client Expo UI, production schema, or live Auth changes |
@@ -28,120 +28,145 @@
   - `Post-merge attribution audit` (Run `45008498571`): **SUCCESS**
   - `Commit attribution fixture tests` (Run `45008498533`): **SUCCESS**
 - Trusted guard variable reminder: Owner must remove `ATTRIBUTION_GUARD_CHANGE_APPROVED_PR_HEAD` from GitHub `attribution-guard-trusted` environment.
-- Branch `docs/task06i-b1-h0-hosted-readiness-harness` branched cleanly from updated `main`.
 
 ---
 
-## 2. Target-Safety Decision Record: Resolving the Architecture Conflict
+## 2. Live Supabase Organization & Project Inventory Audit (Phase B)
 
-### Architectural Background & Conflict
-- **Task 06I-A Specification:** Mandated creating an isolated, disposable managed Supabase project (`tio-auth-proof-disposable`) that could be tested, patched via Management API, probed, and deleted immediately without risk to existing data.
-- **Task 06I-B1 Observation & Quota Reality:** Supabase CLI inspection confirmed that organization `llmbrmxhyirtoqndazpg` ("Tio-tnyx") has exactly 2 active Free-tier projects:
-  1. `oykupyiitspujzpwwvuj` (`Tio-world`): Created 2026-08-14. Contains live production / other product data.
-  2. `bsfwzvgynwriswapxpsp` (`Tio-Tnyx`): Created 2026-11-14. Designated production target for Tio.
-  Active Free slots available: **0**.
-- **Owner's Explicit Mandates:**
-  1. **Strict $0 / Free Cost Policy:** *"dicijan mera free cost par kaam"* — Pro plan upgrade ($25/mo) is explicitly rejected.
-  2. **`Tio-world` Permanent Immunity:** *"tio-world nahi chhedna h"* — Must NEVER be paused, deleted, or modified under any circumstance.
-  3. **Testing Proposal:** *"uske liye jo project use kar rahe h vahi rahega agar testing bhi karna h to bhi yahi rahega fir final production m delate karna pade to same is project ko hi delate karenge then reganrate kar skte h"*.
+Inspection was executed using Supabase CLI v2.121.0 in read-only mode (`projects list --output-format json` and `orgs list --output-format json`):
 
-### Comprehensive Risk & Feasibility Assessment
+```powershell
+& "G:\dev\supabase-cli\v2.121.0\supabase.exe" orgs list --output-format json
+# {"organizations":[{"id":"llmbrmxhyirtoqndazpg","slug":"llmbrmxhyirtoqndazpg","name":"Tio-tnyx"}],"message":""}
 
-| Option | Strategy | Blast Radius & Data Safety | Financial Cost | Quota Feasibility | Reversibility & Operational Risk | Recommended Decision |
-|---|---|---|---|---|---|---|
-| **Option 1: Isolated Disposable Project** | Create temporary 3rd project | **Zero blast radius:** complete isolation from existing projects | **Requires paid Pro upgrade** ($25/mo) or project deletion | **BLOCKED on Free tier:** 0 slots available | High reversibility: project deleted after test | **BLOCKED:** Violates owner $0 mandate unless owner pauses/deletes a non-Tio-world project |
-| **Option 2: Existing Tio-Tnyx (`bsfwzvgynwriswapxpsp`) Testbed** | Apply hooks & route patches directly to `bsfwzvgynwriswapxpsp` | **High risk to existing project:**<br>• Management API PATCH modifies live project auth config<br>• Deploys `private_auth` schema and PL/pgSQL functions<br>• Inserts test users into `auth.users`<br>• **Project regeneration risk:** Deleting and regenerating project erases all tables, migrations, storage buckets, and generates NEW `anon` / `service_role` / `JWT_SECRET` keys, breaking any existing client builds | **$0.00** (Free tier) | **Feasible** without new slots | **Low to moderate reversibility:** Requires manual cleanup of schema, test users, and configuration revert | **NOT APPROVED AT THIS STAGE:** Deleting or regenerating Tio-Tnyx is NOT approved in this prompt. Requires separate explicit owner safety approval |
-| **Option 3: Deterministic Local Security Proof (Harness Baseline)** | Execute PL/pgSQL in local isolated PostgreSQL 17.11 container (0 exposed host ports) + pure offline evaluator | **Zero blast radius:** Zero cloud mutations, zero risk to `bsfwzvgynwriswapxpsp`, zero risk to `Tio-world` | **$0.00** | **Fully feasible** immediately in local environment and CI | **100% reversible:** Ephemeral container torn down immediately; zero state persisted | **APPROVED & IMPLEMENTED:** Complete contract verification achieved without cloud risk |
+& "G:\dev\supabase-cli\v2.121.0\supabase.exe" projects list --output-format json
+# {"projects":[{"id":"bsfwzvgynwriswapxpsp","ref":"bsfwzvgynwriswapxpsp","organization_id":"llmbrmxhyirtoqndazpg","organization_slug":"llmbrmxhyirtoqndazpg","name":"Tio-Tnyx","region":"ap-south-1","created_at":"2026-11-14T17:05:07.049773Z","status":"ACTIVE_HEALTHY","database":{"host":"db.bsfwzvgynwriswapxpsp.supabase.co","version":"17.11.0.019","postgres_engine":"17","release_channel":"ga"},"linked":false}],"message":""}
+```
 
-### Explicit Decision Record & Stop Gate
-1. **Target Selection Verdict:** Neither hosted target (`bsfwzvgynwriswapxpsp` nor `oykupyiitspujzpwwvuj`) is approved for live execution during Task 06I-B1-H0.
-2. **Deleting / Regenerating Tio-Tnyx:** Strictly **NOT APPROVED**.
-3. **`Tio-world` Immunity:** Permanently enshrined in code (`IMMUTABLE_FORBIDDEN_PROJECTS` in `hosted-probe-runner.mjs`).
-4. **Current Execution Mode:** Purely local deterministic verification and dry-run probe planning.
+### Inventory Findings & Quota Reconciliation
+1. **Organization:** `llmbrmxhyirtoqndazpg` ("Tio-tnyx")
+2. **Plan Tier:** Free plan
+3. **Current Active Projects (Count: 1):**
+   - Ref: `bsfwzvgynwriswapxpsp` | Name: `Tio-Tnyx` | Region: `ap-south-1` | Status: `ACTIVE_HEALTHY`
+   - Role: **REAL production application backend** (Protected, READ-ONLY during this phase).
+4. **`Tio-world` Status:** Historical ref `oykupyiitspujzpwwvuj` is **absent** from the latest connected organization project list. Per owner instruction: *"NOT a test target. Never touch, pause, restore, delete, reset or recreate it. It is absent from the latest connected inventory; do not infer why or take corrective actions."* It remains permanently hard-blocked in code.
+5. **Free Project Capacity:** Supabase Free tier allows up to **2 active projects** per organization. With 1 currently active project (`bsfwzvgynwriswapxpsp`), **1 additional active project slot is available**.
+6. **TEMP Project Status:** `Tio-Tnyx-Auth-Temp` does **NOT** exist yet.
+7. **Cost Quotation:** **$0.00** (Free tier active project slot; zero billable add-ons).
 
 ---
 
-## 3. Local Executable Security Proof & SQL/JS Parity Evidence
+## 3. Revised Target-Safety Architecture: Clean TEMP vs REAL Separation
 
-To provide empirical proof of the security design without touching cloud infrastructure, two complementary engines were implemented under `experiments/task06i/`:
+### Environmental Architecture Mapping
 
-### 1. The 12-Area Security Harness (`experiments/task06i/security-harness.mjs`)
-Deterministic evaluators modeling provider semantics across all 12 required areas:
-1. **Native OTP route disablement (`BYPASS-01`):** Simulates provider gateway; verifies HTTP 422 `email_provider_disabled` when `external_email_magic_link_disabled = true`.
-2. **Native signup route disablement (`BYPASS-02`):** Simulates provider gateway; verifies HTTP 422 `signup_disabled` when `disable_signup = true`.
-3. **Custom Access Token Hook authorization (`HOOK-01`):** Verifies that valid password authentication enriches JWT claims with dedicated root claim `claims.amr_authenticated = 'true'`.
-4. **Send Email Hook recovery suppression (`BYPASS-05`):** Verifies that `email_action_type = 'recovery'` triggers unhandled exception with SQLSTATE 42501, halting dispatch.
-5. **Password-origin JWT acceptance (`HOOK-01`, `SESSION-01`):** Models session creation in `auth.sessions` and validates active session acceptance.
-6. **Token refresh AMR preservation (`HOOK-02`):** Verifies session refresh succeeds if and only if RFC 8176 AMR object array preserves password origin.
-7. **Missing/malformed/unknown AMR rejection (`HOOK-06`):** Verifies fail-closed rejection for empty arrays, non-array types, missing `method` string, or unknown methods.
-8. **Mixed password + unauthorized AMR rejection (`HOOK-05`):** Verifies strict rejection when password is mixed with `otp`, `recovery`, `magiclink`, `signup`, `sso/saml`, or `anonymous`.
-9. **Invalid Send Email Hook payload rejection (`BYPASS-05`):** Verifies rejection of missing/null `email_data`, blank or whitespace-padded `email_action_type`, and undocumented aliases (`event.email`).
-10. **Hook error and timeout behavior (`HOOK-07`):** Models timeout (> 2000ms), SQL exceptions, and network errors aborting transactions fail-closed with HTTP 500 and 0 tokens issued.
-11. **Revoked Auth-session behavior (`SESSION-02`, `SESSION-03`):** Models Admin API password updates invalidating sessions; subsequent `/auth/v1/user` calls immediately return HTTP 403 `session_not_found`.
-12. **JWT consumer differences (`SESSION-04`, `SESSION-05`, `SESSION-06`):** Models stateful Auth API (immediate 403) vs stateless PostgREST/Storage (lingering validity bounded by `jwt_exp: 300s`) vs Edge Functions (`auth.getUser()` enforces immediate 403).
+| Environment | Project Name | Project Ref | Region | Purpose & Security Boundary | Protection Status |
+|---|---|---|---|---|---|
+| **REAL** | `Tio-Tnyx` | `bsfwzvgynwriswapxpsp` | `ap-south-1` | Future real application backend | **PROTECTED & READ-ONLY.** Permanently forbidden from test targeting in `hosted-probe-runner.mjs`. |
+| **TEMP** | `Tio-Tnyx-Auth-Temp` | *(To be generated upon creation)* | `ap-south-1` | Dedicated disposable managed Auth security testbed | **Awaiting Creation Approval.** Isolated database, independent JWT signing keys, distinct API keys, disposable test data only. |
+| **IMMUNE** | `Tio-world` | `oykupyiitspujzpwwvuj` | N/A | Historical project | **PERMANENT IMMUNITY.** Hardcoded in `IMMUTABLE_FORBIDDEN_PROJECTS`. Never touched, paused, restored, or created. |
 
-### 2. Live PostgreSQL 17.11 vs JavaScript Parity Verifier (`experiments/task06i/sql-contract-parity.mjs`)
-- **Zero Host Network Exposure:** Spawns an ephemeral Docker container from `postgres:17` with **NO `-p` port mapping**. Communicates exclusively via `docker exec -i psql`. Zero Windows listener ports, zero 0.0.0.0 binding.
-- **Canonical SQL:** Deploys `experiments/task06i/sql/hooks.sql` containing `private_auth.custom_access_token_hook` and `private_auth.send_email_hook`.
-- **Diagnostics Trapping:** Uses PL/pgSQL `GET STACKED DIAGNOSTICS v_sqlstate = RETURNED_SQLSTATE` to extract exact SQLSTATE codes.
-- **Parity Result:** **18 out of 18 test cases matched 100% exact parity** between live PostgreSQL execution and the JavaScript evaluator.
+### TEMP Project Creation Approval Package (Phase C)
+Before creating the disposable testbed, the following verification gates are documented for owner authorization:
+- **Selected Organization:** `llmbrmxhyirtoqndazpg` ("Tio-tnyx")
+- **Proposed Project Name:** `Tio-Tnyx-Auth-Temp`
+- **Region:** `ap-south-1` (Mumbai)
+- **Database Engine:** PostgreSQL 17
+- **Cost Ceiling:** **$0.00** (Strict Free tier active project; zero paid compute or custom domains)
+- **Blast Radius:** Completely isolated from REAL (`bsfwzvgynwriswapxpsp`). Deletion or reconfiguration of TEMP will have **zero impact** on REAL backend keys, database tables, or auth users.
+- **Owner Approval Gate:** Creation is paused. Project creation must be explicitly authorized by the owner before any provisioning command is executed.
 
 ---
 
-## 4. Hosted Probe Runner Specification & Safety Architecture
+## 4. Remediation of PR #36 Independent Review Findings (Phase A)
 
-The opt-in probe runner (`experiments/task06i/hosted-probe-runner.mjs`) is implemented for the future authorized stage with the following mandatory safety gates:
+All 8 review threads on PR #36 have been resolved with regression tests:
 
-1. **Immutable Project Rejection:** `oykupyiitspujzpwwvuj` (`Tio-world`) is hardcoded in `IMMUTABLE_FORBIDDEN_PROJECTS`. Passing it throws a fatal `CRITICAL_SECURITY_VIOLATION`.
-2. **Explicit Target Allowlist:** Only projects in `AUTHORIZED_TARGET_PROJECTS` (`bsfwzvgynwriswapxpsp`) are accepted; all others throw `unauthorized_target`.
-3. **Dual Authorization Gate:** Runner strictly defaults to `DRY_RUN`. `LIVE` execution requires **BOTH** the `--live` command-line flag **AND** the environment variable `TASK06I_HOSTED_PROBE_AUTHORIZED="true"`.
-4. **Secret Sanitization:** `sanitizeData()` redacts JWTs, API keys, service role keys, passwords, and tokens before logging or persistence (`[REDACTED]`).
-5. **Reserved Test Identities:** `validateTestIdentity()` strictly enforces RFC 2606 / RFC 6761 reserved domains (`*.invalid`, `*.example`, `*.test`). Any customer domain (e.g. `@gmail.com`) is rejected.
-6. **Rate Limiting:** Capped at 25 requests total, with 1000ms minimum interval throttling.
-7. **Fail-Fast Stop Gate:** If any critical bypass test fails (i.e. returns 200 OK or mints a session), the runner immediately halts all further execution.
-8. **Rollback & Cleanup:** Deletes test users via Admin API at run completion; **zero automated project deletion**.
+### 1. `PRRT_kwDOVtCmZc66ij5y` — Remove Fake LIVE Success Placeholder
+- **Root Cause:** In `hosted-probe-runner.mjs`, when `--live` mode was invoked without a `mockDispatcher`, the runner assigned `{ status: 500, passed: true }` and marked the run `COMPLETED`.
+- **Remediation:** Removed the synthetic placeholder. In `LIVE` mode, the runner now validates that `typeof mockDispatcher === 'function'`. If missing, it immediately throws `NO_HOSTED_DISPATCHER: live hosted execution requires a configured network dispatcher; synthetic placeholder execution prohibited`.
+- **Test:** `hosted-probe-runner.test.mjs` (Test 11).
+
+### 2. `PRRT_kwDOVtCmZc66ij5z` — Portable Node.js Docker Readiness Logic
+- **Root Cause:** `sql-contract-parity.mjs` used `powershell Start-Sleep -Milliseconds 400` in the readiness poll loop, failing on Linux/Ubuntu CI runners, and had an 8s timeout that could fail during image pulls.
+- **Remediation:** Replaced with portable synchronous Node.js sleep (`sleepSync` using `Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)`), increased container startup timeout to 30s, and expanded readiness retries to 20 cycles (up to 8s poll window).
+- **Test:** `sql-contract-parity.mjs` and `security-harness.test.mjs` (Test 13).
+
+### 3. `PRRT_kwDOVtCmZc66ij51` — Honest Classification When Docker Unavailable
+- **Root Cause:** When Docker was unavailable, `verifyParityMatrix` ran offline JS checks and counted them in `passedParity: 18`, falsely representing JS evaluation as PostgreSQL parity proof.
+- **Remediation:** When Docker is unavailable, the runner sets `passedParity: 0`, `status: 'POSTGRES_NOT_EXECUTED'`, `verifiedInPostgres: false`, and logs `Docker runtime unavailable in execution environment`. JS-only tests are never counted as PostgreSQL parity passes.
+- **Test:** `security-harness.test.mjs` (Test 13 conditional branch).
+
+### 4. `PRRT_kwDOVtCmZc66ij55` — Comprehensive Secret Sanitization
+- **Root Cause:** `sanitizeData` regex did not redact query parameters (`?token=...&password=...`), Bearer authorization headers with arbitrary tokens, or deeply nested credential arrays.
+- **Remediation:** Rewrote `sanitizeData` string regexes:
+  - Bearer headers: `/Bearer\s+[^\s"';,]+/gi` → `Bearer [REDACTED]`
+  - Full JWTs: `/eyJ[a-zA-Z0-9_-]+\.eyJ[a-zA-Z0-9_-]+\.[a-zA-Z0-9_-]+/g` → `[REDACTED_JWT]`
+  - Query parameters: `/([?&](?:token|token_hash|secret|password|api_key|apikey|service_role)=)([^&\s]+)/gi` → `$1[REDACTED]`
+  - Text key/values: `/((?:api_key|apikey|secret|password|token_hash|token|service_role)\s*[:=]\s*['"]?)[^'"\s&,]+/gi` → `$1[REDACTED]`
+  - Recursive object and array sanitization for any key containing `secret`, `password`, `token`, `key`, `auth`, `bearer`, or `credential`.
+- **Test:** `hosted-probe-runner.test.mjs` (Test 9).
+
+### 5. `PRRT_kwDOVtCmZc66ij56` — Request Interval Throttling Enforcement
+- **Root Cause:** `RATE_LIMIT_CONFIG.minIntervalMs` (1000ms) was defined but never invoked in the probe execution loop.
+- **Remediation:** Injected `sleepFn = (ms) => new Promise(r => setTimeout(r, ms))` and invoked `await sleepFn(RATE_LIMIT_CONFIG.minIntervalMs)` before each consecutive probe request ($i > 0$).
+- **Test:** `hosted-probe-runner.test.mjs` (Test 12: verified 17 throttling pauses of exactly 1000ms across 18 requests).
+
+### 6. `PRRT_kwDOVtCmZc66iotG` — Fail-Fast Stop Gate on Every Requirement Category
+- **Root Cause:** Stop gate checked `criticalBypass && probeResult.passed === false`, so failures in `Token Hook` (`HOOK-*`) or `Session & Consumer` (`SESSION-*`) did not halt execution and returned `status: 'COMPLETED'`.
+- **Remediation:** Removed category filtering from the stop gate. If **ANY** probe returns `passed === false`, the runner sets `aborted = true`, records `CRITICAL_SECURITY_FAILURE`, halts immediately, and returns `status: 'HALTED_ON_FAILURE'`.
+- **Tests:** `hosted-probe-runner.test.mjs` (Test 13 for `HOOK-01` failure; Test 14 for `SESSION-03` failure).
+
+### 7. `PRRT_kwDOVtCmZc66iotJ` — `ON_ERROR_STOP=1` and Least-Privilege Grants Verification
+- **Root Cause:** `psql` was invoked without `ON_ERROR_STOP=1`, and stock `postgres:17` lacks Supabase roles `anon` and `authenticated`, so `REVOKE` statements failed silently without failing deployment.
+- **Remediation:**
+  1. Updated `experiments/task06i/sql/hooks.sql` to idempotently provision `supabase_auth_admin`, `anon`, and `authenticated` fixture roles before grant execution.
+  2. Invoked `psql` with `-v ON_ERROR_STOP=1` for both deployment and test execution.
+  3. Implemented `verifyRoleGrantsAndRevocations(containerName)` checking `has_function_privilege`: confirms `supabase_auth_admin` has `EXECUTE`, while `anon`, `authenticated`, and `public` are explicitly revoked (`f`).
+- **Test:** `sql-contract-parity.mjs` and `security-harness.test.mjs` (Test 13).
+
+### 8. `PRRT_kwDOVtCmZc66iotM` — Deep-Compare Normalized SQL/JS Outputs & Discrepancy Detection
+- **Root Cause:** Output comparison only checked allow/deny boolean and `amr_authenticated`, so claim drops (e.g. missing `sub`) or non-empty Send Email responses would falsely pass parity.
+- **Remediation:**
+  1. Implemented deep equality comparison (`isDeepEqual` via `assert.deepStrictEqual`) comparing the full normalized JSON result on all successful cases.
+  2. Verified that denied cases assert exact SQLSTATE `42501` in both PostgreSQL and JS.
+  3. Added deliberate mismatch regression test verifying that dropped claims, tampered claims, or non-empty Send Email Hook outputs fail parity.
+- **Test:** `security-harness.test.mjs` (Test 14).
 
 ---
 
-## 5. Canonical Acceptance Matrix (18 Requirements)
+## 5. Local Security Harness & Parity Verification Results (Phase E)
 
-| Case ID | Category | Target / Vector | Expected Security Behavior | Local Harness Status | Hosted Cloud Status | Evidence Location |
-|---|---|---|---|---|---|---|
-| **BYPASS-01** | Native Bypass | `POST /auth/v1/otp` | HTTP 422 `email_provider_disabled` | **VERIFIED PASS** | **NOT TESTED** | `security-harness.test.mjs` (test 1) |
-| **BYPASS-02** | Native Bypass | `POST /auth/v1/signup` | HTTP 422 `signup_disabled` | **VERIFIED PASS** | **NOT TESTED** | `security-harness.test.mjs` (test 2) |
-| **BYPASS-03** | Native Bypass | `POST /auth/v1/verify` | HTTP 500 / Hook error (0 tokens) | **VERIFIED PASS** (contract & SQL) | **NOT TESTED** | `sql-contract-parity.mjs` (case 3) |
-| **BYPASS-04** | Native Bypass | Magiclink / Invite / Anon | HTTP 500 / Hook error (0 tokens) | **VERIFIED PASS** (contract & SQL) | **NOT TESTED** | `sql-contract-parity.mjs` (case 4) |
-| **BYPASS-05** | Native Bypass | `POST /auth/v1/recover` | Send Email Hook suppresses dispatch (SQLSTATE 42501); 0 tokens | **VERIFIED PASS** (contract & SQL) | **NOT TESTED** | `sql-contract-parity.mjs` (cases 9-14) |
-| **HOOK-01** | Token Hook | Password Sign-In | 200 OK; JWT has `amr: [password]` & `amr_authenticated = 'true'` | **VERIFIED PASS** (contract & SQL) | **NOT TESTED** | `sql-contract-parity.mjs` (case 1) |
-| **HOOK-02** | Token Hook | Password Token Refresh | 200 OK; refreshed JWT preserves `amr: [password]` | **VERIFIED PASS** (contract & SQL) | **NOT TESTED** | `sql-contract-parity.mjs` (case 2) |
-| **HOOK-03** | Token Hook | OTP-Origin Token Refresh | Denied fail-closed with SQLSTATE 42501 | **VERIFIED PASS** (contract & SQL) | **NOT TESTED** | `sql-contract-parity.mjs` (case 3) |
-| **HOOK-04** | Token Hook | Recovery-Origin Refresh | Denied fail-closed with SQLSTATE 42501 | **VERIFIED PASS** (contract & SQL) | **NOT TESTED** | `sql-contract-parity.mjs` (case 4) |
-| **HOOK-05** | Token Hook | Mixed AMR (`password` + other) | Denied fail-closed with SQLSTATE 42501 | **VERIFIED PASS** (contract & SQL) | **NOT TESTED** | `sql-contract-parity.mjs` (cases 5-6) |
-| **HOOK-06** | Token Hook | Missing / Malformed AMR | Denied fail-closed with SQLSTATE 42501 | **VERIFIED PASS** (contract & SQL) | **NOT TESTED** | `sql-contract-parity.mjs` (cases 7-8) |
-| **HOOK-07** | Token Hook | Hook Error & Timeout | HTTP 500; transaction aborted; 0 tokens issued | **VERIFIED PASS** (harness model) | **NOT TESTED** | `security-harness.test.mjs` (test 10) |
-| **SESSION-01**| Session & Consumer | Password Session Creation | Row created in `auth.sessions` | **VERIFIED PASS** (harness model) | **NOT TESTED** | `security-harness.test.mjs` (test 5) |
-| **SESSION-02**| Session & Consumer | Admin Password Reset | All active sessions invalidated in `auth.sessions` | **VERIFIED PASS** (harness model) | **NOT TESTED** | `security-harness.test.mjs` (test 11) |
-| **SESSION-03**| Session & Consumer | `/auth/v1/user` with Revoked Token | HTTP 403 `session_not_found` | **VERIFIED PASS** (harness model) | **NOT TESTED** | `security-harness.test.mjs` (test 11) |
-| **SESSION-04**| Session & Consumer | PostgREST with Revoked Token | Stateless acceptance until `exp`; bounded by 300s window | **VERIFIED PASS** (harness model) | **NOT TESTED** | `security-harness.test.mjs` (test 12) |
-| **SESSION-05**| Session & Consumer | Storage API with Revoked Token | Stateless acceptance until `exp`; bounded by 300s window | **VERIFIED PASS** (harness model) | **NOT TESTED** | `security-harness.test.mjs` (test 12) |
-| **SESSION-06**| Session & Consumer | Edge Function `auth.getUser()` | HTTP 403 `AuthSessionMissingError` immediately | **VERIFIED PASS** (harness model) | **NOT TESTED** | `security-harness.test.mjs` (test 12) |
+| Test Suite / Script | Command | Cases / Result | Exit Code | Notes |
+|---|---|---|---|---|
+| Task 06I Security Suite | `node --test experiments/task06i/*.test.mjs` | **80 passed**, 0 failed | `0` | All 4 test files pass: allowlist (37), evaluator (15), probe runner (14), harness (14) |
+| PostgreSQL 17.11 Parity Check | `node experiments/task06i/sql-contract-parity.mjs` | **18 passed**, 0 failed | `0` | Live Docker PostgreSQL 17.11 with zero host ports; `ON_ERROR_STOP=1`; grants verified |
+| Task 06H Historical Suite | `node --test experiments/task06h/*.test.mjs` | **115 passed**, 0 failed | `0` | Phase 1 Auth Shell contract baseline clean |
+| Workspace Repository Verification | `npm run verify` | **22 shell contract passed** | `0` | Tokens clean, `tsc` clean, `eslint` clean |
+| Base-to-HEAD Diff Check | `git diff --check origin/main...HEAD` | Clean, 0 whitespace errors | `0` | Zero trailing whitespace |
 
 ---
 
-## 6. Regression & Suite Verification
+## 6. Future Task 06I-B1-H1 Gate (Phase F)
 
-- **Task 06I Suite (`node --test experiments/task06i/*.test.mjs`):** **76 passed**, 0 failed (100% pass).
-- **Task 06H Historical Suite (`node --test experiments/task06h/*.test.mjs`):** **115 passed**, 0 failed (100% pass).
-- **Repository Verification (`npm run verify`):** **22 shell contract passed**, tokens guard clean, `tsc` clean, `eslint` clean.
-- **Git Diff & Whitespace (`git diff --check origin/main...HEAD`):** Clean, 0 whitespace errors.
-- **Protected CI Guards:** Zero modifications to `.github/workflows/*` or `package.json`. Existing Security CI remains fully active.
+Live probe execution remains strictly **BLOCKED**. Future Task 06I-B1-H1 plan will be prepared for the verified TEMP project only, requiring:
+1. Distinct TEMP project ref and region (`ap-south-1`).
+2. Explicit owner authorization of the exact Management API PATCH configuration.
+3. Hook deployment (`hooks.sql`) to TEMP database.
+4. Pre-execution active verification (asserting both hooks are registered before probes).
+5. Strict rate limits (max 25 requests, 1000ms spacing) and immediate stop on any failure.
+6. Test identities restricted to `*.invalid` / `*.test` domains.
+7. Post-test cleanup (Admin API user deletion).
+8. Strict isolation: Zero configuration or database replication from TEMP to REAL.
 
 ---
 
-## 7. Next Actions & Owner Approval Gates
+## 7. Next Permissible Actions & Approval Gates
 
-1. **Owner Decision on Target Strategy:** Decide whether to:
-   - Keep managed Auth proof in local harness / dry-run mode (safest, $0, zero cloud risk).
-   - Authorize live hosted probe execution on `bsfwzvgynwriswapxpsp` under strict rate limits and rollback without project deletion.
-2. **Review & PR Gate:** Review this PR and confirm that all local tests pass and safety boundaries are preserved.
-3. **Merge Gate:** Await independent re-review from `im-tio`. Do not merge automatically.
+1. **Owner Decision on TEMP Project Creation:**
+   - Authorize creating `Tio-Tnyx-Auth-Temp` in organization `llmbrmxhyirtoqndazpg` at region `ap-south-1` ($0 Free tier slot).
+   - If not approved, testing remains purely local.
+2. **Review & PR Gate:**
+   - PR #36 updated on branch `docs/task06i-b1-h0-hosted-readiness-harness`.
+   - Independent re-review requested from `im-tio`.
+   - Do not merge automatically.
