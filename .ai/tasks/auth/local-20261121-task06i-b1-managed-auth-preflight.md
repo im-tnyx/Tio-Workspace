@@ -1,19 +1,19 @@
-# Phase 1.2 Task 06I-B1-R4 — Managed Auth Feasibility & Security Boundary Verification Preflight
+# Phase 1.2 Task 06I-B1-R5 — Managed Auth Feasibility & Security Boundary Verification Preflight
 
-> **Preflight Report & Test Plan (Revision R4 — Send Email Hook Security Contract Closure).** Prepared under `AGENTS.md` operating rules. This document authorizes local investigation, documentation, offline test preparation, and read-only feasibility checks only. It does not authorize creating or modifying a hosted Supabase project. Production Real Auth remains **NO-GO**.
+> **Preflight Report & Test Plan (Revision R5 — Final Contract Corrections & Protected CI Approval Preparation).** Prepared under `AGENTS.md` operating rules. This document authorizes local investigation, documentation, offline test preparation, and read-only feasibility checks only. It does not authorize creating or modifying a hosted Supabase project. Production Real Auth remains **NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **PREFLIGHT COMPLETE (REVISION R4) — HOSTED PROVISIONING BLOCKED PENDING OWNER APPROVAL & SAFE TARGET RESOLUTION** |
-| Objective | Address PR #35 review findings (R4-01 strict Send Email Hook validation, R4-02 SQL & JS contract parity, R4-03 recovery endpoint response contract, R4-04 hosted evidence integrity labeling, R4-05 CI security guard blocker), maintain $0 cost and permanent immunity for `Tio-world`, and preserve branch protections |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-R4 slice |
-| Previous agent | Agent / Task 06I-B1-R3 author |
-| Last commit agent | `0861ef9d90afa6ad7a6e9dfd529aa8a711fdb221` (Task 06I-B1-R3 commit on PR #35) |
-| Tracking / approval | Task 06I-B1-R4 authorized by user prompt; PR #35 active; owner mandates $0 cost and permanent immunity for `Tio-world`; hosted mutations strictly prohibited |
+| Status | **PREFLIGHT COMPLETE (REVISION R5) — HOSTED PROVISIONING BLOCKED PENDING OWNER APPROVAL & SAFE TARGET RESOLUTION** |
+| Objective | Address PR #35 review findings (R5-01 strict unpadded action-type normalization parity, R5-02 hosted fail-closed evidence classification corrections, R5-03 test evidence count reconciliation, R5-04 BLK-05 protected CI workflow patch preparation), maintain $0 cost and permanent immunity for `Tio-world`, and preserve branch protections |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-R5 slice |
+| Previous agent | Agent / Task 06I-B1-R4 author |
+| Last commit agent | `c948d3bd9cb4b2a27d1400521fd89b08e48de51f` (Task 06I-B1-R4 commit on PR #35) |
+| Tracking / approval | Task 06I-B1-R5 authorized by user prompt; PR #35 active; owner mandates $0 cost and permanent immunity for `Tio-world`; hosted mutations strictly prohibited |
 | Branch | `docs/task06i-b1-managed-auth-preflight` |
 | Base SHA / inspected HEAD | `b7d4fda97979e734a85461e83bf119dbc1a9689c` (`main`, verified up to date with `origin/main`) |
 | Platform and file scope | Documentation, `.ai/` context, isolated offline preflight test harnesses under `experiments/task06i/`; zero client Expo UI, production schema, or live Auth changes |
-| Created / updated | 2026-11-21 |
+| Created / updated | 2026-11-22 |
 
 ---
 
@@ -221,7 +221,7 @@ To ensure deterministic verification of the provider hook contract before any ho
 
 ### Offline Artifacts Implemented
 1. `experiments/task06i/hook-allowlist-contract.mjs`: Pure JavaScript implementation of the official `custom_access_token_hook` specification, enforcing RFC 8176 object-array traversal, top-level `authentication_method` validation, strict allowlist (only `'password'` allowed), and SQLSTATE 42501 fail-closed exceptions.
-2. `experiments/task06i/hook-allowlist-contract.test.mjs`: Node native test suite verifying all 10 provider-shaped test fixtures from Task 06I-A Section 4.2.2 plus negative regression tests for mixed AMR, malformed AMR, and missing `user_metadata` handling (24 tests).
+2. `experiments/task06i/hook-allowlist-contract.test.mjs`: Node native test suite verifying all 10 provider-shaped test fixtures from Task 06I-A Section 4.2.2 plus negative regression tests for mixed AMR, malformed AMR, missing `user_metadata` handling, canonical unpadded normalization policy, and Send Email Hook native suppression (37 tests).
 3. `experiments/task06i/preflight-evaluator.mjs`: Preflight matrix evaluator, 18-point requirement set validator, and quota/target strategy evaluator.
 4. `experiments/task06i/preflight-evaluator.test.mjs`: Unit tests verifying the 18-point security matrix, fail-closed gate decisions on failures/blockers, and target strategy separation (15 tests).
 
@@ -233,7 +233,7 @@ To eliminate ambiguity, all capabilities and assertions are categorized across t
 
 > [!IMPORTANT]
 > **Offline Contract Tests Are NOT Hosted Integration Proof:**
-> The 49 unit tests in `experiments/task06i/` verify only that the local JavaScript specification and SQL policy contract logic parse inputs, traverse RFC 8176 AMR arrays, and throw fail-closed SQLSTATE 42501 exceptions correctly. They **do not prove** that managed Supabase Cloud executes hooks without latency timeouts, preserves AMR arrays across repeated token refreshes, or reliably enforces Management API route disablements.
+> The 52 unit tests in `experiments/task06i/` verify only that the local JavaScript specification and SQL policy contract logic parse inputs, traverse RFC 8176 AMR arrays, and throw fail-closed SQLSTATE 42501 exceptions correctly. They **do not prove** that managed Supabase Cloud executes hooks without latency timeouts, preserves AMR arrays across repeated token refreshes, or reliably enforces Management API route disablements.
 
 ### Test Execution Results
 Executed test commands:
@@ -242,13 +242,13 @@ Executed test commands:
 node --test experiments/task06i/*.test.mjs
 ```
 
-**Results (49 passed, 0 failed):**
-- 34 Hook Contract tests (Fixtures 1–10; mixed AMR with `email/signup`, `sso/saml`, `email/change`, and unknown methods rejected; non-object elements rejected; missing/blank method rejected; server-owned `amr_authenticated` claim added regardless of `user_metadata` presence; Send Email Hook native recovery, signup, magiclink, invite, and email_change email suppression verified fail-closed with SQLSTATE 42501; malformed/missing/non-object `email_data` rejected; missing/blank `email_action_type` rejected; undocumented aliases `event.email` and `event.action_type` strictly rejected; unknown action types fail closed with SQLSTATE 42501; permitted `custom_notification` returns `{}`).
+**Results (52 passed, 0 failed):**
+- 37 Hook Contract tests (Fixtures 1–10; mixed AMR with `email/signup`, `sso/saml`, `email/change`, and unknown methods rejected; non-object elements rejected; missing/blank method rejected; server-owned `amr_authenticated` claim added regardless of `user_metadata` presence; Send Email Hook native recovery, signup, magiclink, invite, email_change, and reauthentication email suppression verified fail-closed with SQLSTATE 42501; malformed/missing/non-object `email_data` rejected; missing/blank `email_action_type` rejected; canonical unpadded normalization policy enforced with negative tests for leading, trailing, and surrounded whitespace; undocumented aliases `event.email` and `event.action_type` strictly rejected; unknown action types fail closed with SQLSTATE 42501; permitted synthetic test seam `custom_notification` returns `{}`).
 - 15 Preflight Evaluator tests (18 requirements validated; empty, duplicate, missing, or unknown IDs rejected; `VERIFIED FAIL` and `BLOCKED` surface as blocking verdicts; `NOT TESTED` prevents completion; quota and existing project target strategies evaluated; production Auth unconditionally `NO-GO`).
 
 ### CI Status & Commit Attribution Guard Boundary
 - **Automated CI Integration Status:** **OPEN BLOCKER (BLK-05)**.
-- While offline tests run deterministically via `node --test experiments/task06i/*.test.mjs` (44/44 PASS) and shell contract tests pass (`npm test`, 22/22 PASS), automated execution inside GitHub Actions PR checks requires modifying or creating workflow files under `.github/workflows/` (e.g. `.github/workflows/security-experiments.yml`).
+- While offline tests run deterministically via `node --test experiments/task06i/*.test.mjs` (52/52 PASS) and shell contract tests pass (`npm test`, 22/22 PASS), automated execution inside GitHub Actions PR checks requires modifying or creating workflow files under `.github/workflows/` (e.g. `.github/workflows/security-experiments.yml`).
 - In this repository, `.github/workflows/*` is an explicitly guarded path under `scripts/check_guard_integrity.sh`. Any pull request modifying `.github/workflows/*` is automatically blocked by the App-owned `Commit attribution guard` (Run exit code 1) unless the repository owner sets the trusted environment variable `ATTRIBUTION_GUARD_CHANGE_APPROVED_PR_HEAD="35:<HEAD_SHA>"`.
 - Furthermore, modifying `package.json` to trigger existing workflows is inappropriate because `phase1-shell.yml` executes `npm run expo:check` (`expo install --check`), which fails due to upstream npm releases for Expo SDK 58 (`expo@~58.0.26`, `expo-router@~58.0.32`). Updating mobile dependencies is outside the authorized scope of Task 06I-B1 preflight.
 - Therefore, to preserve branch protections and prevent false-pass reporting, `.github/workflows/*` and `package.json` remain untouched on this branch, and automated CI integration is formally tracked as an open blocker awaiting owner-authorized workflow update.
@@ -358,7 +358,7 @@ BEGIN
 END;
 $$;
 
--- 2. Send Email Hook (Strict Native Email Suppression & Fail-Closed Policy)
+-- 2. Send Email Hook (Strict Native Email Suppression & Canonical Normalization Policy)
 CREATE OR REPLACE FUNCTION private_auth.send_email_hook(event jsonb)
 RETURNS jsonb
 LANGUAGE plpgsql
@@ -381,18 +381,19 @@ BEGIN
   END IF;
 
   v_action_type := v_email_data->>'email_action_type';
-  IF v_action_type IS NULL OR trim(v_action_type) = '' THEN
-    RAISE EXCEPTION 'send_email_hook: missing or blank email_action_type'
+  -- Enforce canonical normalization policy: strictly reject missing, blank, or whitespace-padded action types
+  IF v_action_type IS NULL OR trim(v_action_type) = '' OR v_action_type <> trim(v_action_type) THEN
+    RAISE EXCEPTION 'send_email_hook: invalid, blank, or padded email_action_type'
       USING ERRCODE = '42501';
   END IF;
 
-  -- Prohibit native recovery, signup, magiclink, invite, and email_change email dispatch
-  IF v_action_type IN ('recovery', 'signup', 'magiclink', 'invite', 'email_change') THEN
+  -- Prohibit native recovery, signup, magiclink, invite, email_change, and reauthentication email dispatch
+  IF v_action_type IN ('recovery', 'signup', 'magiclink', 'invite', 'email_change', 'reauthentication') THEN
     RAISE EXCEPTION 'send_email_hook: native % email dispatch suppressed by security policy', v_action_type
       USING ERRCODE = '42501';
   END IF;
 
-  -- Allowlist for permitted future custom email actions (e.g. 'custom_notification')
+  -- Allowlist for permitted actions (synthetic test seam only; official Supabase GoTrue does not emit custom_notification natively)
   IF v_action_type IN ('custom_notification') THEN
     RETURN '{}'::jsonb;
   END IF;
@@ -423,16 +424,15 @@ Before executing any native bypass tests (`BYPASS-01` through `BYPASS-05`), the 
 2. **Permission Check:** Verify that role `supabase_auth_admin` can execute both functions and that `public` / `anon` execution is revoked.
 3. **Fail-Closed Gate:** If either hook is missing, disabled (`false`), unreachable, or unhealthy, the environment is immediately marked **UNSAFE / BLOCKED**, halting all further test execution.
 
-### Hook Failure and Fallback Behavior
-- **Custom Access Token Hook Failure:**
-  - If the hook function throws an exception (`RAISE EXCEPTION ... USING ERRCODE = '42501'`), Supabase GoTrue aborts JWT issuance immediately and returns HTTP 500 (`Error invoking access token hook`). ZERO tokens are issued.
-  - If the hook times out (Supabase default timeout is 2 seconds for Postgres functions), GoTrue aborts and returns HTTP 500. ZERO tokens are issued.
-  - If the hook returns malformed JSON or lacks required structure, GoTrue aborts. Fail-closed is absolute.
-- **Send Email Hook Failure & Fallback (Hosted Unverified / NOT TESTED):**
-  - **Exception Abort (Design Intent):** When `send_email_hook` raises an exception with SQLSTATE `42501`, GoTrue is documented to abort the authentication/recovery transaction and return an HTTP error (e.g. HTTP 500 / hook execution failure). Under this path, ZERO emails or recovery tokens are dispatched via SMTP or delivered to the user.
-  - **Hosted SMTP Fallback Unverified:** The assertion that GoTrue aborts without falling back to default SMTP delivery when the Send Email Hook fails or raises SQLSTATE 42501 is documented provider behavior, but remains **Hosted Unverified / NOT TESTED** until empirically validated on live managed Supabase infrastructure in Stage 06I-B1.
-  - **Absorption vs Error Response:** If GoTrue absorbs hook exceptions into an HTTP 200 generic response (for anti-enumeration purposes) or surfaces HTTP 500, both outcomes must ensure that zero usable tokens or emails reach external networks. This behavior remains **Hosted Unverified / NOT TESTED**.
-  - **Fail-Closed Guarantee:** Under no circumstance does an unhandled hook exception, timeout, or malformed payload fail open to native recovery token dispatch or unverified session issuance.
+### Hook Failure and Fallback Behavior (Design Target / Documented Provider Behavior / Hosted Unverified)
+- **Custom Access Token Hook Failure (Documented Provider Behavior / Hosted Unverified):**
+  - **Design Target:** If the hook function throws an exception (`RAISE EXCEPTION ... USING ERRCODE = '42501'`) or times out (Supabase default timeout is 2 seconds for Postgres functions), Supabase GoTrue is documented to abort JWT issuance immediately and return HTTP 500 (`Error invoking access token hook`), issuing zero tokens.
+  - **Observed vs Hosted Evidence:** While hook denial was empirically observed in local Docker GoTrue (Task 06D/06H), timeout handling, malformed JSON abortion, and absence of fallback on managed Supabase Cloud infrastructure remain **DOCUMENTED PROVIDER BEHAVIOR / HOSTED UNVERIFIED / NOT TESTED** until proven in Stage 06I-B1.
+- **Send Email Hook Failure & Fallback (Documented Provider Behavior / Hosted Unverified):**
+  - **Exception Abort (Design Target):** When `send_email_hook` raises an exception with SQLSTATE `42501`, GoTrue is documented to abort the authentication/recovery transaction and return an HTTP error (e.g. HTTP 500 / hook execution failure). Under this path, zero recovery tokens or emails should reach SMTP or the user.
+  - **Hosted SMTP Fallback Unverified:** The assertion that GoTrue aborts without falling back to default SMTP delivery when the Send Email Hook fails or raises SQLSTATE 42501 is documented provider behavior, but remains **DOCUMENTED PROVIDER BEHAVIOR / HOSTED UNVERIFIED / NOT TESTED** until empirically validated on live managed Supabase infrastructure in Stage 06I-B1.
+  - **Absorption vs Error Response:** If GoTrue absorbs hook exceptions into an HTTP 200 generic response (for anti-enumeration purposes) or surfaces HTTP 500, both outcomes are required to ensure that zero usable tokens or emails reach external networks. This behavior remains **HOSTED UNVERIFIED / NOT TESTED**.
+  - **Mandatory Fail-Closed Acceptance Target (Design Target / Hosted Unverified):** Under Tio's mandatory security boundary, an unhandled hook exception, timeout, or malformed payload MUST fail closed with zero native recovery token dispatch, zero unverified session issuance, and zero fallback to default SMTP. However, whether managed Supabase Cloud GoTrue reliably satisfies this fail-closed guarantee under all hosted failure modes without failing open or falling back to default SMTP remains **DOCUMENTED PROVIDER BEHAVIOR / HOSTED UNVERIFIED / NOT TESTED** until empirically proven in Stage 06I-B1.
 
 ### Deterministic Test Identities
 - `synthetic-admin-test-1@example.invalid` (RFC 2606 non-routable domain)
@@ -451,20 +451,76 @@ The following items are explicit blockers that halt execution before any hosted 
 | **BLK-02** (Target Safety & Production Boundary) | Explicit owner approval is required before any hosted project modification or testing. Production project `bsfwzvgynwriswapxpsp` and `Tio-world` remain strictly READ-ONLY. | Prevents accidental configuration mutations or production destruction. | Bounded owner authorization required before any future hosted execution. Deleting or regenerating production project is NOT approved at this stage. If no safe isolated hosted target exists, hosted testing is BLOCKED (`NO_SAFE_HOSTED_TARGET`). |
 | **BLK-03** (Hosted Empirical Gap) | Management API parameter behavior, recovery email suppression, and AMR refresh behavior remain unverified on live infrastructure. | Cannot declare Option B feasible without empirical proof. | Authorize Stage 06I-B1 test execution under separate future gate. |
 | **BLK-04** (Production Auth Gate) | Pinned GoTrue security vulnerabilities (AUTH-12, AUTH-17, AUTH-22) remain open in native runtime. | Production Auth cannot be safely enabled. | Production Auth remains strictly **NO-GO**. |
-| **BLK-05** (Guard-Protected CI Workflow Approval) | Adding automated CI for `experiments/task06i` modifies `.github/workflows/*`, which is strictly protected by `scripts/check_guard_integrity.sh`. | Prevents unreviewed workflow modifications from running without owner authorization. | Owner review and approval procedure: Owner independently reviews workflow patch, sets trusted variable `ATTRIBUTION_GUARD_CHANGE_APPROVED_PR_HEAD="35:<HEAD_SHA>"`, and runs guard check. |
+| **BLK-05** (Guard-Protected CI Workflow Approval) | Adding automated CI for `experiments/task06i` modifies `.github/workflows/*`, which is strictly protected by `scripts/check_guard_integrity.sh`. | Prevents unreviewed workflow modifications from running without owner authorization. | **OPEN BLOCKER.** Minimal proposed workflow patch prepared below. Required owner approval procedure: Owner independently reviews workflow patch, sets trusted environment variable `ATTRIBUTION_GUARD_CHANGE_APPROVED_PR_HEAD="35:<CURRENT_40_CHAR_HEAD_SHA>"`, applies patch, verifies guard passes, and clears variable immediately after merge. |
+
+### Proposed CI Workflow Patch for BLK-05 (Awaiting Owner Review & Authorization)
+
+To provide automated CI regression protection for `experiments/task06i/**` without triggering unrelated Expo SDK version checks in `phase1-shell.yml`, the following minimal standalone workflow is proposed for `.github/workflows/security-experiments.yml`:
+
+```yaml
+name: Security experiment checks
+
+on:
+  pull_request:
+    paths:
+      - 'experiments/task06i/**'
+      - '.github/workflows/security-experiments.yml'
+  push:
+    branches:
+      - main
+    paths:
+      - 'experiments/task06i/**'
+      - '.github/workflows/security-experiments.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-experiments-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Task 06I Security Contract Tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Run Task 06I security tests
+        run: node --test experiments/task06i/*.test.mjs
+```
+
+#### Required Owner Approval & Activation Procedure
+Per [`docs/26-COMMIT-ATTRIBUTION-GUARD.md`](../../../docs/26-COMMIT-ATTRIBUTION-GUARD.md) and `scripts/check_guard_integrity.sh`:
+1. **Independent Review:** The repository owner independently reviews the proposed `.github/workflows/security-experiments.yml` patch above.
+2. **Set Trusted Variable:** In **GitHub Repository Settings → Environments → `attribution-guard-trusted` → Environment variables**, the owner sets:
+   `ATTRIBUTION_GUARD_CHANGE_APPROVED_PR_HEAD="35:<CURRENT_40_CHAR_HEAD_SHA>"`
+3. **Commit & Push:** The approved workflow file is committed and pushed to `docs/task06i-b1-managed-auth-preflight`.
+4. **Guard Verification:** `scripts/check_guard_integrity.sh` verifies that the PR and HEAD match the variable, allowing the App-owned `Commit attribution guard` to pass.
+5. **Clear Variable:** Immediately upon merge or branch update, the owner removes or clears the environment variable.
 
 ---
 
 ## 9. STOP / GO Decision & Recommendations
 
 ### Final Assessment
-- **Task 06I-B1-R4 Preflight Deliverable:** **VERIFIED PASS** (Documentation audited, evidence classifications corrected, 18-point test matrices defined, hook registration and enablement contract explicitly specified, recovery endpoint response contract aligned, Send Email Hook SQL/JS contract parity verified fail-closed, and 49 offline unit tests passing).
+- **Task 06I-B1-R5 Preflight Deliverable:** **VERIFIED PASS** (Documentation audited, evidence classifications corrected, 18-point test matrices defined, hook registration and enablement contract explicitly specified, recovery endpoint response contract aligned, canonical unpadded action-type normalization verified in SQL & JS with fail-closed parity, hosted evidence labeled Hosted Unverified / NOT TESTED, protected CI workflow patch prepared for BLK-05, and 52 offline unit tests passing).
 - **Disposable Hosted Project Execution:** **BLOCKED (STOP)** (Awaiting separate owner authorization and safe isolated target resolution).
 - **Managed Supabase Auth Feasibility:** **NOT VERIFIED ON HOSTED** (Documented capabilities indicate feasibility, but empirical hosted proof is mandatory).
 - **Production Real Auth:** **STRICT NO-GO**.
 
 ### Recommended Next Action
-1. Review this finalized Task 06I-B1-R4 preflight package and PR #35.
+1. Review this finalized Task 06I-B1-R5 preflight package and PR #35.
 2. Maintain `bsfwzvgynwriswapxpsp` and `oykupyiitspujzpwwvuj` as strictly READ-ONLY.
 3. When the owner chooses to authorize future hosted feasibility testing, execute the 18-point Stage 06I-B1 test checklist against an authorized safe target under strict cleanup guarantees.
 

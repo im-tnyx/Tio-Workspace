@@ -112,9 +112,16 @@ export const SUPPRESSED_EMAIL_ACTIONS = new Set([
   'signup',
   'magiclink',
   'invite',
-  'email_change'
+  'email_change',
+  'reauthentication'
 ]);
 
+/**
+ * Permitted action allowlist.
+ * NOTE: 'custom_notification' is a synthetic test seam only for specification verification.
+ * Official Supabase GoTrue does not emit 'custom_notification'; native provider actions are
+ * limited to authentication lifecycle events, all of which are suppressed under Tio policy.
+ */
 export const PERMITTED_EMAIL_ACTIONS = new Set([
   'custom_notification'
 ]);
@@ -122,14 +129,15 @@ export const PERMITTED_EMAIL_ACTIONS = new Set([
 /**
  * Send Email Hook specification evaluator.
  * Mirrors private_auth.send_email_hook(event jsonb) SQL function.
- * Enforces strict email suppression for native recovery, signup, magiclink, invite, and email_change endpoints.
- * Strictly validates that email_data is a non-null JSON object and email_action_type is a non-blank string.
+ * Enforces strict email suppression for native recovery, signup, magiclink, invite, email_change, and reauthentication endpoints.
+ * Strictly validates that email_data is a non-null JSON object and email_action_type is an exact unpadded string.
+ * Enforces canonical unpadded normalization policy: padded action types (e.g. ' recovery ') are strictly rejected.
  * Disallows undocumented aliases (e.g. event.email or event.action_type).
- * Fails closed with SQLSTATE 42501 on malformed payloads, suppressed native actions, or unknown action types.
+ * Fails closed with SQLSTATE 42501 on malformed payloads, padded actions, suppressed native actions, or unknown action types.
  *
  * @param {object} event Provider hook input event
  * @returns {object} Response object ({}) matching '{}'::jsonb if allowed
- * @throws {Error} Fail-closed exception with SQLSTATE 42501 if suppressed, unrecognized, or malformed
+ * @throws {Error} Fail-closed exception with SQLSTATE 42501 if suppressed, unrecognized, padded, or malformed
  */
 export function evaluateSendEmailHook(event) {
   if (!event || typeof event !== 'object' || Array.isArray(event)) {
@@ -146,28 +154,32 @@ export function evaluateSendEmailHook(event) {
   }
 
   const actionType = emailData.email_action_type;
-  if (typeof actionType !== 'string' || !actionType.trim()) {
-    const err = new Error('missing_email_action_type: email_data must specify a non-empty string email_action_type');
+  if (actionType === undefined || actionType === null) {
+    const err = new Error('missing_email_action_type: email_data must specify email_action_type');
     err.code = '42501';
     throw err;
   }
 
-  const normalizedAction = actionType.trim();
-
-  // Strict suppression list: native recovery, signup, magiclink, invite, and email_change dispatch
-  if (SUPPRESSED_EMAIL_ACTIONS.has(normalizedAction)) {
-    const err = new Error(`native_${normalizedAction}_email_dispatch_suppressed_by_security_policy`);
+  if (typeof actionType !== 'string' || !actionType.trim() || actionType !== actionType.trim()) {
+    const err = new Error('invalid_email_action_type: email_data must specify an exact unpadded string email_action_type');
     err.code = '42501';
     throw err;
   }
 
-  // Explicit allowlist: permitted future custom notification actions
-  if (PERMITTED_EMAIL_ACTIONS.has(normalizedAction)) {
+  // Strict suppression list: native recovery, signup, magiclink, invite, email_change, and reauthentication dispatch
+  if (SUPPRESSED_EMAIL_ACTIONS.has(actionType)) {
+    const err = new Error(`native_${actionType}_email_dispatch_suppressed_by_security_policy`);
+    err.code = '42501';
+    throw err;
+  }
+
+  // Explicit allowlist: permitted synthetic test actions
+  if (PERMITTED_EMAIL_ACTIONS.has(actionType)) {
     return {};
   }
 
   // Fail-closed on all unknown or unsupported action types
-  const err = new Error(`unrecognized_email_action_type_${normalizedAction}`);
+  const err = new Error(`unrecognized_email_action_type_${actionType}`);
   err.code = '42501';
   throw err;
 }

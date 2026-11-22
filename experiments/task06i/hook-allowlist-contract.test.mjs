@@ -473,8 +473,8 @@ test('R4-01: Native magiclink email dispatch is suppressed fail-closed (SQLSTATE
   });
 });
 
-test('R4-01: Native invite and email_change email dispatches are suppressed fail-closed (SQLSTATE 42501)', () => {
-  for (const action of ['invite', 'email_change']) {
+test('R4-01 / R5-01: Native invite, email_change, and reauthentication email dispatches are suppressed fail-closed (SQLSTATE 42501)', () => {
+  for (const action of ['invite', 'email_change', 'reauthentication']) {
     const event = {
       user: { id: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4', email: 'user@example.invalid' },
       email_data: {
@@ -505,9 +505,9 @@ test('R4-01 / R4-02: Send Email Hook fails closed on missing, null, or malformed
 
 test('R4-01 / R4-02: Send Email Hook fails closed on missing, blank, or whitespace email_action_type', () => {
   assert.throws(() => evaluateSendEmailHook({ user: {}, email_data: {} }), /missing_email_action_type/);
-  assert.throws(() => evaluateSendEmailHook({ user: {}, email_data: { email_action_type: '' } }), /missing_email_action_type/);
-  assert.throws(() => evaluateSendEmailHook({ user: {}, email_data: { email_action_type: '   ' } }), /missing_email_action_type/);
-  assert.throws(() => evaluateSendEmailHook({ user: {}, email_data: { email_action_type: 123 } }), /missing_email_action_type/);
+  assert.throws(() => evaluateSendEmailHook({ user: {}, email_data: { email_action_type: '' } }), /invalid_email_action_type/);
+  assert.throws(() => evaluateSendEmailHook({ user: {}, email_data: { email_action_type: '   ' } }), /invalid_email_action_type/);
+  assert.throws(() => evaluateSendEmailHook({ user: {}, email_data: { email_action_type: 123 } }), /invalid_email_action_type/);
 });
 
 test('R4-02: Send Email Hook strictly rejects undocumented aliases (event.email and event.action_type)', () => {
@@ -545,7 +545,7 @@ test('R4-01 / R4-02: Unknown action types fail closed with SQLSTATE 42501', () =
   assert.equal(outcome.sqlstate, '42501');
 });
 
-test('R4-02: Permitted custom notification returns empty object {} matching SQL return value', () => {
+test('R4-02 / R5-01: Permitted custom notification returns empty object {} matching SQL return value', () => {
   const customEvent = {
     user: { id: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4' },
     email_data: {
@@ -559,4 +559,63 @@ test('R4-02: Permitted custom notification returns empty object {} matching SQL 
   assert.equal(outcome.allowed, true);
   assert.equal(outcome.result, 'ALLOWED');
   assert.deepEqual(outcome.response, {});
+});
+
+// R5-01: Canonical Normalization Policy & Whitespace-Padded Action Type Tests
+test('R5-01: Leading, trailing, or surrounded whitespace in email_action_type fails closed (SQLSTATE 42501)', () => {
+  const paddedActions = [
+    ' recovery',
+    'recovery ',
+    ' recovery ',
+    ' custom_notification',
+    'custom_notification ',
+    ' custom_notification ',
+    ' unknown_action',
+    'unknown_action ',
+    ' unknown_action '
+  ];
+
+  for (const action of paddedActions) {
+    const event = {
+      user: { id: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4' },
+      email_data: { email_action_type: action }
+    };
+    assert.throws(() => evaluateSendEmailHook(event), (err) => {
+      assert.match(err.message, /invalid_email_action_type/);
+      assert.equal(err.code, '42501');
+      return true;
+    });
+    const outcome = classifySendEmailOutcome(event);
+    assert.equal(outcome.allowed, false);
+    assert.equal(outcome.result, 'SUPPRESSED_FAIL_CLOSED');
+    assert.equal(outcome.sqlstate, '42501');
+  }
+});
+
+test('R5-01: Empty or whitespace-only email_action_type fails closed (SQLSTATE 42501)', () => {
+  for (const blankAction of ['', ' ', '   ', '\t', '\n']) {
+    const event = {
+      user: { id: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4' },
+      email_data: { email_action_type: blankAction }
+    };
+    assert.throws(() => evaluateSendEmailHook(event), (err) => {
+      assert.match(err.message, /invalid_email_action_type/);
+      assert.equal(err.code, '42501');
+      return true;
+    });
+  }
+});
+
+test('R5-01: Non-string email_action_type values fail closed (SQLSTATE 42501)', () => {
+  for (const nonStringAction of [123, true, false, {}, [], null, undefined]) {
+    const event = {
+      user: { id: 'd0407a9a-3f43-4e4b-9e20-5c3b5d38a0a4' },
+      email_data: { email_action_type: nonStringAction }
+    };
+    assert.throws(() => evaluateSendEmailHook(event), (err) => {
+      assert.match(err.message, /(?:invalid|missing)_email_action_type/);
+      assert.equal(err.code, '42501');
+      return true;
+    });
+  }
 });
