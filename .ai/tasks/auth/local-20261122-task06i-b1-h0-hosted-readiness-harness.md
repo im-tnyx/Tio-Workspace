@@ -4,8 +4,8 @@
 
 | Field | Value |
 |---|---|
-| Status | **PR #36 P1 SECURITY REMEDIATION (REVISION R2) COMPLETE; 90/90 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (ON_ERROR_STOP=1 + ROLE GRANTS VERIFIED); LIVE INVENTORY AUDITED (1 ACTIVE PROJECT, 1 FREE SLOT AVAILABLE); TEMP LIFECYCLE & DELETION POLICY FORMALIZED (OWNER DIRECTION); 3 P1 THREADS REMEDIATED WITH TESTS; AWAITING OWNER APPROVAL FOR TEMP PROJECT CREATION** |
-| Objective | Resolve the three independent P1 security findings on PR #36 (immutable project boundary, strict probe outcome validation, and serialized JSON secret redaction), preserve the codified TEMP lifecycle policy, maintain zero host port exposure, and verify all test suites without executing hosted mutations |
+| Status | **PR #36 P1 SECURITY REMEDIATION (REVISION R2) COMPLETE; 91/91 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (ON_ERROR_STOP=1 + ROLE GRANTS VERIFIED); LIVE INVENTORY AUDITED (2 ACTIVE PROJECTS: REAL `bsfwzvgynwriswapxpsp` + OWNER-CREATED TEMP `wvdabiwbaavfggcmpizd`); TEMP LIFECYCLE & DELETION POLICY PRESERVED; 3 P1 THREADS RESOLVED; AWAITING INDEPENDENT RE-REVIEW SIGN-OFF FROM IM-TIO** |
+| Objective | Resolve the three independent P1 security findings on PR #36 (immutable project boundary, strict probe outcome validation, and serialized JSON secret redaction), configure verified owner TEMP project `wvdabiwbaavfggcmpizd`, preserve the codified TEMP lifecycle policy, maintain zero host port exposure, and verify all test suites without executing hosted mutations |
 | Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H0-R2 slice |
 | Previous agent | Agent / Task 06I-B1-H0-R1 author |
 | Last audited HEAD | `a1305e6ee7678de84a44a2b66de224e5c68b5ee1` (PR #36 post-H0-R1 commit) |
@@ -40,19 +40,19 @@ Inspection was executed using Supabase CLI v2.121.0 in read-only mode (`projects
 # {"organizations":[{"id":"llmbrmxhyirtoqndazpg","slug":"llmbrmxhyirtoqndazpg","name":"Tio-tnyx"}],"message":""}
 
 & "G:\dev\supabase-cli\v2.121.0\supabase.exe" projects list --output-format json
-# {"projects":[{"id":"bsfwzvgynwriswapxpsp","ref":"bsfwzvgynwriswapxpsp","organization_id":"llmbrmxhyirtoqndazpg","organization_slug":"llmbrmxhyirtoqndazpg","name":"Tio-Tnyx","region":"ap-south-1","created_at":"2026-11-14T17:05:07.049773Z","status":"ACTIVE_HEALTHY","database":{"host":"db.bsfwzvgynwriswapxpsp.supabase.co","version":"17.11.0.019","postgres_engine":"17","release_channel":"ga"},"linked":false}],"message":""}
+# {"projects":[{"id":"bsfwzvgynwriswapxpsp","ref":"bsfwzvgynwriswapxpsp","organization_id":"llmbrmxhyirtoqndazpg","organization_slug":"llmbrmxhyirtoqndazpg","name":"Tio-Tnyx","region":"ap-south-1","created_at":"2026-11-14T17:05:07.049773Z","status":"ACTIVE_HEALTHY","database":{"host":"db.bsfwzvgynwriswapxpsp.supabase.co","version":"17.11.0.019","postgres_engine":"17","release_channel":"ga"},"linked":false},{"id":"wvdabiwbaavfggcmpizd","ref":"wvdabiwbaavfggcmpizd","organization_id":"llmbrmxhyirtoqndazpg","organization_slug":"llmbrmxhyirtoqndazpg","name":"Tio-Tnyx-Auth-Temp","region":"ap-south-1","created_at":"2026-11-22T09:36:00.38724Z","status":"ACTIVE_HEALTHY","database":{"host":"db.wvdabiwbaavfggcmpizd.supabase.co","version":"17.12.0.000","postgres_engine":"17","release_channel":"ga"},"linked":false}],"message":""}
 ```
 
 ### Inventory Findings & Quota Reconciliation
 1. **Organization:** `llmbrmxhyirtoqndazpg` ("Tio-tnyx")
 2. **Plan Tier:** Free plan
-3. **Current Active Projects (Count: 1):**
-   - Ref: `bsfwzvgynwriswapxpsp` | Name: `Tio-Tnyx` | Region: `ap-south-1` | Status: `ACTIVE_HEALTHY`
-   - Role: **REAL production application backend** (Protected, READ-ONLY during this phase).
-4. **`Tio-world` Status:** Historical ref `oykupyiitspujzpwwvuj` is **absent** from the latest connected organization project list. Per owner instruction: *"NOT a test target. Never touch, pause, restore, delete, reset or recreate it. It is absent from the latest connected inventory; do not infer why or take corrective actions."* It remains permanently hard-blocked in code.
-5. **Free Project Capacity:** Supabase Free tier allows up to **2 active projects** per organization. With 1 currently active project (`bsfwzvgynwriswapxpsp`), **1 additional active project slot is available**.
-6. **TEMP Project Status:** `Tio-Tnyx-Auth-Temp` does **NOT** exist yet.
-7. **Cost Quotation:** **$0.00** (Free tier active project slot; zero billable add-ons).
+3. **Current Active Projects (Count: 2 / 2):**
+   - Ref: `bsfwzvgynwriswapxpsp` | Name: `Tio-Tnyx` | Region: `ap-south-1` | Status: `ACTIVE_HEALTHY` | Role: **REAL production application backend** (Protected, READ-ONLY, permanently forbidden from test targeting).
+   - Ref: `wvdabiwbaavfggcmpizd` | Name: `Tio-Tnyx-Auth-Temp` | Region: `ap-south-1` | Status: `ACTIVE_HEALTHY` | Role: **Owner-created disposable TEMP testbed** (Configured as `HARDCODED_TEMP_REF`).
+4. **`Tio-world` Status:** Historical ref `oykupyiitspujzpwwvuj` is **absent** from the latest connected organization project list. It remains permanently hard-blocked in code.
+5. **Free Project Capacity:** Both allowed Free tier project slots are now active. Zero provisioning needed.
+6. **TEMP Project Status:** Verified created by owner (`wvdabiwbaavfggcmpizd`). Zero hosted mutations, PATCHes, migrations, or user creations have been executed.
+7. **Cost Ceiling:** **$0.00** (Free tier active projects; zero billable add-ons).
 
 ---
 
@@ -63,18 +63,15 @@ Inspection was executed using Supabase CLI v2.121.0 in read-only mode (`projects
 | Environment | Project Name | Project Ref | Region | Purpose & Security Boundary | Protection Status |
 |---|---|---|---|---|---|
 | **REAL** | `Tio-Tnyx` | `bsfwzvgynwriswapxpsp` | `ap-south-1` | Future real application backend | **PROTECTED & READ-ONLY.** Permanently forbidden from test targeting in `hosted-probe-runner.mjs`. |
-| **TEMP** | `Tio-Tnyx-Auth-Temp` | *(To be generated upon creation)* | `ap-south-1` | Dedicated disposable managed Auth security testbed | **Awaiting Creation Approval.** Isolated database, independent JWT signing keys, distinct API keys, disposable test data only. |
+| **TEMP** | `Tio-Tnyx-Auth-Temp` | `wvdabiwbaavfggcmpizd` | `ap-south-1` | Dedicated disposable managed Auth security testbed | **Owner-Created Active Healthy.** Configured as `HARDCODED_TEMP_REF`. LIVE execution disabled pending separate H1 authorization. |
 | **IMMUNE** | `Tio-world` | `oykupyiitspujzpwwvuj` | N/A | Historical project | **PERMANENT IMMUNITY.** Hardcoded in `IMMUTABLE_FORBIDDEN_PROJECTS`. Never touched, paused, restored, or created. |
 
-### TEMP Project Creation Approval Package (Phase C)
-Before creating the disposable testbed, the following verification gates are documented for owner authorization:
-- **Selected Organization:** `llmbrmxhyirtoqndazpg` ("Tio-tnyx")
-- **Proposed Project Name:** `Tio-Tnyx-Auth-Temp`
-- **Region:** `ap-south-1` (Mumbai)
-- **Database Engine:** PostgreSQL 17
-- **Cost Ceiling:** **$0.00** (Strict Free tier active project; zero paid compute or custom domains)
-- **Blast Radius:** Completely isolated from REAL (`bsfwzvgynwriswapxpsp`). Deletion or reconfiguration of TEMP will have **zero impact** on REAL backend keys, database tables, or auth users.
-- **Owner Approval Gate:** Creation is paused. Project creation must be explicitly authorized by the owner before any provisioning command is executed.
+### Verified TEMP Project Integration Status
+- **Owner Action:** Project `Tio-Tnyx-Auth-Temp` (`wvdabiwbaavfggcmpizd`) was created by the owner in organization `llmbrmxhyirtoqndazpg` at region `ap-south-1` ($0 Free tier slot).
+- **Test Configuration:** Hardcoded as `HARDCODED_TEMP_REF = 'wvdabiwbaavfggcmpizd'` in `hosted-probe-runner.mjs`.
+- **Live Status:** Probe execution remains **STRICTLY DISABLED**. No network dispatcher is active; no Management API PATCHes, hook registrations, migrations, or test users have been created.
+- **Separation Guarantee:** Real project `bsfwzvgynwriswapxpsp` and `oykupyiitspujzpwwvuj` remain unconditionally blocked by hardcoded checks.
+- **Preservation & Deletion Gate:** Project `wvdabiwbaavfggcmpizd` must be preserved throughout testing and review cycles. Deletion requires a separate, explicit owner command.
 
 ---
 
@@ -171,7 +168,7 @@ All 8 review threads on PR #36 have been resolved with regression tests:
 
 | Test Suite / Script | Command | Cases / Result | Exit Code | Notes |
 |---|---|---|---|---|
-| Task 06I Security Suite | `node --test experiments/task06i/*.test.mjs` | **90 passed**, 0 failed | `0` | All 4 test files pass: allowlist (37), evaluator (15), probe runner (24), harness (14) |
+| Task 06I Security Suite | `node --test experiments/task06i/*.test.mjs` | **91 passed**, 0 failed | `0` | All 4 test files pass: allowlist (37), evaluator (15), probe runner (25), harness (14) |
 | PostgreSQL 17.11 Parity Check | `node experiments/task06i/sql-contract-parity.mjs` | **18 passed**, 0 failed | `0` | Live Docker PostgreSQL 17.11 with zero host ports; `ON_ERROR_STOP=1`; grants verified |
 | Task 06H Historical Suite | `node --test experiments/task06h/*.test.mjs` | **115 passed**, 0 failed | `0` | Phase 1 Auth Shell contract baseline clean |
 | Workspace Repository Verification | `npm run verify` | **22 shell contract passed** | `0` | Tokens clean, `tsc` clean, `eslint` clean |

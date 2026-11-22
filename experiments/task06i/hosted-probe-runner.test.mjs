@@ -11,7 +11,9 @@ import {
   IMMUTABLE_FORBIDDEN_PROJECTS,
   HARDCODED_REAL_REF,
   HARDCODED_TIO_WORLD_REF,
-  TIO_SUPABASE_REAL_REF
+  HARDCODED_TEMP_REF,
+  TIO_SUPABASE_REAL_REF,
+  TIO_SUPABASE_TEMP_REF
 } from './hosted-probe-runner.mjs';
 
 const VALID_TEMP_REF = 'temp-auth-testbed-12345';
@@ -143,6 +145,23 @@ test('3. Empty or unauthorized project refs are rejected (deny-by-default)', () 
 test('4. Configured TEMP testbed project is accepted', () => {
   const ref = validateTargetProject(VALID_TEMP_REF, VALID_TEMP_REF);
   assert.equal(ref, VALID_TEMP_REF);
+});
+
+test('4b. Verified owner TEMP project ref (wvdabiwbaavfggcmpizd) is accepted and configured by default', () => {
+  assert.equal(HARDCODED_TEMP_REF, 'wvdabiwbaavfggcmpizd');
+  assert.equal(TIO_SUPABASE_TEMP_REF, 'wvdabiwbaavfggcmpizd');
+  // Target validation passes using default configured tempRef
+  const ref = validateTargetProject('wvdabiwbaavfggcmpizd');
+  assert.equal(ref, 'wvdabiwbaavfggcmpizd');
+  // Even with default TEMP ref, REAL and Tio-world remain strictly rejected
+  assert.throws(
+    () => validateTargetProject(HARDCODED_REAL_REF),
+    /CRITICAL_SECURITY_VIOLATION.*protected REAL backend/
+  );
+  assert.throws(
+    () => validateTargetProject(HARDCODED_TIO_WORLD_REF),
+    /CRITICAL_SECURITY_VIOLATION.*Tio-world/
+  );
 });
 
 test('5. Real customer domains are rejected for test identity', () => {

@@ -21,9 +21,10 @@ import { PREFLIGHT_REQUIREMENTS } from './preflight-evaluator.mjs';
 
 export const HARDCODED_REAL_REF = 'bsfwzvgynwriswapxpsp';
 export const HARDCODED_TIO_WORLD_REF = 'oykupyiitspujzpwwvuj';
+export const HARDCODED_TEMP_REF = 'wvdabiwbaavfggcmpizd';
 
 export const TIO_SUPABASE_REAL_REF = HARDCODED_REAL_REF;
-export const TIO_SUPABASE_TEMP_REF = process.env.TIO_SUPABASE_TEMP_REF || '';
+export const TIO_SUPABASE_TEMP_REF = process.env.TIO_SUPABASE_TEMP_REF || HARDCODED_TEMP_REF;
 
 // Internal private immutable array — cannot be mutated from outside
 const INTERNAL_FORBIDDEN_REFS = Object.freeze([
