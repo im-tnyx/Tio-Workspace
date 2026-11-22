@@ -1,14 +1,14 @@
-# Phase 1.2 Task 06I-B1-H0-R6 — Close Final Session-Correlation Evidence Gap
+# Phase 1.2 Task 06I-B1-H0-R7 — Strict Positive JWT Issuance Proof (Final P1 Remediation)
 
-> **Target-Safety Decision Record, P1/P2 Security Proof Closure, Affirmative Evidence Contracts & Dispatcher Deadline Enforcement.** Prepared under `AGENTS.md` operating rules. This document establishes deterministic local security verification, remediates all review threads on PR #36 (including Revision R6: independent validation of every supplied session identifier, strict requirement for an explicit pre-reset session identifier, and rejection of contradictory IDs fail-closed), preserves the owner-directed TEMP lifecycle & deletion policy, audits Supabase organization inventory, and confirms zero host port exposure and zero hosted mutations. Production Real Auth remains **NO-GO**.
+> **Target-Safety Decision Record, P1/P2 Security Proof Closure, Affirmative Evidence Contracts & Dispatcher Deadline Enforcement.** Prepared under `AGENTS.md` operating rules. This document establishes deterministic local security verification, remediates all review threads on PR #36 (including Revision R7: strict positive JWT access_token string verification for HOOK-01 and HOOK-02, complete separation from conservative negative token detection, and full simulated 18-case runner regression), preserves the owner-directed TEMP lifecycle & deletion policy, audits Supabase organization inventory, and confirms zero host port exposure and zero hosted mutations. Production Real Auth remains **NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **PR #36 SECURITY REMEDIATION (REVISION R6) COMPLETE; 102/102 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (ON_ERROR_STOP=1, NONZERO EXIT ON MISMATCH, ROLE GRANTS VERIFIED); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; LIVE INVENTORY AUDITED (2 ACTIVE PROJECTS: REAL `bsfwzvgynwriswapxpsp` + OWNER-CREATED TEMP `wvdabiwbaavfggcmpizd`); APPROVED TEMP REF `wvdabiwbaavfggcmpizd` ENFORCED (TEMP SPOOFING REJECTED); ALL SUPPLIED SESSION IDENTIFIERS INDEPENDENTLY VALIDATED (CONTRADICTORY PRE/CORRELATED IDS FAIL CLOSED); EXPLICIT PRE-RESET IDENTITY REQUIRED; DISPATCHER TIMEOUT AND ABORTSIGNAL ENFORCED; COMPLETE RUNNER REPORT RECURSIVELY SANITIZED; ALL REVIEW THREADS RESOLVED; AWAITING INDEPENDENT RE-REVIEW SIGN-OFF FROM IM-TIO** |
-| Objective | Address review thread `PRRT_kwDOVtCmZc66kQA9` (P2): independently validate `session_id`, `correlated_session_id`, and `pre_session_id`; require an explicit pre-reset session identifier; reject contradictory IDs fail-closed (`SESSION_CORRELATION_MISMATCH`) across both SESSION-03 and SESSION-06; add comprehensive negative regressions. |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H0-R6 slice |
-| Previous agent | Agent / Task 06I-B1-H0-R5 author |
-| Last audited HEAD | `92548b4ddbac30c50680685c5fa676e820445c9a` (PR #36 post-H0-R5 commit) |
+| Status | **PR #36 SECURITY REMEDIATION (REVISION R7) COMPLETE; 104/104 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (ON_ERROR_STOP=1, NONZERO EXIT ON MISMATCH, ROLE GRANTS VERIFIED); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; LIVE INVENTORY AUDITED (2 ACTIVE PROJECTS: REAL `bsfwzvgynwriswapxpsp` + OWNER-CREATED TEMP `wvdabiwbaavfggcmpizd`); APPROVED TEMP REF `wvdabiwbaavfggcmpizd` ENFORCED; STRICT POSITIVE ACCESS_TOKEN VALIDATION ENFORCED (HOOK-01/02 REQUIRE CONCRETE ACCESS_TOKEN STRING; BOOLEANS, REFRESH_TOKEN ALONE, OR UNRELATED TOKENS OBJECTS REJECTED); NEGATIVE PROBES PRESERVE CONSERVATIVE DETECTION; ALL REVIEW THREADS RESOLVED; AWAITING INDEPENDENT RE-REVIEW SIGN-OFF FROM IM-TIO** |
+| Objective | Address review thread `PRRT_kwDOVtCmZc66kiam` (P1): create dedicated `validatePositiveAccessTokenIssuance()` strictly requiring concrete, non-empty `access_token` string for HOOK-01 and HOOK-02; reject booleans alone, refresh_token alone, or unrelated tokens objects; preserve conservative `extractObservedTokens()` for negative probes; add negative regression suite and simulated 18-case runner regression. |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H0-R7 slice |
+| Previous agent | Agent / Task 06I-B1-H0-R6 author |
+| Last audited HEAD | `6da2f7ffd5d91a804d7fa3d130ba7356604bfc9f` (PR #36 post-H0-R6 commit) |
 | Tracking / approval | Task 06I-B1-H0-R2 authorized by user prompt; owner mandates resolving all 3 P1 findings without modifying production resources; owner preserves TEMP Project Lifecycle & Deletion Policy; mandates $0 cost and permanent immunity for `Tio-world` and REAL `bsfwzvgynwriswapxpsp`; hosted mutations strictly prohibited |
 | Branch | `docs/task06i-b1-h0-hosted-readiness-harness` |
 | Base SHA / inspected HEAD | `7150cec4c2e1e9aaa8e75d2cbcb3a23a6dca532e` (`main`, verified up to date with `origin/main`) |
@@ -330,13 +330,24 @@ All 8 review threads on PR #36 have been resolved with regression tests:
   3. Positive probes (`HOOK-01`, `HOOK-02`) require `extractObservedTokens(rawOutcome)` to confirm token issuance.
 - **Tests:** `hosted-probe-runner.test.mjs` (Test 31: regression matrix covering HOOK-03, HOOK-07, BYPASS-01, BYPASS-02, BYPASS-03, BYPASS-04 with top-level and nested credentials).
 
+### 30. `PRRT_kwDOVtCmZc66kiam` (R7-01) — Strict Positive Access Token Issuance Proof for HOOK-01 and HOOK-02
+- **Root Cause:** In Revision R6, `HOOK-01` and `HOOK-02` positive checks were refactored to consume `extractObservedTokens(rawOutcome)`. Because `extractObservedTokens()` is deliberately broad to detect any sign of unauthorized token issuance in negative tests (returning non-null on `has_token: true` or any non-empty `tokens` object such as `{ unrelated: 'x' }`), positive sign-in and token-refresh probes could pass with no concrete `access_token` string as long as AMR evidence was asserted.
+- **Remediation:**
+  1. Completely separated negative token detection from positive issuance proof.
+  2. Preserved conservative `extractObservedTokens()` semantics exclusively for negative probes (`BYPASS-01..04`, `HOOK-03..07`).
+  3. Created dedicated `validatePositiveAccessTokenIssuance(rawOutcome)` strictly requiring a non-empty string `access_token` at either `rawOutcome.access_token` or `rawOutcome.tokens.access_token`.
+  4. Explicitly rejects `has_token: true` alone, `tokens: {}`, `tokens: []`, unrelated keys in `tokens: { ... }`, `refresh_token` alone without `access_token`, non-string types, or whitespace-only tokens.
+  5. Preserved required HTTP 200 and AMR validation (`amr_authenticated` for HOOK-01; `amr_preserved` for HOOK-02).
+  6. Clarified security semantics: string presence is a necessary precondition, not proof of cryptographic validity; raw tokens remain strictly confined to the local execution boundary and are never logged or persisted unredacted.
+- **Tests:** `hosted-probe-runner.test.mjs` (Test 32: comprehensive negative regression matrix for HOOK-01 and HOOK-02, plus a full simulated 18-case runner regression proving a false-positive HOOK-01 outcome halts execution at case 6 and never returns COMPLETED).
+
 ---
 
 ## 5. Local Security Harness & Parity Verification Results (Phase E)
 
 | Test Suite / Script | Command | Cases / Result | Exit Code | Notes |
 |---|---|---|---|---|
-| Task 06I Security Suite | `node --test experiments/task06i/*.test.mjs` | **103 passed**, 0 failed | `0` | All 4 test files pass: allowlist (37), evaluator (15), probe runner (35), harness (16) |
+| Task 06I Security Suite | `node --test experiments/task06i/*.test.mjs` | **104 passed**, 0 failed | `0` | All 4 test files pass: allowlist (37), evaluator (15), probe runner (36), harness (16) |
 | PostgreSQL 17.11 Parity Check | `node experiments/task06i/sql-contract-parity.mjs` | **18 passed**, 0 failed | `0` | Live Docker PostgreSQL 17.11 with zero host ports; `ON_ERROR_STOP=1`; grants verified; `Status: POSTGRES_VERIFIED` |
 | Task 06H Historical Suite | `node --test experiments/task06h/*.test.mjs` | **115 passed**, 0 failed | `0` | Phase 1 Auth Shell contract baseline clean |
 | Workspace Repository Verification | `npm run verify` | **22 shell contract passed** | `0` | Tokens clean, `tsc` clean, `eslint` clean |

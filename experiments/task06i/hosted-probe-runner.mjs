@@ -509,6 +509,59 @@ function extractObservedTokens(rawOutcome) {
 }
 
 /**
+ * Strictly validates affirmative access token issuance for positive token hook tests (HOOK-01 and HOOK-02).
+ * Requires a concrete, non-empty string access_token at either:
+ * - rawOutcome.access_token
+ * - rawOutcome.tokens.access_token (where tokens is a non-null object)
+ *
+ * Strictly rejects:
+ * - has_token: true alone (without an actual access_token string)
+ * - tokens: {} or tokens: [] or tokens: { unrelated: '...' }
+ * - refresh_token alone without access_token
+ * - token-issuance booleans alone
+ * - null, undefined, non-string, empty, or whitespace-only access_token
+ *
+ * Note on security semantics:
+ * String presence alone does NOT constitute cryptographic token validity.
+ * For hosted execution, observed access-token presence is a necessary precondition,
+ * while provider verification, claims validation (e.g. amr_authenticated), and signature
+ * verification represent the complete verification chain.
+ *
+ * Resolves PRRT_kwDOVtCmZc66kiam (P1).
+ */
+function validatePositiveAccessTokenIssuance(rawOutcome) {
+  if (rawOutcome === null || rawOutcome === undefined || typeof rawOutcome !== 'object') {
+    return { valid: false, reason: 'outcome must be a non-null object' };
+  }
+
+  let tokenCandidate = null;
+
+  if (isNonEmptyString(rawOutcome.access_token)) {
+    tokenCandidate = rawOutcome.access_token;
+  } else if (
+    rawOutcome.tokens !== null &&
+    typeof rawOutcome.tokens === 'object' &&
+    !Array.isArray(rawOutcome.tokens) &&
+    isNonEmptyString(rawOutcome.tokens.access_token)
+  ) {
+    tokenCandidate = rawOutcome.tokens.access_token;
+  }
+
+  if (!tokenCandidate) {
+    return {
+      valid: false,
+      reason: 'requires explicit, non-empty access_token string at access_token or tokens.access_token; booleans, refresh_token alone, or unrelated tokens objects are rejected'
+    };
+  }
+
+  // Raw token is strictly kept within this local verification scope and never returned or exposed in unredacted evidence
+  return {
+    valid: true,
+    tokenObserved: true
+  };
+}
+
+/**
  * Independently validates probe dispatcher outcome against canonical requirement contract.
  * Enforces:
  * 1. Output must be a non-null object with explicit boolean `passed`.
@@ -689,7 +742,7 @@ export function validateProbeOutcome(item, rawOutcome) {
 
   // 2. Token Hook Requirements (HOOK-01..07)
   if (item.id === 'HOOK-01') {
-    // Valid password sign-in must succeed with HTTP 200 and issue token with amr_authenticated
+    // Valid password sign-in must succeed with HTTP 200 and issue concrete access token with amr_authenticated
     if (status !== 200) {
       return {
         passed: false,
@@ -697,12 +750,12 @@ export function validateProbeOutcome(item, rawOutcome) {
         reason: `HTTP_STATUS_MISMATCH: HOOK-01 expected HTTP 200, got ${status}`
       };
     }
-    const observedTokens = extractObservedTokens(rawOutcome);
-    if (!observedTokens) {
+    const tokenValidation = validatePositiveAccessTokenIssuance(rawOutcome);
+    if (!tokenValidation.valid) {
       return {
         passed: false,
         status,
-        reason: 'MISSING_EVIDENCE: HOOK-01 expected explicit, non-empty token issuance (tokens.access_token) for valid password sign-in'
+        reason: `MISSING_EVIDENCE: HOOK-01 ${tokenValidation.reason}`
       };
     }
     const hasAmrEvidence =
@@ -719,7 +772,7 @@ export function validateProbeOutcome(item, rawOutcome) {
   }
 
   if (item.id === 'HOOK-02') {
-    // Token refresh with password-origin AMR must succeed with HTTP 200 and issue fresh token
+    // Token refresh with password-origin AMR must succeed with HTTP 200 and issue fresh concrete access token
     if (status !== 200) {
       return {
         passed: false,
@@ -727,12 +780,12 @@ export function validateProbeOutcome(item, rawOutcome) {
         reason: `HTTP_STATUS_MISMATCH: HOOK-02 expected HTTP 200, got ${status}`
       };
     }
-    const observedTokens = extractObservedTokens(rawOutcome);
-    if (!observedTokens) {
+    const tokenValidation = validatePositiveAccessTokenIssuance(rawOutcome);
+    if (!tokenValidation.valid) {
       return {
         passed: false,
         status,
-        reason: 'MISSING_EVIDENCE: HOOK-02 expected explicit, non-empty token issuance (tokens.access_token) for token refresh'
+        reason: `MISSING_EVIDENCE: HOOK-02 ${tokenValidation.reason}`
       };
     }
     const hasAmrPreserved = rawOutcome.amr_preserved === true || rawOutcome.amr_authenticated === true;

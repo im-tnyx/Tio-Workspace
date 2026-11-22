@@ -1565,3 +1565,263 @@ test('31. Negative token-issuance probes reject top-level credentials and tokens
   });
   assert.equal(resValidBypass01.passed, true);
 });
+
+test('32. Strict positive access token issuance proof for HOOK-01 and HOOK-02 (PRRT_kwDOVtCmZc66kiam)', async () => {
+  const hook01 = { id: 'HOOK-01', category: 'Token Hook', target: 'Password Sign-In' };
+  const hook02 = { id: 'HOOK-02', category: 'Token Hook', target: 'Password Token Refresh' };
+  const hook03 = { id: 'HOOK-03', category: 'Token Hook', target: 'Auth API' };
+  const bypass01 = { id: 'BYPASS-01', category: 'Native Bypass', target: 'Auth API' };
+
+  // --- HOOK-01 Strict Positive Tests ---
+  // 1a. has_token: true alone (without actual access_token) -> FAIL
+  const resH1FlagOnly = validateProbeOutcome(hook01, {
+    passed: true,
+    status: 200,
+    has_token: true,
+    amr_authenticated: true
+  });
+  assert.equal(resH1FlagOnly.passed, false);
+  assert.match(resH1FlagOnly.reason, /MISSING_EVIDENCE: HOOK-01 requires explicit, non-empty access_token string/);
+
+  // 1b. Nonempty unrelated tokens object -> FAIL
+  const resH1Unrelated = validateProbeOutcome(hook01, {
+    passed: true,
+    status: 200,
+    tokens: { unrelated: 'some_payload', foo: 'bar' },
+    amr_authenticated: true
+  });
+  assert.equal(resH1Unrelated.passed, false);
+  assert.match(resH1Unrelated.reason, /MISSING_EVIDENCE: HOOK-01 requires explicit, non-empty access_token string/);
+
+  // 1c. Empty tokens object -> FAIL
+  const resH1EmptyObj = validateProbeOutcome(hook01, {
+    passed: true,
+    status: 200,
+    tokens: {},
+    amr_authenticated: true
+  });
+  assert.equal(resH1EmptyObj.passed, false);
+  assert.match(resH1EmptyObj.reason, /MISSING_EVIDENCE: HOOK-01 requires explicit, non-empty access_token string/);
+
+  // 1d. Empty tokens array -> FAIL
+  const resH1EmptyArr = validateProbeOutcome(hook01, {
+    passed: true,
+    status: 200,
+    tokens: [],
+    amr_authenticated: true
+  });
+  assert.equal(resH1EmptyArr.passed, false);
+  assert.match(resH1EmptyArr.reason, /MISSING_EVIDENCE: HOOK-01 requires explicit, non-empty access_token string/);
+
+  // 1e. Whitespace-only access_token -> FAIL
+  const resH1Whitespace = validateProbeOutcome(hook01, {
+    passed: true,
+    status: 200,
+    access_token: '   \t  ',
+    amr_authenticated: true
+  });
+  assert.equal(resH1Whitespace.passed, false);
+  assert.match(resH1Whitespace.reason, /MISSING_EVIDENCE: HOOK-01 requires explicit, non-empty access_token string/);
+
+  // 1f. Non-string (numeric) access_token -> FAIL
+  const resH1Numeric = validateProbeOutcome(hook01, {
+    passed: true,
+    status: 200,
+    access_token: 99999,
+    amr_authenticated: true
+  });
+  assert.equal(resH1Numeric.passed, false);
+  assert.match(resH1Numeric.reason, /MISSING_EVIDENCE: HOOK-01 requires explicit, non-empty access_token string/);
+
+  // 1g. refresh_token only (top-level or nested) without access_token -> FAIL
+  const resH1RefreshOnly = validateProbeOutcome(hook01, {
+    passed: true,
+    status: 200,
+    refresh_token: 'valid.refresh.token',
+    amr_authenticated: true
+  });
+  assert.equal(resH1RefreshOnly.passed, false);
+  assert.match(resH1RefreshOnly.reason, /MISSING_EVIDENCE: HOOK-01 requires explicit, non-empty access_token string/);
+
+  const resH1NestedRefreshOnly = validateProbeOutcome(hook01, {
+    passed: true,
+    status: 200,
+    tokens: { refresh_token: 'valid.refresh.token' },
+    amr_authenticated: true
+  });
+  assert.equal(resH1NestedRefreshOnly.passed, false);
+  assert.match(resH1NestedRefreshOnly.reason, /MISSING_EVIDENCE: HOOK-01 requires explicit, non-empty access_token string/);
+
+  // 1h. access_token present but AMR evidence missing -> FAIL
+  const resH1MissingAmr = validateProbeOutcome(hook01, {
+    passed: true,
+    status: 200,
+    access_token: 'valid.jwt.token'
+  });
+  assert.equal(resH1MissingAmr.passed, false);
+  assert.match(resH1MissingAmr.reason, /MISSING_EVIDENCE: HOOK-01 expected verified amr_authenticated claim/);
+
+  // 1i. Explicit nonempty access_token (top-level and nested) + AMR evidence -> PASS
+  assert.equal(validateProbeOutcome(hook01, {
+    passed: true,
+    status: 200,
+    access_token: 'valid.jwt.token',
+    amr_authenticated: true
+  }).passed, true);
+
+  assert.equal(validateProbeOutcome(hook01, {
+    passed: true,
+    status: 200,
+    tokens: { access_token: 'valid.jwt.token' },
+    amr_authenticated: true
+  }).passed, true);
+
+  // --- HOOK-02 Strict Positive Tests ---
+  // 2a. has_token: true alone -> FAIL
+  const resH2FlagOnly = validateProbeOutcome(hook02, {
+    passed: true,
+    status: 200,
+    has_token: true,
+    amr_preserved: true
+  });
+  assert.equal(resH2FlagOnly.passed, false);
+  assert.match(resH2FlagOnly.reason, /MISSING_EVIDENCE: HOOK-02 requires explicit, non-empty access_token string/);
+
+  // 2b. Nonempty unrelated tokens object -> FAIL
+  const resH2Unrelated = validateProbeOutcome(hook02, {
+    passed: true,
+    status: 200,
+    tokens: { unrelated: 'some_payload' },
+    amr_preserved: true
+  });
+  assert.equal(resH2Unrelated.passed, false);
+  assert.match(resH2Unrelated.reason, /MISSING_EVIDENCE: HOOK-02 requires explicit, non-empty access_token string/);
+
+  // 2c. Empty tokens object -> FAIL
+  const resH2EmptyObj = validateProbeOutcome(hook02, {
+    passed: true,
+    status: 200,
+    tokens: {},
+    amr_preserved: true
+  });
+  assert.equal(resH2EmptyObj.passed, false);
+  assert.match(resH2EmptyObj.reason, /MISSING_EVIDENCE: HOOK-02 requires explicit, non-empty access_token string/);
+
+  // 2d. Whitespace-only access_token -> FAIL
+  const resH2Whitespace = validateProbeOutcome(hook02, {
+    passed: true,
+    status: 200,
+    tokens: { access_token: '   ' },
+    amr_preserved: true
+  });
+  assert.equal(resH2Whitespace.passed, false);
+  assert.match(resH2Whitespace.reason, /MISSING_EVIDENCE: HOOK-02 requires explicit, non-empty access_token string/);
+
+  // 2e. refresh_token only -> FAIL
+  const resH2RefreshOnly = validateProbeOutcome(hook02, {
+    passed: true,
+    status: 200,
+    refresh_token: 'fresh.refresh.token',
+    amr_preserved: true
+  });
+  assert.equal(resH2RefreshOnly.passed, false);
+  assert.match(resH2RefreshOnly.reason, /MISSING_EVIDENCE: HOOK-02 requires explicit, non-empty access_token string/);
+
+  // 2f. access_token present but AMR preservation evidence missing -> FAIL
+  const resH2MissingAmr = validateProbeOutcome(hook02, {
+    passed: true,
+    status: 200,
+    access_token: 'fresh.jwt.token'
+  });
+  assert.equal(resH2MissingAmr.passed, false);
+  assert.match(resH2MissingAmr.reason, /MISSING_EVIDENCE: HOOK-02 expected verified AMR preservation/);
+
+  // 2g. Explicit nonempty access_token (top-level and nested) + AMR preservation -> PASS
+  assert.equal(validateProbeOutcome(hook02, {
+    passed: true,
+    status: 200,
+    access_token: 'fresh.jwt.token',
+    amr_preserved: true
+  }).passed, true);
+
+  assert.equal(validateProbeOutcome(hook02, {
+    passed: true,
+    status: 200,
+    tokens: { access_token: 'fresh.jwt.token' },
+    amr_preserved: true
+  }).passed, true);
+
+  // --- Negative BYPASS/HOOK tests must still fail closed when token issuance is observed ---
+  // 3a. HOOK-03 fails on has_token: true
+  assert.equal(validateProbeOutcome(hook03, {
+    passed: true,
+    status: 500,
+    rejection_observed: true,
+    has_token: true
+  }).passed, false);
+
+  // 3b. HOOK-03 fails on tokens object with unrelated keys
+  assert.equal(validateProbeOutcome(hook03, {
+    passed: true,
+    status: 500,
+    rejection_observed: true,
+    tokens: { unrelated: 'x' }
+  }).passed, false);
+
+  // 3c. BYPASS-01 fails on has_token: true
+  assert.equal(validateProbeOutcome(bypass01, {
+    passed: true,
+    status: 403,
+    route_disabled: true,
+    has_token: true
+  }).passed, false);
+
+  // --- Full simulated 18-case runner regression ---
+  // Demonstrates that a false-positive HOOK-01 outcome (has_token: true + amr_authenticated: true but NO concrete access_token)
+  // halts execution at case 6 and NEVER returns COMPLETED.
+  let casesExecutedCount = 0;
+  const mockDispatcherFalsePositive = async (item) => {
+    casesExecutedCount++;
+    if (item.id === 'BYPASS-01') {
+      return { passed: true, status: 403, route_disabled: true };
+    }
+    if (item.id === 'BYPASS-02') {
+      return { passed: true, status: 403, signup_disabled: true };
+    }
+    if (item.id === 'BYPASS-03' || item.id === 'BYPASS-04') {
+      return { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' };
+    }
+    if (item.id === 'BYPASS-05') {
+      return { passed: true, status: 500, recovery_suppressed: true, zero_email_delivered: true };
+    }
+    if (item.id === 'HOOK-01') {
+      // False-positive outcome: claims has_token: true and amr_authenticated: true, but provides NO access_token string!
+      return {
+        passed: true,
+        status: 200,
+        has_token: true,
+        tokens: { unrelated_key: 'no_token_here' },
+        amr_authenticated: true
+      };
+    }
+    // Subsequent cases should never be reached
+    return { passed: true, status: 200 };
+  };
+
+  const resultFpHook01 = await runHostedProbeRunner({
+    projectRef: HARDCODED_TEMP_REF,
+    argv: ['--live'],
+    env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    mockDispatcher: mockDispatcherFalsePositive,
+    sleepFn: async () => {}
+  });
+
+  assert.notEqual(resultFpHook01.status, 'COMPLETED', 'Runner must NEVER return COMPLETED on false-positive HOOK-01');
+  assert.equal(resultFpHook01.status, 'HALTED_ON_FAILURE', 'Runner must halt immediately on failure');
+  assert.equal(resultFpHook01.results.length, 6, 'Runner must halt at case 6 (HOOK-01) and not execute subsequent probes');
+  assert.equal(casesExecutedCount, 6, 'Dispatcher must only be invoked for 6 probes');
+  assert.match(
+    resultFpHook01.abortReason,
+    /CRITICAL_SECURITY_FAILURE: Case HOOK-01 \(Token Hook\) failed validation.*requires explicit, non-empty access_token string/
+  );
+});
