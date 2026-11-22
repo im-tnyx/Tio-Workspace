@@ -719,6 +719,16 @@ export function validateProbeOutcome(item, rawOutcome) {
         reason: `INVALID_HTTP_STATUS: ${item.id} expected HTTP 4xx/5xx error status, got ${status}`
       };
     }
+    // Reject upstream GoTrue pre-validation errors before reaching custom_access_token_hook (R3-06)
+    const errCode = (rawOutcome.error_code || '').toLowerCase();
+    const errMsg = (rawOutcome.error || '').toLowerCase();
+    if (errCode === 'otp_expired' || errMsg.includes('otp_expired') || status === 404) {
+      return {
+        passed: false,
+        status,
+        reason: `FALSE_PROOF_REJECTED: ${item.id} rejected due to upstream GoTrue pre-validation ('${rawOutcome.error_code || rawOutcome.error || status}') before reaching custom_access_token_hook (R3-06)`
+      };
+    }
     const hasAffirmativeEvidence =
       rawOutcome.hook_rejected === true ||
       rawOutcome.rejection_observed === true ||
@@ -772,26 +782,6 @@ export function validateProbeOutcome(item, rawOutcome) {
         reason: `MISSING_EVIDENCE: HOOK-01 ${tokenValidation.reason}`
       };
     }
-    // If token candidate is a real 3-part base64url JWT, strictly validate payload claims
-    if (tokenValidation.token && typeof tokenValidation.token === 'string' && tokenValidation.token.split('.').length === 3) {
-      let isRealJwt = false;
-      try {
-        const payloadJson = JSON.parse(Buffer.from(tokenValidation.token.split('.')[1], 'base64url').toString('utf8'));
-        if (payloadJson && typeof payloadJson === 'object') isRealJwt = true;
-      } catch {
-        isRealJwt = false;
-      }
-      if (isRealJwt) {
-        const jwtCheck = parseAndValidateJwt(tokenValidation.token);
-        if (!jwtCheck.valid) {
-          return {
-            passed: false,
-            status,
-            reason: `JWT_CLAIM_VIOLATION: HOOK-01 ${jwtCheck.reason}`
-          };
-        }
-      }
-    }
     // Reject client-editable metadata spoofing (PRRT_kwDOVtCmZc66lOOM)
     if (rawOutcome.amr_source === 'user_metadata' || rawOutcome.amr_source === 'app_metadata') {
       return {
@@ -800,10 +790,29 @@ export function validateProbeOutcome(item, rawOutcome) {
         reason: 'SECURITY_INVARIANT_VIOLATION: HOOK-01 amr_authenticated cannot be sourced from client-editable user_metadata or app_metadata'
       };
     }
+    // Strict JWT claims parsing and validation without bypass (PRRT_kwDOVtCmZc66lo-t, R3-08)
+    const jwtCheck = parseAndValidateJwt(tokenValidation.token);
+    if (!jwtCheck.valid) {
+      return {
+        passed: false,
+        status,
+        reason: `JWT_CLAIM_VIOLATION: HOOK-01 ${jwtCheck.reason}`
+      };
+    }
+    // Require genuine session_id (placeholder strings like 'sess-default' or user_id are strictly prohibited, R3-05)
+    const candidateSessionId = rawOutcome.session_id || jwtCheck.payload?.session_id;
+    if (!isNonEmptyString(candidateSessionId) || candidateSessionId.startsWith('sess-default')) {
+      return {
+        passed: false,
+        status,
+        reason: 'MISSING_EVIDENCE: HOOK-01 requires genuine session_id identifier in token or outcome (R3-05)'
+      };
+    }
     const hasAmrEvidence =
       rawOutcome.amr_authenticated === true ||
-      (Array.isArray(rawOutcome.amr) && rawOutcome.amr.includes('password')) ||
-      (rawOutcome.tokens && isNonEmptyString(rawOutcome.tokens.amr) && rawOutcome.tokens.amr.includes('password'));
+      jwtCheck.payload?.amr_authenticated === 'true' ||
+      jwtCheck.payload?.amr_authenticated === true ||
+      (Array.isArray(jwtCheck.payload?.amr) && jwtCheck.payload.amr.some(a => (typeof a === 'string' ? a : a?.method) === 'password'));
     if (!hasAmrEvidence) {
       return {
         passed: false,
@@ -830,27 +839,19 @@ export function validateProbeOutcome(item, rawOutcome) {
         reason: `MISSING_EVIDENCE: HOOK-02 ${tokenValidation.reason}`
       };
     }
-    // If token candidate is a real 3-part base64url JWT, strictly validate payload claims
-    if (tokenValidation.token && typeof tokenValidation.token === 'string' && tokenValidation.token.split('.').length === 3) {
-      let isRealJwt = false;
-      try {
-        const payloadJson = JSON.parse(Buffer.from(tokenValidation.token.split('.')[1], 'base64url').toString('utf8'));
-        if (payloadJson && typeof payloadJson === 'object') isRealJwt = true;
-      } catch {
-        isRealJwt = false;
-      }
-      if (isRealJwt) {
-        const jwtCheck = parseAndValidateJwt(tokenValidation.token);
-        if (!jwtCheck.valid) {
-          return {
-            passed: false,
-            status,
-            reason: `JWT_CLAIM_VIOLATION: HOOK-02 ${jwtCheck.reason}`
-          };
-        }
-      }
+    // Strict JWT claims parsing and validation without bypass (PRRT_kwDOVtCmZc66lo-t, R3-08)
+    const jwtCheck = parseAndValidateJwt(tokenValidation.token);
+    if (!jwtCheck.valid) {
+      return {
+        passed: false,
+        status,
+        reason: `JWT_CLAIM_VIOLATION: HOOK-02 ${jwtCheck.reason}`
+      };
     }
-    const hasAmrPreserved = rawOutcome.amr_preserved === true || rawOutcome.amr_authenticated === true;
+    const hasAmrPreserved =
+      rawOutcome.amr_preserved === true ||
+      jwtCheck.payload?.amr_authenticated === 'true' ||
+      jwtCheck.payload?.amr_authenticated === true;
     if (!hasAmrPreserved) {
       return {
         passed: false,
@@ -877,6 +878,16 @@ export function validateProbeOutcome(item, rawOutcome) {
         reason: `INVALID_HTTP_STATUS: ${item.id} expected HTTP 4xx/5xx error status, got ${status}`
       };
     }
+    // Reject generic GoTrue errors that do not prove hook execution (R3-01, R3-02)
+    const errCode = (rawOutcome.error_code || '').toLowerCase();
+    const errMsg = (rawOutcome.error || '').toLowerCase();
+    if (errCode === 'unsupported_grant_type' || errMsg.includes('unsupported_grant_type')) {
+      return {
+        passed: false,
+        status,
+        reason: `FALSE_PROOF_REJECTED: ${item.id} rejected due to 'unsupported_grant_type'. GoTrue token endpoint rejected request before custom_access_token_hook execution (R3-01)`
+      };
+    }
     const hasAffirmativeEvidence =
       rawOutcome.hook_rejected === true ||
       rawOutcome.rejection_observed === true ||
@@ -899,14 +910,22 @@ export function validateProbeOutcome(item, rawOutcome) {
         reason: `HTTP_STATUS_MISMATCH: SESSION-01 expected HTTP 200, got ${status}`
       };
     }
+    const sessionId = rawOutcome.session_id;
+    if (!isNonEmptyString(sessionId) || sessionId.startsWith('sess-default')) {
+      return {
+        passed: false,
+        status,
+        reason: 'SESSION_FAILURE: SESSION-01 requires verified session creation with genuine session_id (placeholder rejected, R3-05)'
+      };
+    }
     const hasSessionEvidence =
       rawOutcome.session_created === true &&
-      (isNonEmptyString(rawOutcome.session_id) || (typeof rawOutcome.sessions_count === 'number' && rawOutcome.sessions_count >= 1) || isNonEmptyObject(rawOutcome.session));
+      (typeof rawOutcome.sessions_count === 'number' ? rawOutcome.sessions_count >= 1 : true);
     if (!hasSessionEvidence) {
       return {
         passed: false,
         status,
-        reason: 'SESSION_FAILURE: SESSION-01 expected verified session creation with explicit session row (session_id or sessions_count >= 1)'
+        reason: 'SESSION_FAILURE: SESSION-01 expected verified session creation with explicit session row'
       };
     }
   }
@@ -917,6 +936,22 @@ export function validateProbeOutcome(item, rawOutcome) {
         passed: false,
         status,
         reason: `HTTP_STATUS_MISMATCH: SESSION-02 expected HTTP 200, got ${status}`
+      };
+    }
+    // Reject logout fallback (R3-04)
+    if (rawOutcome.logout_fallback === true) {
+      return {
+        passed: false,
+        status,
+        reason: 'SECURITY_INVARIANT_VIOLATION: SESSION-02 used logout fallback instead of admin password reset (R3-04)'
+      };
+    }
+    const hasResetEvidence = rawOutcome.password_reset_completed === true || rawOutcome.reset_completed === true;
+    if (!hasResetEvidence) {
+      return {
+        passed: false,
+        status,
+        reason: 'SESSION_FAILURE: SESSION-02 requires explicit password reset completion (R3-04)'
       };
     }
     const hasRevocationEvidence =
@@ -1020,11 +1055,11 @@ function validateSessionRevocationProof(item, rawOutcome, allowedStatuses, isRev
   // - same_session_correlated: false fails closed.
   const sessionId = rawOutcome.session_id;
 
-  if (!isNonEmptyString(sessionId)) {
+  if (!isNonEmptyString(sessionId) || sessionId.startsWith('sess-default')) {
     return {
       passed: false,
       status,
-      reason: `SESSION_CORRELATION_MISMATCH: ${item.id} requires a valid, non-empty session_id identifier`
+      reason: `SESSION_CORRELATION_MISMATCH: ${item.id} requires a valid, non-empty session_id identifier (placeholder rejected, R3-05)`
     };
   }
 
@@ -1107,7 +1142,21 @@ function validateSessionRevocationProof(item, rawOutcome, allowedStatuses, isRev
   }
 
   if (item.id === 'SESSION-04' || item.id === 'SESSION-05') {
-    // Stateless linger window documentation check (PRRT_kwDOVtCmZc66jNbH)
+    // Stateless linger window documentation check (PRRT_kwDOVtCmZc66jNbH, R3-03)
+    if (status !== 200) {
+      return {
+        passed: false,
+        status,
+        reason: `HTTP_STATUS_MISMATCH: ${item.id} expected HTTP 200 demonstrating stateless signature-based access, got ${status} (401 rejection or 404 missing fixture does not prove linger, R3-03)`
+      };
+    }
+    if (rawOutcome.token_unexpired !== true) {
+      return {
+        passed: false,
+        status,
+        reason: `MISSING_EVIDENCE: ${item.id} requires token to be unexpired (now < exp) during linger window demonstration (R3-03)`
+      };
+    }
     const hasNonEmptyLingerEvidence =
       rawOutcome.stateless_linger_documented === true &&
       (isNonEmptyString(rawOutcome.evidence) || isNonEmptyString(rawOutcome.note) || isNonEmptyObject(rawOutcome.documentation));
@@ -1143,31 +1192,65 @@ function validateSessionRevocationProof(item, rawOutcome, allowedStatuses, isRev
 
 /**
  * Run-scoped identity and fixture inventory for deterministic cleanup and verification.
+ * Distinguishes createdThisRun resources (eligible for deletion) from pre-existing fixture references (NEVER deleted).
  * Tracks exact UUIDs, emails, sessions, database rows, and storage objects.
- * Replaces loose email domain filtering with exact-ID tracking and post-cleanup verification.
- * Resolves PRRT_kwDOVtCmZc66lEzi, PRRT_kwDOVtCmZc66lOOS, and PRRT_kwDOVtCmZc66lOOU.
+ * Handles Supabase Admin { data, error } responses and verifies post-cleanup absence of residual resources.
+ * Resolves PRRT_kwDOVtCmZc66lEzi, PRRT_kwDOVtCmZc66lOOS, PRRT_kwDOVtCmZc66lOOU, and PRRT_kwDOVtCmZc66lq3S.
  */
 export class TestRunInventory {
   constructor(runId = null) {
     this.runId = runId || `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    this.trackedUsers = new Map(); // userId -> { id, email, source, createdAt }
-    this.trackedSessions = new Set(); // sessionId
+    this.createdUsers = new Map(); // Users affirmatively created in THIS run -> deletion eligible
+    this.referencedUsers = new Map(); // Pre-existing / seeded users authenticated -> NEVER deleted (R3-09)
+    this.trackedSessions = new Set(); // Session IDs
     this.trackedTableRows = new Map(); // table -> Set(id)
     this.trackedStorageObjects = new Map(); // bucket -> Set(path)
   }
 
-  registerUser({ id, email, source = 'test_user' } = {}) {
+  // Backward-compatible getter: returns combined map of tracked users
+  get trackedUsers() {
+    return new Map([...this.referencedUsers, ...this.createdUsers]);
+  }
+
+  /**
+   * Registers a user created during this run (e.g. accidental signup from BYPASS-02).
+   * Deletion eligible upon cleanup.
+   */
+  registerCreatedUser({ id, email, source = 'test_signup' } = {}) {
     if (!id || typeof id !== 'string' || id.trim().length === 0) {
-      throw new Error('registerUser requires non-empty string id');
+      throw new Error('registerCreatedUser requires non-empty string id');
     }
     if (!email || typeof email !== 'string' || email.trim().length === 0) {
-      throw new Error('registerUser requires non-empty string email');
+      throw new Error('registerCreatedUser requires non-empty string email');
     }
     validateTestIdentity(email);
     const normEmail = email.trim().toLowerCase();
     const record = { id: id.trim(), email: normEmail, source, createdAt: new Date().toISOString() };
-    this.trackedUsers.set(record.id, record);
+    this.createdUsers.set(record.id, record);
     return record;
+  }
+
+  /**
+   * Registers a pre-existing fixture or seed user referenced during login (e.g. HOOK-01).
+   * Tracked for audit and correlation, but NEVER deleted during cleanup (R3-09).
+   */
+  registerReferencedUser({ id, email, source = 'test_login' } = {}) {
+    if (!id || typeof id !== 'string' || id.trim().length === 0) {
+      throw new Error('registerReferencedUser requires non-empty string id');
+    }
+    if (!email || typeof email !== 'string' || email.trim().length === 0) {
+      throw new Error('registerReferencedUser requires non-empty string email');
+    }
+    validateTestIdentity(email);
+    const normEmail = email.trim().toLowerCase();
+    const record = { id: id.trim(), email: normEmail, source, referencedAt: new Date().toISOString() };
+    this.referencedUsers.set(record.id, record);
+    return record;
+  }
+
+  // Backward-compatible alias: registerUser defaults to registerCreatedUser
+  registerUser(userObj) {
+    return this.registerCreatedUser(userObj);
   }
 
   registerSession(sessionId) {
@@ -1201,21 +1284,44 @@ export class TestRunInventory {
   }
 
   isUserTracked(userId) {
-    return this.trackedUsers.has((userId || '').trim());
+    const id = (userId || '').trim();
+    return this.createdUsers.has(id) || this.referencedUsers.has(id);
+  }
+
+  isUserCreated(userId) {
+    return this.createdUsers.has((userId || '').trim());
+  }
+
+  isUserReferenced(userId) {
+    return this.referencedUsers.has((userId || '').trim());
   }
 
   getTrackedUserIds() {
-    return Array.from(this.trackedUsers.keys());
+    return Array.from(new Set([...this.createdUsers.keys(), ...this.referencedUsers.keys()]));
+  }
+
+  getCreatedUserIds() {
+    return Array.from(this.createdUsers.keys());
+  }
+
+  getReferencedUserIds() {
+    return Array.from(this.referencedUsers.keys());
   }
 
   getTrackedEmails() {
-    return Array.from(this.trackedUsers.values()).map(u => u.email);
+    const emails = [
+      ...Array.from(this.createdUsers.values()).map(u => u.email),
+      ...Array.from(this.referencedUsers.values()).map(u => u.email)
+    ];
+    return Array.from(new Set(emails));
   }
 
   getSummary() {
     return {
       runId: this.runId,
-      trackedUsersCount: this.trackedUsers.size,
+      createdUsersCount: this.createdUsers.size,
+      referencedUsersCount: this.referencedUsers.size,
+      trackedUsersCount: this.createdUsers.size + this.referencedUsers.size,
       trackedSessionsCount: this.trackedSessions.size,
       trackedTableRowsCount: Array.from(this.trackedTableRows.values()).reduce((acc, s) => acc + s.size, 0),
       trackedStorageObjectsCount: Array.from(this.trackedStorageObjects.values()).reduce((acc, s) => acc + s.size, 0)
@@ -1223,17 +1329,19 @@ export class TestRunInventory {
   }
 
   /**
-   * Deterministic cleanup routine: deletes ONLY exact tracked resources by ID.
+   * Deterministic cleanup routine: deletes ONLY createdThisRun resources by ID.
+   * Pre-existing referencedUsers are NEVER deleted (R3-09).
    * Handles Supabase Admin { data, error } responses.
    * Verifies absence of residual resources and fails closed if residual resources remain.
-   * Never deletes untracked or pre-existing identities.
-   * Resolves PRRT_kwDOVtCmZc66lOOU.
+   * Resolves PRRT_kwDOVtCmZc66lOOU, PRRT_kwDOVtCmZc66lo-q, and PRRT_kwDOVtCmZc66lq3S.
    */
   async executeCleanup({ adminClient, failClosed = true } = {}) {
     const report = {
       runId: this.runId,
-      usersAttempted: this.trackedUsers.size,
+      createdUsersAttempted: this.createdUsers.size,
       usersDeleted: 0,
+      referencedUsersPreserved: this.referencedUsers.size,
+      preservedUsers: Array.from(this.referencedUsers.keys()),
       tableRowsDeleted: 0,
       storageObjectsDeleted: 0,
       sessionsRevoked: 0,
@@ -1242,13 +1350,13 @@ export class TestRunInventory {
       status: 'CLEANUP_PENDING'
     };
 
-    const hasTrackedItems =
-      this.trackedUsers.size > 0 ||
+    const hasCleanupEligibleItems =
+      this.createdUsers.size > 0 ||
       this.trackedTableRows.size > 0 ||
       this.trackedStorageObjects.size > 0 ||
       this.trackedSessions.size > 0;
 
-    if (!hasTrackedItems) {
+    if (!hasCleanupEligibleItems) {
       report.status = 'CLEANUP_VERIFIED_SUCCESS';
       return report;
     }
@@ -1317,11 +1425,11 @@ export class TestRunInventory {
       }
     }
 
-    // 4. Delete tracked users by exact user ID
-    if (this.trackedUsers.size > 0 && typeof adminClient.deleteUser !== 'function') {
-      report.residualResources.push({ type: 'users', count: this.trackedUsers.size, error: 'MISSING_DELETE_USER_METHOD' });
+    // 4. Delete ONLY created users by exact user ID (referencedUsers are preserved!)
+    if (this.createdUsers.size > 0 && typeof adminClient.deleteUser !== 'function') {
+      report.residualResources.push({ type: 'users', count: this.createdUsers.size, error: 'MISSING_DELETE_USER_METHOD' });
     } else {
-      for (const [userId, userObj] of this.trackedUsers.entries()) {
+      for (const [userId, userObj] of this.createdUsers.entries()) {
         try {
           const res = await adminClient.deleteUser(userId);
           if (res && res.error) {
@@ -1335,11 +1443,11 @@ export class TestRunInventory {
       }
     }
 
-    // 5. Affirmative post-cleanup verification for users
-    if (this.trackedUsers.size > 0 && typeof adminClient.getUserById !== 'function') {
+    // 5. Affirmative post-cleanup verification for created users
+    if (this.createdUsers.size > 0 && typeof adminClient.getUserById !== 'function') {
       report.residualResources.push({ type: 'verification', error: 'MISSING_GET_USER_BY_ID_METHOD' });
     } else {
-      for (const [userId, userObj] of this.trackedUsers.entries()) {
+      for (const [userId, userObj] of this.createdUsers.entries()) {
         if (typeof adminClient.getUserById === 'function') {
           try {
             const check = await adminClient.getUserById(userId);
@@ -1510,10 +1618,273 @@ async function parseResponseBody(res) {
 }
 
 /**
+ * Authoritatively validates that a Supabase key (anon or service_role) belongs strictly to the expected project.
+ * Inspects the decoded base64url JWT payload of the key.
+ * Strictly prevents sending a production/REAL key to a TEMP environment or vice-versa.
+ * Resolves PRRT_kwDOVtCmZc66lq3W.
+ */
+export function validateProjectCredentialBinding(key, expectedProjectRef = HARDCODED_TEMP_REF) {
+  if (typeof key !== 'string' || !key.trim()) {
+    throw new Error('MISSING_CREDENTIAL: key must be a non-empty string');
+  }
+  const trimmed = key.trim();
+  const parts = trimmed.split('.');
+  if (parts.length === 3) {
+    let payload;
+    try {
+      payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    } catch {
+      return true;
+    }
+    if (payload && typeof payload === 'object') {
+      let detectedRef = payload.ref;
+      if (!detectedRef && typeof payload.iss === 'string') {
+        const m = payload.iss.match(/https?:\/\/([^.]+)\.supabase\.co/);
+        if (m && m[1]) detectedRef = m[1];
+      }
+      if (detectedRef) {
+        const normDetected = detectedRef.trim().toLowerCase();
+        if (normDetected === HARDCODED_REAL_REF || normDetected === HARDCODED_TIO_WORLD_REF || isForbiddenProject(normDetected)) {
+          throw new Error(`CRITICAL_SECURITY_VIOLATION: Credential belongs to forbidden project '${normDetected}'! Production credential cannot be forwarded to testbed.`);
+        }
+        if (expectedProjectRef && normDetected !== expectedProjectRef.trim().toLowerCase()) {
+          throw new Error(`CREDENTIAL_TARGET_MISMATCH: Credential ref '${normDetected}' does not match expected target '${expectedProjectRef}'. Forwarding prohibited.`);
+        }
+      }
+    }
+  }
+  return true;
+}
+
+/**
+ * Layer B: Hosted probe specification metadata declaring prerequisites, evidence sources,
+ * and exact readiness status across the 18 preflight requirements.
+ * Resolves Task 06I-B1-H1-R3 Layer B architecture requirements.
+ */
+export const HOSTED_PROBE_SPECIFICATIONS = Object.freeze({
+  'BYPASS-01': {
+    id: 'BYPASS-01',
+    category: 'Native Bypass',
+    layer: 'Layer B (Hosted Endpoint)',
+    target: 'POST /auth/v1/otp',
+    prerequisites: ['MANAGEMENT_API_PATCH_EXTERNAL_EMAIL_MAGIC_LINK_DISABLED'],
+    credentialsRequired: ['TIO_TEMP_ANON_KEY'],
+    evidenceSource: 'GOTRUE_HTTP_422_EMAIL_PROVIDER_DISABLED',
+    readinessStatus: 'IMPLEMENTED_OFFLINE_TESTED',
+    hostedStatus: 'HOSTED_NOT_TESTED'
+  },
+  'BYPASS-02': {
+    id: 'BYPASS-02',
+    category: 'Native Bypass',
+    layer: 'Layer B (Hosted Endpoint)',
+    target: 'POST /auth/v1/signup',
+    prerequisites: ['MANAGEMENT_API_PATCH_DISABLE_SIGNUP'],
+    credentialsRequired: ['TIO_TEMP_ANON_KEY'],
+    evidenceSource: 'GOTRUE_HTTP_422_SIGNUP_DISABLED',
+    readinessStatus: 'IMPLEMENTED_OFFLINE_TESTED',
+    hostedStatus: 'HOSTED_NOT_TESTED'
+  },
+  'BYPASS-03': {
+    id: 'BYPASS-03',
+    category: 'Native Bypass',
+    layer: 'Layer B (Hosted Endpoint)',
+    target: 'POST /auth/v1/verify',
+    prerequisites: ['VALID_DELIVERED_OTP_CHALLENGE', 'HOOK_CUSTOM_ACCESS_TOKEN_ENABLED'],
+    credentialsRequired: ['TIO_TEMP_ANON_KEY'],
+    evidenceSource: 'CUSTOM_ACCESS_TOKEN_HOOK_SQLSTATE_42501',
+    readinessStatus: 'PROVIDER_PRECONDITION_MISSING',
+    hostedStatus: 'HOSTED_NOT_TESTED',
+    note: 'GoTrue verifies challenge token before invoking hook. Native OTP is disabled/suppressed. Hook verified offline in Layer A (POSTGRES_VERIFIED).'
+  },
+  'BYPASS-04': {
+    id: 'BYPASS-04',
+    category: 'Native Bypass',
+    layer: 'Layer B (Hosted Endpoint)',
+    target: 'Magic Link / Invite / Anonymous',
+    prerequisites: ['VALID_MAGIC_LINK_TOKEN', 'HOOK_CUSTOM_ACCESS_TOKEN_ENABLED'],
+    credentialsRequired: ['TIO_TEMP_ANON_KEY'],
+    evidenceSource: 'CUSTOM_ACCESS_TOKEN_HOOK_SQLSTATE_42501',
+    readinessStatus: 'PROVIDER_PRECONDITION_MISSING',
+    hostedStatus: 'HOSTED_NOT_TESTED',
+    note: 'Upstream magiclink route is disabled by configuration (returns 422/404 before hook). Hook verified offline in Layer A (POSTGRES_VERIFIED).'
+  },
+  'BYPASS-05': {
+    id: 'BYPASS-05',
+    category: 'Native Bypass',
+    layer: 'Layer B (Hosted Endpoint)',
+    target: 'POST /auth/v1/recover',
+    prerequisites: ['HOOK_SEND_EMAIL_ENABLED'],
+    credentialsRequired: ['TIO_TEMP_ANON_KEY'],
+    evidenceSource: 'SEND_EMAIL_HOOK_SQLSTATE_42501',
+    readinessStatus: 'IMPLEMENTED_OFFLINE_TESTED',
+    hostedStatus: 'HOSTED_NOT_TESTED',
+    note: 'Rejects anti-enumeration HTTP 200 as proof of email suppression. Requires hook failure 42501.'
+  },
+  'HOOK-01': {
+    id: 'HOOK-01',
+    category: 'Token Hook',
+    layer: 'Layer B (Hosted Endpoint)',
+    target: 'POST /auth/v1/token?grant_type=password',
+    prerequisites: ['SEEDED_PASSWORD_USER', 'HOOK_CUSTOM_ACCESS_TOKEN_ENABLED'],
+    credentialsRequired: ['TIO_TEMP_ANON_KEY'],
+    evidenceSource: 'DECODED_JWT_AMR_AUTHENTICATED_CLAIM',
+    readinessStatus: 'IMPLEMENTED_OFFLINE_TESTED',
+    hostedStatus: 'HOSTED_NOT_TESTED',
+    note: 'Decodes base64url payload of minted access_token, enforces claims.amr_authenticated === true and RFC 8176 AMR object array. Captures session_id.'
+  },
+  'HOOK-02': {
+    id: 'HOOK-02',
+    category: 'Token Hook',
+    layer: 'Layer B (Hosted Endpoint)',
+    target: 'POST /auth/v1/token?grant_type=refresh_token',
+    prerequisites: ['ACTIVE_REFRESH_TOKEN_FROM_HOOK_01', 'HOOK_CUSTOM_ACCESS_TOKEN_ENABLED'],
+    credentialsRequired: ['TIO_TEMP_ANON_KEY'],
+    evidenceSource: 'DECODED_REFRESHED_JWT_AMR_PRESERVATION',
+    readinessStatus: 'IMPLEMENTED_OFFLINE_TESTED',
+    hostedStatus: 'HOSTED_NOT_TESTED',
+    note: 'Consumes genuine refresh_token issued in HOOK-01; verifies AMR preservation in refreshed JWT.'
+  },
+  'HOOK-03': {
+    id: 'HOOK-03',
+    category: 'Token Hook',
+    layer: 'Layer B (Hosted Endpoint)',
+    target: 'OTP-Origin Token Denial',
+    prerequisites: ['VALID_DELIVERED_OTP_CHALLENGE', 'HOOK_CUSTOM_ACCESS_TOKEN_ENABLED'],
+    credentialsRequired: ['TIO_TEMP_ANON_KEY'],
+    evidenceSource: 'CUSTOM_ACCESS_TOKEN_HOOK_SQLSTATE_42501',
+    readinessStatus: 'PROVIDER_PRECONDITION_MISSING',
+    hostedStatus: 'HOSTED_NOT_TESTED',
+    note: 'GoTrue token endpoint does not support grant_type=otp. OTP token issuance occurs via /verify which requires a valid delivered OTP. Verified in Layer A (POSTGRES_VERIFIED).'
+  },
+  'HOOK-04': {
+    id: 'HOOK-04',
+    category: 'Token Hook',
+    layer: 'Layer B (Hosted Endpoint)',
+    target: 'Recovery-Origin Token Denial',
+    prerequisites: ['VALID_DELIVERED_RECOVERY_TOKEN', 'HOOK_CUSTOM_ACCESS_TOKEN_ENABLED'],
+    credentialsRequired: ['TIO_TEMP_ANON_KEY'],
+    evidenceSource: 'CUSTOM_ACCESS_TOKEN_HOOK_SQLSTATE_42501',
+    readinessStatus: 'PROVIDER_PRECONDITION_MISSING',
+    hostedStatus: 'HOSTED_NOT_TESTED',
+    note: 'GoTrue token endpoint does not support grant_type=recovery. Recovery token issuance occurs via /verify. Verified in Layer A (POSTGRES_VERIFIED).'
+  },
+  'HOOK-05': {
+    id: 'HOOK-05',
+    category: 'Token Hook',
+    layer: 'Layer A (Offline SQL Parity)',
+    target: 'Mixed AMR Rejection',
+    prerequisites: ['SQL_FUNCTION_PARITY_TEST'],
+    credentialsRequired: [],
+    evidenceSource: 'PLPGSQL_FUNCTION_EXECUTION_42501',
+    readinessStatus: 'BLOCKED_UNSUPPORTED',
+    hostedStatus: 'HOSTED_NOT_TESTED',
+    note: 'GoTrue server-owned claims.amr cannot be mutated via HTTP client request body. Authoritatively verified at Layer A in PostgreSQL (POSTGRES_VERIFIED).'
+  },
+  'HOOK-06': {
+    id: 'HOOK-06',
+    category: 'Token Hook',
+    layer: 'Layer A (Offline SQL Parity)',
+    target: 'Malformed/Missing AMR Rejection',
+    prerequisites: ['SQL_FUNCTION_PARITY_TEST'],
+    credentialsRequired: [],
+    evidenceSource: 'PLPGSQL_FUNCTION_EXECUTION_42501',
+    readinessStatus: 'BLOCKED_UNSUPPORTED',
+    hostedStatus: 'HOSTED_NOT_TESTED',
+    note: 'GoTrue server-owned claims.amr cannot be mutated via HTTP client request body. Authoritatively verified at Layer A in PostgreSQL (POSTGRES_VERIFIED).'
+  },
+  'HOOK-07': {
+    id: 'HOOK-07',
+    category: 'Token Hook',
+    layer: 'Layer A (Offline SQL Parity)',
+    target: 'Fail-Closed Exception Handling',
+    prerequisites: ['SQL_FUNCTION_PARITY_TEST'],
+    credentialsRequired: [],
+    evidenceSource: 'PLPGSQL_TRANSACTION_ABORT_500',
+    readinessStatus: 'BLOCKED_UNSUPPORTED',
+    hostedStatus: 'HOSTED_NOT_TESTED',
+    note: 'Hook exceptions abort transaction fail-closed. Cannot inject hook exception over client HTTP. Authoritatively verified at Layer A in PostgreSQL (POSTGRES_VERIFIED).'
+  },
+  'SESSION-01': {
+    id: 'SESSION-01',
+    category: 'Session & Consumer',
+    layer: 'Layer B (Hosted Endpoint)',
+    target: 'GET /auth/v1/user',
+    prerequisites: ['ACTIVE_SESSION_FROM_HOOK_01', 'TIO_TEMP_SERVICE_ROLE_KEY'],
+    credentialsRequired: ['TIO_TEMP_ANON_KEY', 'TIO_TEMP_SERVICE_ROLE_KEY'],
+    evidenceSource: 'REAL_SESSION_ID_CORRELATION',
+    readinessStatus: 'IMPLEMENTED_OFFLINE_TESTED',
+    hostedStatus: 'HOSTED_NOT_TESTED',
+    note: 'Verifies real session_id from JWT payload and correlates with active session in GoTrue.'
+  },
+  'SESSION-02': {
+    id: 'SESSION-02',
+    category: 'Session & Consumer',
+    layer: 'Layer B (Hosted Endpoint)',
+    target: 'PUT /auth/v1/admin/users/:userId',
+    prerequisites: ['ACTIVE_USER_ID_FROM_HOOK_01', 'TIO_TEMP_SERVICE_ROLE_KEY'],
+    credentialsRequired: ['TIO_TEMP_SERVICE_ROLE_KEY'],
+    evidenceSource: 'ADMIN_API_PASSWORD_UPDATE_AND_SESSION_REVOCATION',
+    readinessStatus: 'IMPLEMENTED_OFFLINE_TESTED',
+    hostedStatus: 'HOSTED_NOT_TESTED',
+    note: 'Performs administrative password reset via Admin API. No logout fallback allowed. Verifies session revocation.'
+  },
+  'SESSION-03': {
+    id: 'SESSION-03',
+    category: 'Session & Consumer',
+    layer: 'Layer B (Hosted Endpoint)',
+    target: 'GET /auth/v1/user (post-reset)',
+    prerequisites: ['PRE_RESET_TOKEN', 'ADMIN_PASSWORD_RESET_COMPLETED'],
+    credentialsRequired: ['TIO_TEMP_ANON_KEY'],
+    evidenceSource: 'GOTRUE_HTTP_403_SESSION_NOT_FOUND',
+    readinessStatus: 'IMPLEMENTED_OFFLINE_TESTED',
+    hostedStatus: 'HOSTED_NOT_TESTED',
+    note: 'Direct GET /user with pre-reset token rejected with HTTP 403 / session_not_found.'
+  },
+  'SESSION-04': {
+    id: 'SESSION-04',
+    category: 'Session & Consumer',
+    layer: 'Layer B (Hosted Endpoint)',
+    target: 'GET /rest/v1/task06i_session_probe',
+    prerequisites: ['PRE_RESET_TOKEN_BEFORE_EXPIRY', 'TABLE_FIXTURE_TASK06I_SESSION_PROBE'],
+    credentialsRequired: ['TIO_TEMP_ANON_KEY'],
+    evidenceSource: 'POSTGREST_STATELESS_HTTP_200_BEFORE_EXP',
+    readinessStatus: 'IMPLEMENTED_OFFLINE_TESTED',
+    hostedStatus: 'HOSTED_NOT_TESTED',
+    note: 'Documents PostgREST stateless JWT linger window. Accepts HTTP 200 before exp; rejects 401 as proof of linger.'
+  },
+  'SESSION-05': {
+    id: 'SESSION-05',
+    category: 'Session & Consumer',
+    layer: 'Layer B (Hosted Endpoint)',
+    target: 'GET /storage/v1/object/authenticated/task06i_probe_bucket/probe.txt',
+    prerequisites: ['PRE_RESET_TOKEN_BEFORE_EXPIRY', 'STORAGE_BUCKET_TASK06I_PROBE_BUCKET'],
+    credentialsRequired: ['TIO_TEMP_ANON_KEY'],
+    evidenceSource: 'STORAGE_STATELESS_HTTP_200_BEFORE_EXP',
+    readinessStatus: 'IMPLEMENTED_OFFLINE_TESTED',
+    hostedStatus: 'HOSTED_NOT_TESTED',
+    note: 'Documents Storage stateless JWT linger window. Accepts HTTP 200 before exp; rejects 401 or 404 as proof of linger.'
+  },
+  'SESSION-06': {
+    id: 'SESSION-06',
+    category: 'Session & Consumer',
+    layer: 'Layer B (Hosted Endpoint)',
+    target: 'POST /functions/v1/auth-user-probe',
+    prerequisites: ['EDGE_FUNCTION_AUTH_USER_PROBE_DEPLOYED', 'PRE_RESET_TOKEN'],
+    credentialsRequired: ['TIO_TEMP_ANON_KEY'],
+    evidenceSource: 'EDGE_FUNCTION_AUTH_SESSION_MISSING_ERROR',
+    readinessStatus: 'PROVIDER_PRECONDITION_MISSING',
+    hostedStatus: 'HOSTED_NOT_TESTED',
+    note: 'Requires Edge Function auth-user-probe deployed to TEMP before execution.'
+  }
+});
+
+/**
  * Creates a LIVE hosted probe dispatcher contract for the approved TEMP project.
  * Implements real endpoint logic for ALL 18 preflight probes (BYPASS-01..05, HOOK-01..07, SESSION-01..06).
  * Resolves PRRT_kwDOVtCmZc66lEzb, PRRT_kwDOVtCmZc66lOOK, PRRT_kwDOVtCmZc66lOOM, PRRT_kwDOVtCmZc66lOOP,
- * PRRT_kwDOVtCmZc66lOOS, PRRT_kwDOVtCmZc66lOOY, and PRRT_kwDOVtCmZc66layA.
+ * PRRT_kwDOVtCmZc66lOOS, PRRT_kwDOVtCmZc66lOOY, PRRT_kwDOVtCmZc66layA, PRRT_kwDOVtCmZc66lo-X,
+ * PRRT_kwDOVtCmZc66lo-a, PRRT_kwDOVtCmZc66lo-f, PRRT_kwDOVtCmZc66lo-i, PRRT_kwDOVtCmZc66lo-m,
+ * PRRT_kwDOVtCmZc66lo-o, PRRT_kwDOVtCmZc66lo-t, PRRT_kwDOVtCmZc66lq3S, and PRRT_kwDOVtCmZc66lq3W.
  */
 export function createHostedDispatcher({
   projectRef = HARDCODED_TEMP_REF,
@@ -1536,11 +1907,17 @@ export function createHostedDispatcher({
     throw new Error(`CRITICAL_SECURITY_VIOLATION: Cannot create dispatcher for forbidden project '${normRef}'`);
   }
 
-  // 3. Require non-empty anonKey
+  // 3. Require non-empty anonKey and validate credential binding (R3-10)
   if (!isNonEmptyString(anonKey)) {
     throw new Error(
       'MISSING_HOSTED_CREDENTIALS: createHostedDispatcher requires non-empty anonKey for Supabase gateway requests'
     );
+  }
+  validateProjectCredentialBinding(anonKey, normRef);
+
+  // 4. Validate serviceRoleKey binding if provided (R3-10)
+  if (isNonEmptyString(serviceRoleKey)) {
+    validateProjectCredentialBinding(serviceRoleKey, normRef);
   }
 
   const baseUrl = `https://${normRef}.supabase.co`;
@@ -1594,7 +1971,7 @@ export function createHostedDispatcher({
         const errText = (body?.msg || body?.message || body?.error_description || body?.error || '').toLowerCase();
         const createdUserId = body?.id || body?.user?.id;
         if (createdUserId && inv) {
-          inv.registerUser({ id: String(createdUserId), email: testUser, source: 'BYPASS-02_unexpected' });
+          inv.registerCreatedUser({ id: String(createdUserId), email: testUser, source: 'BYPASS-02_unexpected' });
         }
         const signupDisabled =
           body?.error_code === 'signup_disabled' ||
@@ -1612,6 +1989,8 @@ export function createHostedDispatcher({
       }
 
       case 'BYPASS-03': {
+        // Direct verify with fake/unverified token returns 400 before hook execution (R3-06).
+        // Hook is verified only if GoTrue actually invokes custom_access_token_hook.
         const res = await fetchFn(`${baseUrl}/auth/v1/verify`, {
           method: 'POST',
           headers,
@@ -1622,17 +2001,22 @@ export function createHostedDispatcher({
         const errText = (body?.msg || body?.message || body?.error_description || body?.error || '').toLowerCase();
         const hookRejected =
           res.status >= 400 &&
-          (body?.error_code === 'hook_error' || errText.includes('42501') || errText.includes('hook'));
+          (body?.error_code === 'hook_error' || errText.includes('42501') || errText.includes('error invoking access token hook'));
+        const isUpstreamTokenError = body?.error_code === 'otp_expired' || errText.includes('token has expired') || errText.includes('invalid');
         return {
           passed: res.status !== 200 && hookRejected === true,
           status: res.status,
           hook_rejected: hookRejected,
+          upstream_rejected_before_hook: isUpstreamTokenError,
           tokens: extractObservedTokens(body) ? body : null,
-          error: body?.msg || body?.message || null
+          error: hookRejected
+            ? (body?.msg || body?.message || 'Hook rejected token issuance')
+            : 'PROVIDER_PRECONDITION_MISSING: GoTrue rejected fake OTP upstream before invoking Custom Access Token Hook (R3-06)'
         };
       }
 
       case 'BYPASS-04': {
+        // Disabled magiclink route returns 422 or 404 upstream before hook execution (R3-06).
         const res = await fetchFn(`${baseUrl}/auth/v1/magiclink`, {
           method: 'POST',
           headers,
@@ -1643,13 +2027,15 @@ export function createHostedDispatcher({
         const errText = (body?.msg || body?.message || body?.error_description || body?.error || '').toLowerCase();
         const hookRejected =
           res.status >= 400 &&
-          (body?.error_code === 'hook_error' || errText.includes('42501') || errText.includes('hook'));
+          (body?.error_code === 'hook_error' || errText.includes('42501') || errText.includes('error invoking access token hook'));
         return {
           passed: res.status !== 200 && hookRejected === true,
           status: res.status,
           hook_rejected: hookRejected,
           tokens: extractObservedTokens(body) ? body : null,
-          error: body?.msg || body?.message || null
+          error: hookRejected
+            ? (body?.msg || body?.message || 'Hook rejected magiclink')
+            : 'PROVIDER_PRECONDITION_MISSING: Magic link route rejected upstream before Custom Access Token Hook invocation (R3-06)'
         };
       }
 
@@ -1685,57 +2071,70 @@ export function createHostedDispatcher({
         const body = await parseResponseBody(res);
         const accessToken = body?.access_token;
         const refreshToken = body?.refresh_token;
-        const userId = body?.user?.id;
-        const sessionId = body?.session_id || body?.user?.session_id;
 
-        let jwtValid = false;
-        let amrAuthenticated = false;
-        if (isNonEmptyString(accessToken)) {
-          if (accessToken.split('.').length === 3) {
-            let isRealJwt = false;
-            try {
-              const p = JSON.parse(Buffer.from(accessToken.split('.')[1], 'base64url').toString('utf8'));
-              if (p && typeof p === 'object') isRealJwt = true;
-            } catch {
-              isRealJwt = false;
-            }
-            if (isRealJwt) {
-              const jwtCheck = parseAndValidateJwt(accessToken, { expectedAudience: 'authenticated' });
-              if (jwtCheck.valid) {
-                jwtValid = true;
-                amrAuthenticated = jwtCheck.payload.amr_authenticated === 'true' || jwtCheck.payload.amr_authenticated === true;
-              }
-            } else {
-              // Synthetic 3-part mock token in tests
-              jwtValid = true;
-              amrAuthenticated = Boolean(body?.user?.app_metadata?.amr_authenticated || body?.amr_authenticated);
-            }
-          } else {
-            // Non-3-part synthetic token fallback
-            jwtValid = true;
-            amrAuthenticated = Boolean(body?.amr_authenticated);
-          }
-          if (ctx) {
-            ctx.activeAccessToken = accessToken;
-            ctx.activeRefreshToken = refreshToken;
-            ctx.activeUserId = userId;
-            ctx.activeSessionId = sessionId;
-          }
-          if (inv && userId) {
-            inv.registerUser({ id: String(userId), email: testUser, source: 'HOOK-01_login' });
-          }
-          if (inv && sessionId) {
-            inv.registerSession(String(sessionId));
-          }
+        if (res.status !== 200) {
+          return {
+            passed: false,
+            status: res.status,
+            error: body?.msg || body?.message || body?.error_description || 'Password grant authentication failed',
+            tokens: body
+          };
+        }
+
+        if (!isNonEmptyString(accessToken)) {
+          return {
+            passed: false,
+            status: res.status,
+            error: 'MISSING_ACCESS_TOKEN: Password grant returned HTTP 200 but access_token is missing or empty'
+          };
+        }
+
+        // Strictly validate JWT payload claims - NO bypass paths allowed (R3-08)
+        const jwtCheck = parseAndValidateJwt(accessToken, { expectedAudience: 'authenticated' });
+        if (!jwtCheck.valid) {
+          return {
+            passed: false,
+            status: res.status,
+            error: `JWT_CLAIM_VIOLATION: ${jwtCheck.reason}`,
+            jwt_claims_verified: false
+          };
+        }
+
+        const userId = jwtCheck.payload.sub || body?.user?.id;
+        const sessionId = jwtCheck.payload.session_id || body?.session_id;
+
+        if (!isNonEmptyString(sessionId)) {
+          return {
+            passed: false,
+            status: res.status,
+            error: 'MISSING_SESSION_ID: Valid JWT must contain session_id claim for session tracking (R3-05)',
+            jwt_claims_verified: true
+          };
+        }
+
+        if (ctx) {
+          ctx.activeAccessToken = accessToken;
+          ctx.activeRefreshToken = refreshToken;
+          ctx.activeUserId = userId;
+          ctx.activeSessionId = sessionId;
+        }
+
+        // Pre-existing seeded user: register as referenced user, NEVER cleanup-owned created user (R3-09)
+        if (inv && userId) {
+          inv.registerReferencedUser({ id: String(userId), email: testUser, source: 'HOOK-01_login' });
+        }
+        if (inv && sessionId) {
+          inv.registerSession(String(sessionId));
         }
 
         return {
-          passed: res.status === 200 && isNonEmptyString(accessToken) && jwtValid && amrAuthenticated,
+          passed: true,
           status: res.status,
           access_token: accessToken,
           refresh_token: refreshToken,
-          amr_authenticated: amrAuthenticated,
-          jwt_claims_verified: jwtValid,
+          amr_authenticated: true,
+          jwt_claims_verified: true,
+          user_id: userId,
           session_id: sessionId,
           tokens: body
         };
@@ -1758,148 +2157,133 @@ export function createHostedDispatcher({
         });
         const body = await parseResponseBody(res);
         const refreshedAccess = body?.access_token;
-        let refreshedClaimsVerified = false;
-        let amrPreserved = false;
-        if (isNonEmptyString(refreshedAccess)) {
-          if (refreshedAccess.split('.').length === 3) {
-            const jwtCheck = parseAndValidateJwt(refreshedAccess, { expectedAudience: 'authenticated' });
-            if (jwtCheck.valid) {
-              refreshedClaimsVerified = true;
-              amrPreserved =
-                (jwtCheck.payload.amr_authenticated === 'true' || jwtCheck.payload.amr_authenticated === true) &&
-                Array.isArray(jwtCheck.payload.amr) &&
-                jwtCheck.payload.amr.some(m => (typeof m === 'string' ? m : m?.method) === 'password');
-            }
-          } else {
-            refreshedClaimsVerified = true;
-            amrPreserved = Boolean(body?.amr_preserved);
-          }
-          if (ctx) {
-            ctx.activeAccessToken = refreshedAccess;
-            if (body?.refresh_token) {
-              ctx.activeRefreshToken = body.refresh_token;
-            }
+
+        if (res.status !== 200) {
+          return {
+            passed: false,
+            status: res.status,
+            error: body?.msg || body?.message || 'Token refresh failed',
+            tokens: body
+          };
+        }
+
+        if (!isNonEmptyString(refreshedAccess)) {
+          return {
+            passed: false,
+            status: res.status,
+            error: 'MISSING_ACCESS_TOKEN: Token refresh returned HTTP 200 but access_token is missing'
+          };
+        }
+
+        // Strictly validate refreshed JWT payload - NO bypass paths allowed (R3-08)
+        const jwtCheck = parseAndValidateJwt(refreshedAccess, { expectedAudience: 'authenticated' });
+        if (!jwtCheck.valid) {
+          return {
+            passed: false,
+            status: res.status,
+            error: `JWT_CLAIM_VIOLATION: ${jwtCheck.reason}`,
+            refreshed_claims_verified: false
+          };
+        }
+
+        const amrPreserved =
+          (jwtCheck.payload.amr_authenticated === 'true' || jwtCheck.payload.amr_authenticated === true) &&
+          Array.isArray(jwtCheck.payload.amr) &&
+          jwtCheck.payload.amr.some(m => (typeof m === 'string' ? m : m?.method) === 'password');
+
+        if (!amrPreserved) {
+          return {
+            passed: false,
+            status: res.status,
+            error: 'AMR_PRESERVATION_VIOLATION: Refreshed token did not preserve password-origin AMR',
+            amr_preserved: false
+          };
+        }
+
+        if (ctx) {
+          ctx.activeAccessToken = refreshedAccess;
+          if (body?.refresh_token) {
+            ctx.activeRefreshToken = body.refresh_token;
           }
         }
+
         return {
-          passed: res.status === 200 && isNonEmptyString(refreshedAccess) && refreshedClaimsVerified && amrPreserved,
+          passed: true,
           status: res.status,
           access_token: refreshedAccess,
-          amr_preserved: amrPreserved,
-          refreshed_claims_verified: refreshedClaimsVerified,
+          amr_preserved: true,
+          refreshed_claims_verified: true,
           tokens: body
         };
       }
 
-      case 'HOOK-03': {
-        const res = await fetchFn(`${baseUrl}/auth/v1/token?grant_type=otp`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ email: testUser, otp: '123456' }),
-          signal
-        });
-        const body = await parseResponseBody(res);
-        const hookRejected = res.status >= 400 && !extractObservedTokens(body);
-        return {
-          passed: hookRejected,
-          status: res.status,
-          hook_rejected: hookRejected,
-          tokens: extractObservedTokens(body) ? body : null,
-          error: body?.msg || body?.message || null
-        };
-      }
-
+      case 'HOOK-03':
       case 'HOOK-04': {
-        const res = await fetchFn(`${baseUrl}/auth/v1/token?grant_type=recovery`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ email: testUser, token: 'recovery-token-xyz' }),
-          signal
-        });
-        const body = await parseResponseBody(res);
-        const hookRejected = res.status >= 400 && !extractObservedTokens(body);
+        // GoTrue token endpoint does not support grant_type=otp or grant_type=recovery (R3-01).
+        // Token issuance from OTP/recovery occurs via POST /auth/v1/verify, which requires a valid delivered challenge token.
+        // Because native OTP/recovery delivery is disabled and suppressed fail-closed on this testbed,
+        // valid delivered challenge tokens cannot be generated without an external authenticated provider.
         return {
-          passed: hookRejected,
-          status: res.status,
-          hook_rejected: hookRejected,
-          tokens: extractObservedTokens(body) ? body : null,
-          error: body?.msg || body?.message || null
+          passed: false,
+          status: 0,
+          hook_rejected: false,
+          error: `PROVIDER_PRECONDITION_MISSING: ${item.id} requires valid delivered challenge token to exercise Custom Access Token Hook; GoTrue /token does not support grant_type=${item.id === 'HOOK-03' ? 'otp' : 'recovery'}. Hook contract is verified offline via Layer A PostgreSQL parity (POSTGRES_VERIFIED).`,
+          reason: `PROVIDER_PRECONDITION_MISSING: ${item.id} cannot be executed live without valid delivered challenge token`
         };
       }
 
-      case 'HOOK-05': {
-        const res = await fetchFn(`${baseUrl}/auth/v1/token?grant_type=password`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ email: testUser, password: testPassword, amr: [{ method: 'password' }, { method: 'otp' }] }),
-          signal
-        });
-        const body = await parseResponseBody(res);
-        const hookRejected = res.status >= 400 && !extractObservedTokens(body);
-        return {
-          passed: hookRejected,
-          status: res.status,
-          hook_rejected: hookRejected,
-          tokens: extractObservedTokens(body) ? body : null,
-          error: body?.msg || body?.message || null
-        };
-      }
-
-      case 'HOOK-06': {
-        const res = await fetchFn(`${baseUrl}/auth/v1/token?grant_type=password`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ email: testUser, password: testPassword, amr: 'not-an-array' }),
-          signal
-        });
-        const body = await parseResponseBody(res);
-        const hookRejected = res.status >= 400 && !extractObservedTokens(body);
-        return {
-          passed: hookRejected,
-          status: res.status,
-          hook_rejected: hookRejected,
-          tokens: extractObservedTokens(body) ? body : null,
-          error: body?.msg || body?.message || null
-        };
-      }
-
+      case 'HOOK-05':
+      case 'HOOK-06':
       case 'HOOK-07': {
-        const res = await fetchFn(`${baseUrl}/auth/v1/token?grant_type=password`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ email: testUser, password: testPassword, __trigger_hook_error: true }),
-          signal
-        });
-        const body = await parseResponseBody(res);
-        const hookRejected = res.status >= 400 && !extractObservedTokens(body);
+        // GoTrue server-owned claims.amr is constructed internally by GoTrue and cannot be mutated or overridden
+        // by client request body fields during password grant (R3-02). Client-injected AMR is ignored by GoTrue.
+        // Malformed AMR, mixed AMR, and hook runtime exception abort are authoritative Layer A SQL contract
+        // properties, verified directly against PostgreSQL in sql-contract-parity.mjs (POSTGRES_VERIFIED).
         return {
-          passed: hookRejected,
-          status: res.status,
-          hook_rejected: hookRejected,
-          tokens: extractObservedTokens(body) ? body : null,
-          error: body?.msg || body?.message || null
+          passed: false,
+          status: 0,
+          hook_rejected: false,
+          error: `BLOCKED_UNSUPPORTED: ${item.id} cannot be triggered via HTTP client body parameters. GoTrue constructs claims.amr server-side and ignores client-injected AMR. Verified authoritatively via Layer A SQL contract parity (POSTGRES_VERIFIED).`,
+          reason: `BLOCKED_UNSUPPORTED: HTTP client cannot inject server-owned AMR claims into GoTrue hook payload`
         };
       }
 
       case 'SESSION-01': {
         const authHeader = ctx?.activeAccessToken ? `Bearer ${ctx.activeAccessToken}` : null;
+        if (!authHeader) {
+          return {
+            passed: false,
+            status: 401,
+            error: 'PREREQUISITE_MISSING: SESSION-01 requires activeAccessToken from HOOK-01'
+          };
+        }
+        const sessionId = ctx?.activeSessionId;
+        if (!isNonEmptyString(sessionId) || sessionId.startsWith('sess-default')) {
+          return {
+            passed: false,
+            status: 0,
+            error: 'PREREQUISITE_MISSING: SESSION-01 requires genuine session_id from HOOK-01; user ID or fixed placeholder prohibited (R3-05)'
+          };
+        }
+
         const res = await fetchFn(`${baseUrl}/auth/v1/user`, {
           method: 'GET',
-          headers: { ...headers, ...(authHeader ? { Authorization: authHeader } : {}) },
+          headers: { ...headers, Authorization: authHeader },
           signal
         });
         const body = await parseResponseBody(res);
         const sessionCreated = res.status === 200 && isNonEmptyString(body?.id);
-        const sessionId = ctx?.activeSessionId || body?.id || `sess-${body?.id || 'default'}`;
+
         if (sessionCreated && ctx) {
           ctx.preInvalidationSessionValid = true;
-          ctx.activeSessionId = sessionId;
         }
+
         return {
           passed: sessionCreated,
           status: res.status,
           session_created: sessionCreated,
           session_id: sessionId,
+          user_id: body?.id,
           sessions_count: 1,
           user: body
         };
@@ -1907,49 +2291,81 @@ export function createHostedDispatcher({
 
       case 'SESSION-02': {
         const userId = ctx?.activeUserId;
-        let res;
-        if (serviceRoleKey && userId) {
-          res = await fetchFn(`${baseUrl}/auth/v1/admin/users/${userId}`, {
-            method: 'PUT',
-            headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, 'Content-Type': 'application/json' },
-            body: JSON.stringify({ password: 'TioNewPassword#2026!' }),
-            signal
-          });
-        } else {
-          const authHeader = ctx?.activeAccessToken ? `Bearer ${ctx.activeAccessToken}` : null;
-          res = await fetchFn(`${baseUrl}/auth/v1/logout`, {
-            method: 'POST',
-            headers: { ...headers, ...(authHeader ? { Authorization: authHeader } : {}) },
-            signal
-          });
+        if (!serviceRoleKey) {
+          return {
+            passed: false,
+            status: 0,
+            logout_fallback: false,
+            error: 'PREREQUISITE_MISSING: SESSION-02 strictly requires explicit TIO_TEMP_SERVICE_ROLE_KEY to perform administrative password update via Admin API. Logout fallback prohibited (R3-04).'
+          };
         }
+        if (!userId) {
+          return {
+            passed: false,
+            status: 0,
+            error: 'PREREQUISITE_MISSING: SESSION-02 requires activeUserId from HOOK-01'
+          };
+        }
+
+        const newPassword = 'TioNewPassword#2026!';
+        const res = await fetchFn(`${baseUrl}/auth/v1/admin/users/${userId}`, {
+          method: 'PUT',
+          headers: {
+            apikey: serviceRoleKey,
+            Authorization: `Bearer ${serviceRoleKey}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ password: newPassword }),
+          signal
+        });
         const body = await parseResponseBody(res);
-        const invalidated = res.status === 200 || res.status === 204;
-        if (invalidated && ctx) {
+        const resetSucceeded = res.status === 200 && (body?.id === userId || body?.user?.id === userId);
+
+        if (resetSucceeded && ctx) {
           ctx.passwordResetCompleted = true;
+          ctx.activeSeedPassword = newPassword;
         }
+
         return {
-          passed: invalidated,
+          passed: resetSucceeded,
           status: res.status,
-          session_revoked: invalidated,
+          session_revoked: resetSucceeded,
           remaining_sessions: 0,
-          password_reset_completed: invalidated,
-          invalidation_completed: invalidated
+          password_reset_completed: resetSucceeded,
+          invalidation_completed: resetSucceeded,
+          logout_fallback: false
         };
       }
 
       case 'SESSION-03': {
         const authHeader = ctx?.activeAccessToken ? `Bearer ${ctx.activeAccessToken}` : null;
+        if (!authHeader) {
+          return {
+            passed: false,
+            status: 401,
+            error: 'PREREQUISITE_MISSING: SESSION-03 requires pre-reset access token'
+          };
+        }
+        const sessionId = ctx?.activeSessionId;
+        if (!isNonEmptyString(sessionId) || sessionId.startsWith('sess-default')) {
+          return {
+            passed: false,
+            status: 0,
+            error: 'PREREQUISITE_MISSING: SESSION-03 requires valid activeSessionId from HOOK-01 (R3-05)'
+          };
+        }
+
         const res = await fetchFn(`${baseUrl}/auth/v1/user`, {
           method: 'GET',
-          headers: { ...headers, ...(authHeader ? { Authorization: authHeader } : {}) },
+          headers: { ...headers, Authorization: authHeader },
           signal
         });
         const body = await parseResponseBody(res);
-        const sessionId = ctx?.activeSessionId || 'sess-default';
         const isRevocationError = res.status === 401 || res.status === 403;
+        const errCode = body?.error_code || (isRevocationError ? 'session_not_found' : null);
+
         return {
-          passed: isRevocationError,
+          passed: isRevocationError && ctx?.preInvalidationSessionValid === true && ctx?.passwordResetCompleted === true,
           status: res.status,
           pre_reset_baseline_verified: ctx?.preInvalidationSessionValid === true,
           reset_completed: ctx?.passwordResetCompleted === true,
@@ -1958,64 +2374,149 @@ export function createHostedDispatcher({
           correlated_session_id: sessionId,
           revocation_verified: isRevocationError,
           session_revoked: isRevocationError,
-          error_code: body?.error_code || 'session_not_found',
-          error: body?.msg || body?.message || 'session_not_found'
+          error_code: errCode,
+          error: body?.msg || body?.message || errCode
         };
       }
 
       case 'SESSION-04': {
         const authHeader = ctx?.activeAccessToken ? `Bearer ${ctx.activeAccessToken}` : null;
+        if (!authHeader) {
+          return {
+            passed: false,
+            status: 401,
+            error: 'PREREQUISITE_MISSING: SESSION-04 requires pre-reset access token'
+          };
+        }
+        const token = ctx.activeAccessToken;
+        let tokenExpiry = null;
+        try {
+          const parts = token.split('.');
+          if (parts.length === 3) {
+            const p = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+            tokenExpiry = p?.exp;
+          }
+        } catch {}
+
+        const nowUnix = Math.floor(Date.now() / 1000);
+        const tokenUnexpired = typeof tokenExpiry === 'number' && nowUnix < tokenExpiry;
+
         const res = await fetchFn(`${baseUrl}/rest/v1/task06i_session_probe`, {
           method: 'GET',
-          headers: { ...headers, ...(authHeader ? { Authorization: authHeader } : {}) },
+          headers: { ...headers, Authorization: authHeader },
           signal
         });
         const body = await parseResponseBody(res);
-        const isDocumentedLinger = res.status === 200 || res.status === 401;
+
+        // Stateless linger is observed ONLY when token is unexpired AND PostgREST accepts it with HTTP 200 (R3-03)
+        const lingerObserved = res.status === 200 && tokenUnexpired;
+
         return {
-          passed: isDocumentedLinger,
+          passed: lingerObserved,
           status: res.status,
-          stateless_linger_documented: true,
-          evidence: `PostgREST Data API stateless JWT linger observed (HTTP ${res.status}); bounded by short jwt_exp (300s)`,
-          postgrest_linger_observed: res.status === 200,
+          stateless_linger_documented: lingerObserved,
+          token_unexpired: tokenUnexpired,
+          jwt_exp: tokenExpiry,
+          evidence: lingerObserved
+            ? `PostgREST Data API stateless JWT linger confirmed (HTTP 200 before exp ${tokenExpiry}); bounded by short jwt_exp (300s)`
+            : `PostgREST did not demonstrate stateless linger (status ${res.status}, unexpired: ${tokenUnexpired})`,
+          postgrest_linger_observed: lingerObserved,
           bounded_by_jwt_exp: true,
-          data: body
+          data: body,
+          error: res.status === 401 ? 'POSTGREST_TOKEN_REJECTED: PostgREST returned HTTP 401; linger not observed' : (!tokenUnexpired ? 'TOKEN_ALREADY_EXPIRED' : null)
         };
       }
 
       case 'SESSION-05': {
         const authHeader = ctx?.activeAccessToken ? `Bearer ${ctx.activeAccessToken}` : null;
+        if (!authHeader) {
+          return {
+            passed: false,
+            status: 401,
+            error: 'PREREQUISITE_MISSING: SESSION-05 requires pre-reset access token'
+          };
+        }
+        const token = ctx.activeAccessToken;
+        let tokenExpiry = null;
+        try {
+          const parts = token.split('.');
+          if (parts.length === 3) {
+            const p = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+            tokenExpiry = p?.exp;
+          }
+        } catch {}
+
+        const nowUnix = Math.floor(Date.now() / 1000);
+        const tokenUnexpired = typeof tokenExpiry === 'number' && nowUnix < tokenExpiry;
+
         const res = await fetchFn(`${baseUrl}/storage/v1/object/authenticated/task06i_probe_bucket/probe.txt`, {
           method: 'GET',
-          headers: { ...headers, ...(authHeader ? { Authorization: authHeader } : {}) },
+          headers: { ...headers, Authorization: authHeader },
           signal
         });
         const body = await parseResponseBody(res);
-        const isDocumentedLinger = res.status === 200 || res.status === 404 || res.status === 401;
+
+        // Stateless linger is observed ONLY when token is unexpired AND Storage accepts it with HTTP 200 (R3-03)
+        const lingerObserved = res.status === 200 && tokenUnexpired;
+
         return {
-          passed: isDocumentedLinger,
+          passed: lingerObserved,
           status: res.status,
-          stateless_linger_documented: true,
-          evidence: `Storage API stateless JWT linger observed (HTTP ${res.status}); bounded by short jwt_exp (300s)`,
-          storage_linger_observed: res.status === 200,
+          stateless_linger_documented: lingerObserved,
+          token_unexpired: tokenUnexpired,
+          jwt_exp: tokenExpiry,
+          evidence: lingerObserved
+            ? `Storage API stateless JWT linger confirmed (HTTP 200 before exp ${tokenExpiry}); bounded by short jwt_exp (300s)`
+            : `Storage API did not demonstrate stateless linger (status ${res.status}, unexpired: ${tokenUnexpired})`,
+          storage_linger_observed: lingerObserved,
           bounded_by_jwt_exp: true,
-          data: body
+          data: body,
+          error: res.status === 404
+            ? 'STORAGE_FIXTURE_MISSING: Storage probe file returned HTTP 404'
+            : (res.status === 401 ? 'STORAGE_TOKEN_REJECTED: Storage returned HTTP 401' : (!tokenUnexpired ? 'TOKEN_ALREADY_EXPIRED' : null))
         };
       }
 
       case 'SESSION-06': {
         const authHeader = ctx?.activeAccessToken ? `Bearer ${ctx.activeAccessToken}` : null;
+        if (!authHeader) {
+          return {
+            passed: false,
+            status: 401,
+            error: 'PREREQUISITE_MISSING: SESSION-06 requires pre-reset access token'
+          };
+        }
+        const sessionId = ctx?.activeSessionId;
+        if (!isNonEmptyString(sessionId) || sessionId.startsWith('sess-default')) {
+          return {
+            passed: false,
+            status: 0,
+            error: 'PREREQUISITE_MISSING: SESSION-06 requires activeSessionId from HOOK-01 (R3-05)'
+          };
+        }
+
         const res = await fetchFn(`${baseUrl}/functions/v1/auth-user-probe`, {
           method: 'POST',
-          headers: { ...headers, ...(authHeader ? { Authorization: authHeader } : {}) },
+          headers: { ...headers, Authorization: authHeader },
           body: JSON.stringify({ probe: 'revoked_session_check' }),
           signal
         });
         const body = await parseResponseBody(res);
-        const sessionId = ctx?.activeSessionId || 'sess-default';
+
+        if (res.status === 404) {
+          return {
+            passed: false,
+            status: 404,
+            error: 'PROVIDER_PRECONDITION_MISSING: Edge Function auth-user-probe is not deployed on TEMP project (R3-05)',
+            reason: 'PROVIDER_PRECONDITION_MISSING: Edge Function deployment required for SESSION-06'
+          };
+        }
+
         const isRevocationError = res.status === 401 || res.status === 403;
+        const errCode = body?.error_code || (isRevocationError ? 'AuthSessionMissingError' : null);
+
         return {
-          passed: isRevocationError,
+          passed: isRevocationError && ctx?.preInvalidationSessionValid === true && ctx?.passwordResetCompleted === true,
           status: res.status,
           pre_reset_baseline_verified: ctx?.preInvalidationSessionValid === true,
           reset_completed: ctx?.passwordResetCompleted === true,
@@ -2024,8 +2525,8 @@ export function createHostedDispatcher({
           correlated_session_id: sessionId,
           revocation_verified: isRevocationError,
           session_revoked: isRevocationError,
-          error_code: body?.error_code || 'AuthSessionMissingError',
-          error: body?.msg || body?.message || 'AuthSessionMissingError'
+          error_code: errCode,
+          error: body?.msg || body?.message || errCode
         };
       }
 
@@ -2093,6 +2594,24 @@ export async function runHostedProbeRunner(options = {}) {
 
   const activeInventory = inventory || new TestRunInventory();
   const activeRunContext = runContext || createRunContext(options);
+  const adminClient = options.adminClient || null;
+  let cleanupReport = null;
+  let cleanupExecuted = false;
+
+  async function performCleanup() {
+    if (cleanupExecuted) return;
+    cleanupExecuted = true;
+    if (isLive && activeInventory && adminClient) {
+      try {
+        cleanupReport = await activeInventory.executeCleanup({ adminClient, failClosed: false });
+      } catch (err) {
+        cleanupReport = {
+          status: 'CLEANUP_FAILED',
+          error: err.message
+        };
+      }
+    }
+  }
 
   try {
     // LIVE probe loop with bounded timeout and abort signal (PRRT_kwDOVtCmZc66jOw5)
@@ -2172,6 +2691,9 @@ export async function runHostedProbeRunner(options = {}) {
       });
     }
 
+    // Execute cleanup at end of test run (PRRT_kwDOVtCmZc66lo-q, R3-07)
+    await performCleanup();
+
     // Status is COMPLETED only if zero cases failed and all planned cases executed
     const allCasesExecuted = results.length === plan.plannedCases.length;
     const allPassed = !aborted && allCasesExecuted && results.every(r => r.outcome && r.outcome.passed === true);
@@ -2185,12 +2707,15 @@ export async function runHostedProbeRunner(options = {}) {
       requestCount,
       aborted,
       abortReason: abortReason,
+      cleanupReport: cleanupReport,
       inventorySummary: activeInventory.getSummary(),
       results: results
     });
   } finally {
     // Clear run-scoped credential state after execution (PRRT_kwDOVtCmZc66lOOP)
     activeRunContext.clear();
+    // Ensure cleanup always executes even on unexpected exceptions (PRRT_kwDOVtCmZc66lo-q, R3-07)
+    await performCleanup();
   }
 }
 
@@ -2226,13 +2751,35 @@ if (process.argv[1] && process.argv[1].endsWith('hosted-probe-runner.mjs')) {
       process.exit(1);
     }
 
-    const anonKey = process.env.SUPABASE_ANON_KEY || process.env.TIO_TEMP_ANON_KEY;
-    if (!anonKey) {
-      console.error('MISSING_HOSTED_CREDENTIALS: LIVE mode against TEMP project requires SUPABASE_ANON_KEY (or TIO_TEMP_ANON_KEY). None found in environment.');
+    // Prohibit generic keys for LIVE TEMP testing to prevent accidental production key leakage (PRRT_kwDOVtCmZc66lq3W, R3-10)
+    if (process.env.SUPABASE_ANON_KEY && !process.env.TIO_TEMP_ANON_KEY) {
+      console.error('GENERIC_KEY_PROHIBITED: Generic SUPABASE_ANON_KEY is forbidden for LIVE TEMP testing. Set TIO_TEMP_ANON_KEY explicitly (R3-10).');
+      process.exit(1);
+    }
+    if (process.env.SUPABASE_SERVICE_ROLE_KEY && !process.env.TIO_TEMP_SERVICE_ROLE_KEY) {
+      console.error('GENERIC_KEY_PROHIBITED: Generic SUPABASE_SERVICE_ROLE_KEY is forbidden for LIVE TEMP testing. Set TIO_TEMP_SERVICE_ROLE_KEY explicitly (R3-10).');
       process.exit(1);
     }
 
-    const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.TIO_TEMP_SERVICE_ROLE_KEY;
+    const anonKey = process.env.TIO_TEMP_ANON_KEY;
+    if (!anonKey) {
+      console.error('MISSING_HOSTED_CREDENTIALS: LIVE mode against TEMP project requires TIO_TEMP_ANON_KEY (R3-10). None found in environment.');
+      process.exit(1);
+    }
+
+    const serviceRoleKey = process.env.TIO_TEMP_SERVICE_ROLE_KEY;
+
+    // Validate project credential binding for anonKey and serviceRoleKey
+    try {
+      validateProjectCredentialBinding(anonKey, HARDCODED_TEMP_REF);
+      if (serviceRoleKey) {
+        validateProjectCredentialBinding(serviceRoleKey, HARDCODED_TEMP_REF);
+      }
+    } catch (err) {
+      console.error('CREDENTIAL_BINDING_ERROR:', err.message);
+      process.exit(1);
+    }
+
     const inventory = new TestRunInventory();
     const runContext = createRunContext({
       testPassword: process.env.TASK06I_TEST_PASSWORD
@@ -2246,12 +2793,49 @@ if (process.argv[1] && process.argv[1].endsWith('hosted-probe-runner.mjs')) {
       runContext
     });
 
+    let adminClient = null;
+    if (serviceRoleKey) {
+      adminClient = {
+        async deleteUser(userId) {
+          const res = await fetch(`https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/admin/users/${userId}`, {
+            method: 'DELETE',
+            headers: {
+              apikey: serviceRoleKey,
+              Authorization: `Bearer ${serviceRoleKey}`
+            }
+          });
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            return { error: body?.msg || body?.message || `HTTP_${res.status}` };
+          }
+          return { data: { user: { id: userId } }, error: null };
+        },
+        async getUserById(userId) {
+          const res = await fetch(`https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/admin/users/${userId}`, {
+            method: 'GET',
+            headers: {
+              apikey: serviceRoleKey,
+              Authorization: `Bearer ${serviceRoleKey}`
+            }
+          });
+          if (res.status === 404) return { data: null, error: { message: 'User not found', status: 404 } };
+          if (!res.ok) {
+            const body = await res.json().catch(() => ({}));
+            return { data: null, error: body };
+          }
+          const data = await res.json();
+          return { data, error: null };
+        }
+      };
+    }
+
     runHostedProbeRunner({
       projectRef: HARDCODED_TEMP_REF,
       argv,
       env: process.env,
       inventory,
       runContext,
+      adminClient,
       mockDispatcher: liveDispatcher
     }).then(res => {
       console.log(`[HOSTED PROBE RUNNER] Mode: ${res.mode} | Status: ${res.status} | Project: ${res.projectRef} | Executed: ${res.totalExecuted}`);

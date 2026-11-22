@@ -230,3 +230,30 @@ CREATE POLICY task06i_probe_storage_policy ON storage.objects
 -- }
 -- Resolves PRRT_kwDOVtCmZc66lOOY
 -- -----------------------------------------------------------------------------
+
+-- -----------------------------------------------------------------------------
+-- 6. EDGE FUNCTION SPECIFICATION FOR SESSION-06 (GoTrue User Verification)
+-- Function Name: auth-user-probe
+-- Endpoint: POST /functions/v1/auth-user-probe
+-- Deployment: supabase functions deploy auth-user-probe --project-ref wvdabiwbaavfggcmpizd
+-- Implementation Contract:
+--   Deno.serve(async (req) => {
+--     const authHeader = req.headers.get('Authorization');
+--     if (!authHeader) return new Response(JSON.stringify({ error: 'Missing auth header' }), { status: 401 });
+--     const supabase = createClient(Deno.env.get('SUPABASE_URL'), Deno.env.get('SUPABASE_ANON_KEY'), {
+--       global: { headers: { Authorization: authHeader } }
+--     });
+--     const { data: { user }, error } = await supabase.auth.getUser();
+--     if (error || !user) {
+--       return new Response(JSON.stringify({ error: error?.message || 'AuthSessionMissingError', error_code: 'AuthSessionMissingError' }), {
+--         status: 401,
+--         headers: { 'Content-Type': 'application/json' }
+--       });
+--     }
+--     return new Response(JSON.stringify({ status: 'ok', user_id: user.id }), {
+--       status: 200,
+--       headers: { 'Content-Type': 'application/json' }
+--     });
+--   });
+-- Resolves PRRT_kwDOVtCmZc66lo-m (R3-05)
+-- -----------------------------------------------------------------------------
