@@ -1,14 +1,14 @@
-# Phase 1.2 Task 06I-B1-H1-R11 — Indeterminate Verification Response & Residual Session Closure
+# Phase 1.2 Task 06I-B1-H1-R12 — Shared Auth Response Observation & Residual Session Safety Closure
 
-> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R11. All outstanding review findings across PR #37 (including Codex P2 finding `PRRT_kwDOVtCmZc66tz_m` and R11-02 secret boundary requirements) are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
+> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R12. All outstanding review findings across PR #37 (including Codex P2 finding `PRRT_kwDOVtCmZc66u-GX` on HOOK-01 unreadable success and R12-02 shared fail-closed Auth response boundary) are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **LOCAL REMEDIATION COMPLETE (REVISION R11); ALL REVIEW FINDINGS RESOLVED (R11-01 CODEX P2: REJECTION OF UNREADABLE/TRUNCATED/MALFORMED/EMPTY/NO-TOKEN VERIFICATION RESPONSES INSTEAD OF ASSUMING ZERO SESSIONS, INDETERMINATE SESSION DETECTION, IMMEDIATE UNTRACKED SESSION INVENTORY REGISTRATION, FAIL-CLOSED RESIDUAL RESOURCE REPORTING BLOCKING CLEANUP_VERIFIED_SUCCESS; R11-02 SECRET BOUNDARY & REDACTION: TOKEN STRIPPED FROM RETURNED ERROR OBJECTS, SENSITIVE TOKENS ISOLATED IN PRIVATE RUN-SCOPED INVENTORY CONTEXT FOR CLEANUP RETRY, PASSWORDS PRESERVED ON CLEANUP FAILURE FOR ADMIN REMEDIATION AND CLEARED ONLY ON VERIFIED SUCCESS); 87/87 RUNNER TESTS PASS; 155/155 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; GITHUB CI STATUS: 4/4 CHECKS PASS ON PREVIOUS HEAD; DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
-| Objective | Remediate Codex P2 review finding `PRRT_kwDOVtCmZc66tz_m` (R11-01: reject unreadable verification responses instead of assuming zero sessions) and R11-02 (secret boundary & credential isolation) on PR #37 without executing any live hosted mutations. |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R11 slice |
-| Previous agent | Agent / Task 06I-B1-H1-R10 author |
-| Last audited HEAD | `2fd50c9bde6ba55c49c070f142018a721e5d44a8` (PR #37 previous commit) |
+| Status | **LOCAL REMEDIATION COMPLETE (REVISION R12); ALL REVIEW FINDINGS RESOLVED (R12-01 CODEX P2: REJECTION OF UNREADABLE/TRUNCATED/MALFORMED/EMPTY/NO-TOKEN SUCCESS RESPONSES IN HOOK-01 AND DISPATCHER, IMMEDIATE UNTRACKED SESSION INVENTORY REGISTRATION, FAIL-CLOSED RESIDUAL REPORTING BLOCKING CLEANUP_VERIFIED_SUCCESS; R12-02 SHARED FAIL-CLOSED AUTH RESPONSE BOUNDARY ACROSS ALL PROBES AND ADMIN VERIFICATION VIA `observeAuthResponse` AND `parseResponseEnvelope`; COMPLETE 10-CLASS LIFECYCLE AUDIT MATRIX COMPILED); 88/88 RUNNER TESTS PASS; 155/155 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; GITHUB CI STATUS: 4/4 CHECKS PASS ON PREVIOUS HEAD; DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
+| Objective | Remediate Codex P2 review finding `PRRT_kwDOVtCmZc66u-GX` (R12-01: treat HOOK-01 unreadable success as residual session) and R12-02 (shared fail-closed Auth response boundary) on PR #37 without executing any live hosted mutations. |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R12 slice |
+| Previous agent | Agent / Task 06I-B1-H1-R11 author |
+| Last audited HEAD | `3581e22c56bbaa9a7ca64f82a9e662a3e69a30bd` (PR #37 previous commit) |
 | Tracking / approval | Task 06I-B1-H1-R10 remediation authorized by user prompt; LIVE hosted probe execution requires separate explicit owner authorization; mandates $0 cost ceiling and permanent immunity for `Tio-world` (`oykupyiitspujzpwwvuj`) and REAL `bsfwzvgynwriswapxpsp` |
 | Branch | `test/task06i-b1-h1-hosted-security-preflight` |
 | Base SHA / inspected HEAD | `716fb32061ffb6012d17eae9453c822a281fe6f1` (`main`) |
@@ -499,6 +499,46 @@ End-to-end audit across the Auth lifecycle (`Auth response → minted-session ob
 | **Residual Risks (Not Provable Offline)** | Edge clock skew & stateless linger TTL | Minor clock skew across distributed edge nodes could theoretically affect stateless JWT expiry boundaries (mitigated by 300s hard cap). |
 | **Residual Risks (Not Provable Offline)** | Brevo external SMTP delivery | Brevo sending readiness requires authenticated domain; blocked until custom domain DNS records are configured. |
 
+### 7.13 Revision R12 Remediation Details
+
+- **R12-01 — Treat HOOK-01 Unreadable Success as Residual Session (Codex P2, `PRRT_kwDOVtCmZc66u-GX`):**
+  1. Identified that when GoTrue returned HTTP 200 with truncated, unreadable, or missing token evidence, `createHostedDispatcher` previously saw `body === null` and registered zero session obligations.
+  2. When cleanup ran, it reported false `CLEANUP_VERIFIED_SUCCESS` with zero logout calls and empty inventory while an unobserved server-side session remained active.
+  3. Remediated by ensuring any HTTP 200 response with unreadable body, missing access token, or unextractable session ID is classified as `AUTH_RESPONSE_INDETERMINATE` and immediately registers an untracked session risk in inventory (`inv.registerUntrackedSession()`).
+  4. In `executeCleanup`, indeterminate sessions trigger residual resource reporting (`INDETERMINATE_SESSION_LEAK`) and fail closed (`CLEANUP_FAILED_RESIDUAL_RESOURCES`), blocking `CLEANUP_VERIFIED_SUCCESS` and throwing `CLEANUP_INCOMPLETE` under `failClosed: true`.
+
+- **R12-02 — Shared Fail-Closed Auth Response Boundary (`observeAuthResponse` and `parseResponseEnvelope`):**
+  1. Implemented `parseResponseEnvelope(res)`:
+     - Handles stream reads defensively (`text()` fallback on `json()` failure).
+     - Standardized status classification: `'parsed'`, `'unreadable'`, `'non_object'`, `'missing_response'`, or `'transport_error'`.
+  2. Implemented `observeAuthResponse(...)`:
+     - Applied across all Auth probes (`BYPASS-01..05`, `HOOK-01..02`) and `createHostedAdminClient.verifyUserCredentials()`.
+     - Standardized classifications:
+       - `AUTH_RESPONSE_VERIFIED_REJECTION`: HTTP 4xx rejection with confirmed error message.
+       - `AUTH_RESPONSE_TOKEN_OBSERVED`: HTTP 200 with valid access token and extractable session ID.
+       - `AUTH_RESPONSE_INDETERMINATE`: HTTP 200 with unreadable body, missing tokens, unextractable session ID, or post-dispatch transport failure.
+       - `AUTH_RESPONSE_PROVIDER_FAILURE`: HTTP 5xx or transport failure without session minting risk.
+       - `AUTH_RESPONSE_UNEXPECTED_TOKEN`: Negative probe unexpectedly issuing tokens.
+     - Unverified tokens are stored in `ctx.mintedAccessToken` and registered in `inv.trackedSessions` for cleanup, but strictly omitted from `ctx.activeAccessToken` until JWT claim verification passes.
+     - Added comprehensive regression Test 84 covering all 18 requirements.
+
+### 7.14 One-Time Full Lifecycle Audit Matrix
+
+Compact invariant matrix verifying the 10 lifecycle invariant classes across code locations, supporting tests, and remaining limitations:
+
+| Invariant Class | Scope / Description | Code Implementation Location | Supporting Test(s) | Operational Limitation / Proof Status |
+|---|---|---|---|---|
+| **1. Seed Credential Restore & Verification** | Pre-reset password captured, modified during test, restored during cleanup, and verified via real login | `hosted-probe-runner.mjs:2260-2345` (`TestRunInventory.executeCleanup`), `4180-4280` (`verifyUserCredentials`) | Test 68 (R5-06), Test 78 (R9-01), Test 80 (R10-01), Test 82 (R11-01) | Requires seed user pre-provisioned on testbed; offline verified via mock admin client |
+| **2. Pre-Existing User Preservation** | Referenced seed user never deleted by testbed cleanup; only `createdThisRun` users deleted | `hosted-probe-runner.mjs:2200-2250` (`TestRunInventory.executeCleanup`) | Test 52 (R3-09), Test 82 (R11-01), Test 84 (R12-02) | Verified offline; hard guarantee in inventory contract |
+| **3. Negative Probe Unexpected Tokens** | Negative probes (`BYPASS-01..05`) capture unexpected tokens and sessions into inventory for cleanup | `hosted-probe-runner.mjs:738-741`, `2930-3115` (`createHostedDispatcher`) | Test 76 (R8-01), Test 84 (R12-02) | Requires fail-closed token tracking in all negative probe handlers |
+| **4. Supported Session Revocation** | Supported session invalidation uses GoTrue sign-out (`POST /auth/v1/logout?scope=local`) with token context | `hosted-probe-runner.mjs:4280-4350` (`createHostedAdminClient.signOut`) | Test 71 (R6-01), Test 74 (R7-01), Test 84 (R12-02) | Admin session-by-ID deletion not supported by GoTrue; token context mandatory |
+| **5. Token-Only & Session-Only Cleanup Paths** | Both session ID and access token context tracked in private inventory; fallback retry supported | `hosted-probe-runner.mjs:1830-1860`, `2150-2200` (`executeCleanup`) | Test 71 (R6-01), Test 77 (R8-02), Test 83 (R11-02) | If token lost and provider lacks session-by-ID deletion, fails closed with untracked session risk |
+| **6. Affirmative Provider Revocation Proof** | Password reset & session invalidation require provider-observed `session_not_found` error | `hosted-probe-runner.mjs:3720-3770` (`SESSION-02`), `3900-3940` (`SESSION-06`) | Test 57 (R4-03), Test 58 (R4-04), Test 63 (R5-01), Test 70 (R5-08), Test 73 (R6-03) | Rejects false-proof errors (`bad_jwt`, `jwt_expired`, generic 401/403) |
+| **7. User Absence Verification** | User deletion verified by structured HTTP 404 from `getUserById`; 503 or generic error fails closed | `hosted-probe-runner.mjs:2210-2245` (`executeCleanup`) | Test 60 (R4-06), Test 65 (R5-03), Test 84 (R12-02) | Network errors during verification block cleanup completion |
+| **8. Storage & Table Fixture Lifecycle** | Storage bucket objects and table rows registered into inventory and deleted during cleanup | `hosted-probe-runner.mjs:1880-1920`, `2350-2395` (`executeCleanup`) | Test 69 (R5-07), Test 72 (R6-02) | Requires probe bucket and table pre-created on testbed before probe dispatch |
+| **9. Credential Binding & Key Validation** | Service role & anon keys validated against project ref in JWT claims (`ref`, `iss`); forged claims fail closed | `hosted-probe-runner.mjs:2567-2620` (`validateProjectCredentialBinding`) | Test 53 (R3-10), Test 55 (R4-01) | Prevents accidental targeting of REAL project with TEMP keys or vice versa |
+| **10. Secret Boundary Enforcement & Redaction** | JWTs, passwords, and service role keys redacted from error objects, logs, and serialized reports | `hosted-probe-runner.mjs:144-260` (`redactSensitiveFields`), `262-310` (`sanitizeData`), `4260-4285` | Test 9 (R1-02), Test 21 (R1-04), Test 29 (R2-03), Test 83 (R11-02), Test 84 (R12-02) | Offline validated; secrets cleared on verified cleanup, preserved in memory on failure for recovery |
+
 ---
 
 ## 8. Verification Evidence Matrix
@@ -507,7 +547,7 @@ All verification checks were run locally and passed completely:
 
 ```bash
 node --test experiments/task06i/hosted-probe-runner.test.mjs
-# 87 passed, 0 failed, exit code 0 (including Tests 82 and 83)
+# 88 passed, 0 failed, exit code 0 (including Tests 82, 83, and 84)
 
 node --test experiments/task06i/*.test.mjs
 # 155 passed, 0 failed, exit code 0
@@ -529,7 +569,7 @@ git diff --check origin/main...HEAD
 
 ## 9. GitHub CI Status
 
-- **Status:** **4/4 CHECKS PASS** on remote commit `2fd50c9bde6ba55c49c070f142018a721e5d44a8`:
+- **Status:** **4/4 CHECKS PASS** on remote commit `3581e22c56bbaa9a7ca64f82a9e662a3e69a30bd`:
   1. `Attribution guard runner`: **PASS**
   2. `Commit attribution fixture tests`: **PASS**
   3. `Commit attribution guard` (App-owned required check ID `5032971`): **PASS**
@@ -550,7 +590,7 @@ git diff --check origin/main...HEAD
   - Project deletion perform nahi hua hai.
 
 **Readiness State:**
-- **Code readiness:** READY (Revision R11)
+- **Code readiness:** READY (Revision R12)
 - **GitHub CI:** PASS (4/4 on remote HEAD)
 - **Independent review:** PENDING (`im-tio`)
 - **Hosted testing:** NOT_AUTHORIZED
@@ -558,4 +598,4 @@ git diff --check origin/main...HEAD
 
 **Decision:** **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**
 
-> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all outstanding review findings (including Codex P2 finding `PRRT_kwDOVtCmZc66tz_m` and R11-02 secret boundary requirements) is complete and fully covered by offline regression tests (87/87 runner tests, 155/155 task06i tests pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution. Awaiting independent re-review from `im-tio`.
+> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all outstanding review findings (including Codex P2 finding `PRRT_kwDOVtCmZc66u-GX` on HOOK-01 unreadable success, R12-02 shared fail-closed Auth response boundary, and the full 10-class lifecycle audit matrix) is complete and fully covered by offline regression tests (88/88 runner tests, 155/155 task06i tests pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution. Awaiting independent re-review from `im-tio`.

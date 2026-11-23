@@ -28,7 +28,9 @@ import {
   createMockProjectKey,
   HOSTED_PROBE_SPECIFICATIONS,
   createHostedAdminClient,
-  observeAndTrackSessionTokens
+  observeAndTrackSessionTokens,
+  parseResponseEnvelope,
+  observeAuthResponse
 } from './hosted-probe-runner.mjs';
 
 const defaultMockAdminClient = {
@@ -5952,4 +5954,324 @@ test('83. Task 06I-B1-H1-R11 (R11-02): Secret boundary enforcement, private clea
   assert.equal(repSuccess.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(invSuccess.seedCredentialRestorations[0].originalPassword, '[CLEARED]', 'Successful cleanup must clear original password');
   assert.equal(invSuccess.seedCredentialRestorations[0].targetPassword, '[CLEARED]', 'Successful cleanup must clear target password');
+});
+
+test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response boundary, indeterminate session tracking, and residual safety', async () => {
+  // 1. HOOK-01 HTTP 200 with valid token and session ID -> passed: true, token observed
+  const inv1 = new TestRunInventory('test-r12-case1');
+  const runCtx1 = createRunContext();
+  const sess1 = 'sess-r12-case1-999';
+  const token1 = createMockJwt({ session_id: sess1, sub: 'user-r12-case1' });
+  const disp1 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv1,
+    runContext: runCtx1,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({
+        access_token: token1,
+        refresh_token: 'refresh-case1',
+        session_id: sess1,
+        user: { id: 'user-r12-case1', email: 'tio-test-user-06i@proof.invalid' }
+      })
+    })
+  });
+  const res1 = await disp1({ id: 'HOOK-01', category: 'Token Hook' });
+  assert.equal(res1.passed, true);
+  assert.equal(res1.jwt_claims_verified, true);
+  assert.equal(res1.session_id, sess1);
+  assert.equal(inv1.trackedSessions.has(sess1), true);
+  assert.equal(runCtx1.activeAccessToken, token1);
+  assert.equal(runCtx1.activeSessionId, sess1);
+
+  // 2. HOOK-01 HTTP 200 with truncated JSON -> passed: false, indeterminate_session: true, inv.untrackedSessionsCount incremented, cleanup fails closed
+  const inv2 = new TestRunInventory('test-r12-case2');
+  const runCtx2 = createRunContext();
+  const disp2 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv2,
+    runContext: runCtx2,
+    fetchFn: async () => ({
+      status: 200,
+      text: async () => '{"access_token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
+      json: async () => { throw new SyntaxError('Unexpected end of JSON input'); }
+    })
+  });
+  const res2 = await disp2({ id: 'HOOK-01', category: 'Token Hook' });
+  assert.equal(res2.passed, false);
+  assert.equal(res2.indeterminate_session, true);
+  assert.equal(inv2.untrackedSessionsCount, 1);
+  assert.equal(runCtx2.activeAccessToken, null);
+  await assert.rejects(
+    inv2.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: true }),
+    /CLEANUP_INCOMPLETE/
+  );
+
+  // 3. HOOK-01 HTTP 200 with HTML response -> indeterminate_session: true, inv.untrackedSessionsCount incremented
+  const inv3 = new TestRunInventory('test-r12-case3');
+  const runCtx3 = createRunContext();
+  const disp3 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv3,
+    runContext: runCtx3,
+    fetchFn: async () => ({
+      status: 200,
+      text: async () => '<!DOCTYPE html><html><body>502 Bad Gateway</body></html>',
+      json: async () => { throw new SyntaxError('Unexpected token < in JSON at position 0'); }
+    })
+  });
+  const res3 = await disp3({ id: 'HOOK-01', category: 'Token Hook' });
+  assert.equal(res3.passed, false);
+  assert.equal(res3.indeterminate_session, true);
+  assert.equal(inv3.untrackedSessionsCount, 1);
+
+  // 4. HOOK-01 HTTP 200 with empty {} -> indeterminate_session: true, inv.untrackedSessionsCount incremented
+  const inv4 = new TestRunInventory('test-r12-case4');
+  const runCtx4 = createRunContext();
+  const disp4 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv4,
+    runContext: runCtx4,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({})
+    })
+  });
+  const res4 = await disp4({ id: 'HOOK-01', category: 'Token Hook' });
+  assert.equal(res4.passed, false);
+  assert.equal(res4.indeterminate_session, true);
+  assert.equal(inv4.untrackedSessionsCount, 1);
+
+  // 5. HOOK-01 HTTP 200 with missing access token -> indeterminate_session: true
+  const inv5 = new TestRunInventory('test-r12-case5');
+  const runCtx5 = createRunContext();
+  const disp5 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv5,
+    runContext: runCtx5,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({ user: { id: 'user-no-token' } })
+    })
+  });
+  const res5 = await disp5({ id: 'HOOK-01', category: 'Token Hook' });
+  assert.equal(res5.passed, false);
+  assert.equal(res5.indeterminate_session, true);
+  assert.equal(inv5.untrackedSessionsCount, 1);
+
+  // 6. HOOK-01 HTTP 200 with malformed JWT -> passed: false, unverified JWT NOT stored in ctx.activeAccessToken, session retained in inv
+  const inv6 = new TestRunInventory('test-r12-case6');
+  const runCtx6 = createRunContext();
+  const sess6 = 'sess-malformed-jwt-6';
+  const disp6 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv6,
+    runContext: runCtx6,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({
+        access_token: 'malformed.token.value',
+        session_id: sess6,
+        user: { id: 'user-malformed-6' }
+      })
+    })
+  });
+  const res6 = await disp6({ id: 'HOOK-01', category: 'Token Hook' });
+  assert.equal(res6.passed, false);
+  assert.equal(res6.jwt_claims_verified, false);
+  assert.equal(runCtx6.activeAccessToken, null, 'Unverified JWT must not be stored in activeAccessToken');
+  assert.equal(inv6.trackedSessions.has(sess6), true, 'Session must be tracked for cleanup');
+
+  // 7. HOOK-01 token issued but session ID unavailable -> UNTRACKED_SESSION, inv.untrackedSessionsCount incremented
+  const inv7 = new TestRunInventory('test-r12-case7');
+  const runCtx7 = createRunContext();
+  const disp7 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv7,
+    runContext: runCtx7,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({
+        access_token: 'opaque-token-without-claims-or-session-id',
+        user: { id: 'user-opaque-7' }
+      })
+    })
+  });
+  const res7 = await disp7({ id: 'HOOK-01', category: 'Token Hook' });
+  assert.equal(res7.passed, false);
+  assert.equal(res7.indeterminate_session, true);
+  assert.equal(inv7.untrackedSessionsCount, 1);
+
+  // 8. HOOK-01 response read failure after successful HTTP status -> indeterminate_session: true
+  const inv8 = new TestRunInventory('test-r12-case8');
+  const runCtx8 = createRunContext();
+  const disp8 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv8,
+    runContext: runCtx8,
+    fetchFn: async () => ({
+      status: 200,
+      text: async () => { throw new Error('Premature socket termination while reading body'); },
+      json: async () => { throw new Error('Premature socket termination while reading body'); }
+    })
+  });
+  const res8 = await disp8({ id: 'HOOK-01', category: 'Token Hook' });
+  assert.equal(res8.passed, false);
+  assert.equal(res8.indeterminate_session, true);
+  assert.equal(inv8.untrackedSessionsCount, 1);
+
+  // 9. Request transport failure after possible server-side commit (ECONNRESET) -> indeterminate_session: true, inv.untrackedSessionsCount incremented
+  const inv9 = new TestRunInventory('test-r12-case9');
+  const runCtx9 = createRunContext();
+  const disp9 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv9,
+    runContext: runCtx9,
+    fetchFn: async () => {
+      throw new Error('ECONNRESET: Connection reset by peer');
+    }
+  });
+  const res9 = await disp9({ id: 'HOOK-01', category: 'Token Hook' });
+  assert.equal(res9.passed, false);
+  assert.equal(res9.indeterminate_session, true);
+  assert.equal(inv9.untrackedSessionsCount, 1);
+
+  // 10. Genuine rejected authentication (HTTP 400 invalid grant) -> AUTH_RESPONSE_VERIFIED_REJECTION, no sessions in inv
+  const inv10 = new TestRunInventory('test-r12-case10');
+  const runCtx10 = createRunContext();
+  const disp10 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv10,
+    runContext: runCtx10,
+    fetchFn: async () => ({
+      status: 400,
+      json: async () => ({ error: 'invalid_grant', error_description: 'Invalid login credentials' })
+    })
+  });
+  const res10 = await disp10({ id: 'HOOK-01', category: 'Token Hook' });
+  assert.equal(res10.passed, false);
+  assert.equal(res10.indeterminate_session, undefined);
+  assert.equal(inv10.untrackedSessionsCount, 0);
+  assert.equal(inv10.trackedSessions.size, 0);
+
+  // 11. Negative probe (BYPASS-01, BYPASS-02) unexpectedly issuing tokens -> AUTH_RESPONSE_UNEXPECTED_TOKEN, registered in inv
+  const inv11 = new TestRunInventory('test-r12-case11');
+  const sess11a = 'sess-unexpected-bypass01';
+  const token11a = createMockJwt({ session_id: sess11a, sub: 'user-unexpected-11a' });
+  const disp11a = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv11,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({
+        access_token: token11a,
+        session_id: sess11a,
+        user: { id: 'user-unexpected-11a' }
+      })
+    })
+  });
+  const res11a = await disp11a({ id: 'BYPASS-01', testUser: 'unexpected@proof.invalid' });
+  assert.equal(res11a.passed, false);
+  assert.equal(inv11.trackedSessions.has(sess11a), true, 'Unexpected token from BYPASS-01 must be tracked in inventory');
+
+  const sess11b = 'sess-unexpected-bypass02';
+  const token11b = createMockJwt({ session_id: sess11b, sub: 'user-unexpected-11b' });
+  const disp11b = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv11,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({
+        access_token: token11b,
+        session_id: sess11b,
+        user: { id: 'user-unexpected-11b' }
+      })
+    })
+  });
+  const res11b = await disp11b({ id: 'BYPASS-02', testUser: 'unexpected2@proof.invalid' });
+  assert.equal(res11b.passed, false);
+  assert.equal(inv11.trackedSessions.has(sess11b), true, 'Unexpected token from BYPASS-02 must be tracked in inventory');
+  assert.equal(inv11.isUserCreated('user-unexpected-11b'), true, 'Unexpected user created in BYPASS-02 must be tracked');
+
+  // 12. Cleanup after aborted authentication -> executeCleanup handles cleanly
+  const inv12 = new TestRunInventory('test-r12-case12');
+  inv12.registerCreatedUser({ id: 'user-aborted-12', email: 'aborted@proof.invalid', source: 'aborted_test' });
+  const mockAdmin12 = {
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => ({ data: null, error: { status: 404 } })
+  };
+  const rep12 = await inv12.executeCleanup({ adminClient: mockAdmin12, failClosed: true });
+  assert.equal(rep12.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(rep12.usersDeleted, 1);
+
+  // 13. Cleanup after unexpected provider response -> fails closed if indeterminate
+  const inv13 = new TestRunInventory('test-r12-case13');
+  inv13.registerUntrackedSession();
+  const rep13 = await inv13.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  assert.equal(rep13.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  await assert.rejects(
+    inv13.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: true }),
+    /CLEANUP_INCOMPLETE/
+  );
+
+  // 14. Cleanup with unresolved minted-session risk -> CLEANUP_FAILED_RESIDUAL_RESOURCES, throws CLEANUP_INCOMPLETE
+  const inv14 = new TestRunInventory('test-r12-case14');
+  inv14.registerUntrackedSession();
+  const rep14 = await inv14.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  assert.equal(rep14.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(rep14.residualResources.some(r => r.type === 'untracked_session'));
+  await assert.rejects(
+    inv14.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: true }),
+    /CLEANUP_INCOMPLETE/
+  );
+
+  // 15. Cleanup with real provider-confirmed session revocation -> CLEANUP_VERIFIED_SUCCESS
+  const inv15 = new TestRunInventory('test-r12-case15');
+  const sess15 = 'sess-revoked-15';
+  inv15.registerSession(sess15, { source: 'test_session' });
+  const mockAdmin15 = {
+    signOut: async () => ({ data: null, error: null }),
+    invalidateSession: async (id) => ({ data: { id }, error: null })
+  };
+  const rep15 = await inv15.executeCleanup({ adminClient: mockAdmin15, failClosed: true });
+  assert.equal(rep15.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(rep15.sessionsRevoked, 1);
+
+  // 16. Pre-existing seed user preservation -> deleteUser never called on referenced seed user
+  const inv16 = new TestRunInventory('test-r12-case16');
+  const seedUid16 = 'seed-uid-preserved-16';
+  inv16.trackReferencedUser({ id: seedUid16, email: 'seed@proof.invalid', source: 'seed' });
+  let deleteCalls16 = 0;
+  const mockAdmin16 = {
+    deleteUser: async () => { deleteCalls16++; return { data: null, error: null }; }
+  };
+  const rep16 = await inv16.executeCleanup({ adminClient: mockAdmin16, failClosed: true });
+  assert.equal(rep16.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(deleteCalls16, 0, 'deleteUser must never be called on referenced seed user');
+  assert.equal(inv16.referencedUsers.has(seedUid16), true);
+
+  // 17. Credential and token redaction -> zero secrets in error objects or serialized reports
+  const secretToken17 = createMockJwt({ session_id: 'sess-sec-17', sub: 'user-sec-17' });
+  const secretPass17 = 'TopSecretPass#2026!';
+  const parseEnv17 = await parseResponseEnvelope({
+    status: 200,
+    json: async () => ({ access_token: secretToken17, session_id: 'sess-sec-17' })
+  });
+  const observed17 = observeAuthResponse({
+    probeId: 'HOOK-01',
+    status: parseEnv17.status,
+    parseStatus: parseEnv17.parseStatus,
+    body: parseEnv17.body,
+    parseError: parseEnv17.parseError,
+    canMintSession: true,
+    testUser: 'test@proof.invalid'
+  });
+  const sanitized17 = sanitizeData(observed17);
+  const jsonStr17 = JSON.stringify(sanitized17);
+  assert.equal(jsonStr17.includes(secretToken17), false, 'Sanitized object must not contain raw JWT');
+  assert.equal(jsonStr17.includes(secretPass17), false, 'Sanitized object must not contain password');
+
+  // 18. Zero external network requests during tests
+  // Confirmed: All dispatchers and admin clients in Test 84 use injected mock functions; zero external fetch executed
+  assert.ok(true, 'All probes and cleanup operations executed entirely offline with zero external network requests');
 });

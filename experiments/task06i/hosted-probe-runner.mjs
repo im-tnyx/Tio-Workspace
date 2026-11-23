@@ -522,6 +522,334 @@ function extractObservedTokens(rawOutcome) {
 }
 
 /**
+ * Safely parses response envelope, preserving HTTP status, structured JSON body,
+ * and exact parse status for indeterminate observation. (R12-01, R12-02)
+ */
+export async function parseResponseEnvelope(res) {
+  if (!res) {
+    return { ok: false, status: 0, body: null, parseStatus: 'missing_response', parseError: null };
+  }
+  const status = typeof res.status === 'number' ? res.status : 0;
+  if (typeof res.json !== 'function') {
+    return { ok: res.ok ?? (status >= 200 && status < 300), status, body: null, parseStatus: 'no_json_function', parseError: null };
+  }
+  try {
+    const body = await res.json();
+    if (body === null || body === undefined) {
+      return { ok: res.ok ?? (status >= 200 && status < 300), status, body: null, parseStatus: 'empty_body', parseError: null };
+    }
+    if (typeof body !== 'object') {
+      return { ok: res.ok ?? (status >= 200 && status < 300), status, body, parseStatus: 'non_object', parseError: null };
+    }
+    return { ok: res.ok ?? (status >= 200 && status < 300), status, body, parseStatus: 'parsed', parseError: null };
+  } catch (err) {
+    return { ok: res.ok ?? (status >= 200 && status < 300), status, body: null, parseStatus: 'unreadable', parseError: err };
+  }
+}
+
+/**
+ * Shared Auth response observation boundary (R12-01, R12-02).
+ * Classifies provider responses and registers session / user obligations in inventory.
+ * Strictly separates response observation from probe pass/fail verdicts.
+ *
+ * Classifications:
+ * - AUTH_RESPONSE_VERIFIED_REJECTION: Expected rejection (4xx) without tokens.
+ * - AUTH_RESPONSE_TOKEN_OBSERVED: Successful authentication with valid token and extractable session.
+ * - AUTH_RESPONSE_INDETERMINATE: Uncertain session state (HTTP 200 with unreadable/empty/missing tokens, or post-dispatch transport error).
+ * - AUTH_RESPONSE_PROVIDER_FAILURE: HTTP 5xx or transport failure on non-minting request.
+ * - AUTH_RESPONSE_UNEXPECTED_TOKEN: Tokens issued on negative probe or error status.
+ */
+export function observeAuthResponse({
+  probeId = 'unknown',
+  status = 0,
+  parseStatus = 'parsed',
+  body = null,
+  parseError = null,
+  transportError = null,
+  inv = null,
+  ctx = null,
+  expectedOperation = 'token_issuance',
+  canMintSession = false,
+  testUser = null
+} = {}) {
+  // 1. Transport error handling
+  if (transportError) {
+    if (canMintSession) {
+      if (inv) {
+        inv.registerUntrackedSession();
+      }
+      return {
+        classification: 'AUTH_RESPONSE_INDETERMINATE',
+        status: 0,
+        hasTokens: false,
+        sessionId: null,
+        userId: null,
+        accessToken: null,
+        refreshToken: null,
+        indeterminateSession: true,
+        errorCode: 'TRANSPORT_ERROR_POST_DISPATCH',
+        error: `TRANSPORT_ERROR_POST_DISPATCH: Request dispatch threw transport error (${transportError?.message || String(transportError)}). Server may have minted session but client cannot observe response. Untracked session risk registered (R12-01).`,
+        body: null
+      };
+    }
+    return {
+      classification: 'AUTH_RESPONSE_PROVIDER_FAILURE',
+      status: 0,
+      hasTokens: false,
+      sessionId: null,
+      userId: null,
+      accessToken: null,
+      refreshToken: null,
+      indeterminateSession: false,
+      errorCode: 'TRANSPORT_ERROR',
+      error: `TRANSPORT_ERROR: Request dispatch failed: ${transportError?.message || String(transportError)}`,
+      body: null
+    };
+  }
+
+  // 2. Token extraction from parsed body (if body is an object)
+  const isBodyObject = Boolean(body && typeof body === 'object');
+  const accessToken = isBodyObject
+    ? ((typeof body.access_token === 'string' && body.access_token.trim()) ||
+       (typeof body.token === 'string' && body.token.trim()) ||
+       (typeof body.tokens?.access_token === 'string' && body.tokens.access_token.trim()) ||
+       (typeof body.tokens?.token === 'string' && body.tokens.token.trim()) ||
+       (typeof body.session?.access_token === 'string' && body.session.access_token.trim()) ||
+       null)
+    : null;
+
+  const refreshToken = isBodyObject
+    ? ((typeof body.refresh_token === 'string' && body.refresh_token.trim()) ||
+       (typeof body.tokens?.refresh_token === 'string' && body.tokens.refresh_token.trim()) ||
+       (typeof body.session?.refresh_token === 'string' && body.session.refresh_token.trim()) ||
+       null)
+    : null;
+
+  let rawSessionId = isBodyObject
+    ? ((typeof body.session_id === 'string' && body.session_id.trim()) ||
+       (typeof body.session?.id === 'string' && body.session.id.trim()) ||
+       (typeof body.tokens?.session_id === 'string' && body.tokens.session_id.trim()) ||
+       null)
+    : null;
+
+  let rawUserId = isBodyObject
+    ? ((typeof body.user?.id === 'string' && body.user.id.trim()) ||
+       (typeof body.id === 'string' && body.id.trim()) ||
+       (typeof body.tokens?.user?.id === 'string' && body.tokens.user.id.trim()) ||
+       null)
+    : null;
+
+  // Extract from unverified JWT claims if not present at top level
+  if (accessToken && (!rawSessionId || !rawUserId)) {
+    try {
+      const parts = accessToken.split('.');
+      if (parts.length === 3) {
+        const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+        if (!rawSessionId && typeof payload?.session_id === 'string' && payload.session_id.trim()) {
+          rawSessionId = payload.session_id.trim();
+        }
+        if (!rawUserId && typeof payload?.sub === 'string' && payload.sub.trim()) {
+          rawUserId = payload.sub.trim();
+        }
+      }
+    } catch {}
+  }
+
+  const hasTokens = Boolean(accessToken || refreshToken || rawSessionId);
+  const userEmail = testUser || (typeof body?.email === 'string' ? body.email : null) || 'tio-test-user-06i@proof.invalid';
+
+  // 3. HTTP 200 evaluation
+  if (status >= 200 && status < 300) {
+    // Register created or referenced user into inventory if user ID observed (R2-04, R12-02)
+    if (inv && rawUserId) {
+      const uidStr = String(rawUserId).trim();
+      if (probeId === 'BYPASS-02') {
+        if (!inv.isUserCreated(uidStr)) {
+          inv.registerCreatedUser({ id: uidStr, email: userEmail, source: `${probeId}_unexpected_signup` });
+        }
+      } else {
+        if (!inv.isUserReferenced(uidStr)) {
+          inv.registerReferencedUser({ id: uidStr, email: userEmail, source: `${probeId}_token_observation` });
+        }
+      }
+    }
+
+    // 3A: Parse error or malformed body structure
+    if (parseStatus !== 'parsed' || !isBodyObject) {
+      if (inv) {
+        inv.registerUntrackedSession();
+      }
+      return {
+        classification: 'AUTH_RESPONSE_INDETERMINATE',
+        status,
+        hasTokens: false,
+        sessionId: null,
+        userId: null,
+        accessToken: null,
+        refreshToken: null,
+        indeterminateSession: true,
+        errorCode: parseStatus === 'unreadable' ? 'UNREADABLE_RESPONSE' : 'INVALID_RESPONSE_STRUCTURE',
+        error: `INDETERMINATE_AUTH_RESPONSE: Server returned HTTP ${status} but response body was ${parseStatus}: ${parseError?.message || 'body is not a valid JSON object'} (R12-01)`,
+        body
+      };
+    }
+
+    // 3B: Missing access token on session-minting request
+    if (canMintSession && !accessToken) {
+      if (inv) {
+        inv.registerUntrackedSession();
+      }
+      return {
+        classification: 'AUTH_RESPONSE_INDETERMINATE',
+        status,
+        hasTokens: false,
+        sessionId: null,
+        userId: null,
+        accessToken: null,
+        refreshToken: null,
+        indeterminateSession: true,
+        errorCode: 'MISSING_ACCESS_TOKEN',
+        error: `INDETERMINATE_AUTH_RESPONSE: Server returned HTTP ${status} for ${expectedOperation} but response lacked valid access_token (R12-01)`,
+        body
+      };
+    }
+
+    // 3C: Token present but session ID unextractable
+    if (canMintSession && accessToken && !rawSessionId) {
+      if (inv) {
+        inv.registerUntrackedSession();
+      }
+      if (ctx) {
+        ctx.mintedAccessToken = accessToken;
+        if (rawUserId) ctx.activeUserId = String(rawUserId).trim();
+      }
+      return {
+        classification: 'AUTH_RESPONSE_INDETERMINATE',
+        status,
+        hasTokens: true,
+        sessionId: null,
+        userId: rawUserId ? String(rawUserId).trim() : null,
+        accessToken,
+        refreshToken,
+        indeterminateSession: true,
+        errorCode: 'UNTRACKED_SESSION',
+        error: 'INDETERMINATE_AUTH_RESPONSE: Server returned access_token but session identifier could not be determined from payload or claims (R12-01)',
+        body
+      };
+    }
+
+    // 3D: Valid token and extractable session ID observed
+    if (hasTokens) {
+      if (inv) {
+        if (rawSessionId) {
+          inv.registerSession(String(rawSessionId).trim(), { accessToken, source: `${probeId}_observed` });
+        }
+      }
+
+      if (ctx) {
+        if (rawSessionId) ctx.activeSessionId = String(rawSessionId).trim();
+        if (rawUserId) ctx.activeUserId = String(rawUserId).trim();
+        if (accessToken) {
+          ctx.mintedAccessToken = accessToken;
+        }
+      }
+
+      const isUnexpected = expectedOperation === 'rejection';
+      const classification = isUnexpected ? 'AUTH_RESPONSE_UNEXPECTED_TOKEN' : 'AUTH_RESPONSE_TOKEN_OBSERVED';
+      return {
+        classification,
+        status,
+        hasTokens: true,
+        sessionId: rawSessionId ? String(rawSessionId).trim() : null,
+        userId: rawUserId ? String(rawUserId).trim() : null,
+        accessToken,
+        refreshToken,
+        indeterminateSession: false,
+        errorCode: isUnexpected ? 'UNEXPECTED_TOKEN_ISSUANCE' : null,
+        error: isUnexpected
+          ? `SECURITY_INVARIANT_VIOLATION: ${probeId} (${expectedOperation}) unexpectedly issued authentication tokens!`
+          : null,
+        body
+      };
+    }
+
+    // 3E: HTTP 200 without tokens on an expected-rejection probe (e.g. anti-enumeration 200)
+    return {
+      classification: 'AUTH_RESPONSE_INDETERMINATE',
+      status,
+      hasTokens: false,
+      sessionId: null,
+      userId: null,
+      accessToken: null,
+      refreshToken: null,
+      indeterminateSession: false,
+      errorCode: 'HTTP_200_CANNOT_PROVE_REJECTION',
+      error: `HTTP_200_CANNOT_PROVE_REJECTION: Expected rejection but received HTTP ${status} without tokens; anti-enumeration response cannot prove policy enforcement`,
+      body
+    };
+  }
+
+  // 4. HTTP Non-200 evaluation
+  if (hasTokens) {
+    // Unexpected tokens returned in non-200 error response
+    if (inv) {
+      if (rawSessionId) {
+        inv.registerSession(String(rawSessionId).trim(), { accessToken, source: `${probeId}_unexpected_non200` });
+      } else {
+        inv.registerUntrackedSession();
+      }
+    }
+    return {
+      classification: 'AUTH_RESPONSE_UNEXPECTED_TOKEN',
+      status,
+      hasTokens: true,
+      sessionId: rawSessionId ? String(rawSessionId).trim() : null,
+      userId: rawUserId ? String(rawUserId).trim() : null,
+      accessToken,
+      refreshToken,
+      indeterminateSession: !rawSessionId,
+      errorCode: 'UNEXPECTED_TOKEN_IN_ERROR_RESPONSE',
+      error: `SECURITY_INVARIANT_VIOLATION: ${probeId} returned HTTP ${status} but unexpectedly included session tokens!`,
+      body
+    };
+  }
+
+  // 5xx Server Error
+  if (status >= 500 && status < 600) {
+    return {
+      classification: 'AUTH_RESPONSE_PROVIDER_FAILURE',
+      status,
+      hasTokens: false,
+      sessionId: null,
+      userId: null,
+      accessToken: null,
+      refreshToken: null,
+      indeterminateSession: false,
+      errorCode: (body?.error_code || body?.code || `HTTP_${status}`).toString(),
+      error: body?.msg || body?.message || body?.error_description || `PROVIDER_HTTP_${status}`,
+      body
+    };
+  }
+
+  // 4xx Client Error / Verified Rejection
+  const errCode = (body?.error_code || body?.code || null)?.toString() || null;
+  const errMsg = body?.msg || body?.message || body?.error_description || (status > 0 ? `HTTP_${status}` : 'Unknown rejection');
+  return {
+    classification: 'AUTH_RESPONSE_VERIFIED_REJECTION',
+    status,
+    hasTokens: false,
+    sessionId: null,
+    userId: null,
+    accessToken: null,
+    refreshToken: null,
+    indeterminateSession: false,
+    errorCode: errCode,
+    error: errMsg,
+    body
+  };
+}
+
+/**
  * Shared helper to observe and immediately track session tokens across all probes.
  * Captures session identity and cleanup obligations whenever provider responses contain concrete tokens or session evidence.
  * If token is issued but session ID cannot be determined, records untracked session obligation via inv.registerUntrackedSession().
@@ -2223,17 +2551,11 @@ export function parseAndValidateJwt(token, { expectedIssuer, expectedAudience = 
 
 /**
  * Safely parses response JSON body or returns null on parse failure.
+ * Delegates to parseResponseEnvelope for backward compatibility. (R12-02)
  */
 async function parseResponseBody(res) {
-  if (!res) return null;
-  try {
-    if (typeof res.json === 'function') {
-      return await res.json();
-    }
-    return null;
-  } catch {
-    return null;
-  }
+  const env = await parseResponseEnvelope(res);
+  return env.body;
 }
 
 /**
@@ -2593,22 +2915,44 @@ export function createHostedDispatcher({
 
     switch (probeId) {
       case 'BYPASS-01': {
-        const res = await fetchFn(`${baseUrl}/auth/v1/otp`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ email: testUser }),
-          signal
+        let res;
+        let transportError = null;
+        try {
+          res = await fetchFn(`${baseUrl}/auth/v1/otp`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ email: testUser }),
+            signal
+          });
+        } catch (err) {
+          transportError = err;
+        }
+
+        const parseEnv = res ? await parseResponseEnvelope(res) : null;
+        const observed = observeAuthResponse({
+          probeId: 'BYPASS-01',
+          status: parseEnv?.status || 0,
+          parseStatus: parseEnv?.parseStatus || (transportError ? 'transport_error' : 'missing_response'),
+          body: parseEnv?.body || null,
+          parseError: parseEnv?.parseError || null,
+          transportError,
+          inv,
+          ctx,
+          expectedOperation: 'rejection',
+          canMintSession: false,
+          testUser
         });
-        const body = await parseResponseBody(res);
-        const observed = observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser });
+
+        const body = parseEnv?.body || null;
         const errText = (body?.msg || body?.message || body?.error_description || body?.error || '').toLowerCase();
         const providerDisabled =
           body?.error_code === 'email_provider_disabled' ||
           errText.includes('email provider is disabled') ||
           errText.includes('signups not allowed for otp');
+
         return {
-          passed: res.status !== 200 && providerDisabled === true && !observed.hasTokens,
-          status: res.status,
+          passed: observed.status !== 200 && providerDisabled === true && !observed.hasTokens,
+          status: observed.status,
           route_disabled: providerDisabled,
           error_code: body?.error_code || null,
           tokens: extractObservedTokens(body) ? body : null,
@@ -2617,26 +2961,48 @@ export function createHostedDispatcher({
       }
 
       case 'BYPASS-02': {
-        const res = await fetchFn(`${baseUrl}/auth/v1/signup`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ email: testUser, password: testPassword }),
-          signal
+        let res;
+        let transportError = null;
+        try {
+          res = await fetchFn(`${baseUrl}/auth/v1/signup`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ email: testUser, password: testPassword }),
+            signal
+          });
+        } catch (err) {
+          transportError = err;
+        }
+
+        const parseEnv = res ? await parseResponseEnvelope(res) : null;
+        const observed = observeAuthResponse({
+          probeId: 'BYPASS-02',
+          status: parseEnv?.status || 0,
+          parseStatus: parseEnv?.parseStatus || (transportError ? 'transport_error' : 'missing_response'),
+          body: parseEnv?.body || null,
+          parseError: parseEnv?.parseError || null,
+          transportError,
+          inv,
+          ctx,
+          expectedOperation: 'rejection',
+          canMintSession: false,
+          testUser
         });
-        const body = await parseResponseBody(res);
-        const observed = observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser });
+
+        const body = parseEnv?.body || null;
         const errText = (body?.msg || body?.message || body?.error_description || body?.error || '').toLowerCase();
         const createdUserId = observed.userId || body?.id || body?.user?.id;
-        if (createdUserId && inv && !inv.isUserCreated(String(createdUserId))) {
-          inv.registerCreatedUser({ id: String(createdUserId), email: testUser, source: 'BYPASS-02_unexpected' });
+        if (inv && createdUserId && !inv.isUserCreated(String(createdUserId).trim())) {
+          inv.registerCreatedUser({ id: String(createdUserId).trim(), email: testUser, source: 'BYPASS-02_unexpected_signup' });
         }
         const signupDisabled =
           body?.error_code === 'signup_disabled' ||
           errText.includes('signups not allowed') ||
           errText.includes('signup is disabled');
+
         return {
-          passed: res.status !== 200 && !createdUserId && signupDisabled === true && !observed.hasTokens,
-          status: res.status,
+          passed: observed.status !== 200 && !createdUserId && signupDisabled === true && !observed.hasTokens,
+          status: observed.status,
           signup_disabled: signupDisabled,
           user_created: Boolean(createdUserId),
           error_code: body?.error_code || null,
@@ -2648,22 +3014,44 @@ export function createHostedDispatcher({
       case 'BYPASS-03': {
         // Direct verify with fake/unverified token returns 400 before hook execution (R3-06).
         // Hook is verified only if GoTrue actually invokes custom_access_token_hook.
-        const res = await fetchFn(`${baseUrl}/auth/v1/verify`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ type: 'email', token: '000000', email: testUser }),
-          signal
+        let res;
+        let transportError = null;
+        try {
+          res = await fetchFn(`${baseUrl}/auth/v1/verify`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ type: 'email', token: '000000', email: testUser }),
+            signal
+          });
+        } catch (err) {
+          transportError = err;
+        }
+
+        const parseEnv = res ? await parseResponseEnvelope(res) : null;
+        const observed = observeAuthResponse({
+          probeId: 'BYPASS-03',
+          status: parseEnv?.status || 0,
+          parseStatus: parseEnv?.parseStatus || (transportError ? 'transport_error' : 'missing_response'),
+          body: parseEnv?.body || null,
+          parseError: parseEnv?.parseError || null,
+          transportError,
+          inv,
+          ctx,
+          expectedOperation: 'rejection',
+          canMintSession: false,
+          testUser
         });
-        const body = await parseResponseBody(res);
-        const observed = observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser });
+
+        const body = parseEnv?.body || null;
         const errText = (body?.msg || body?.message || body?.error_description || body?.error || '').toLowerCase();
         const hookRejected =
-          res.status >= 400 &&
+          observed.status >= 400 &&
           (body?.error_code === 'hook_error' || errText.includes('42501') || errText.includes('error invoking access token hook'));
         const isUpstreamTokenError = body?.error_code === 'otp_expired' || errText.includes('token has expired') || errText.includes('invalid');
+
         return {
-          passed: res.status !== 200 && hookRejected === true && !observed.hasTokens,
-          status: res.status,
+          passed: observed.status !== 200 && hookRejected === true && !observed.hasTokens,
+          status: observed.status,
           hook_rejected: hookRejected,
           upstream_rejected_before_hook: isUpstreamTokenError,
           tokens: extractObservedTokens(body) ? body : null,
@@ -2690,66 +3078,104 @@ export function createHostedDispatcher({
       }
 
       case 'BYPASS-05': {
-        const res = await fetchFn(`${baseUrl}/auth/v1/recover`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ email: testUser }),
-          signal
+        let res;
+        let transportError = null;
+        try {
+          res = await fetchFn(`${baseUrl}/auth/v1/recover`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ email: testUser }),
+            signal
+          });
+        } catch (err) {
+          transportError = err;
+        }
+
+        const parseEnv = res ? await parseResponseEnvelope(res) : null;
+        const observed = observeAuthResponse({
+          probeId: 'BYPASS-05',
+          status: parseEnv?.status || 0,
+          parseStatus: parseEnv?.parseStatus || (transportError ? 'transport_error' : 'missing_response'),
+          body: parseEnv?.body || null,
+          parseError: parseEnv?.parseError || null,
+          transportError,
+          inv,
+          ctx,
+          expectedOperation: 'rejection',
+          canMintSession: false,
+          testUser
         });
-        const body = await parseResponseBody(res);
-        const observed = observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser });
+
+        const body = parseEnv?.body || null;
         const errText = (body?.msg || body?.message || body?.error_description || body?.error || '').toLowerCase();
         const hookSuppressed =
-          res.status !== 200 &&
+          observed.status !== 200 &&
           (body?.error_code === 'hook_error' || errText.includes('42501') || errText.includes('send_email_hook'));
+
         return {
           passed: hookSuppressed === true && !body?.recovery_token && !observed.hasTokens,
-          status: res.status,
+          status: observed.status,
           recovery_suppressed: hookSuppressed,
           email_delivered: null,
           recovery_token: body?.recovery_token || null,
           tokens: extractObservedTokens(body) ? body : null,
-          error: body?.msg || body?.message || (observed.hasTokens ? 'SECURITY_INVARIANT_VIOLATION: POST /auth/v1/recover unexpectedly issued tokens!' : (res.status === 200 ? 'HTTP_200_CANNOT_PROVE_EMAIL_SUPPRESSION: Anti-enumeration 200 does not prove hook suppression' : null))
+          error: body?.msg || body?.message || (observed.hasTokens ? 'SECURITY_INVARIANT_VIOLATION: POST /auth/v1/recover unexpectedly issued tokens!' : (observed.status === 200 ? 'HTTP_200_CANNOT_PROVE_EMAIL_SUPPRESSION: Anti-enumeration 200 does not prove hook suppression' : null))
         };
       }
 
       case 'HOOK-01': {
-        const res = await fetchFn(`${baseUrl}/auth/v1/token?grant_type=password`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ email: testUser, password: testPassword }),
-          signal
-        });
-        const body = await parseResponseBody(res);
-        const accessToken = body?.access_token;
-        const refreshToken = body?.refresh_token;
+        let res;
+        let transportError = null;
+        try {
+          res = await fetchFn(`${baseUrl}/auth/v1/token?grant_type=password`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ email: testUser, password: testPassword }),
+            signal
+          });
+        } catch (err) {
+          transportError = err;
+        }
 
-        if (res.status !== 200) {
-          observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser });
+        const parseEnv = res ? await parseResponseEnvelope(res) : null;
+        const observed = observeAuthResponse({
+          probeId: 'HOOK-01',
+          status: parseEnv?.status || 0,
+          parseStatus: parseEnv?.parseStatus || (transportError ? 'transport_error' : 'missing_response'),
+          body: parseEnv?.body || null,
+          parseError: parseEnv?.parseError || null,
+          transportError,
+          inv,
+          ctx,
+          expectedOperation: 'token_issuance',
+          canMintSession: true,
+          testUser
+        });
+
+        if (observed.classification === 'AUTH_RESPONSE_INDETERMINATE') {
           return {
             passed: false,
-            status: res.status,
-            error: body?.msg || body?.message || body?.error_description || 'Password grant authentication failed',
-            tokens: body
+            status: observed.status,
+            indeterminate_session: true,
+            session_cleanup_registered: true,
+            error: observed.error,
+            tokens: parseEnv?.body || null
           };
         }
 
-        // Extract session ID and user ID immediately on HTTP 200 before JWT claim validation (R5-04, R8-01)
-        const observed = observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser });
+        if (observed.classification !== 'AUTH_RESPONSE_TOKEN_OBSERVED') {
+          return {
+            passed: false,
+            status: observed.status,
+            error: observed.error || 'Password grant authentication failed',
+            tokens: parseEnv?.body || null
+          };
+        }
+
+        const accessToken = observed.accessToken;
+        const refreshToken = observed.refreshToken;
         const rawSessionId = observed.sessionId;
         const rawUserId = observed.userId;
-
-        if (ctx) {
-          ctx.mintedAccessToken = accessToken;
-        }
-
-        if (!isNonEmptyString(accessToken)) {
-          return {
-            passed: false,
-            status: res.status,
-            error: 'MISSING_ACCESS_TOKEN: Password grant returned HTTP 200 but access_token is missing or empty'
-          };
-        }
 
         // Strictly validate JWT payload claims - NO bypass paths allowed (R3-08)
         const jwtCheck = parseAndValidateJwt(accessToken, { expectedAudience: 'authenticated' });
@@ -2757,7 +3183,7 @@ export function createHostedDispatcher({
           // Token is unverified and untrusted for authorization, but cleanup obligation was retained (R5-04, R8-01)
           return {
             passed: false,
-            status: res.status,
+            status: observed.status,
             error: `JWT_CLAIM_VIOLATION: ${jwtCheck.reason}`,
             jwt_claims_verified: false,
             session_id: rawSessionId || null,
@@ -2771,7 +3197,7 @@ export function createHostedDispatcher({
         if (!isNonEmptyString(sessionId)) {
           return {
             passed: false,
-            status: res.status,
+            status: observed.status,
             error: 'MISSING_SESSION_ID: Valid JWT must contain session_id claim for session tracking (R3-05)',
             jwt_claims_verified: true
           };
@@ -2786,14 +3212,14 @@ export function createHostedDispatcher({
 
         return {
           passed: true,
-          status: res.status,
+          status: observed.status,
           access_token: accessToken,
           refresh_token: refreshToken,
           amr_authenticated: true,
           jwt_claims_verified: true,
           user_id: userId,
           session_id: sessionId,
-          tokens: body
+          tokens: parseEnv?.body || null
         };
       }
 
@@ -2806,41 +3232,62 @@ export function createHostedDispatcher({
             error: 'PREREQUISITE_MISSING: HOOK-02 requires activeRefreshToken from HOOK-01'
           };
         }
-        const res = await fetchFn(`${baseUrl}/auth/v1/token?grant_type=refresh_token`, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({ refresh_token: activeRefresh }),
-          signal
+
+        let res;
+        let transportError = null;
+        try {
+          res = await fetchFn(`${baseUrl}/auth/v1/token?grant_type=refresh_token`, {
+            method: 'POST',
+            headers,
+            body: JSON.stringify({ refresh_token: activeRefresh }),
+            signal
+          });
+        } catch (err) {
+          transportError = err;
+        }
+
+        const parseEnv = res ? await parseResponseEnvelope(res) : null;
+        const observed = observeAuthResponse({
+          probeId: 'HOOK-02',
+          status: parseEnv?.status || 0,
+          parseStatus: parseEnv?.parseStatus || (transportError ? 'transport_error' : 'missing_response'),
+          body: parseEnv?.body || null,
+          parseError: parseEnv?.parseError || null,
+          transportError,
+          inv,
+          ctx,
+          expectedOperation: 'token_refresh',
+          canMintSession: true,
+          testUser
         });
-        const body = await parseResponseBody(res);
-        const refreshedAccess = body?.access_token;
 
-        if (res.status !== 200) {
-          observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser });
+        if (observed.classification === 'AUTH_RESPONSE_INDETERMINATE') {
           return {
             passed: false,
-            status: res.status,
-            error: body?.msg || body?.message || 'Token refresh failed',
-            tokens: body
+            status: observed.status,
+            indeterminate_session: true,
+            error: observed.error,
+            tokens: parseEnv?.body || null
           };
         }
 
-        observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser });
-
-        if (!isNonEmptyString(refreshedAccess)) {
+        if (observed.classification !== 'AUTH_RESPONSE_TOKEN_OBSERVED') {
           return {
             passed: false,
-            status: res.status,
-            error: 'MISSING_ACCESS_TOKEN: Token refresh returned HTTP 200 but access_token is missing'
+            status: observed.status,
+            error: observed.error || 'Token refresh failed',
+            tokens: parseEnv?.body || null
           };
         }
+
+        const refreshedAccess = observed.accessToken;
 
         // Strictly validate refreshed JWT payload - NO bypass paths allowed (R3-08)
         const jwtCheck = parseAndValidateJwt(refreshedAccess, { expectedAudience: 'authenticated' });
         if (!jwtCheck.valid) {
           return {
             passed: false,
-            status: res.status,
+            status: observed.status,
             error: `JWT_CLAIM_VIOLATION: ${jwtCheck.reason}`,
             refreshed_claims_verified: false
           };
@@ -2854,7 +3301,7 @@ export function createHostedDispatcher({
         if (!amrPreserved) {
           return {
             passed: false,
-            status: res.status,
+            status: observed.status,
             error: 'AMR_PRESERVATION_VIOLATION: Refreshed token did not preserve password-origin AMR',
             amr_preserved: false
           };
@@ -2862,18 +3309,18 @@ export function createHostedDispatcher({
 
         if (ctx) {
           ctx.activeAccessToken = refreshedAccess;
-          if (body?.refresh_token) {
-            ctx.activeRefreshToken = body.refresh_token;
+          if (observed.refreshToken) {
+            ctx.activeRefreshToken = observed.refreshToken;
           }
         }
 
         return {
           passed: true,
-          status: res.status,
+          status: observed.status,
           access_token: refreshedAccess,
           amr_preserved: true,
           refreshed_claims_verified: true,
-          tokens: body
+          tokens: parseEnv?.body || null
         };
       }
 
@@ -3747,6 +4194,7 @@ export function createHostedAdminClient({
       }
       const keyToUse = anonKey || serviceRoleKey;
       let res;
+      let transportError = null;
       try {
         res = await fetchFn(`${baseUrl}/auth/v1/token?grant_type=password`, {
           method: 'POST',
@@ -3760,136 +4208,52 @@ export function createHostedAdminClient({
           })
         });
       } catch (err) {
+        transportError = err;
+      }
+
+      const parseEnv = res ? await parseResponseEnvelope(res) : null;
+      const observed = observeAuthResponse({
+        probeId: 'verify_credentials',
+        status: parseEnv?.status || 0,
+        parseStatus: parseEnv?.parseStatus || (transportError ? 'transport_error' : 'missing_response'),
+        body: parseEnv?.body || null,
+        parseError: parseEnv?.parseError || null,
+        transportError,
+        inv,
+        expectedOperation: 'token_issuance',
+        canMintSession: true,
+        testUser: email.trim()
+      });
+
+      if (observed.classification === 'AUTH_RESPONSE_INDETERMINATE') {
+        const errorMsg = transportError
+          ? `VERIFICATION_NETWORK_ERROR: ${observed.error || transportError?.message || String(transportError)}`
+          : observed.error;
         return {
           data: null,
           error: {
-            message: `VERIFICATION_NETWORK_ERROR: ${err?.message || String(err)}`
+            message: errorMsg,
+            code: observed.errorCode || 'UNREADABLE_RESPONSE',
+            status: observed.status
+          },
+          sessionRevocationFailed: true,
+          indeterminateSession: true
+        };
+      }
+
+      if (observed.classification !== 'AUTH_RESPONSE_TOKEN_OBSERVED') {
+        return {
+          data: null,
+          error: {
+            message: observed.error || `HTTP_${observed.status}`,
+            status: observed.status,
+            code: observed.errorCode || `HTTP_${observed.status}`
           }
         };
       }
 
-      if (!res.ok) {
-        let errBody = null;
-        try {
-          errBody = await res.json();
-        } catch {}
-        return {
-          data: null,
-          error: {
-            message: errBody?.msg || errBody?.message || errBody?.error_description || `HTTP_${res.status}`,
-            status: res.status,
-            code: (errBody?.error_code || errBody?.code || `HTTP_${res.status}`).toString()
-          }
-        };
-      }
-
-      // Parse JSON body on HTTP 200 (res.ok) (R11-01)
-      let data;
-      let parseFailed = false;
-      let parseError = null;
-      try {
-        data = await res.json();
-      } catch (err) {
-        parseFailed = true;
-        parseError = err;
-      }
-
-      // If parsing fails on HTTP 200, response was malformed/truncated.
-      // Server may have minted a session, but client cannot read token to identify or revoke it! (R11-01)
-      if (parseFailed) {
-        if (inv) {
-          inv.registerUntrackedSession();
-        }
-        return {
-          data: null,
-          error: {
-            message: `INDETERMINATE_VERIFICATION_RESPONSE: Verification login returned HTTP 200 but response body was unreadable or malformed JSON: ${parseError?.message || String(parseError)} (R11-01)`,
-            code: 'UNREADABLE_RESPONSE',
-            status: res.status
-          },
-          sessionRevocationFailed: true,
-          indeterminateSession: true
-        };
-      }
-
-      // HTTP 200 body must be a non-null object (R11-01)
-      if (!data || typeof data !== 'object') {
-        if (inv) {
-          inv.registerUntrackedSession();
-        }
-        return {
-          data: null,
-          error: {
-            message: 'INDETERMINATE_VERIFICATION_RESPONSE: Verification login returned HTTP 200 but response was not a valid JSON object (R11-01)',
-            code: 'INVALID_RESPONSE_STRUCTURE',
-            status: res.status
-          },
-          sessionRevocationFailed: true,
-          indeterminateSession: true
-        };
-      }
-
-      const token = typeof data.access_token === 'string' && data.access_token.trim().length > 0
-        ? data.access_token.trim()
-        : null;
-
-      // If HTTP 200 arrives without access_token, never assume zero sessions were created! (R11-01)
-      if (!token) {
-        if (inv) {
-          inv.registerUntrackedSession();
-        }
-        return {
-          data: null,
-          error: {
-            message: 'INDETERMINATE_VERIFICATION_RESPONSE: Verification login returned HTTP 200 but response lacked a valid access_token (R11-01)',
-            code: 'MISSING_ACCESS_TOKEN',
-            status: res.status
-          },
-          sessionRevocationFailed: true,
-          indeterminateSession: true
-        };
-      }
-
-      // Extract session ID from response payload or JWT claims (R10-01, R11-01)
-      let sessionId =
-        (typeof data.session_id === 'string' && data.session_id.trim()) ||
-        (typeof data.session?.id === 'string' && data.session.id.trim()) ||
-        null;
-
-      if (!sessionId && token) {
-        try {
-          const parts = token.split('.');
-          if (parts.length === 3) {
-            const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-            if (typeof payload?.session_id === 'string' && payload.session_id.trim()) {
-              sessionId = payload.session_id.trim();
-            }
-          }
-        } catch {}
-      }
-
-      // Register session in inventory immediately upon token issuance (R10-01, R11-01)
-      if (inv) {
-        if (sessionId) {
-          inv.registerSession(sessionId, { accessToken: token, source: 'verify_credentials' });
-        } else {
-          inv.registerUntrackedSession();
-        }
-      }
-
-      // If token exists but session ID cannot be determined:
-      if (!sessionId) {
-        return {
-          data: null,
-          error: {
-            message: 'INDETERMINATE_VERIFICATION_RESPONSE: Verification login returned access_token but session identifier could not be determined from payload or claims (R11-01)',
-            code: 'UNTRACKED_SESSION',
-            status: res.status
-          },
-          sessionRevocationFailed: true,
-          indeterminateSession: true
-        };
-      }
+      const token = observed.accessToken;
+      const sessionId = observed.sessionId;
 
       // Immediately revoke verification session so no residual sessions leak (R9-01, R10-01, R11-01)
       let signOutRes;
@@ -3937,7 +4301,7 @@ export function createHostedAdminClient({
       return {
         data: {
           verified: true,
-          userId: data?.user?.id || null,
+          userId: observed.userId,
           sessionId: String(sessionId)
         },
         error: null
