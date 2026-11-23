@@ -969,6 +969,7 @@ export function validateProbeOutcome(item, rawOutcome) {
         reason: 'SESSION_FAILURE: SESSION-02 requires explicit password reset completion (R3-04)'
       };
     }
+
     // Strict session revocation verification: require affirmative provider evidence (R4-03)
     const hasRevocationEvidence =
       rawOutcome.remaining_sessions === 0 &&
@@ -980,6 +981,68 @@ export function validateProbeOutcome(item, rawOutcome) {
         status,
         reason: `SESSION_FAILURE: SESSION-02 requires affirmative proof of session revocation after password update (got remaining_sessions: ${rawOutcome.remaining_sessions}, session_revoked: ${rawOutcome.session_revoked}). Surviving sessions fail closed (R4-03).`
       };
+    }
+
+    // Strict session correlation (R5-01): validate session identity if provided
+    const sessionId = rawOutcome.session_id;
+    if (sessionId !== undefined && sessionId !== null) {
+      if (!isNonEmptyString(sessionId) || sessionId.startsWith('sess-default')) {
+        return {
+          passed: false,
+          status,
+          reason: 'SESSION_CORRELATION_MISMATCH: SESSION-02 requires valid session_id from HOOK-01 (R5-01)'
+        };
+      }
+      if (rawOutcome.pre_session_id && rawOutcome.pre_session_id !== sessionId) {
+        return {
+          passed: false,
+          status,
+          reason: `SESSION_CORRELATION_MISMATCH: SESSION-02 pre_session_id '${rawOutcome.pre_session_id}' does not match session '${sessionId}'`
+        };
+      }
+    }
+
+    // Reject false-proof errors (R5-01): bad_jwt, jwt_expired, token_expired, invalid_jwt, etc.
+    const errorCode = (rawOutcome.error_code || '').toLowerCase();
+    const errorMsg = (rawOutcome.error || '').toLowerCase();
+    const isFalseProofError =
+      errorCode === 'bad_jwt' ||
+      errorCode === 'jwt_expired' ||
+      errorCode === 'token_expired' ||
+      errorCode === 'invalid_jwt' ||
+      errorCode === 'malformed_jwt' ||
+      errorMsg.includes('bad_jwt') ||
+      errorMsg.includes('expired') ||
+      errorMsg.includes('malformed') ||
+      errorMsg.includes('invalid jwt') ||
+      errorMsg.includes('invalid token') ||
+      errorMsg.includes('signature');
+
+    if (isFalseProofError) {
+      return {
+        passed: false,
+        status,
+        reason: `FALSE_PROOF_REJECTED: SESSION-02 rejection due to '${rawOutcome.error_code || rawOutcome.error}'. Invalid, expired, or malformed JWT errors do not demonstrate remote session invalidation (R5-01).`
+      };
+    }
+
+    // Reject ambiguous rejection without affirmative provider error code (R5-01)
+    if (rawOutcome.error_code !== undefined && rawOutcome.error_code !== null) {
+      const isAffirmativeRevocation =
+        rawOutcome.revocation_error_code === 'session_not_found' ||
+        errorCode === 'session_not_found' ||
+        errorCode === 'session_revoked' ||
+        errorCode === 'authsessionmissingerror' ||
+        errorMsg.includes('session not found') ||
+        errorMsg.includes('session_not_found');
+
+      if (!isAffirmativeRevocation) {
+        return {
+          passed: false,
+          status,
+          reason: `MISSING_EVIDENCE: SESSION-02 requires affirmative provider revocation error code (e.g. session_not_found). Ambiguous rejection '${rawOutcome.error_code}' is rejected (R5-01).`
+        };
+      }
     }
   }
 
@@ -1227,6 +1290,8 @@ export class TestRunInventory {
     this.trackedSessions = new Set(); // Session IDs
     this.trackedTableRows = new Map(); // table -> Set(id)
     this.trackedStorageObjects = new Map(); // bucket -> Set(path)
+    this.seedCredentialRestorations = []; // Seed users whose password was modified -> must be restored (R5-06)
+    this.untrackedSessionsCount = 0; // Minted sessions whose ID could not be parsed (R5-04)
   }
 
   // Backward-compatible getter: returns combined map of tracked users
@@ -1305,6 +1370,24 @@ export class TestRunInventory {
     this.trackedStorageObjects.get(b).add(p);
   }
 
+  registerSeedPasswordModification({ userId, originalPassword, newPassword } = {}) {
+    if (!userId || typeof userId !== 'string' || !userId.trim()) {
+      throw new Error('registerSeedPasswordModification requires non-empty string userId');
+    }
+    if (!originalPassword || typeof originalPassword !== 'string') {
+      throw new Error('registerSeedPasswordModification requires string originalPassword');
+    }
+    this.seedCredentialRestorations.push({
+      userId: userId.trim(),
+      originalPassword,
+      modifiedAt: new Date().toISOString()
+    });
+  }
+
+  registerUntrackedSession() {
+    this.untrackedSessionsCount++;
+  }
+
   isUserTracked(userId) {
     const id = (userId || '').trim();
     return this.createdUsers.has(id) || this.referencedUsers.has(id);
@@ -1346,16 +1429,19 @@ export class TestRunInventory {
       trackedUsersCount: this.createdUsers.size + this.referencedUsers.size,
       trackedSessionsCount: this.trackedSessions.size,
       trackedTableRowsCount: Array.from(this.trackedTableRows.values()).reduce((acc, s) => acc + s.size, 0),
-      trackedStorageObjectsCount: Array.from(this.trackedStorageObjects.values()).reduce((acc, s) => acc + s.size, 0)
+      trackedStorageObjectsCount: Array.from(this.trackedStorageObjects.values()).reduce((acc, s) => acc + s.size, 0),
+      seedCredentialRestorationsCount: this.seedCredentialRestorations.length,
+      untrackedSessionsCount: this.untrackedSessionsCount
     };
   }
 
   /**
    * Deterministic cleanup routine: deletes ONLY createdThisRun resources by ID.
    * Pre-existing referencedUsers are NEVER deleted (R3-09).
+   * Restores modified seed user credentials (R5-06).
    * Handles Supabase Admin { data, error } responses.
    * Verifies absence of residual resources and fails closed if residual resources remain.
-   * Resolves PRRT_kwDOVtCmZc66lOOU, PRRT_kwDOVtCmZc66lo-q, and PRRT_kwDOVtCmZc66lq3S.
+   * Resolves PRRT_kwDOVtCmZc66lOOU, PRRT_kwDOVtCmZc66lo-q, PRRT_kwDOVtCmZc66lq3S, PRRT_kwDOVtCmZc66mPVg (R5-02), PRRT_kwDOVtCmZc66mPVn (R5-03), and PRRT_kwDOVtCmZc66mP9a (R5-06).
    */
   async executeCleanup({ adminClient, failClosed = true } = {}) {
     const report = {
@@ -1367,6 +1453,7 @@ export class TestRunInventory {
       tableRowsDeleted: 0,
       storageObjectsDeleted: 0,
       sessionsRevoked: 0,
+      seedCredentialsRestored: 0,
       residualUsers: [],
       residualResources: [],
       status: 'CLEANUP_PENDING'
@@ -1376,7 +1463,9 @@ export class TestRunInventory {
       this.createdUsers.size > 0 ||
       this.trackedTableRows.size > 0 ||
       this.trackedStorageObjects.size > 0 ||
-      this.trackedSessions.size > 0;
+      this.trackedSessions.size > 0 ||
+      this.seedCredentialRestorations.length > 0 ||
+      this.untrackedSessionsCount > 0;
 
     if (!hasCleanupEligibleItems) {
       report.status = 'CLEANUP_VERIFIED_SUCCESS';
@@ -1390,6 +1479,15 @@ export class TestRunInventory {
         throw new Error('CLEANUP_CLIENT_REQUIRED: executeCleanup requires authenticated adminClient when resources are tracked');
       }
       return report;
+    }
+
+    // 0. Untracked minted sessions blocker (R5-04)
+    if (this.untrackedSessionsCount > 0) {
+      report.residualResources.push({
+        type: 'untracked_session',
+        count: this.untrackedSessionsCount,
+        error: 'UNTRACKED_MINTED_SESSION: Password grant minted token but session identifier could not be extracted; residual session cannot be tracked'
+      });
     }
 
     // 1. Delete tracked table rows by exact ID
@@ -1432,7 +1530,7 @@ export class TestRunInventory {
       }
     }
 
-    // 3. Invalidate tracked sessions if client provides session invalidation (R4-05)
+    // 3. Invalidate tracked sessions if client provides session invalidation (R4-05, R5-02)
     if (this.trackedSessions.size > 0 && typeof adminClient.invalidateSession !== 'function' && typeof adminClient.signOut !== 'function') {
       report.residualResources.push({
         type: 'sessions',
@@ -1477,7 +1575,7 @@ export class TestRunInventory {
       }
     }
 
-    // 5. Affirmative post-cleanup verification for created users (R4-06)
+    // 5. Affirmative post-cleanup verification for created users (R4-06, R5-03)
     if (this.createdUsers.size > 0 && typeof adminClient.getUserById !== 'function') {
       report.residualResources.push({ type: 'verification', error: 'MISSING_GET_USER_BY_ID_METHOD' });
     } else {
@@ -1493,21 +1591,26 @@ export class TestRunInventory {
               continue;
             }
 
-            // If check returns error, require explicit 404 not-found; any 5xx/network error fails verification (R4-06)
+            // If check returns error, require structured 404; any 5xx/network/timeout error fails verification (R4-06, R5-03)
             if (check?.error) {
               const err = check.error;
-              const isExplicit404 =
-                err.status === 404 ||
-                err.code === 404 ||
-                err.code === 'user_not_found' ||
-                (typeof err.message === 'string' && err.message.toLowerCase().includes('not found')) ||
-                (typeof err.msg === 'string' && err.msg.toLowerCase().includes('not found'));
+              const errStatus = typeof err.status === 'number' ? err.status : (typeof err.code === 'number' ? err.code : null);
+              const errCode = typeof err.code === 'string' ? err.code.toLowerCase() : '';
+
+              const is5xxOrNetwork =
+                (errStatus !== null && errStatus >= 500 && errStatus < 600) ||
+                errCode.includes('503') ||
+                errCode.includes('unavailable') ||
+                errCode.includes('timeout') ||
+                errCode.includes('econnrefused');
+
+              const isExplicit404 = !is5xxOrNetwork && (errStatus === 404 || errCode === 'user_not_found');
 
               if (!isExplicit404) {
                 report.residualUsers.push({
                   id: userId,
                   email: userObj.email,
-                  error: `VERIFY_FAILED: Non-404 error during absence check: ${err.message || err.msg || String(err)}`
+                  error: `VERIFY_FAILED: Non-404 error during absence check (${errStatus || errCode || err.message || err.msg || String(err)})`
                 });
               }
               continue;
@@ -1525,10 +1628,15 @@ export class TestRunInventory {
               error: 'VERIFY_FAILED: Inconclusive response from getUserById; cannot verify user absence'
             });
           } catch (err) {
-            const isExplicit404 =
-              err?.status === 404 ||
-              err?.code === 404 ||
-              (typeof err?.message === 'string' && err.message.toLowerCase().includes('not found'));
+            const errStatus = typeof err?.status === 'number' ? err.status : (typeof err?.code === 'number' ? err.code : null);
+            const errCode = typeof err?.code === 'string' ? err.code.toLowerCase() : '';
+            const is5xxOrNetwork =
+              (errStatus !== null && errStatus >= 500 && errStatus < 600) ||
+              errCode.includes('503') ||
+              errCode.includes('unavailable') ||
+              errCode.includes('timeout') ||
+              errCode.includes('econnrefused');
+            const isExplicit404 = !is5xxOrNetwork && (errStatus === 404 || errCode === 'user_not_found');
             if (!isExplicit404) {
               report.residualUsers.push({ id: userId, email: userObj.email, error: `VERIFY_FAILED: ${err.message}` });
             }
@@ -1537,12 +1645,51 @@ export class TestRunInventory {
       }
     }
 
+    // 6. Restore modified seed credentials (R5-06)
+    if (this.seedCredentialRestorations.length > 0) {
+      const updateFn = typeof adminClient.updateUserById === 'function'
+        ? adminClient.updateUserById.bind(adminClient)
+        : (adminClient.auth && typeof adminClient.auth.admin?.updateUserById === 'function'
+            ? adminClient.auth.admin.updateUserById.bind(adminClient.auth.admin)
+            : null);
+
+      if (!updateFn) {
+        report.residualResources.push({
+          type: 'seed_credential_restoration',
+          count: this.seedCredentialRestorations.length,
+          error: 'MISSING_UPDATE_USER_METHOD: adminClient lacks updateUserById for seed password restoration'
+        });
+      } else {
+        for (const item of this.seedCredentialRestorations) {
+          try {
+            const res = await updateFn(item.userId, { password: item.originalPassword });
+            if (res && res.error) {
+              report.residualResources.push({
+                type: 'seed_credential_restoration',
+                userId: item.userId,
+                error: `RESTORE_FAILED: ${res.error.message || String(res.error)}`
+              });
+            } else {
+              report.seedCredentialsRestored++;
+            }
+          } catch (err) {
+            report.residualResources.push({
+              type: 'seed_credential_restoration',
+              userId: item.userId,
+              error: `RESTORE_FAILED: ${err.message}`
+            });
+          }
+        }
+      }
+    }
+
     if (report.residualUsers.length > 0 || report.residualResources.length > 0) {
       report.status = 'CLEANUP_FAILED_RESIDUAL_RESOURCES';
       if (failClosed) {
-        throw new Error(
-          `CLEANUP_INCOMPLETE: ${report.residualUsers.length} synthetic user(s) remain in database after cleanup`
-        );
+        const detail = report.residualUsers.length > 0
+          ? `${report.residualUsers.length} synthetic user(s) remain in database after cleanup`
+          : `${report.residualResources.length} residual resource(s) remain after cleanup`;
+        throw new Error(`CLEANUP_INCOMPLETE: ${detail}`);
       }
     } else {
       report.status = 'CLEANUP_VERIFIED_SUCCESS';
@@ -1611,8 +1758,26 @@ export function parseAndValidateJwt(token, { expectedIssuer, expectedAudience = 
     return { valid: false, reason: 'TOKEN_PAYLOAD_INVALID: Decoded JWT payload must be a JSON object' };
   }
 
+  // Mandatory finite numeric expiration claim (R5-05)
+  if (payload.exp === undefined || payload.exp === null) {
+    return { valid: false, reason: 'MISSING_EXP: JWT payload claims lack mandatory exp (expiration) claim', payload };
+  }
+  if (typeof payload.exp !== 'number' || !Number.isFinite(payload.exp)) {
+    return { valid: false, reason: `INVALID_EXP: JWT exp claim must be a finite number, got ${typeof payload.exp} (${payload.exp})`, payload };
+  }
+
+  // Temporal consistency with iat (R5-05)
+  if (payload.iat !== undefined && payload.iat !== null) {
+    if (typeof payload.iat !== 'number' || !Number.isFinite(payload.iat)) {
+      return { valid: false, reason: `INVALID_IAT: JWT iat claim must be a finite number, got ${typeof payload.iat}`, payload };
+    }
+    if (payload.exp < payload.iat) {
+      return { valid: false, reason: `TEMPORAL_INCONSISTENCY: JWT exp (${payload.exp}) cannot be earlier than iat (${payload.iat})`, payload };
+    }
+  }
+
   const nowUnix = Math.floor(Date.now() / 1000);
-  if (typeof payload.exp === 'number' && payload.exp + clockToleranceSeconds < nowUnix) {
+  if (payload.exp + clockToleranceSeconds < nowUnix) {
     return { valid: false, reason: `TOKEN_EXPIRED: JWT expired at unix ${payload.exp}, current ${nowUnix}`, payload };
   }
 
@@ -1960,12 +2125,12 @@ export const HOSTED_PROBE_SPECIFICATIONS = Object.freeze({
     category: 'Session & Consumer',
     layer: 'Layer B (Hosted Endpoint)',
     target: 'GET /storage/v1/object/authenticated/task06i_probe_bucket/probe.txt',
-    prerequisites: ['PRE_RESET_TOKEN_BEFORE_EXPIRY', 'STORAGE_BUCKET_TASK06I_PROBE_BUCKET'],
+    prerequisites: ['PRE_RESET_TOKEN_BEFORE_EXPIRY', 'STORAGE_OBJECT_FIXTURE_PROVISIONED (task06i_probe_bucket/probe.txt owned by test user)'],
     credentialsRequired: ['TIO_TEMP_ANON_KEY'],
     evidenceSource: 'STORAGE_STATELESS_HTTP_200_BEFORE_EXP',
     readinessStatus: 'IMPLEMENTED_OFFLINE_TESTED',
     hostedStatus: 'HOSTED_NOT_TESTED',
-    note: 'Documents Storage stateless JWT linger window. Accepts HTTP 200 before exp; rejects 401 or 404 as proof of linger.'
+    note: 'Documents Storage stateless JWT linger window. Accepts HTTP 200 before exp; rejects 401 or 404 as proof of linger (HTTP 404 indicates missing probe.txt fixture, R5-07).'
   },
   'SESSION-06': {
     id: 'SESSION-06',
@@ -2174,6 +2339,36 @@ export function createHostedDispatcher({
           };
         }
 
+        // Extract session ID and user ID immediately on HTTP 200 before JWT claim validation (R5-04)
+        let rawSessionId = body?.session_id;
+        let rawUserId = body?.user?.id;
+        if (!rawSessionId && isNonEmptyString(accessToken)) {
+          try {
+            const parts = accessToken.split('.');
+            if (parts.length === 3) {
+              const p = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+              rawSessionId = p?.session_id;
+              rawUserId = rawUserId || p?.sub;
+            }
+          } catch {}
+        }
+
+        // Capture security-sensitive session cleanup obligations immediately (R5-04)
+        if (inv && rawUserId) {
+          inv.registerReferencedUser({ id: String(rawUserId), email: testUser, source: 'HOOK-01_login' });
+        }
+        if (inv && rawSessionId) {
+          inv.registerSession(String(rawSessionId));
+        } else if (inv && !rawSessionId) {
+          inv.registerUntrackedSession();
+        }
+
+        if (ctx) {
+          if (rawSessionId) ctx.activeSessionId = String(rawSessionId);
+          if (rawUserId) ctx.activeUserId = String(rawUserId);
+          ctx.mintedAccessToken = accessToken;
+        }
+
         if (!isNonEmptyString(accessToken)) {
           return {
             passed: false,
@@ -2185,16 +2380,19 @@ export function createHostedDispatcher({
         // Strictly validate JWT payload claims - NO bypass paths allowed (R3-08)
         const jwtCheck = parseAndValidateJwt(accessToken, { expectedAudience: 'authenticated' });
         if (!jwtCheck.valid) {
+          // Token is unverified and untrusted for authorization, but cleanup obligation was retained (R5-04)
           return {
             passed: false,
             status: res.status,
             error: `JWT_CLAIM_VIOLATION: ${jwtCheck.reason}`,
-            jwt_claims_verified: false
+            jwt_claims_verified: false,
+            session_id: rawSessionId || null,
+            session_cleanup_registered: isNonEmptyString(rawSessionId)
           };
         }
 
-        const userId = jwtCheck.payload.sub || body?.user?.id;
-        const sessionId = jwtCheck.payload.session_id || body?.session_id;
+        const userId = jwtCheck.payload.sub || rawUserId;
+        const sessionId = jwtCheck.payload.session_id || rawSessionId;
 
         if (!isNonEmptyString(sessionId)) {
           return {
@@ -2210,14 +2408,6 @@ export function createHostedDispatcher({
           ctx.activeRefreshToken = refreshToken;
           ctx.activeUserId = userId;
           ctx.activeSessionId = sessionId;
-        }
-
-        // Pre-existing seeded user: register as referenced user, NEVER cleanup-owned created user (R3-09)
-        if (inv && userId) {
-          inv.registerReferencedUser({ id: String(userId), email: testUser, source: 'HOOK-01_login' });
-        }
-        if (inv && sessionId) {
-          inv.registerSession(String(sessionId));
         }
 
         return {
@@ -2400,6 +2590,7 @@ export function createHostedDispatcher({
           };
         }
 
+        const origPassword = ctx?.originalSeedPassword || ctx?.testPassword || options.testPassword || DEFAULT_TEST_PASSWORD;
         const newPassword = 'TioNewPassword#2026!';
         const res = await fetchFn(`${baseUrl}/auth/v1/admin/users/${userId}`, {
           method: 'PUT',
@@ -2414,15 +2605,26 @@ export function createHostedDispatcher({
         const body = await parseResponseBody(res);
         const resetSucceeded = res.status === 200 && (body?.id === userId || body?.user?.id === userId);
 
-        if (resetSucceeded && ctx) {
-          ctx.passwordResetCompleted = true;
-          ctx.activeSeedPassword = newPassword;
+        if (resetSucceeded) {
+          if (ctx) {
+            ctx.passwordResetCompleted = true;
+            ctx.originalSeedPassword = origPassword;
+            ctx.activeSeedPassword = newPassword;
+          }
+          if (inv && userId) {
+            inv.registerSeedPasswordModification({
+              userId: String(userId),
+              originalPassword: origPassword,
+              newPassword
+            });
+          }
         }
 
-        // Affirmative verification of session revocation: pre-reset token MUST be verified as revoked (R4-03)
+        // Affirmative verification of session revocation: pre-reset token MUST be verified as revoked (R4-03, R5-01)
         let sessionRevocationVerified = false;
         let remainingSessions = null;
         let verifyError = null;
+        let probeErrorCode = null;
 
         if (resetSucceeded && ctx?.activeAccessToken) {
           try {
@@ -2434,13 +2636,50 @@ export function createHostedDispatcher({
               },
               signal
             });
-            if (probeRes.status === 401 || probeRes.status === 403) {
-              sessionRevocationVerified = true;
-              remainingSessions = 0;
-            } else if (probeRes.status === 200) {
+            const probeBody = await parseResponseBody(probeRes);
+            probeErrorCode = (probeBody?.error_code || probeBody?.code || '').toLowerCase();
+            const probeErrorMsg = (probeBody?.msg || probeBody?.message || probeBody?.error_description || probeBody?.error || '').toLowerCase();
+
+            // Distinguish false-proof errors (R5-01): bad_jwt, jwt_expired, token_expired, invalid_jwt, malformed_jwt, etc.
+            const isFalseProof =
+              probeErrorCode === 'bad_jwt' ||
+              probeErrorCode === 'jwt_expired' ||
+              probeErrorCode === 'token_expired' ||
+              probeErrorCode === 'invalid_jwt' ||
+              probeErrorCode === 'malformed_jwt' ||
+              probeErrorMsg.includes('bad_jwt') ||
+              probeErrorMsg.includes('expired') ||
+              probeErrorMsg.includes('malformed') ||
+              probeErrorMsg.includes('invalid jwt') ||
+              probeErrorMsg.includes('invalid token') ||
+              probeErrorMsg.includes('signature');
+
+            // Affirmative provider-observed session revocation error (R5-01)
+            const isAffirmativeRevocation =
+              probeErrorCode === 'session_not_found' ||
+              probeErrorCode === 'session_revoked' ||
+              probeErrorCode === 'authsessionmissingerror' ||
+              probeErrorMsg.includes('session not found') ||
+              probeErrorMsg.includes('session_not_found');
+
+            if (probeRes.status === 200) {
               sessionRevocationVerified = false;
               remainingSessions = 1;
               verifyError = 'SECURITY_REGRESSION: Admin password update returned HTTP 200, but pre-reset session token remained valid (HTTP 200 on /auth/v1/user); session was not revoked!';
+            } else if (probeRes.status === 401 || probeRes.status === 403) {
+              if (isFalseProof) {
+                sessionRevocationVerified = false;
+                remainingSessions = null;
+                verifyError = `FALSE_PROOF_REJECTED: /auth/v1/user returned '${probeBody?.error_code || probeBody?.msg || probeBody?.message}'. Invalid/expired/malformed JWT errors do not demonstrate remote session invalidation (R5-01).`;
+              } else if (isAffirmativeRevocation) {
+                sessionRevocationVerified = true;
+                remainingSessions = 0;
+              } else {
+                // Ambiguous 401/403 without revocation-specific code fails closed (R5-01)
+                sessionRevocationVerified = false;
+                remainingSessions = null;
+                verifyError = `AMBIGUOUS_REJECTION: /auth/v1/user returned HTTP ${probeRes.status} with code '${probeBody?.error_code || 'none'}', which does not prove session revocation. Specific session_not_found provider error code required (R5-01).`;
+              }
             } else {
               sessionRevocationVerified = false;
               verifyError = `REVOCATION_CHECK_INCONCLUSIVE: Unexpected status ${probeRes.status} during post-reset session verification`;
@@ -2461,8 +2700,13 @@ export function createHostedDispatcher({
           session_revoked: sessionRevocationVerified,
           remaining_sessions: remainingSessions,
           session_revocation_verified: sessionRevocationVerified,
+          session_id: ctx?.activeSessionId || null,
+          pre_session_id: ctx?.activeSessionId || null,
+          correlated_session_id: ctx?.activeSessionId || null,
           invalidation_completed: isRevoked,
           logout_fallback: false,
+          error_code: probeErrorCode || null,
+          revocation_error_code: sessionRevocationVerified ? (probeErrorCode || 'session_not_found') : null,
           error: verifyError || (resetSucceeded ? null : (body?.msg || body?.message || 'Admin password update failed'))
         };
       }
@@ -2608,7 +2852,7 @@ export function createHostedDispatcher({
           bounded_by_jwt_exp: true,
           data: body,
           error: res.status === 404
-            ? 'STORAGE_FIXTURE_MISSING: Storage probe file returned HTTP 404'
+            ? 'STORAGE_FIXTURE_MISSING: Storage probe file returned HTTP 404 (PROVIDER_PRECONDITION_MISSING: task06i_probe_bucket/probe.txt must be provisioned before test, R5-07)'
             : (res.status === 401 ? 'STORAGE_TOKEN_REJECTED: Storage returned HTTP 401' : (!tokenUnexpired ? 'TOKEN_ALREADY_EXPIRED' : null))
         };
       }
@@ -2650,9 +2894,26 @@ export function createHostedDispatcher({
 
         const errCode = body?.error_code || body?.code || null;
         const errMsg = (body?.msg || body?.message || body?.error_description || body?.error || '').toLowerCase();
-        // Provider-observed revocation error (R4-04): Accept ONLY genuine AuthSessionMissingError or session_not_found
-        // Reject generic 401/403 without synthesizing AuthSessionMissingError!
+        const errCodeLower = (errCode || '').toLowerCase();
+
+        // Check false-proof errors (R5-08): bad_jwt, jwt_expired, token_expired, invalid_jwt, invalid_token, etc.
+        const isFalseProof =
+          errCodeLower === 'bad_jwt' ||
+          errCodeLower === 'jwt_expired' ||
+          errCodeLower === 'token_expired' ||
+          errCodeLower === 'invalid_jwt' ||
+          errCodeLower === 'malformed_jwt' ||
+          errMsg.includes('bad_jwt') ||
+          errMsg.includes('expired') ||
+          errMsg.includes('malformed') ||
+          errMsg.includes('invalid jwt') ||
+          errMsg.includes('invalid token') ||
+          errMsg.includes('signature');
+
+        // Provider-observed revocation error (R4-04, R5-08): Accept ONLY genuine AuthSessionMissingError or session_not_found
+        // Reject generic 401/403/500 and false-proof errors!
         const isRevocationError =
+          !isFalseProof &&
           (res.status === 401 || res.status === 403 || res.status === 500) &&
           (errCode === 'AuthSessionMissingError' ||
            errCode === 'session_not_found' ||
@@ -2670,7 +2931,7 @@ export function createHostedDispatcher({
           revocation_verified: isRevocationError,
           session_revoked: isRevocationError,
           error_code: errCode,
-          error: body?.msg || body?.message || (isRevocationError ? null : (res.status === 401 || res.status === 403 ? 'GENERIC_UNAUTHORIZED: Edge Function returned generic 401/403 without AuthSessionMissingError' : null))
+          error: body?.msg || body?.message || (isRevocationError ? null : (isFalseProof ? `FALSE_PROOF_REJECTED: Edge Function returned '${errCode || errMsg}' (invalid/expired token does not prove revocation)` : (res.status === 401 || res.status === 403 || res.status === 500 ? 'GENERIC_UNAUTHORIZED: Edge Function returned generic error without provider-observed session revocation proof (R5-08)' : null)))
         };
       }
 
@@ -3002,12 +3263,32 @@ if (process.argv[1] && process.argv[1].endsWith('hosted-probe-runner.mjs')) {
             Authorization: `Bearer ${serviceRoleKey}`
           }
         });
-        if (res.status === 404) return { data: null, error: null };
+        if (res.status === 404) {
+          // Do NOT treat 404 as success (R5-02); missing route or session fails closed
+          return { error: { status: 404, message: 'SESSION_INVALIDATION_FAILED: Endpoint or session not found (HTTP 404)' } };
+        }
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           return { error: body?.msg || body?.message || `HTTP_${res.status}` };
         }
         return { data: { id: sessionId }, error: null };
+      },
+      async updateUserById(userId, attributes) {
+        const res = await fetch(`https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/admin/users/${userId}`, {
+          method: 'PUT',
+          headers: {
+            apikey: serviceRoleKey,
+            Authorization: `Bearer ${serviceRoleKey}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify(attributes)
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          return { data: null, error: body?.msg || body?.message || `HTTP_${res.status}` };
+        }
+        const data = await res.json().catch(() => ({ id: userId }));
+        return { data, error: null };
       },
       async signOut(sessionId) {
         return this.invalidateSession(sessionId);

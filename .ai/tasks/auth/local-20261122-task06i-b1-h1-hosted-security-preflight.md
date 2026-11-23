@@ -1,19 +1,19 @@
-# Phase 1.2 Task 06I-B1-H1-R4 — Security Evidence, Credential Binding & Cleanup Closure
+# Phase 1.2 Task 06I-B1-H1-R5 — Evidence Integrity & Repeatable Testbed Closure
 
-> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R3. All 10 security review findings across PR #37 (from reviewer `im-tio` and `Cursor Bugbot`) are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
+> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R5. All 8 security review findings across PR #37 (from reviewer `im-tio`, `Codex`, and `Cursor Bugbot`) are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **LOCAL REMEDIATION COMPLETE (REVISION R4); ALL 8 REVIEW FINDINGS RESOLVED (R4-01 TO R4-08); 66/66 RUNNER TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; LAYER B 18-CASE MATRIX AUDITED (10 IMPLEMENTED_OFFLINE_TESTED, 5 PROVIDER_PRECONDITION_MISSING, 3 BLOCKED_UNSUPPORTED, 0 HOSTED_VERIFIED); STRICT JWT PARSING & AMR ALLOWLIST MATCHING SQL HOOK; FAIL-CLOSED CREDENTIAL BINDING; MANDATORY LIVE CLEANUP PREREQUISITE & FAILURE OVERRIDE; SESSION-02 AFFIRMATIVE REVOCATION VERIFICATION; SESSION-06 GENUINE ERROR REQUIREMENT; TRACKED SESSION INVALIDATION; NORMALIZED USER ABSENCE DETECTION; DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
-| Objective | Remediate all 10 security review findings on PR #37 (R3-01 to R3-10) without executing any live hosted mutations, resolving OTP grant-type preconditions, client AMR injection limitations, stateless linger proof integrity, password reset admin requirements, genuine session ID extraction, bypass pre-validation distinction, deterministic cleanup integration, strict JWT parsing, seed user preservation, and production credential boundary protection. |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R3 slice |
-| Previous agent | Agent / Task 06I-B1-H1-R2 author |
-| Last audited HEAD | `c456ed9aec1fe304cb5ec00ac70fdaae75c9b64e` (PR #37 previous commit) |
-| Tracking / approval | Task 06I-B1-H1-R3 remediation authorized by user prompt; LIVE hosted probe execution requires separate explicit owner authorization; mandates $0 cost ceiling and permanent immunity for `Tio-world` (`oykupyiitspujzpwwvuj`) and REAL `bsfwzvgynwriswapxpsp` |
+| Status | **LOCAL REMEDIATION COMPLETE (REVISION R5); ALL 8 REVIEW FINDINGS RESOLVED (R5-01 TO R5-08); 74/74 RUNNER TESTS PASS; 142/142 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; LAYER B 18-CASE MATRIX AUDITED; ENFORCED SESSION IDENTITY CORRELATION & AFFIRMATIVE REVOCATION CODES (`SESSION_NOT_FOUND`); FAIL-CLOSED SESSION CLEANUP (404 PROHIBITED); STRUCTURED 404 USER ABSENCE (503/OUTAGES REJECTED); IMMEDIATE SESSION RETENTION FOR CLEANUP UPON HTTP 200; MANDATORY FINITE NUMERIC JWT EXPIRATION & TEMPORAL CONSISTENCY (`EXP >= IAT`); SEED CREDENTIAL RESTORATION FOR REPEATABLE RUNS; EXPLICIT STORAGE FIXTURE PROVISIONING & CLEANUP; GENUINE EDGE FUNCTION ERROR PRESERVATION; DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
+| Objective | Remediate all 8 security review findings on PR #37 (R5-01 to R5-08) without executing any live hosted mutations, resolving session revocation proof integrity, session deletion endpoint 404 handling, user absence structured verification, session cleanup capture upon HTTP 200, mandatory JWT expiration & temporal consistency, seed password restoration, Storage object fixture provisioning, and Edge Function error code preservation. |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R5 slice |
+| Previous agent | Agent / Task 06I-B1-H1-R4 author |
+| Last audited HEAD | `e593e3920533b380bf2d1d6ec628ce0954980875` (PR #37 previous commit) |
+| Tracking / approval | Task 06I-B1-H1-R5 remediation authorized by user prompt; LIVE hosted probe execution requires separate explicit owner authorization; mandates $0 cost ceiling and permanent immunity for `Tio-world` (`oykupyiitspujzpwwvuj`) and REAL `bsfwzvgynwriswapxpsp` |
 | Branch | `test/task06i-b1-h1-hosted-security-preflight` |
 | Base SHA / inspected HEAD | `716fb32061ffb6012d17eae9453c822a281fe6f1` (`main`) |
 | Platform and file scope | Documentation, `.ai/` context, runner CLI hardening & LIVE dispatcher contract in `experiments/task06i/hosted-probe-runner.mjs`, testbed fixture specification in `experiments/task06i/sql/testbed-fixtures.sql`, and offline verification tests in `experiments/task06i/hosted-probe-runner.test.mjs`; zero client Expo UI, production schema, or live Auth mutations |
-| Created / updated | 2026-11-22 |
+| Created / updated | 2026-11-23 |
 
 ---
 
@@ -248,13 +248,78 @@ In accordance with findings R3-01, R3-02, R3-05, and R3-06, each probe case is s
   3. `createHostedDispatcher` returns `PROVIDER_PRECONDITION_MISSING: Magic link token cannot be obtained because email delivery is suppressed fail-closed...`.
   4. `validateProbeOutcome` explicitly rejects email suppression claims as proof of Custom Access Token Hook rejection (`FALSE_PROOF_REJECTED`).
 
-## 6. Verification Evidence Matrix
+---
+
+## 6. Revision R5 Remediation Summary (PR #37 Review Findings)
+
+### R5-01 — Session Revocation Proof Rejects Generic Errors & Requires Error Codes (`PRRT_kwDOVtCmZc66mPVZ`, Bugbot High)
+- **Vulnerability:** `SESSION-02` accepted generic 401/403 responses and treated them as revocation proof, even if the rejection was due to false proof conditions (e.g. `bad_jwt`, `jwt_expired`, `invalid_token`) or without correlating the exact probed session identity.
+- **Remediation:**
+  1. Enforced session identity correlation between pre-reset session (`pre_session_id`) and the probed session outcome (`session_id`).
+  2. Explicitly rejected false-proof conditions (`bad_jwt`, `jwt_expired`, `token_expired`, `invalid_token`).
+  3. Strictly required affirmative provider error codes (`session_not_found`, `session_revoked`). Ambiguous rejections without code fail closed.
+
+### R5-02 — Session Cleanup Rejects HTTP 404 from Session Invalidation Endpoint (`PRRT_kwDOVtCmZc66mPVg`, Bugbot High)
+- **Vulnerability:** Session cleanup in `executeCleanup` and the standalone CLI runner assumed `/auth/v1/admin/users/sessions/{sessionId}` is a valid endpoint, treating HTTP 404 as "session already gone / success". In reality, unknown routes return 404 and leave sessions alive.
+- **Remediation:**
+  1. In `executeCleanup`, HTTP 404 from session deletion is strictly treated as failure (`SESSION_INVALIDATION_FAILED: Unknown session deletion route (HTTP 404)`).
+  2. In the CLI runner, `invalidateSession` fails closed when 404 is received.
+  3. Untracked sessions or failed session invalidations fail closed (`CLEANUP_FAILED_RESIDUAL_RESOURCES`).
+
+### R5-03 — User Absence Check Requires Structured 404 (`PRRT_kwDOVtCmZc66mPVn`, Bugbot Med)
+- **Vulnerability:** User absence verification trusted error message text containing "not found", allowing 503 Service Unavailable, gateway errors, or DNS timeouts containing such substrings to be falsely interpreted as confirmed user deletion.
+- **Remediation:**
+  1. User absence strictly requires structured provider HTTP status 404 (`error.status === 404`) or structured error code (`error.code === 'user_not_found'`).
+  2. Explicitly rejects 5xx, 503, timeouts, gateway errors, and network failures, pushing to `residualUsers` as `VERIFY_FAILED`.
+
+### R5-04 — Session Minted Before JWT Validation Failure Tracked for Cleanup (`PRRT_kwDOVtCmZc66mP9O`, Codex P2)
+- **Vulnerability:** In `HOOK-01`, if password grant succeeded with HTTP 200, a session was minted on the server. However, if subsequent client-side JWT claims check failed, the error was thrown before capturing `session_id` into `inventory.trackedSessions`, leaking the active session across runs.
+- **Remediation:**
+  1. Extracted `user.id` and `session.id` immediately upon HTTP 200 password grant before parsing/validating JWT claims.
+  2. Registered the session into `inventory.trackedSessions` so it is guaranteed to be cleaned up.
+  3. Kept unverified JWT untrusted for authorization while preserving session tracking for cleanup. Untracked minted sessions fail closed (`UNTRACKED_MINTED_SESSION`).
+
+### R5-05 — Mandatory Finite Numeric JWT Expiration & Temporal Consistency (`PRRT_kwDOVtCmZc66mP9U`, Codex P2)
+- **Vulnerability:** `parseAndValidateJwt` allowed missing, string, null, NaN, or non-finite `exp` claims, and did not check temporal consistency with `iat`.
+- **Remediation:**
+  1. Strictly required `exp` to be a finite number (`typeof claims.exp !== 'number' || !Number.isFinite(claims.exp)` throws `INVALID_EXP` or `MISSING_EXP`).
+  2. Required `iat` to be a finite number if present.
+  3. Enforced temporal consistency: `exp >= iat`. Tokens where `exp < iat` throw `INVALID_EXP_TEMPORAL_INCONSISTENCY`.
+
+### R5-06 — Seed Password Restoration for Repeatable Runs (`PRRT_kwDOVtCmZc66mP9a`, Codex P2)
+- **Vulnerability:** In `SESSION-02`, updating the seed user's password left the user with the new password. Because seed accounts are preserved across runs (`referencedUsers`), subsequent test runs failed authentication with `Invalid login credentials`.
+- **Remediation:**
+  1. Added `registerSeedPasswordModification({ userId, originalPassword, newPassword })` in `TestRunInventory`.
+  2. In `executeCleanup`, added Step 6: restore modified seed passwords using Admin API (`adminClient.updateUserById(userId, { password: originalPassword })`).
+  3. Redacted passwords from reports; tracked `seedCredentialsRestored++`; failed closed on restoration failure.
+  4. Wired `updateUserById` in standalone CLI adapter.
+
+### R5-07 — Explicit Storage Object Fixture Provisioning & Cleanup (`PRRT_kwDOVtCmZc66mP9g`, Codex P2)
+- **Vulnerability:** `SESSION-05` tested Storage authorization against `probe.txt` in `task06i_probe_bucket`, but no fixture setup script provisioned this object under test-user ownership. A 404 response could mean either auth failure or missing fixture.
+- **Remediation:**
+  1. Added explicit Storage object fixture provisioning instructions in `experiments/task06i/sql/testbed-fixtures.sql` Section 4 under test-user ownership (`owner_id = (auth.uid())::text`).
+  2. Clarified that HTTP 404 indicates a missing fixture (`STORAGE_FIXTURE_MISSING` / `PROVIDER_PRECONDITION_MISSING`) rather than an authentication failure.
+  3. Registered Storage fixture for cleanup in inventory.
+
+### R5-08 — Edge Function Error Code Preservation (`PRRT_kwDOVtCmZc66mUba`, im-tio P2)
+- **Vulnerability:** The Edge Function contract specification in `testbed-fixtures.sql` unconditionally synthesized `AuthSessionMissingError` on any upstream GoTrue error, masking legitimate upstream errors (e.g. 500, `bad_jwt`, `jwt_expired`).
+- **Remediation:**
+  1. Updated Edge Function `auth-user-probe` contract specification to preserve actual GoTrue error code and status.
+  2. Only emit `AuthSessionMissingError` when GoTrue affirmatively returns a session-not-found error. Generic errors (`bad_jwt`, `jwt_expired`, `invalid_token`) preserve their exact codes.
+  3. `validateProbeOutcome` rejects generic or false-proof errors on `SESSION-06`.
+
+---
+
+## 7. Verification Evidence Matrix
 
 All verification checks were run locally and passed completely:
 
 ```bash
 node --test experiments/task06i/hosted-probe-runner.test.mjs
-# 66 passed, 0 failed, exit code 0
+# 74 passed, 0 failed, exit code 0
+
+node --test experiments/task06i/*.test.mjs
+# 142 passed, 0 failed, exit code 0
 
 node experiments/task06i/sql-contract-parity.mjs
 # Status: POSTGRES_VERIFIED, 18/18 matched parity, exit code 0
@@ -271,7 +336,7 @@ git diff --check origin/main...HEAD
 
 ---
 
-## 7. Hard STOP Gate & Decision
+## 8. Hard STOP Gate & Decision
 
 - **Hard STOP Gate Honored:**
   - Zero hosted LIVE probes execute hue hain.
@@ -284,4 +349,4 @@ git diff --check origin/main...HEAD
 
 **Decision:** **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**
 
-> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all 10 review findings (R3-01 through R3-10) is complete and fully covered by offline regression tests (58/58 pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution. Awaiting independent re-review from `im-tio`.
+> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all 8 review findings (R5-01 through R5-08) is complete and fully covered by offline regression tests (74/74 runner tests, 142/142 task06i tests pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution. Awaiting independent re-review from `im-tio`.

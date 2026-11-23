@@ -2896,13 +2896,36 @@ test('57. Task 06I-B1-H1-R4 (R4-03): Password reset in SESSION-02 requires affir
   assert.equal(outSurviving.session_revoked, false);
   assert.match(outSurviving.error, /SECURITY_REGRESSION.*session was not revoked/);
 
-  // 4. When /auth/v1/user returns 401 on pre-reset token, session revocation is verified
-  const mockFetchRevoked = async (url) => {
+  // 4. When /auth/v1/user returns generic 401 (e.g. 'Invalid token') without session_not_found, fails closed (R5-01)
+  const mockFetchGenericInvalidToken = async (url) => {
     if (url.includes('/auth/v1/admin/users/')) {
       return { status: 200, json: async () => ({ id: 'user-test-reset-123' }) };
     }
     if (url.includes('/auth/v1/user')) {
       return { status: 401, json: async () => ({ message: 'Invalid token' }) };
+    }
+    return { status: 400, json: async () => ({}) };
+  };
+
+  const dispGeneric = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    serviceRoleKey: validTestServiceRoleKey,
+    runContext: runCtx,
+    fetchFn: mockFetchGenericInvalidToken
+  });
+
+  const outGeneric = await dispGeneric(session02);
+  assert.equal(outGeneric.passed, false, 'Generic Invalid token cannot pass SESSION-02 (R5-01)');
+  assert.equal(outGeneric.session_revoked, false);
+  assert.match(outGeneric.error, /FALSE_PROOF_REJECTED/);
+
+  // 5. When /auth/v1/user returns affirmative session_not_found provider error, session revocation is verified
+  const mockFetchRevoked = async (url) => {
+    if (url.includes('/auth/v1/admin/users/')) {
+      return { status: 200, json: async () => ({ id: 'user-test-reset-123' }) };
+    }
+    if (url.includes('/auth/v1/user')) {
+      return { status: 401, json: async () => ({ error_code: 'session_not_found', message: 'Session not found' }) };
     }
     return { status: 400, json: async () => ({}) };
   };
@@ -2919,6 +2942,7 @@ test('57. Task 06I-B1-H1-R4 (R4-03): Password reset in SESSION-02 requires affir
   assert.equal(outRevoked.remaining_sessions, 0);
   assert.equal(outRevoked.session_revoked, true);
   assert.equal(outRevoked.session_revocation_verified, true);
+  assert.equal(outRevoked.revocation_error_code, 'session_not_found');
 });
 
 test('58. Task 06I-B1-H1-R4 (R4-04): SESSION-06 and SESSION-03 reject generic 401/403 Forbidden without provider-observed revocation error', async () => {
@@ -3134,4 +3158,411 @@ test('62. Task 06I-B1-H1-R4 (R4-08): Send Email Hook suppression (42501) cannot 
   });
   assert.equal(resSuppressionClaim.passed, false);
   assert.match(resSuppressionClaim.reason, /FALSE_PROOF_REJECTED.*BYPASS-04 email hook suppression cannot be accepted as proof/);
+});
+
+test('63. Task 06I-B1-H1-R5 (R5-01): SESSION-02 rejects generic 401/403, bad_jwt, expired token, and ambiguous errors; strictly requires affirmative session_not_found', async () => {
+  const session02 = { id: 'SESSION-02', category: 'Session & Consumer' };
+  const runCtx = createRunContext();
+  runCtx.activeAccessToken = createMockJwt();
+  runCtx.activeUserId = 'user-r5-01';
+  runCtx.activeSessionId = 'sess-r5-01';
+
+  // 1. bad_jwt is rejected as FALSE_PROOF_REJECTED
+  const dispBadJwt = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    serviceRoleKey: validTestServiceRoleKey,
+    runContext: runCtx,
+    fetchFn: async (url) => {
+      if (url.includes('/auth/v1/admin/users/')) return { status: 200, json: async () => ({ id: 'user-r5-01' }) };
+      if (url.includes('/auth/v1/user')) return { status: 401, json: async () => ({ error_code: 'bad_jwt', message: 'Token signature is invalid' }) };
+      return { status: 400, json: async () => ({}) };
+    }
+  });
+  const outBadJwt = await dispBadJwt(session02);
+  assert.equal(outBadJwt.passed, false);
+  assert.match(outBadJwt.error, /FALSE_PROOF_REJECTED/);
+
+  // 2. Ambiguous 403 Forbidden without provider revocation error code fails closed
+  const dispAmbiguous = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    serviceRoleKey: validTestServiceRoleKey,
+    runContext: runCtx,
+    fetchFn: async (url) => {
+      if (url.includes('/auth/v1/admin/users/')) return { status: 200, json: async () => ({ id: 'user-r5-01' }) };
+      if (url.includes('/auth/v1/user')) return { status: 403, json: async () => ({ message: 'Forbidden' }) };
+      return { status: 400, json: async () => ({}) };
+    }
+  });
+  const outAmbiguous = await dispAmbiguous(session02);
+  assert.equal(outAmbiguous.passed, false);
+  assert.match(outAmbiguous.error, /AMBIGUOUS_REJECTION/);
+
+  // 3. validateProbeOutcome rejects false-proof outcome
+  const resBadJwt = validateProbeOutcome(session02, {
+    passed: true,
+    status: 200,
+    password_reset_completed: true,
+    session_revoked: true,
+    remaining_sessions: 0,
+    session_revocation_verified: true,
+    error_code: 'bad_jwt'
+  });
+  assert.equal(resBadJwt.passed, false);
+  assert.match(resBadJwt.reason, /FALSE_PROOF_REJECTED/);
+
+  // 4. validateProbeOutcome rejects ambiguous rejection
+  const resAmbiguous = validateProbeOutcome(session02, {
+    passed: true,
+    status: 200,
+    password_reset_completed: true,
+    session_revoked: true,
+    remaining_sessions: 0,
+    session_revocation_verified: true,
+    error_code: 'generic_forbidden'
+  });
+  assert.equal(resAmbiguous.passed, false);
+  assert.match(resAmbiguous.reason, /MISSING_EVIDENCE/);
+
+  // 5. Affirmative session_not_found passes validation
+  const resAffirmative = validateProbeOutcome(session02, {
+    passed: true,
+    status: 200,
+    password_reset_completed: true,
+    session_revoked: true,
+    remaining_sessions: 0,
+    session_revocation_verified: true,
+    session_id: 'sess-r5-01',
+    pre_session_id: 'sess-r5-01',
+    error_code: 'session_not_found'
+  });
+  assert.equal(resAffirmative.passed, true);
+});
+
+test('64. Task 06I-B1-H1-R5 (R5-02): Session cleanup rejects HTTP 404 from session deletion endpoint; unknown route or missing method fails closed', async () => {
+  const inv = new TestRunInventory('test-run-session-404');
+  inv.registerSession('session-to-clean-1');
+
+  // 1. Session deletion returning 404 (e.g. unknown route or missing session) fails cleanup closed
+  const client404 = {
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    invalidateSession: async () => ({ error: { status: 404, message: 'Endpoint or session not found (HTTP 404)' } })
+  };
+
+  const report404 = await inv.executeCleanup({ adminClient: client404, failClosed: false });
+  assert.equal(report404.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(report404.residualResources.some(r => r.type === 'session' && r.error.includes('404')));
+
+  // 2. Session deletion returning 500 error fails cleanup closed
+  const client500 = {
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    invalidateSession: async () => ({ error: { status: 500, message: 'Database connection failed 500' } })
+  };
+  const report500 = await inv.executeCleanup({ adminClient: client500, failClosed: false });
+  assert.equal(report500.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(report500.residualResources.some(r => r.type === 'session' && r.error.includes('500')));
+});
+
+test('65. Task 06I-B1-H1-R5 (R5-03): User absence check requires structured 404; 503 Service Unavailable with "not found" in message fails closed', async () => {
+  const inv = new TestRunInventory('test-run-user-absence-503');
+  inv.registerCreatedUser({ id: 'user-absence-503', email: 'absence503@proof.invalid' });
+
+  // 1. 503 error containing 'not found' in message text must NOT be treated as absence
+  const client503 = {
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => ({
+      data: null,
+      error: { status: 503, message: 'Upstream gateway service: route not found' }
+    })
+  };
+
+  const report503 = await inv.executeCleanup({ adminClient: client503, failClosed: false });
+  assert.equal(report503.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(report503.residualUsers.some(u => u.id === 'user-absence-503' && u.error.includes('VERIFY_FAILED')));
+
+  // 2. Exception with 503 status must NOT be treated as absence
+  const clientThrow503 = {
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => {
+      const err = new Error('Service Unavailable: user resource not found');
+      err.status = 503;
+      throw err;
+    }
+  };
+
+  const reportThrow = await inv.executeCleanup({ adminClient: clientThrow503, failClosed: false });
+  assert.equal(reportThrow.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(reportThrow.residualUsers.some(u => u.id === 'user-absence-503'));
+
+  // 3. Structured 404 confirms absence
+  const clientExplicit404 = {
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => ({ data: null, error: { status: 404, message: 'User not found' } })
+  };
+  const reportExplicit = await inv.executeCleanup({ adminClient: clientExplicit404, failClosed: false });
+  assert.equal(reportExplicit.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(reportExplicit.usersDeleted, 1);
+});
+
+test('66. Task 06I-B1-H1-R5 (R5-04): Successful password grant mints session that is tracked for cleanup immediately even when JWT claim validation fails', async () => {
+  const hook01 = { id: 'HOOK-01', category: 'Token Hook' };
+  const inv = new TestRunInventory('test-run-r5-04');
+  const runCtx = createRunContext();
+
+  // Create JWT with malformed AMR (string array ['password']) that fails parseAndValidateJwt
+  const tokenWithBadAmr = createMockJwt({
+    session_id: 'sess-minted-bad-amr-999',
+    sub: 'user-minted-999',
+    amr: ['password'] // Invalid RFC 8176 element (string instead of object)
+  });
+
+  const disp = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv,
+    runContext: runCtx,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({
+        access_token: tokenWithBadAmr,
+        refresh_token: 'refresh-999',
+        session_id: 'sess-minted-bad-amr-999',
+        user: { id: 'user-minted-999', email: 'tio-test-user-06i@proof.invalid' }
+      })
+    })
+  });
+
+  const outcome = await disp(hook01);
+
+  // 1. Dispatcher rejected token for authorization because of JWT claim violation
+  assert.equal(outcome.passed, false);
+  assert.equal(outcome.jwt_claims_verified, false);
+  assert.match(outcome.error, /JWT_CLAIM_VIOLATION/);
+
+  // 2. BUT minted session was immediately captured and registered in inventory for cleanup!
+  assert.equal(inv.trackedSessions.has('sess-minted-bad-amr-999'), true, 'Minted session must be registered for cleanup');
+  assert.equal(outcome.session_cleanup_registered, true);
+
+  // 3. activeAccessToken is NOT authorized in runCtx
+  assert.equal(runCtx.activeAccessToken, null, 'Unverified JWT must not be stored as active authorized token');
+
+  // 4. Cleanup executes and revokes the minted session
+  const mockAdminClient = {
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    invalidateSession: async (id) => ({ data: { id }, error: null })
+  };
+
+  const cleanupReport = await inv.executeCleanup({ adminClient: mockAdminClient, failClosed: false });
+  assert.equal(cleanupReport.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(cleanupReport.sessionsRevoked, 1);
+});
+
+test('67. Task 06I-B1-H1-R5 (R5-05): Mandatory JWT expiration: missing exp, string exp, NaN, Infinity, and exp < iat fail closed', () => {
+  // 1. Missing exp claim fails closed
+  const noExpJwt = createMockJwt({ exp: undefined });
+  const resNoExp = parseAndValidateJwt(noExpJwt);
+  assert.equal(resNoExp.valid, false);
+  assert.match(resNoExp.reason, /MISSING_EXP/);
+
+  // 2. Null exp claim fails closed
+  const nullExpJwt = createMockJwt({ exp: null });
+  const resNullExp = parseAndValidateJwt(nullExpJwt);
+  assert.equal(resNullExp.valid, false);
+  assert.match(resNullExp.reason, /MISSING_EXP/);
+
+  // 3. String exp fails closed
+  const stringExpJwt = createMockJwt({ exp: '1893456000' });
+  const resStringExp = parseAndValidateJwt(stringExpJwt);
+  assert.equal(resStringExp.valid, false);
+  assert.match(resStringExp.reason, /INVALID_EXP/);
+
+  // 4. NaN / Infinity exp fails closed
+  const nanExpJwt = createMockJwt({ exp: NaN });
+  const resNanExp = parseAndValidateJwt(nanExpJwt);
+  assert.equal(resNanExp.valid, false);
+  assert.match(resNanExp.reason, /MISSING_EXP|INVALID_EXP/);
+
+  // 5. Temporal inconsistency: exp earlier than iat fails closed
+  const now = Math.floor(Date.now() / 1000);
+  const inconsistentJwt = createMockJwt({ iat: now + 500, exp: now + 100 });
+  const resInconsistent = parseAndValidateJwt(inconsistentJwt);
+  assert.equal(resInconsistent.valid, false);
+  assert.match(resInconsistent.reason, /TEMPORAL_INCONSISTENCY/);
+
+  // 6. Valid finite exp with temporal consistency passes
+  const validExpJwt = createMockJwt({ iat: now - 10, exp: now + 3600 });
+  const resValid = parseAndValidateJwt(validExpJwt);
+  assert.equal(resValid.valid, true);
+});
+
+test('68. Task 06I-B1-H1-R5 (R5-06): Seed credential lifecycle: password reset modifies seed user; cleanup restores original seed password; sequential run can authenticate', async () => {
+  const session02 = { id: 'SESSION-02', category: 'Session & Consumer' };
+  const hook01 = { id: 'HOOK-01', category: 'Token Hook' };
+
+  // Track provider user database state across runs
+  let providerSeedPassword = DEFAULT_TEST_PASSWORD;
+  const originalSeedPassword = providerSeedPassword;
+
+  const mockAdminClient = {
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    invalidateSession: async (id) => ({ data: { id }, error: null }),
+    updateUserById: async (userId, attrs) => {
+      if (attrs.password) {
+        providerSeedPassword = attrs.password;
+      }
+      return { data: { id: userId }, error: null };
+    }
+  };
+
+  // --- RUN 1: Login, Password Reset, and Cleanup ---
+  const inv1 = new TestRunInventory('run-1-seed-lifecycle');
+  const runCtx1 = createRunContext();
+  runCtx1.activeUserId = 'seed-user-uuid-1';
+  runCtx1.activeSessionId = 'sess-run-1';
+  runCtx1.activeAccessToken = createMockJwt({ sub: 'seed-user-uuid-1', session_id: 'sess-run-1' });
+
+  const disp1 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    serviceRoleKey: validTestServiceRoleKey,
+    inventory: inv1,
+    runContext: runCtx1,
+    fetchFn: async (url, opts) => {
+      if (url.includes('/auth/v1/admin/users/')) {
+        const body = JSON.parse(opts.body);
+        providerSeedPassword = body.password;
+        return { status: 200, json: async () => ({ id: 'seed-user-uuid-1' }) };
+      }
+      if (url.includes('/auth/v1/user')) {
+        return { status: 401, json: async () => ({ error_code: 'session_not_found', message: 'Session not found' }) };
+      }
+      return { status: 400, json: async () => ({}) };
+    }
+  });
+
+  const outReset = await disp1(session02);
+  assert.equal(outReset.passed, true);
+  assert.equal(providerSeedPassword, 'TioNewPassword#2026!', 'Seed user password changed to new password in provider');
+  assert.equal(inv1.seedCredentialRestorations.length, 1, 'Inventory tracked password modification');
+
+  // Run 1 Cleanup: Must restore original seed password!
+  const cleanupReport1 = await inv1.executeCleanup({ adminClient: mockAdminClient, failClosed: true });
+  assert.equal(cleanupReport1.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(cleanupReport1.seedCredentialsRestored, 1);
+  assert.equal(providerSeedPassword, originalSeedPassword, 'Cleanup must restore original seed password in provider');
+
+  // --- RUN 2: Sequential run authenticates with original seed password ---
+  const inv2 = new TestRunInventory('run-2-seed-lifecycle');
+  const runCtx2 = createRunContext();
+
+  const disp2 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv2,
+    runContext: runCtx2,
+    fetchFn: async (url, opts) => {
+      if (url.includes('/auth/v1/token')) {
+        const creds = JSON.parse(opts.body);
+        if (creds.password === providerSeedPassword) {
+          const token = createMockJwt({ sub: 'seed-user-uuid-1', session_id: 'sess-run-2' });
+          return {
+            status: 200,
+            json: async () => ({ access_token: token, refresh_token: 'refr-run-2', session_id: 'sess-run-2', user: { id: 'seed-user-uuid-1' } })
+          };
+        }
+        return { status: 400, json: async () => ({ message: 'Invalid login credentials' }) };
+      }
+      return { status: 400, json: async () => ({}) };
+    }
+  });
+
+  const outLogin2 = await disp2(hook01);
+  assert.equal(outLogin2.passed, true, 'Run 2 must succeed logging in with restored seed credentials');
+  assert.equal(runCtx2.activeSessionId, 'sess-run-2');
+});
+
+test('69. Task 06I-B1-H1-R5 (R5-07): Storage fixture readiness: SESSION-05 distinguishes missing 404 fixture from auth failure; storage object registered in inventory', async () => {
+  const session05 = { id: 'SESSION-05', category: 'Session & Consumer' };
+  const runCtx = createRunContext();
+  runCtx.activeAccessToken = createMockJwt({ exp: Math.floor(Date.now() / 1000) + 300 });
+
+  // 1. Missing storage object (HTTP 404) returns STORAGE_FIXTURE_MISSING (not an auth failure)
+  const disp404 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtx,
+    fetchFn: async () => ({ status: 404, json: async () => ({ message: 'Object not found' }) })
+  });
+  const out404 = await disp404(session05);
+  assert.equal(out404.passed, false);
+  assert.equal(out404.status, 404);
+  assert.match(out404.error, /STORAGE_FIXTURE_MISSING/);
+
+  // 2. Storage object registration in inventory and cleanup
+  const inv = new TestRunInventory('test-run-storage-clean');
+  inv.registerStorageObject('task06i_probe_bucket', 'probe.txt');
+  assert.equal(inv.trackedStorageObjects.get('task06i_probe_bucket').has('probe.txt'), true);
+
+  let deletedPath = null;
+  const mockAdminClient = {
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    deleteStorageObject: async (bucket, path) => {
+      deletedPath = `${bucket}/${path}`;
+      return { data: { message: 'Deleted' }, error: null };
+    }
+  };
+
+  const report = await inv.executeCleanup({ adminClient: mockAdminClient, failClosed: true });
+  assert.equal(report.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(report.storageObjectsDeleted, 1);
+  assert.equal(deletedPath, 'task06i_probe_bucket/probe.txt');
+});
+
+test('70. Task 06I-B1-H1-R5 (R5-08): Edge Function contract rejects false revocation proof: generic invalid_token or provider error does not synthesize AuthSessionMissingError and fails SESSION-06', async () => {
+  const session06 = { id: 'SESSION-06', category: 'Session & Consumer' };
+  const runCtx = createRunContext();
+  runCtx.activeAccessToken = createMockJwt();
+  runCtx.activeSessionId = 'sess-r5-08';
+  runCtx.preInvalidationSessionValid = true;
+  runCtx.passwordResetCompleted = true;
+
+  // 1. Edge Function returning generic invalid_token must FAIL SESSION-06
+  const dispGeneric = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtx,
+    fetchFn: async () => ({
+      status: 401,
+      json: async () => ({ error: 'Invalid token: signature verification failed', error_code: 'invalid_token' })
+    })
+  });
+  const outGeneric = await dispGeneric(session06);
+  assert.equal(outGeneric.passed, false);
+  assert.equal(outGeneric.revocation_verified, false);
+  assert.match(outGeneric.error, /FALSE_PROOF_REJECTED/);
+
+  // 2. Edge Function returning transient 500 database error must FAIL SESSION-06
+  const disp500 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtx,
+    fetchFn: async () => ({
+      status: 500,
+      json: async () => ({ error: 'Internal server error connecting to GoTrue', error_code: 'internal_server_error' })
+    })
+  });
+  const out500 = await disp500(session06);
+  assert.equal(out500.passed, false);
+  assert.equal(out500.revocation_verified, false);
+
+  // 3. Genuine AuthSessionMissingError emitted on confirmed session absence PASSES
+  const dispGenuine = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtx,
+    fetchFn: async () => ({
+      status: 401,
+      json: async () => ({ error: 'AuthSessionMissingError: session revoked by password change', error_code: 'AuthSessionMissingError' })
+    })
+  });
+  const outGenuine = await dispGenuine(session06);
+  assert.equal(outGenuine.passed, true);
+  assert.equal(outGenuine.revocation_verified, true);
 });

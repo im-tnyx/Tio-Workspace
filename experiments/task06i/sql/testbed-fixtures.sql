@@ -201,7 +201,7 @@ GRANT ALL ON public.task06i_session_probe TO service_role;
 -- -----------------------------------------------------------------------------
 -- 4. STORAGE BUCKET FIXTURE FOR SESSION-05 (Storage API Linger Window)
 -- Uses type-safe owner_id = (auth.uid())::text per Supabase Storage Ownership docs
--- Resolves PRRT_kwDOVtCmZc66layC
+-- Resolves PRRT_kwDOVtCmZc66layC and PRRT_kwDOVtCmZc66mP9g (R5-07)
 -- -----------------------------------------------------------------------------
 
 INSERT INTO storage.buckets (id, name, public)
@@ -215,6 +215,25 @@ CREATE POLICY task06i_probe_storage_policy ON storage.objects
   TO authenticated
   USING (bucket_id = 'task06i_probe_bucket' AND owner_id = (auth.uid())::text)
   WITH CHECK (bucket_id = 'task06i_probe_bucket' AND owner_id = (auth.uid())::text);
+
+-- STORAGE OBJECT PROVISIONING PROCEDURE (R5-07):
+-- Bucket creation alone is insufficient; SESSION-05 requires an accessible object 'probe.txt'
+-- owned by the seeded test user. Provisioning must occur under the seeded user's ownership context:
+-- Option A (Storage API with seed user JWT):
+--   POST /storage/v1/object/task06i_probe_bucket/probe.txt
+--   Headers: Authorization: Bearer <seed_user_jwt>, apikey: <anon_key>, Content-Type: text/plain
+--   Body: "task06i-storage-probe-content"
+-- Option B (SQL fixture with seeded user ID):
+--   INSERT INTO storage.objects (id, bucket_id, name, owner_id, metadata)
+--   VALUES (
+--     gen_random_uuid(),
+--     'task06i_probe_bucket',
+--     'probe.txt',
+--     '<seed_user_uuid>',
+--     '{"mimetype": "text/plain", "size": 29}'::jsonb
+--   ) ON CONFLICT (bucket_id, name) DO NOTHING;
+-- Note: Missing object yields HTTP 404 (STORAGE_FIXTURE_MISSING), which indicates a testbed
+-- configuration gap (PROVIDER_PRECONDITION_MISSING) rather than an authentication failure.
 
 -- -----------------------------------------------------------------------------
 -- 5. SEED USER PROVISIONING SPECIFICATION (Compatible with disable_signup=true)
@@ -236,17 +255,26 @@ CREATE POLICY task06i_probe_storage_policy ON storage.objects
 -- Function Name: auth-user-probe
 -- Endpoint: POST /functions/v1/auth-user-probe
 -- Deployment: supabase functions deploy auth-user-probe --project-ref wvdabiwbaavfggcmpizd
--- Implementation Contract:
+-- Implementation Contract (Resolves PRRT_kwDOVtCmZc66mUba / R5-08):
 --   Deno.serve(async (req) => {
 --     const authHeader = req.headers.get('Authorization');
---     if (!authHeader) return new Response(JSON.stringify({ error: 'Missing auth header' }), { status: 401 });
+--     if (!authHeader) return new Response(JSON.stringify({ error: 'Missing auth header', error_code: 'missing_auth_header' }), { status: 401 });
 --     const supabase = createClient(Deno.env.get('SUPABASE_URL'), Deno.env.get('SUPABASE_ANON_KEY'), {
 --       global: { headers: { Authorization: authHeader } }
 --     });
 --     const { data: { user }, error } = await supabase.auth.getUser();
 --     if (error || !user) {
---       return new Response(JSON.stringify({ error: error?.message || 'AuthSessionMissingError', error_code: 'AuthSessionMissingError' }), {
---         status: 401,
+--       const errStatus = error?.status || 401;
+--       const rawCode = error?.code || error?.name || '';
+--       // Preserve actual provider error code; DO NOT synthesize AuthSessionMissingError for generic failures (R5-08)
+--       const isRevocation = rawCode === 'session_not_found' || rawCode === 'AuthSessionMissingError';
+--       const finalCode = isRevocation ? 'AuthSessionMissingError' : (rawCode || 'invalid_token');
+--       return new Response(JSON.stringify({
+--         error: error?.message || 'Authentication failed',
+--         error_code: finalCode,
+--         status: errStatus
+--       }), {
+--         status: errStatus,
 --         headers: { 'Content-Type': 'application/json' }
 --       });
 --     }
@@ -255,5 +283,5 @@ CREATE POLICY task06i_probe_storage_policy ON storage.objects
 --       headers: { 'Content-Type': 'application/json' }
 --     });
 --   });
--- Resolves PRRT_kwDOVtCmZc66lo-m (R3-05)
+-- Resolves PRRT_kwDOVtCmZc66lo-m (R3-05) and PRRT_kwDOVtCmZc66mUba (R5-08)
 -- -----------------------------------------------------------------------------
