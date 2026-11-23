@@ -2,8 +2,9 @@
 
 [Tio-TNYX Expo Preview](../.github/workflows/expo-pr-preview.yml) is the Actions
 workflow for Live Expo Go, OTA updates and internal builds from eligible
-owner-authored PRs targeting `main`. For a manual run, choose the operation and
-platform and enter the PR number and full head SHA.
+owner-authored PRs targeting `main`. For a manual run, enter the PR number and
+choose the operation. Platform defaults to `all`; select `android` or `ios` to
+limit EAS to one platform. Live serves both platforms.
 
 | Operation | Trigger | Result |
 |---|---|---|
@@ -26,8 +27,10 @@ this workflow. Preview policy tests run with the existing shell checks.
   directories, nested package manifests, symlinks and submodules fail validation.
   A rename is checked at both paths. Workflow, root app/native configuration and
   dependency changes require a different verification path.
-- Manual runs require the PR number and full owner-approved head SHA. The
-  trusted `pull_request_target` entry admits only the owner's first-attempt
+- Manual runs use the PR's current HEAD when `head_sha` is blank. To require a
+  specific revision, enter its full 40-character SHA. Each run pins the selected
+  SHA, and validation rejects the run if a later check sees a different HEAD.
+  The trusted `pull_request_target` entry admits only the owner's first-attempt
   `tnyx-preview` label event or a push to that labeled same-repository PR.
   Unrelated events schedule no preview runner. A feature branch can use the
   main-based workflow without carrying a separate push signal.
@@ -89,7 +92,7 @@ this workflow. Preview policy tests run with the existing shell checks.
 5. Open an owner-authored, source-only feature PR targeting current `main`.
    Applying `tnyx-preview` starts Live. Later owner pushes refresh the preview
    automatically. For an on-demand retry use **Tio-TNYX Expo Preview → Run
-   workflow** on `main` and select `codespaces_live` with the exact PR SHA.
+   workflow** on `main`, select `codespaces_live` and enter the PR number.
    Open TNYX from Expo Go Projects using the matching preview account and a
    compatible SDK 58 client. Keep Metro tunnel URLs private.
 6. For EAS modes, configure the separate `eas-preview` GitHub environment with
@@ -127,7 +130,7 @@ new starter does not adopt a process from the old PID-only record.
 
 | Scenario | Evidence to record |
 |---|---|
-| Manual labeled PR | Workflow run URL, input PR and exact SHA, policy checks, dedicated Codespace selection and SSH sync success |
+| Manual labeled PR | Workflow run URL, input PR, pinned SHA, policy checks, dedicated Codespace selection and SSH sync success |
 | Label and owner push | Apply the label once, push new source, and record the Live run URLs and exact served SHAs |
 | Unrelated activity | Non-preview labels, unlabeled PR pushes, forks and non-owner events do not enter Live or EAS jobs |
 | EAS modes | Verify a requested OTA lands on `pr-preview` and a compatible install loads it. Verify a requested internal build queues the selected platform with existing signing |

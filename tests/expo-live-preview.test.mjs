@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -149,6 +149,56 @@ test('one workflow exposes three operations; only owner label and synchronize ev
   assert.match(text, /inputs\.operation \|\| 'codespaces_live'/);
   assert.doesNotMatch(text, /^  (?:push|schedule|workflow_run):/m);
   assert.doesNotMatch(text, /^concurrency:/m);
+});
+
+test('manual selection pins a blank SHA once and defaults to all platforms', (t) => {
+  const workflow = readRepoFile('.github/workflows/expo-pr-preview.yml');
+  assert.match(workflow, /^      head_sha:\n        description:.*\n        required: false$/m);
+  assert.match(workflow, /^      platform:\n        description:.*\n        required: true\n        default: all\n        type: choice\n        options:\n          - all\n          - android\n          - ios$/m);
+  assert.match(workflow, /PREVIEW_SHA: \$\{\{ inputs\.head_sha \|\| github\.event\.pull_request\.head\.sha \}\}/);
+  const selection = workflow.split('      - name: Validate the exact PR revision and operation\n')[1]
+    .split('        run: |\n')[1].split('\n  codespaces_live:')[0];
+  const root = mkdtempSync(join(tmpdir(), 'tnyx-preview-selection-'));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  const scripts = join(root, '.github', 'scripts');
+  mkdirSync(scripts, { recursive: true });
+  writeFileSync(join(root, 'gh'), `#!/usr/bin/env bash
+set -eu
+[[ "$#" == 4 && "$1" == api && "$2" == repos/im-tnyx/Tio-Workspace/pulls/42 && "$3" == --jq && "$4" == .head.sha ]]
+printf 'lookup\\n' >> "$LOOKUPS"
+printf '%s\\n' "$API_HEAD"
+`, { mode: 0o700 });
+  writeFileSync(join(scripts, 'check-expo-live-pr.sh'), `set -eu
+[[ "$PREVIEW_SHA" =~ ^[0-9a-f]{40}$ && "$PREVIEW_SHA" == "$VALIDATED_HEAD" ]]
+`);
+  writeFileSync(join(scripts, 'verify-eas-preview-config.mjs'), '');
+  const output = join(root, 'output');
+  const lookups = join(root, 'lookups');
+  const run = (overrides = {}) => {
+    writeFileSync(output, '');
+    writeFileSync(lookups, '');
+    const result = spawnSync('bash', ['-c', selection], { cwd: root, encoding: 'utf8', env: {
+      ...process.env, PATH: `${root}:${process.env.PATH}`, GITHUB_EVENT_NAME: 'workflow_dispatch',
+      GITHUB_REPOSITORY: REPO.full_name, SELECTED_PR: '42', PREVIEW_SHA: '', PREVIEW_PLATFORM: 'all',
+      PREVIEW_OPERATION: 'codespaces_live', API_HEAD: HEAD, VALIDATED_HEAD: HEAD,
+      GITHUB_OUTPUT: output, LOOKUPS: lookups, ...overrides,
+    } });
+    assert.ifError(result.error);
+    return { status: result.status, output: readFileSync(output, 'utf8'), lookups: readFileSync(lookups, 'utf8') };
+  };
+
+  for (const mode of ['codespaces_live', 'publish_update', 'build_preview']) {
+    assert.deepEqual(run({ PREVIEW_OPERATION: mode }), {
+      status: 0, output: `pr_number=42\nhead_sha=${HEAD}\noperation=${mode}\nplatform=all\n`, lookups: 'lookup\n',
+    });
+  }
+  assert.deepEqual(run({ PREVIEW_SHA: HEAD, API_HEAD: MAIN, PREVIEW_PLATFORM: 'ios' }), {
+    status: 0, output: `pr_number=42\nhead_sha=${HEAD}\noperation=codespaces_live\nplatform=ios\n`, lookups: '',
+  });
+  assert.deepEqual(run({ PREVIEW_SHA: MAIN }), { status: 1, output: '', lookups: '' });
+  assert.deepEqual(run({ VALIDATED_HEAD: MAIN }), { status: 1, output: '', lookups: 'lookup\n' });
+  assert.deepEqual(run({ GITHUB_EVENT_NAME: 'pull_request_target' }), { status: 1, output: '', lookups: '' });
+  assert.deepEqual(run({ SELECTED_PR: 'invalid' }), { status: 1, output: '', lookups: '' });
 });
 
 test('Live uses trusted checkout, scoped concurrency and a separate credential', () => {

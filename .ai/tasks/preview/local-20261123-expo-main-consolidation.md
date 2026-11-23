@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | Implemented in PR #40. Formal review, rollout acceptance and legacy retirement pending |
+| Status | Initial workflow merged in PR #40. Manual input update, rollout acceptance and legacy retirement pending |
 | Implementation owner | Codex Cloud session for the consolidation task |
 | Last commit agent | Codex Cloud. The consolidation PR's Commits tab records the reviewed SHA |
 | Approval | Owner's Cloud-only consolidation request. Merge and legacy deletion have separate approval gates |
@@ -54,9 +54,8 @@ environment and was left intact.
 ## Review and verification
 
 The workflow validates complete Git tree diffs, checks file modes, and
-revalidates PR eligibility before privileged steps. Manual dispatch requires
-the full PR head SHA. The legacy preview stays available through device
-acceptance.
+revalidates PR eligibility before privileged steps. The legacy preview stays
+available through device acceptance.
 
 The [Main Protection ruleset](https://github.com/im-tnyx/Tio-Workspace/rules/27218050)
 requires the strict App-owned `Commit attribution guard` check (App ID
@@ -97,3 +96,10 @@ Metro port is free. Ambiguous ownership fails closed. Regression fixtures cover
 the 409, deadline, stopped wake with stale record, PID reuse, foreign port,
 record changes, concurrent manual/push sync and healthy reuse. Hosted wake and
 phone verification remain acceptance checks.
+
+## Manual dispatch inputs
+
+The PR number is required. A blank `head_sha` resolves the current PR HEAD
+once during selection, and all later jobs use that pinned SHA. An explicit
+SHA must still match the current head. The platform defaults to `all`, with
+`android` and `ios` available for single-platform EAS runs.
