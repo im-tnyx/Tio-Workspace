@@ -1474,6 +1474,14 @@ export class TestRunInventory {
     return this.registerCreatedUser(userObj);
   }
 
+  trackReferencedUser(userObj) {
+    return this.registerReferencedUser(userObj);
+  }
+
+  trackCreatedUser(userObj) {
+    return this.registerCreatedUser(userObj);
+  }
+
   registerSession(sessionOrId, optionsOrToken = {}) {
     let sessionId = null;
     let accessToken = null;
@@ -1527,18 +1535,65 @@ export class TestRunInventory {
     this.trackedStorageObjects.get(b).add(p);
   }
 
-  registerSeedPasswordModification({ userId, originalPassword, newPassword } = {}) {
+  getUserEmail(userId) {
+    if (!userId || typeof userId !== 'string') return null;
+    const uid = userId.trim();
+    if (this.referencedUsers.has(uid)) {
+      return this.referencedUsers.get(uid)?.email || null;
+    }
+    if (this.createdUsers.has(uid)) {
+      return this.createdUsers.get(uid)?.email || null;
+    }
+    return null;
+  }
+
+  registerSeedPasswordModification({ userId, email, originalPassword, newPassword, targetPassword, state = 'pending' } = {}) {
     if (!userId || typeof userId !== 'string' || !userId.trim()) {
       throw new Error('registerSeedPasswordModification requires non-empty string userId');
     }
     if (!originalPassword || typeof originalPassword !== 'string') {
       throw new Error('registerSeedPasswordModification requires string originalPassword');
     }
-    this.seedCredentialRestorations.push({
-      userId: userId.trim(),
+    const uid = userId.trim();
+    const existing = this.seedCredentialRestorations.find(r => r.userId === uid && r.state !== 'restored');
+    if (existing) {
+      if (email && !existing.email) existing.email = email.trim().toLowerCase();
+      if (targetPassword || newPassword) existing.targetPassword = targetPassword || newPassword;
+      if (state) existing.state = state;
+      return existing;
+    }
+    const target = targetPassword || newPassword || null;
+    const userEmail = typeof email === 'string' && email.trim() ? email.trim().toLowerCase() : (this.getUserEmail(uid) || null);
+    const record = {
+      userId: uid,
+      email: userEmail,
       originalPassword,
-      modifiedAt: new Date().toISOString()
-    });
+      targetPassword: target,
+      state, // 'pending' | 'dispatched' | 'confirmed' | 'indeterminate' | 'restored' | 'restoration_failed'
+      registeredAt: new Date().toISOString(),
+      dispatchedAt: null,
+      confirmedAt: null,
+      indeterminateAt: null,
+      restoredAt: null,
+      verifiedAt: null,
+      lastStatus: null,
+      error: null
+    };
+    this.seedCredentialRestorations.push(record);
+    return record;
+  }
+
+  getSeedPasswordModification(userId) {
+    if (!userId || typeof userId !== 'string') return null;
+    const uid = userId.trim();
+    return this.seedCredentialRestorations.find(r => r.userId === uid) || null;
+  }
+
+  clearCredentials() {
+    for (const item of this.seedCredentialRestorations) {
+      if (item.originalPassword) item.originalPassword = '[CLEARED]';
+      if (item.targetPassword) item.targetPassword = '[CLEARED]';
+    }
   }
 
   registerUntrackedSession() {
@@ -1830,7 +1885,7 @@ export class TestRunInventory {
       }
     }
 
-    // 6. Restore modified seed credentials (R5-06)
+    // 6. Restore modified seed credentials (R5-06, R9-01)
     if (this.seedCredentialRestorations.length > 0) {
       const updateFn = typeof adminClient.updateUserById === 'function'
         ? adminClient.updateUserById.bind(adminClient)
@@ -1846,18 +1901,61 @@ export class TestRunInventory {
         });
       } else {
         for (const item of this.seedCredentialRestorations) {
+          // Untracked users cannot be modified by restoration (R9-01 security boundary)
+          if (!this.isUserTracked(item.userId)) {
+            report.residualResources.push({
+              type: 'seed_credential_restoration',
+              userId: item.userId,
+              error: `SECURITY_BOUNDARY_VIOLATION: Attempted password restoration for untracked user '${item.userId}'`
+            });
+            continue;
+          }
+
+          // If already restored in this cleanup cycle, skip redundant update
+          if (item.state === 'restored') {
+            report.seedCredentialsRestored++;
+            continue;
+          }
+
           try {
             const res = await updateFn(item.userId, { password: item.originalPassword });
             if (res && res.error) {
+              item.state = 'restoration_failed';
+              item.error = res.error.message || String(res.error);
               report.residualResources.push({
                 type: 'seed_credential_restoration',
                 userId: item.userId,
-                error: `RESTORE_FAILED: ${res.error.message || String(res.error)}`
+                error: `RESTORE_FAILED: ${item.error}`
               });
-            } else {
-              report.seedCredentialsRestored++;
+              continue;
             }
+
+            // Post-restoration verification via controlled authentication (R9-01):
+            // If adminClient provides verifyUserCredentials, verify that the restored password actually works
+            if (typeof adminClient.verifyUserCredentials === 'function') {
+              const testEmail = item.email || this.getUserEmail(item.userId);
+              if (testEmail) {
+                const verifyRes = await adminClient.verifyUserCredentials(testEmail, item.originalPassword);
+                if (verifyRes && verifyRes.error) {
+                  item.state = 'restoration_failed';
+                  item.error = verifyRes.error.message || String(verifyRes.error);
+                  report.residualResources.push({
+                    type: 'seed_credential_restoration',
+                    userId: item.userId,
+                    error: `RESTORE_VERIFICATION_FAILED: ${item.error}`
+                  });
+                  continue;
+                }
+                item.verifiedAt = new Date().toISOString();
+              }
+            }
+
+            item.state = 'restored';
+            item.restoredAt = new Date().toISOString();
+            report.seedCredentialsRestored++;
           } catch (err) {
+            item.state = 'restoration_failed';
+            item.error = err.message;
             report.residualResources.push({
               type: 'seed_credential_restoration',
               userId: item.userId,
@@ -1878,6 +1976,7 @@ export class TestRunInventory {
       }
     } else {
       report.status = 'CLEANUP_VERIFIED_SUCCESS';
+      this.clearCredentials();
     }
 
     return report;
@@ -1889,6 +1988,7 @@ export class TestRunInventory {
  * Resolves PRRT_kwDOVtCmZc66lOOY.
  */
 export const DEFAULT_TEST_PASSWORD = 'TioTest#SecureRun2026!';
+export const DEFAULT_TEST_EMAIL = 'tio-test-user-06i@proof.invalid';
 
 export function getRunTestPassword(options = {}) {
   return (options && options.testPassword) || process.env.TASK06I_TEST_PASSWORD || DEFAULT_TEST_PASSWORD;
@@ -2765,33 +2865,101 @@ export function createHostedDispatcher({
           };
         }
 
+        const seedEmail = ctx?.testEmail || options.testEmail || DEFAULT_TEST_EMAIL;
         const origPassword = ctx?.originalSeedPassword || ctx?.testPassword || options.testPassword || DEFAULT_TEST_PASSWORD;
         const newPassword = 'TioNewPassword#2026!';
-        const res = await fetchFn(`${baseUrl}/auth/v1/admin/users/${userId}`, {
-          method: 'PUT',
-          headers: {
-            apikey: serviceRoleKey,
-            Authorization: `Bearer ${serviceRoleKey}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify({ password: newPassword }),
-          signal
-        });
-        const body = await parseResponseBody(res);
+
+        // Ensure seed user is tracked in referencedUsers so it is preserved and never deleted (R3-09, R9-01)
+        if (inv && !inv.isUserTracked(userId)) {
+          inv.trackReferencedUser({
+            id: String(userId),
+            email: seedEmail,
+            source: 'SESSION-02_seed_user'
+          });
+        }
+
+        // PRE-DISPATCH RESTORATION REGISTRATION (R9-01):
+        // Register the restoration obligation BEFORE dispatching the Admin API password mutation.
+        // If the request commits but response is lost (network drop, timeout, connection reset,
+        // or unreadable JSON), the restoration obligation is already securely recorded in inventory.
+        let restorationRecord = null;
+        if (inv && userId) {
+          restorationRecord = inv.registerSeedPasswordModification({
+            userId: String(userId),
+            email: seedEmail,
+            originalPassword: origPassword,
+            targetPassword: newPassword,
+            state: 'pending'
+          });
+          if (restorationRecord) {
+            restorationRecord.state = 'dispatched';
+            restorationRecord.dispatchedAt = new Date().toISOString();
+          }
+        }
+
+        let res;
+        let body;
+        let fetchThrew = false;
+        let fetchError = null;
+
+        try {
+          res = await fetchFn(`${baseUrl}/auth/v1/admin/users/${userId}`, {
+            method: 'PUT',
+            headers: {
+              apikey: serviceRoleKey,
+              Authorization: `Bearer ${serviceRoleKey}`,
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ password: newPassword }),
+            signal
+          });
+          body = await parseResponseBody(res);
+        } catch (err) {
+          fetchThrew = true;
+          fetchError = err;
+        }
+
+        if (fetchThrew) {
+          if (restorationRecord) {
+            restorationRecord.state = 'indeterminate';
+            restorationRecord.indeterminateAt = new Date().toISOString();
+            restorationRecord.error = fetchError?.message || String(fetchError);
+          }
+          return {
+            passed: false,
+            status: 0,
+            password_reset_completed: false,
+            session_revoked: false,
+            session_revocation_verified: false,
+            remaining_sessions: null,
+            restoration_registered: true,
+            restoration_state: 'indeterminate',
+            error: `DISPATCH_EXCEPTION: Admin password update failed during transport or response parsing: ${fetchError?.message}. Restoration obligation preserved as indeterminate (R9-01).`
+          };
+        }
+
+        if (restorationRecord) {
+          restorationRecord.lastStatus = res.status;
+        }
+
         const resetSucceeded = res.status === 200 && (body?.id === userId || body?.user?.id === userId);
 
         if (resetSucceeded) {
+          if (restorationRecord) {
+            restorationRecord.state = 'confirmed';
+            restorationRecord.confirmedAt = new Date().toISOString();
+          }
           if (ctx) {
             ctx.passwordResetCompleted = true;
             ctx.originalSeedPassword = origPassword;
             ctx.activeSeedPassword = newPassword;
           }
-          if (inv && userId) {
-            inv.registerSeedPasswordModification({
-              userId: String(userId),
-              originalPassword: origPassword,
-              newPassword
-            });
+        } else {
+          // If status was not 200, or body could not be verified as matching userId, mark indeterminate
+          if (restorationRecord) {
+            restorationRecord.state = 'indeterminate';
+            restorationRecord.indeterminateAt = new Date().toISOString();
+            restorationRecord.error = body?.msg || body?.message || (res.status === 200 ? 'UNREADABLE_RESPONSE: HTTP 200 received but response body could not be verified' : `HTTP_${res.status}`);
           }
         }
 
@@ -2886,6 +3054,8 @@ export function createHostedDispatcher({
           logout_fallback: false,
           error_code: probeErrorCode || null,
           revocation_error_code: sessionRevocationVerified ? (probeErrorCode || 'session_not_found') : null,
+          restoration_registered: !!restorationRecord,
+          restoration_state: restorationRecord ? restorationRecord.state : null,
           error: verifyError || (resetSucceeded ? null : (body?.msg || body?.message || 'Admin password update failed'))
         };
       }
@@ -3391,6 +3561,9 @@ export async function runHostedProbeRunner(options = {}) {
     activeRunContext.clear();
     // Ensure cleanup always executes even on unexpected exceptions (PRRT_kwDOVtCmZc66lo-q, R3-07)
     await performCleanup();
+    if (activeInventory && typeof activeInventory.clearCredentials === 'function') {
+      activeInventory.clearCredentials();
+    }
   }
 }
 
@@ -3401,6 +3574,7 @@ export async function runHostedProbeRunner(options = {}) {
  */
 export function createHostedAdminClient({
   serviceRoleKey,
+  anonKey,
   projectRef = HARDCODED_TEMP_REF,
   fetchFn = fetch
 } = {}) {
@@ -3414,6 +3588,54 @@ export function createHostedAdminClient({
   const baseUrl = `https://${projectRef}.supabase.co`;
 
   return {
+    async verifyUserCredentials(email, password) {
+      if (!email || typeof email !== 'string' || !email.trim()) {
+        return { data: null, error: { message: 'MISSING_EMAIL: verifyUserCredentials requires non-empty email' } };
+      }
+      if (!password || typeof password !== 'string') {
+        return { data: null, error: { message: 'MISSING_PASSWORD: verifyUserCredentials requires string password' } };
+      }
+      const keyToUse = anonKey || serviceRoleKey;
+      const res = await fetchFn(`${baseUrl}/auth/v1/token?grant_type=password`, {
+        method: 'POST',
+        headers: {
+          apikey: keyToUse,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          email: email.trim(),
+          password
+        })
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        return {
+          data: null,
+          error: {
+            message: body?.msg || body?.message || body?.error_description || `HTTP_${res.status}`,
+            status: res.status,
+            code: body?.error_code || body?.code
+          }
+        };
+      }
+      const data = await res.json().catch(() => ({}));
+      // Immediately revoke verification access token so no residual sessions leak (R9-01)
+      if (data?.access_token) {
+        try {
+          await this.signOut(data.access_token, 'local');
+        } catch {
+          // Best-effort immediate revocation of verification session
+        }
+      }
+      return {
+        data: {
+          verified: true,
+          userId: data?.user?.id || null
+        },
+        error: null
+      };
+    },
+
     async deleteUser(userId) {
       if (!userId || typeof userId !== 'string' || !userId.trim()) {
         return { data: null, error: { message: 'MISSING_USER_ID: deleteUser requires non-empty userId' } };
@@ -3667,6 +3889,7 @@ if (process.argv[1] && process.argv[1].endsWith('hosted-probe-runner.mjs')) {
 
     const adminClient = createHostedAdminClient({
       serviceRoleKey,
+      anonKey,
       projectRef: HARDCODED_TEMP_REF,
       fetchFn: fetch
     });

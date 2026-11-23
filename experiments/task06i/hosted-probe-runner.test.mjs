@@ -4469,3 +4469,443 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
   const secondLogoutCount = calls.filter(c => c.url.includes('/logout')).length;
   assert.equal(secondLogoutCount, 0, 'Second cleanup must be idempotent and make ZERO logout calls');
 });
+
+test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, state tracking, and indeterminate transport failure handling', async () => {
+  const session02 = { id: 'SESSION-02', category: 'Session & Consumer' };
+  const origPassword = 'OriginalTioPassword#2026!';
+  const newPassword = 'TioNewPassword#2026!';
+  const seedUserId = 'seed-user-uuid-r9-01';
+  const seedEmail = 'tio-seed-r9-01@proof.invalid';
+
+  // 1. Pre-dispatch registration invariance:
+  // Restoration obligation MUST be registered and in 'dispatched' state BEFORE PUT request proceeds
+  let preDispatchVerified = false;
+  let providerPassword = origPassword;
+
+  const invPre = new TestRunInventory('test-run-pre-dispatch');
+  const runCtxPre = createRunContext();
+  runCtxPre.activeUserId = seedUserId;
+  runCtxPre.originalSeedPassword = origPassword;
+  runCtxPre.activeSessionId = 'sess-pre-1';
+  runCtxPre.activeAccessToken = createMockJwt({ sub: seedUserId, session_id: 'sess-pre-1' });
+
+  const dispPre = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    serviceRoleKey: validTestServiceRoleKey,
+    inventory: invPre,
+    runContext: runCtxPre,
+    testEmail: seedEmail,
+    fetchFn: async (url, opts) => {
+      if (url.includes('/auth/v1/admin/users/')) {
+        // Assert pre-dispatch state inside fetchFn BEFORE any mutation or response!
+        assert.equal(invPre.seedCredentialRestorations.length, 1, 'Restoration MUST be registered before dispatch');
+        const rec = invPre.seedCredentialRestorations[0];
+        assert.equal(rec.userId, seedUserId);
+        assert.equal(rec.originalPassword, origPassword);
+        assert.equal(rec.targetPassword, newPassword);
+        assert.equal(rec.state, 'dispatched', 'Record state MUST be dispatched when network call begins');
+        assert.ok(rec.dispatchedAt, 'dispatchedAt timestamp MUST be recorded');
+        assert.equal(invPre.isUserTracked(seedUserId), true, 'Seed user MUST be tracked in inventory');
+        preDispatchVerified = true;
+
+        const body = JSON.parse(opts.body);
+        providerPassword = body.password;
+        return { status: 200, json: async () => ({ id: seedUserId }) };
+      }
+      if (url.includes('/auth/v1/user')) {
+        return { status: 401, json: async () => ({ error_code: 'session_not_found', message: 'Session not found' }) };
+      }
+      return { status: 400, json: async () => ({}) };
+    }
+  });
+
+  const outPre = await dispPre(session02);
+  assert.equal(preDispatchVerified, true, 'Pre-dispatch verification MUST be observed');
+  assert.equal(outPre.passed, true);
+  assert.equal(invPre.seedCredentialRestorations[0].state, 'confirmed', 'Successful 200 transitions state to confirmed');
+  assert.ok(invPre.seedCredentialRestorations[0].confirmedAt);
+
+  // 2. Transport failure (ECONNRESET / socket hangup) retains obligation as indeterminate:
+  // If fetch throws AFTER dispatch, probe fails closed, but restoration obligation remains intact!
+  const invTransport = new TestRunInventory('test-run-transport-failure');
+  const runCtxTransport = createRunContext();
+  runCtxTransport.activeUserId = seedUserId;
+  runCtxTransport.originalSeedPassword = origPassword;
+  runCtxTransport.activeSessionId = 'sess-trans-1';
+  runCtxTransport.activeAccessToken = createMockJwt({ sub: seedUserId, session_id: 'sess-trans-1' });
+
+  // Simulate provider having updated password, but transport throwing ECONNRESET on client response
+  let transportProviderPassword = origPassword;
+  const dispTransport = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    serviceRoleKey: validTestServiceRoleKey,
+    inventory: invTransport,
+    runContext: runCtxTransport,
+    testEmail: seedEmail,
+    fetchFn: async (url, opts) => {
+      if (url.includes('/auth/v1/admin/users/')) {
+        // Provider updates password in its database
+        const body = JSON.parse(opts.body);
+        transportProviderPassword = body.password;
+        // Client-side socket drops
+        const connErr = new Error('ECONNRESET: socket hang up');
+        connErr.code = 'ECONNRESET';
+        throw connErr;
+      }
+      return { status: 400, json: async () => ({}) };
+    }
+  });
+
+  const outTransport = await dispTransport(session02);
+  assert.equal(outTransport.passed, false, 'Probe must fail when transport throws');
+  assert.equal(outTransport.status, 0);
+  assert.match(outTransport.error, /DISPATCH_EXCEPTION/);
+  assert.match(outTransport.error, /ECONNRESET/);
+  assert.equal(outTransport.restoration_registered, true);
+  assert.equal(outTransport.restoration_state, 'indeterminate');
+
+  // Verify inventory retained the restoration obligation in indeterminate state
+  assert.equal(invTransport.seedCredentialRestorations.length, 1);
+  const transRec = invTransport.seedCredentialRestorations[0];
+  assert.equal(transRec.state, 'indeterminate');
+  assert.ok(transRec.indeterminateAt);
+  assert.match(transRec.error, /ECONNRESET/);
+  assert.equal(transportProviderPassword, newPassword, 'Provider database was mutated before drop');
+
+  // Cleanup MUST execute restoration and restore original password
+  const mockAdminClient = {
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    invalidateSession: async (id) => ({ data: { id }, error: null }),
+    updateUserById: async (uid, attrs) => {
+      if (attrs.password) {
+        transportProviderPassword = attrs.password;
+      }
+      return { data: { id: uid }, error: null };
+    }
+  };
+
+  const cleanupTransport = await invTransport.executeCleanup({ adminClient: mockAdminClient });
+  assert.equal(cleanupTransport.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(cleanupTransport.seedCredentialsRestored, 1);
+  assert.equal(transportProviderPassword, origPassword, 'Original password MUST be restored in provider after transport drop');
+
+  // 3. Malformed JSON response retains obligation as indeterminate:
+  const invJsonErr = new TestRunInventory('test-run-json-error');
+  const runCtxJsonErr = createRunContext();
+  runCtxJsonErr.activeUserId = seedUserId;
+  runCtxJsonErr.originalSeedPassword = origPassword;
+
+  let jsonProviderPassword = origPassword;
+  const dispJsonErr = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    serviceRoleKey: validTestServiceRoleKey,
+    inventory: invJsonErr,
+    runContext: runCtxJsonErr,
+    testEmail: seedEmail,
+    fetchFn: async (url, opts) => {
+      if (url.includes('/auth/v1/admin/users/')) {
+        const body = JSON.parse(opts.body);
+        jsonProviderPassword = body.password;
+        return {
+          status: 200,
+          text: async () => '<html><body>502 Bad Gateway</body></html>',
+          json: async () => { throw new SyntaxError('Unexpected token < in JSON at position 0'); }
+        };
+      }
+      return { status: 400, json: async () => ({}) };
+    }
+  });
+
+  const outJson = await dispJsonErr(session02);
+  assert.equal(outJson.passed, false);
+  assert.equal(outJson.restoration_state, 'indeterminate');
+  assert.equal(invJsonErr.seedCredentialRestorations[0].state, 'indeterminate');
+
+  const cleanupJson = await invJsonErr.executeCleanup({
+    adminClient: {
+      ...mockAdminClient,
+      updateUserById: async (uid, attrs) => {
+        if (attrs.password) jsonProviderPassword = attrs.password;
+        return { data: { id: uid }, error: null };
+      }
+    }
+  });
+  assert.equal(cleanupJson.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(jsonProviderPassword, origPassword, 'Original password MUST be restored after malformed JSON');
+
+  // 4. HTTP 500 response marks obligation as indeterminate:
+  const inv500 = new TestRunInventory('test-run-500');
+  const runCtx500 = createRunContext();
+  runCtx500.activeUserId = seedUserId;
+  runCtx500.originalSeedPassword = origPassword;
+
+  let http500ProviderPassword = origPassword;
+  const disp500 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    serviceRoleKey: validTestServiceRoleKey,
+    inventory: inv500,
+    runContext: runCtx500,
+    testEmail: seedEmail,
+    fetchFn: async (url, opts) => {
+      if (url.includes('/auth/v1/admin/users/')) {
+        http500ProviderPassword = JSON.parse(opts.body).password;
+        return {
+          status: 500,
+          json: async () => ({ msg: 'Internal server error', error_code: 'internal_error' })
+        };
+      }
+      return { status: 400, json: async () => ({}) };
+    }
+  });
+
+  const out500 = await disp500(session02);
+  assert.equal(out500.passed, false);
+  assert.equal(inv500.seedCredentialRestorations[0].state, 'indeterminate');
+  assert.equal(inv500.seedCredentialRestorations[0].lastStatus, 500);
+
+  // 5. Earliest initial password is preserved across repeated registrations:
+  const invEarliest = new TestRunInventory('test-run-earliest-pass');
+  invEarliest.registerSeedPasswordModification({
+    userId: 'u-earliest',
+    originalPassword: 'InitialSecret#1',
+    targetPassword: 'SecondPassword#2',
+    state: 'pending'
+  });
+  invEarliest.registerSeedPasswordModification({
+    userId: 'u-earliest',
+    originalPassword: 'MutatedPassword#2',
+    targetPassword: 'ThirdPassword#3',
+    state: 'dispatched'
+  });
+
+  assert.equal(invEarliest.seedCredentialRestorations.length, 1, 'Only one restoration record per userId');
+  const recEarliest = invEarliest.seedCredentialRestorations[0];
+  assert.equal(recEarliest.originalPassword, 'InitialSecret#1', 'Initial/earliest password MUST be preserved');
+  assert.equal(recEarliest.targetPassword, 'ThirdPassword#3', 'Latest target password is updated');
+  assert.equal(recEarliest.state, 'dispatched');
+});
+
+test('79. Task 06I-B1-H1-R9 (R9-02): Controlled authentication verification, adversarial cleanup failures, credential sanitization, and security boundaries', async () => {
+  const seedUserId = 'seed-user-uuid-r9-02';
+  const seedEmail = 'tio-seed-r9-02@proof.invalid';
+  const origPassword = 'OriginalSecret#2026!';
+
+  // 1. Controlled authentication verification in executeCleanup:
+  // a) Verification succeeds: cleanup succeeds, record restored and verified, credentials sanitized
+  const invSuccess = new TestRunInventory('test-verify-success');
+  invSuccess.registerReferencedUser({ id: seedUserId, email: seedEmail });
+  invSuccess.registerSeedPasswordModification({
+    userId: seedUserId,
+    email: seedEmail,
+    originalPassword: origPassword,
+    targetPassword: 'Mutated#1',
+    state: 'confirmed'
+  });
+
+  let updateCalled = false;
+  let verifyCalled = false;
+  let signOutCalled = false;
+
+  const adminClientSuccess = {
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    invalidateSession: async (id) => ({ data: { id }, error: null }),
+    updateUserById: async (uid, attrs) => {
+      assert.equal(uid, seedUserId);
+      assert.equal(attrs.password, origPassword);
+      updateCalled = true;
+      return { data: { id: uid }, error: null };
+    },
+    verifyUserCredentials: async (email, password) => {
+      assert.equal(email, seedEmail);
+      assert.equal(password, origPassword);
+      verifyCalled = true;
+      return { data: { verified: true, userId: seedUserId }, error: null };
+    }
+  };
+
+  const reportSuccess = await invSuccess.executeCleanup({ adminClient: adminClientSuccess });
+  assert.equal(reportSuccess.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(reportSuccess.seedCredentialsRestored, 1);
+  assert.equal(updateCalled, true);
+  assert.equal(verifyCalled, true);
+
+  const restoredItem = invSuccess.seedCredentialRestorations[0];
+  assert.equal(restoredItem.state, 'restored');
+  assert.ok(restoredItem.restoredAt);
+  assert.ok(restoredItem.verifiedAt);
+  // Credentials sanitized after verified cleanup
+  assert.equal(restoredItem.originalPassword, '[CLEARED]');
+  assert.equal(restoredItem.targetPassword, '[CLEARED]');
+
+  // b) Verification fails: invalid credentials reported, cleanup fails closed
+  const invVerifyFail = new TestRunInventory('test-verify-fail');
+  invVerifyFail.registerReferencedUser({ id: seedUserId, email: seedEmail });
+  invVerifyFail.registerSeedPasswordModification({
+    userId: seedUserId,
+    email: seedEmail,
+    originalPassword: origPassword,
+    targetPassword: 'Mutated#2',
+    state: 'confirmed'
+  });
+
+  const adminClientVerifyFail = {
+    ...adminClientSuccess,
+    verifyUserCredentials: async () => {
+      return { data: null, error: { message: 'invalid_grant: Invalid login credentials', status: 400 } };
+    }
+  };
+
+  const reportVerifyFail = await invVerifyFail.executeCleanup({ adminClient: adminClientVerifyFail, failClosed: false });
+  assert.equal(reportVerifyFail.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(reportVerifyFail.residualResources.length, 1);
+  assert.match(reportVerifyFail.residualResources[0].error, /RESTORE_VERIFICATION_FAILED/);
+  assert.equal(invVerifyFail.seedCredentialRestorations[0].state, 'restoration_failed');
+
+  // c) Restoration API failure: updateUserById returns error
+  const invUpdateFail = new TestRunInventory('test-update-fail');
+  invUpdateFail.registerReferencedUser({ id: seedUserId, email: seedEmail });
+  invUpdateFail.registerSeedPasswordModification({
+    userId: seedUserId,
+    email: seedEmail,
+    originalPassword: origPassword,
+    targetPassword: 'Mutated#3',
+    state: 'confirmed'
+  });
+
+  const adminClientUpdateFail = {
+    ...adminClientSuccess,
+    updateUserById: async () => {
+      return { data: null, error: { message: 'Database lock timeout' } };
+    }
+  };
+
+  const reportUpdateFail = await invUpdateFail.executeCleanup({ adminClient: adminClientUpdateFail, failClosed: false });
+  assert.equal(reportUpdateFail.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.match(reportUpdateFail.residualResources[0].error, /RESTORE_FAILED/);
+  assert.equal(invUpdateFail.seedCredentialRestorations[0].state, 'restoration_failed');
+
+  // 2. createHostedAdminClient.verifyUserCredentials unit behavior:
+  const calls = [];
+  const testClient = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    anonKey: validTestAnonKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async (url, opts) => {
+      calls.push({ url, method: opts.method, body: opts.body ? JSON.parse(opts.body) : null });
+      if (url.includes('/auth/v1/token?grant_type=password')) {
+        const body = JSON.parse(opts.body);
+        if (body.password === origPassword) {
+          return {
+            status: 200,
+            ok: true,
+            json: async () => ({
+              access_token: createMockJwt({ sub: seedUserId, session_id: 'verify-sess-1' }),
+              user: { id: seedUserId }
+            })
+          };
+        }
+        return {
+          status: 400,
+          ok: false,
+          json: async () => ({ msg: 'Invalid login credentials', error_code: 'invalid_grant' })
+        };
+      }
+      if (url.includes('/auth/v1/logout')) {
+        return { status: 200, ok: true, json: async () => ({}) };
+      }
+      return { status: 400, ok: false, json: async () => ({}) };
+    }
+  });
+
+  // Successful verification triggers login AND immediate local signout
+  calls.length = 0;
+  const verifyRes = await testClient.verifyUserCredentials(seedEmail, origPassword);
+  assert.equal(verifyRes.error, null);
+  assert.equal(verifyRes.data.verified, true);
+  assert.equal(verifyRes.data.userId, seedUserId);
+  assert.equal(calls.length, 2, 'Must call /token AND /logout');
+  assert.ok(calls[0].url.includes('/token?grant_type=password'));
+  assert.ok(calls[1].url.includes('/logout?scope=local'), 'Must immediately revoke verification session');
+
+  // Invalid password returns clean error without throwing
+  calls.length = 0;
+  const badVerifyRes = await testClient.verifyUserCredentials(seedEmail, 'WrongPassword!');
+  assert.equal(badVerifyRes.data, null);
+  assert.ok(badVerifyRes.error);
+  assert.equal(badVerifyRes.error.status, 400);
+
+  // Parameter validation
+  const noEmailRes = await testClient.verifyUserCredentials('', 'pass');
+  assert.match(noEmailRes.error.message, /MISSING_EMAIL/);
+  const noPassRes = await testClient.verifyUserCredentials(seedEmail, '');
+  assert.match(noPassRes.error.message, /MISSING_PASSWORD/);
+
+  // 3. Untracked users cannot be modified by restoration (security boundary):
+  const invUntracked = new TestRunInventory('test-untracked-user');
+  // Inject restoration obligation for untracked user directly
+  invUntracked.seedCredentialRestorations.push({
+    userId: 'untracked-victim-id',
+    email: 'untracked@proof.invalid',
+    originalPassword: 'Secret#1',
+    state: 'pending'
+  });
+
+  let untrackedUpdateCalled = false;
+  const reportUntracked = await invUntracked.executeCleanup({
+    adminClient: {
+      ...adminClientSuccess,
+      updateUserById: async () => {
+        untrackedUpdateCalled = true;
+        return { data: { id: 'untracked-victim-id' }, error: null };
+      }
+    },
+    failClosed: false
+  });
+
+  assert.equal(untrackedUpdateCalled, false, 'Restoration MUST NEVER modify untracked users in database');
+  assert.equal(reportUntracked.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.match(reportUntracked.residualResources[0].error, /SECURITY_BOUNDARY_VIOLATION/);
+
+  // 4. Seed user identity is preserved; restoration never deletes user:
+  let deleteCalledForSeed = false;
+  const invPreserve = new TestRunInventory('test-preserve-seed');
+  invPreserve.registerReferencedUser({ id: seedUserId, email: seedEmail });
+  invPreserve.registerSeedPasswordModification({
+    userId: seedUserId,
+    email: seedEmail,
+    originalPassword: origPassword,
+    state: 'restored' // already restored
+  });
+
+  const reportPreserve = await invPreserve.executeCleanup({
+    adminClient: {
+      ...adminClientSuccess,
+      deleteUser: async (uid) => {
+        if (uid === seedUserId) deleteCalledForSeed = true;
+        return { data: null, error: null };
+      }
+    }
+  });
+
+  assert.equal(deleteCalledForSeed, false, 'Seed user MUST NEVER be deleted by cleanup');
+  assert.equal(reportPreserve.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(reportPreserve.referencedUsersPreserved, 1);
+
+  // 5. Credential sanitization (clearCredentials):
+  const invSanitize = new TestRunInventory('test-sanitize');
+  invSanitize.registerSeedPasswordModification({
+    userId: seedUserId,
+    email: seedEmail,
+    originalPassword: 'PlainPassword123!',
+    targetPassword: 'NewPassword123!',
+    state: 'restored'
+  });
+  invSanitize.clearCredentials();
+  const summary = invSanitize.getSummary();
+  assert.equal(JSON.stringify(summary).includes('PlainPassword123!'), false, 'Summary MUST NOT contain passwords');
+  assert.equal(JSON.stringify(summary).includes('NewPassword123!'), false);
+  assert.equal(invSanitize.seedCredentialRestorations[0].originalPassword, '[CLEARED]');
+  assert.equal(invSanitize.seedCredentialRestorations[0].targetPassword, '[CLEARED]');
+});
