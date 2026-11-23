@@ -1,15 +1,15 @@
-# Phase 1.2 Task 06I-B1-H1-R14 — Asynchronous Mutation & Orphan-User Cleanup Closure
+# Phase 1.2 Task 06I-B1-H1-R15 — OTP User-Creation & Endpoint Capability Consistency Closure
 
-> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R14. All outstanding review findings across PR #37 (including Codex P2 finding `PRRT_kwDOVtCmZc663HvN` on unresolved password mutation cleanup blocking and Codex P2 finding `PRRT_kwDOVtCmZc663HvU` on indeterminate signup user-creation retention) are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
+> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R15. All outstanding review findings across PR #37 (including `im-tio` P2 finding `PRRT_kwDOVtCmZc66-adI` on OTP user-creation tracking and endpoint capability drift elimination) are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **LOCAL REMEDIATION COMPLETE (REVISION R14); ALL REVIEW FINDINGS RESOLVED (R14-01 CODEX P2 `PRRT_kwDOVtCmZc663HvN`: UNRESOLVED PASSWORD MUTATION BLOCKS CLEANUP SUCCESS, PRE-DISPATCH IN-FLIGHT REGISTRATION, CONCURRENT PASSWORD MUTATION AUDIT IN STEP 6, ABORT/TIMEOUT STATE RETENTION, POST-FINALIZATION IMMUTABILITY; R14-02 CODEX P2 `PRRT_kwDOVtCmZc663HvU`: INDETERMINATE SIGNUP RETAINS USER-CREATION OBLIGATION ACROSS TRANSPORT RESETS, UNREADABLE RESPONSES, AND MISSING USER IDS; UNTRACKED USER CREATION RISK FAILS CLEANUP CLOSED; PRE-EXISTING ACCOUNTS PRESERVED AGAINST EMAIL EQUALITY DELETION); 90/90 RUNNER TESTS PASS; 158/158 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
-| Objective | Remediate Codex P2 review findings `PRRT_kwDOVtCmZc663HvN` (R14-01: block cleanup success for unresolved password mutations) and `PRRT_kwDOVtCmZc663HvU` (R14-02: retain indeterminate user-creation obligations after signup) on PR #37 without executing any live hosted mutations. |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R14 slice |
-| Previous agent | Agent / Task 06I-B1-H1-R13 author |
-| Last audited HEAD | `2e2e23cec2717ce79850ddc04879c6e9d503a36b` (PR #37 previous commit) |
-| Tracking / approval | Task 06I-B1-H1-R14 remediation authorized by user prompt; LIVE hosted probe execution requires separate explicit owner authorization; mandates $0 cost ceiling and permanent immunity for `Tio-world` (`oykupyiitspujzpwwvuj`) and REAL `bsfwzvgynwriswapxpsp` |
+| Status | **LOCAL REMEDIATION COMPLETE (REVISION R15); ALL REVIEW FINDINGS RESOLVED (R15-01 `im-tio` P2 `PRRT_kwDOVtCmZc66-adI`: TRACK OTP-ORIGIN USER CREATION ON LOST/UNREADABLE RESPONSES BEFORE REPORTING CLEANUP SUCCESS, PRE-DISPATCH IN-FLIGHT REGISTRATION, FAIL-CLOSED UNTRACKED USER RISK ON TRANSPORT ERRORS / TIMEOUTS / UNREADABLE BODIES / EMPTY HTTP 200, UNEXPECTED CONCRETE USER DELETION WITH EXACT ID, PRE-EXISTING SEED USER ANTI-DELETION PRESERVATION; R15-02: ENDPOINT CAPABILITY DRIFT ELIMINATION, CANONICAL `AUTH_ENDPOINT_CAPABILITIES` CONSISTENCY ACROSS ALL 9 ENDPOINTS, `getEndpointCapabilities` RESOLVER HELPER, DISPATCHER SYNCHRONIZATION); 91/91 RUNNER TESTS PASS; 159/159 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
+| Objective | Remediate `im-tio` P2 review finding `PRRT_kwDOVtCmZc66-adI` (R15-01: track OTP-origin user creation on lost/unreadable responses before reporting cleanup success) and eliminate capability drift (R15-02) across all Auth endpoints on PR #37 without executing any live hosted mutations. |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R15 slice |
+| Previous agent | Agent / Task 06I-B1-H1-R14 author |
+| Last audited HEAD | `9a2cb1096910306172222de8602caf1ffc363ea0` (PR #37 R14 commit) |
+| Tracking / approval | Task 06I-B1-H1-R15 remediation authorized by user prompt; LIVE hosted probe execution requires separate explicit owner authorization; mandates $0 cost ceiling and permanent immunity for `Tio-world` (`oykupyiitspujzpwwvuj`) and REAL `bsfwzvgynwriswapxpsp` |
 | Branch | `test/task06i-b1-h1-hosted-security-preflight` |
 | Base SHA / inspected HEAD | `716fb32061ffb6012d17eae9453c822a281fe6f1` (`main`) |
 | Platform and file scope | Documentation, `.ai/` context, runner CLI hardening & LIVE dispatcher contract in `experiments/task06i/hosted-probe-runner.mjs`, testbed fixture specification in `experiments/task06i/sql/testbed-fixtures.sql`, and offline verification tests in `experiments/task06i/hosted-probe-runner.test.mjs`; zero client Expo UI, production schema, or live Auth mutations |
@@ -593,6 +593,25 @@ Compact invariant matrix verifying the 10 lifecycle invariant classes across cod
   7. Deletion safety boundary: only concrete user IDs observed as created this run are deletion-eligible. Pre-existing referenced and seed accounts are strictly preserved and never deleted based on email equality.
   8. Added comprehensive regression Test 86 with 11 offline regression scenarios.
 
+### 7.17 Revision R15 Remediation Details
+
+- **R15-01 — Track OTP User Creation on Lost/Unreadable Responses (Reviewer `im-tio` P2, `PRRT_kwDOVtCmZc66-adI`):**
+  1. Identified that `BYPASS-01` (`POST /auth/v1/otp`) was passing only `canMintSession: false` to `observeAuthResponse` without an in-flight operation, despite `AUTH_ENDPOINT_CAPABILITIES['POST /auth/v1/otp']` declaring `canCreateUsers: true`. Per Supabase Auth documentation, OTP email sign-in can automatically sign up a user by default. If a transport error (`ECONNRESET`), timeout, empty HTTP 200 (`{}`), or unreadable body occurred, `observeAuthResponse` recorded zero untracked users, and cleanup returned false `CLEANUP_VERIFIED_SUCCESS` while leaving an untracked user on the server.
+  2. In `createHostedDispatcher` for `case 'BYPASS-01':`:
+     - Pre-registers an in-flight operation with `canCreateUser: true`, `canModifyProviderState: true`, `requiresCleanupReconciliation: true`, `canMintSession: false` before network dispatch.
+     - Passes canonical capabilities into `observeAuthResponse`.
+     - Settles in-flight operation upon response parsing.
+     - Tracks concrete created user ID in `inv.registerCreatedUser(...)` for cleanup deletion by exact ID.
+     - Returns explicit `user_created` and `indeterminate_user_creation` indicators in outcome.
+  3. Fail-closed cleanup enforcement: transport error, request timeout, empty HTTP 200, or unreadable response on `BYPASS-01` increments `inv.untrackedUsersCount` and blocks cleanup success with `unresolved_user_creation_risk` / `unresolved_user_creation`.
+  4. Anti-deletion security boundary: pre-existing seed or referenced users are never registered into `createdUsers` and are strictly protected against deletion. Cleanup deletes only by exact ID of users created in the active run; deletion by email address is prohibited.
+
+- **R15-02 — Eliminate Capability Matrix / Dispatcher Drift (`im-tio` R15 Guidance):**
+  1. Standardized all 9 entries in `AUTH_ENDPOINT_CAPABILITIES` with consistent boolean properties: `canMintSession`, `canCreateUser`, `canCreateUsers` (backward-compatible alias), `canModifyProviderState`, `requiresCleanupReconciliation`, `canTriggerEmail`.
+  2. Exported `getEndpointCapabilities(endpointOrProbeId)` helper that resolves canonical capabilities by endpoint key or probe ID.
+  3. Synchronized all dispatchers in `createHostedDispatcher` (`BYPASS-01`, `BYPASS-02`, `BYPASS-03`, `BYPASS-05`, `HOOK-01`, `HOOK-02`, `SESSION-02`), `verifyUserCredentials`, and runner-level operations in `runHostedProbeRunner` to resolve capabilities via `getEndpointCapabilities`.
+  4. Added comprehensive regression Test 87 covering 13 adversarial scenarios, capability consistency, and anti-deletion protections.
+
 ---
 
 ## 8. Verification Evidence Matrix
@@ -601,10 +620,10 @@ All verification checks were run locally and passed completely:
 
 ```bash
 node --test experiments/task06i/hosted-probe-runner.test.mjs
-# 90 passed, 0 failed, exit code 0 (including Tests 82, 83, 84, 85, and 86)
+# 91 passed, 0 failed, exit code 0 (including Tests 82, 83, 84, 85, 86, and 87)
 
 node --test experiments/task06i/*.test.mjs
-# 158 passed, 0 failed, exit code 0
+# 159 passed, 0 failed, exit code 0
 
 node experiments/task06i/sql-contract-parity.mjs
 # Status: POSTGRES_VERIFIED, 18/18 matched parity, exit code 0
@@ -623,7 +642,7 @@ git diff --check origin/main...HEAD
 
 ## 9. GitHub CI Status
 
-- **Status:** **4/4 CHECKS PASS** on remote commit `2e2e23cec2717ce79850ddc04879c6e9d503a36b`:
+- **Status:** **4/4 CHECKS PASS** on remote commit `9a2cb1096910306172222de8602caf1ffc363ea0`:
   1. `Attribution guard runner`: **PASS**
   2. `Commit attribution fixture tests`: **PASS**
   3. `Commit attribution guard` (App-owned required check ID `5032971`): **PASS**
@@ -644,12 +663,12 @@ git diff --check origin/main...HEAD
   - Project deletion perform nahi hua hai.
 
 **Readiness State:**
-- **Code readiness:** READY (Revision R14)
-- **GitHub CI:** PASS (4/4 on remote HEAD `2e2e23c`)
+- **Code readiness:** READY (Revision R15)
+- **GitHub CI:** PASS (4/4 on remote HEAD `9a2cb10`)
 - **Independent review:** PENDING (`im-tio`)
 - **Hosted testing:** NOT_AUTHORIZED
 - **Production Auth:** STRICT NO-GO
 
 **Decision:** **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**
 
-> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all outstanding review findings (including Codex P2 finding `PRRT_kwDOVtCmZc663HvN` on unresolved password mutation cleanup blocking and `PRRT_kwDOVtCmZc663HvU` on indeterminate signup user-creation retention) is complete and fully covered by offline regression tests (90/90 runner tests, 158/158 task06i tests pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution. Awaiting independent re-review from `im-tio`.
+> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all outstanding review findings (including `im-tio` P2 finding `PRRT_kwDOVtCmZc66-adI` on OTP user-creation tracking and endpoint capability drift elimination) is complete and fully covered by offline regression tests (91/91 runner tests, 159/159 task06i tests pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution. Awaiting independent re-review from `im-tio`.

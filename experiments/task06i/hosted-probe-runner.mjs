@@ -54,8 +54,8 @@ export const AUTH_ENDPOINT_CAPABILITIES = Object.freeze({
     requiresCleanupReconciliation: true,
     canTriggerEmail: true,
     requiredEvidence: 'route_disabled (providerDisabled === true) and HTTP non-200',
-    cleanupObligation: 'Track created user into createdUsers if created; track unexpected tokens if returned',
-    indeterminateBehavior: 'AUTH_RESPONSE_PROVIDER_FAILURE (no session minting capability)'
+    cleanupObligation: 'Track created user into createdUsers if created; register untracked user creation risk on transport error, unreadable response, or empty HTTP 200; track unexpected tokens for cleanup',
+    indeterminateBehavior: 'AUTH_RESPONSE_INDETERMINATE on transport error or unreadable/missing user ID, register untracked user, fail cleanup closed'
   }),
   'POST /auth/v1/signup': Object.freeze({
     probeId: 'BYPASS-02',
@@ -68,8 +68,8 @@ export const AUTH_ENDPOINT_CAPABILITIES = Object.freeze({
     requiresCleanupReconciliation: true,
     canTriggerEmail: true,
     requiredEvidence: 'signup_disabled === true, status !== 200, zero created user, zero tokens',
-    cleanupObligation: 'Track created user into createdUsers; track unexpected tokens for cleanup',
-    indeterminateBehavior: 'Track created user if present; report indeterminate failure'
+    cleanupObligation: 'Track created user into createdUsers; register untracked user on transport error, unreadable response, or empty HTTP 200; track unexpected tokens for cleanup',
+    indeterminateBehavior: 'AUTH_RESPONSE_INDETERMINATE on transport error or unreadable/missing user ID, register untracked user, fail cleanup closed'
   }),
   'POST /auth/v1/verify': Object.freeze({
     probeId: 'BYPASS-03',
@@ -97,7 +97,7 @@ export const AUTH_ENDPOINT_CAPABILITIES = Object.freeze({
     canTriggerEmail: true,
     requiredEvidence: 'recovery_suppressed === true (42501) and zero recovery_token',
     cleanupObligation: 'Track unexpected tokens if issued',
-    indeterminateBehavior: 'AUTH_RESPONSE_PROVIDER_FAILURE (no session minting capability)'
+    indeterminateBehavior: 'AUTH_RESPONSE_PROVIDER_FAILURE (no session minting or user creation capability)'
   }),
   'POST /auth/v1/token?grant_type=password': Object.freeze({
     probeId: 'HOOK-01',
@@ -170,6 +170,21 @@ export const AUTH_ENDPOINT_CAPABILITIES = Object.freeze({
     indeterminateBehavior: 'Session remains unconfirmed; subsequent GET /user probe determines revocation state'
   })
 });
+
+/**
+ * Resolves the canonical capability definition for an endpoint key or probe ID (R15-02).
+ * Prevents configuration and dispatcher capability drift.
+ */
+export function getEndpointCapabilities(endpointOrProbeId) {
+  if (!endpointOrProbeId || typeof endpointOrProbeId !== 'string') {
+    return null;
+  }
+  const key = endpointOrProbeId.trim();
+  if (AUTH_ENDPOINT_CAPABILITIES[key]) {
+    return AUTH_ENDPOINT_CAPABILITIES[key];
+  }
+  return Object.values(AUTH_ENDPOINT_CAPABILITIES).find(c => c.probeId === key || c.endpoint === key) || null;
+}
 
 export const TIO_SUPABASE_REAL_REF = HARDCODED_REAL_REF;
 export const TIO_SUPABASE_TEMP_REF = process.env.TIO_SUPABASE_TEMP_REF || HARDCODED_TEMP_REF;
@@ -801,11 +816,11 @@ export function observeAuthResponse({
 
   // 3. HTTP 200 evaluation
   if (status >= 200 && status < 300) {
-    // Register created or referenced user into inventory if user ID observed (R2-04, R12-02)
+    // Register created or referenced user into inventory if user ID observed (R2-04, R12-02, R15-01)
     if (inv && rawUserId) {
       const uidStr = String(rawUserId).trim();
-      if (probeId === 'BYPASS-02') {
-        if (!inv.isUserCreated(uidStr)) {
+      if (canCreateUser || probeId === 'BYPASS-01' || probeId === 'BYPASS-02') {
+        if (!inv.isUserReferenced(uidStr) && !inv.isUserCreated(uidStr)) {
           inv.registerCreatedUser({ id: uidStr, email: userEmail, source: `${probeId}_unexpected_signup` });
         }
       } else {
@@ -1077,15 +1092,19 @@ export function observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser
   if (hasTokens && inv) {
     const userEmail = testUser || (typeof body.email === 'string' ? body.email : null) || 'tio-test-user-06i@proof.invalid';
 
-    // Register user for cleanup accounting:
-    // If BYPASS-02 (signup probe), the user was potentially minted/created by the test, so eligible for deletion.
+    // Register user for cleanup accounting (R15-01):
+    // If BYPASS-01 or BYPASS-02, the user was potentially minted/created by the test, so eligible for deletion (unless pre-existing seed user).
     // For all other probes (seed user or login probe), register as REFERENCED user so pre-existing user is NEVER deleted during cleanup!
     if (rawUserId) {
       const uidStr = String(rawUserId).trim();
-      if (probeId === 'BYPASS-02') {
-        inv.registerCreatedUser({ id: uidStr, email: userEmail, source: `${probeId}_unexpected_signup` });
+      if (probeId === 'BYPASS-01' || probeId === 'BYPASS-02') {
+        if (!inv.isUserReferenced(uidStr) && !inv.isUserCreated(uidStr)) {
+          inv.registerCreatedUser({ id: uidStr, email: userEmail, source: `${probeId}_unexpected_signup` });
+        }
       } else {
-        inv.registerReferencedUser({ id: uidStr, email: userEmail, source: `${probeId}_token_observation` });
+        if (!inv.isUserReferenced(uidStr)) {
+          inv.registerReferencedUser({ id: uidStr, email: userEmail, source: `${probeId}_token_observation` });
+        }
       }
     }
 
@@ -1241,6 +1260,20 @@ export function validateProbeOutcome(item, rawOutcome) {
         reason: `SECURITY_INVARIANT_VIOLATION: BYPASS-01 issued tokens on disabled route (${observedTokens})`
       };
     }
+    if (rawOutcome.user_created === true) {
+      return {
+        passed: false,
+        status,
+        reason: `SECURITY_INVARIANT_VIOLATION: BYPASS-01 created user on disabled route (user_created: true)`
+      };
+    }
+    if (rawOutcome.indeterminate_user_creation === true) {
+      return {
+        passed: false,
+        status,
+        reason: `INDETERMINATE_USER_CREATION: BYPASS-01 encountered indeterminate response or transport loss during user-creation capable dispatch (${rawOutcome.error || 'untracked user creation risk'})`
+      };
+    }
     const hasAffirmativeEvidence =
       rawOutcome.route_disabled === true ||
       rawOutcome.rejection_observed === true ||
@@ -1277,6 +1310,13 @@ export function validateProbeOutcome(item, rawOutcome) {
         passed: false,
         status,
         reason: `SECURITY_INVARIANT_VIOLATION: BYPASS-02 created user or issued tokens on disabled route (${observedTokens || 'user_created: true'})`
+      };
+    }
+    if (rawOutcome.indeterminate_user_creation === true) {
+      return {
+        passed: false,
+        status,
+        reason: `INDETERMINATE_USER_CREATION: BYPASS-02 encountered indeterminate response or transport loss during user-creation capable dispatch (${rawOutcome.error || 'untracked user creation risk'})`
       };
     }
     const hasAffirmativeEvidence =
@@ -3427,6 +3467,25 @@ export function createHostedDispatcher({
 
     switch (probeId) {
       case 'BYPASS-01': {
+        const cap = getEndpointCapabilities('BYPASS-01') || {
+          canMintSession: false,
+          canCreateUser: true,
+          canModifyProviderState: true,
+          requiresCleanupReconciliation: true
+        };
+        const op = inv?.registerInFlightOperation
+          ? inv.registerInFlightOperation({
+              probeId: 'BYPASS-01',
+              endpoint: '/auth/v1/otp',
+              canMintSession: cap.canMintSession,
+              canCreateUser: cap.canCreateUser,
+              canModifyProviderState: cap.canModifyProviderState,
+              requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
+              description: 'OTP probe dispatch (BYPASS-01)',
+              metadata: { email: testUser }
+            })
+          : null;
+
         let res;
         let transportError = null;
         try {
@@ -3451,11 +3510,26 @@ export function createHostedDispatcher({
           inv,
           ctx,
           expectedOperation: 'rejection',
-          canMintSession: false,
+          canMintSession: cap.canMintSession,
+          canCreateUser: cap.canCreateUser,
+          canModifyProviderState: cap.canModifyProviderState,
+          requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
           testUser
         });
 
+        if (op && inv?.settleInFlightOperation) {
+          inv.settleInFlightOperation(op.opId, { observed, error: transportError });
+        }
+
         const body = parseEnv?.body || null;
+        const createdUserId = observed.userId || body?.id || body?.user?.id;
+        if (inv && createdUserId) {
+          const uidStr = String(createdUserId).trim();
+          if (!inv.isUserReferenced(uidStr) && !inv.isUserCreated(uidStr)) {
+            inv.registerCreatedUser({ id: uidStr, email: testUser, source: 'BYPASS-01_unexpected_signup' });
+          }
+        }
+
         const errText = (body?.msg || body?.message || body?.error_description || body?.error || '').toLowerCase();
         const providerDisabled =
           body?.error_code === 'email_provider_disabled' ||
@@ -3463,24 +3537,32 @@ export function createHostedDispatcher({
           errText.includes('signups not allowed for otp');
 
         return {
-          passed: observed.status !== 200 && providerDisabled === true && !observed.hasTokens,
+          passed: observed.status !== 200 && !createdUserId && providerDisabled === true && !observed.hasTokens,
           status: observed.status,
           route_disabled: providerDisabled,
+          user_created: Boolean(createdUserId),
+          indeterminate_user_creation: Boolean(observed.indeterminateUserCreation),
           error_code: body?.error_code || null,
           tokens: extractObservedTokens(body) ? body : null,
-          error: body?.msg || body?.message || body?.error_description || (observed.hasTokens ? 'SECURITY_INVARIANT_VIOLATION: POST /auth/v1/otp unexpectedly issued tokens!' : null)
+          error: body?.msg || body?.message || body?.error_description || (observed.hasTokens ? 'SECURITY_INVARIANT_VIOLATION: POST /auth/v1/otp unexpectedly issued tokens!' : (createdUserId ? 'SECURITY_INVARIANT_VIOLATION: POST /auth/v1/otp unexpectedly created user!' : (observed.indeterminateUserCreation ? observed.error : null)))
         };
       }
 
       case 'BYPASS-02': {
+        const cap = getEndpointCapabilities('BYPASS-02') || {
+          canMintSession: false,
+          canCreateUser: true,
+          canModifyProviderState: true,
+          requiresCleanupReconciliation: true
+        };
         const op = inv?.registerInFlightOperation
           ? inv.registerInFlightOperation({
               probeId: 'BYPASS-02',
               endpoint: '/auth/v1/signup',
-              canMintSession: false,
-              canCreateUser: true,
-              canModifyProviderState: true,
-              requiresCleanupReconciliation: true,
+              canMintSession: cap.canMintSession,
+              canCreateUser: cap.canCreateUser,
+              canModifyProviderState: cap.canModifyProviderState,
+              requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
               description: 'Signup probe dispatch (BYPASS-02)',
               metadata: { email: testUser }
             })
@@ -3510,9 +3592,10 @@ export function createHostedDispatcher({
           inv,
           ctx,
           expectedOperation: 'rejection',
-          canMintSession: false,
-          canCreateUser: true,
-          canModifyProviderState: true,
+          canMintSession: cap.canMintSession,
+          canCreateUser: cap.canCreateUser,
+          canModifyProviderState: cap.canModifyProviderState,
+          requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
           testUser
         });
 
@@ -3523,8 +3606,11 @@ export function createHostedDispatcher({
         const body = parseEnv?.body || null;
         const errText = (body?.msg || body?.message || body?.error_description || body?.error || '').toLowerCase();
         const createdUserId = observed.userId || body?.id || body?.user?.id;
-        if (inv && createdUserId && !inv.isUserCreated(String(createdUserId).trim())) {
-          inv.registerCreatedUser({ id: String(createdUserId).trim(), email: testUser, source: 'BYPASS-02_unexpected_signup' });
+        if (inv && createdUserId) {
+          const uidStr = String(createdUserId).trim();
+          if (!inv.isUserReferenced(uidStr) && !inv.isUserCreated(uidStr)) {
+            inv.registerCreatedUser({ id: uidStr, email: testUser, source: 'BYPASS-02_unexpected_signup' });
+          }
         }
         const signupDisabled =
           body?.error_code === 'signup_disabled' ||
@@ -3539,13 +3625,27 @@ export function createHostedDispatcher({
           indeterminate_user_creation: Boolean(observed.indeterminateUserCreation),
           error_code: body?.error_code || null,
           tokens: extractObservedTokens(body) ? body : null,
-          error: body?.msg || body?.message || body?.error_description || (observed.hasTokens ? 'SECURITY_INVARIANT_VIOLATION: POST /auth/v1/signup unexpectedly issued tokens!' : null)
+          error: body?.msg || body?.message || body?.error_description || (observed.hasTokens ? 'SECURITY_INVARIANT_VIOLATION: POST /auth/v1/signup unexpectedly issued tokens!' : (createdUserId ? 'SECURITY_INVARIANT_VIOLATION: POST /auth/v1/signup unexpectedly created user!' : (observed.indeterminateUserCreation ? observed.error : null)))
         };
       }
 
       case 'BYPASS-03': {
+        const cap = getEndpointCapabilities('BYPASS-03') || {
+          canMintSession: true,
+          canCreateUser: false,
+          canModifyProviderState: true,
+          requiresCleanupReconciliation: true
+        };
         const op = inv?.registerInFlightOperation
-          ? inv.registerInFlightOperation({ probeId: 'BYPASS-03', endpoint: '/auth/v1/verify', canMintSession: true })
+          ? inv.registerInFlightOperation({
+              probeId: 'BYPASS-03',
+              endpoint: '/auth/v1/verify',
+              canMintSession: cap.canMintSession,
+              canCreateUser: cap.canCreateUser,
+              canModifyProviderState: cap.canModifyProviderState,
+              requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
+              description: 'Verify probe dispatch (BYPASS-03)'
+            })
           : null;
 
         // Direct verify with fake/unverified token returns 400 before hook execution (R3-06).
@@ -3574,7 +3674,10 @@ export function createHostedDispatcher({
           inv,
           ctx,
           expectedOperation: 'rejection',
-          canMintSession: true, // Verification challenge success issues tokens and session (R13-01)
+          canMintSession: cap.canMintSession,
+          canCreateUser: cap.canCreateUser,
+          canModifyProviderState: cap.canModifyProviderState,
+          requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
           testUser
         });
 
@@ -3643,6 +3746,25 @@ export function createHostedDispatcher({
       }
 
       case 'BYPASS-05': {
+        const cap = getEndpointCapabilities('BYPASS-05') || {
+          canMintSession: false,
+          canCreateUser: false,
+          canModifyProviderState: true,
+          requiresCleanupReconciliation: false
+        };
+        const op = inv?.registerInFlightOperation
+          ? inv.registerInFlightOperation({
+              probeId: 'BYPASS-05',
+              endpoint: '/auth/v1/recover',
+              canMintSession: cap.canMintSession,
+              canCreateUser: cap.canCreateUser,
+              canModifyProviderState: cap.canModifyProviderState,
+              requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
+              description: 'Recover probe dispatch (BYPASS-05)',
+              metadata: { email: testUser }
+            })
+          : null;
+
         let res;
         let transportError = null;
         try {
@@ -3667,9 +3789,16 @@ export function createHostedDispatcher({
           inv,
           ctx,
           expectedOperation: 'rejection',
-          canMintSession: false,
+          canMintSession: cap.canMintSession,
+          canCreateUser: cap.canCreateUser,
+          canModifyProviderState: cap.canModifyProviderState,
+          requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
           testUser
         });
+
+        if (op && inv?.settleInFlightOperation) {
+          inv.settleInFlightOperation(op.opId, { observed, error: transportError });
+        }
 
         const body = parseEnv?.body || null;
         const errText = (body?.msg || body?.message || body?.error_description || body?.error || '').toLowerCase();
@@ -3689,8 +3818,23 @@ export function createHostedDispatcher({
       }
 
       case 'HOOK-01': {
+        const cap = getEndpointCapabilities('HOOK-01') || {
+          canMintSession: true,
+          canCreateUser: false,
+          canModifyProviderState: true,
+          requiresCleanupReconciliation: true
+        };
         const op = inv?.registerInFlightOperation
-          ? inv.registerInFlightOperation({ probeId: 'HOOK-01', endpoint: '/auth/v1/token?grant_type=password', canMintSession: true })
+          ? inv.registerInFlightOperation({
+              probeId: 'HOOK-01',
+              endpoint: '/auth/v1/token?grant_type=password',
+              canMintSession: cap.canMintSession,
+              canCreateUser: cap.canCreateUser,
+              canModifyProviderState: cap.canModifyProviderState,
+              requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
+              description: 'Password token grant dispatch (HOOK-01)',
+              metadata: { email: testUser }
+            })
           : null;
 
         let res;
@@ -3717,7 +3861,10 @@ export function createHostedDispatcher({
           inv,
           ctx,
           expectedOperation: 'token_issuance',
-          canMintSession: true,
+          canMintSession: cap.canMintSession,
+          canCreateUser: cap.canCreateUser,
+          canModifyProviderState: cap.canModifyProviderState,
+          requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
           testUser
         });
 
@@ -3806,8 +3953,22 @@ export function createHostedDispatcher({
           };
         }
 
+        const cap = getEndpointCapabilities('HOOK-02') || {
+          canMintSession: true,
+          canCreateUser: false,
+          canModifyProviderState: true,
+          requiresCleanupReconciliation: true
+        };
         const op = inv?.registerInFlightOperation
-          ? inv.registerInFlightOperation({ probeId: 'HOOK-02', endpoint: '/auth/v1/token?grant_type=refresh_token', canMintSession: true })
+          ? inv.registerInFlightOperation({
+              probeId: 'HOOK-02',
+              endpoint: '/auth/v1/token?grant_type=refresh_token',
+              canMintSession: cap.canMintSession,
+              canCreateUser: cap.canCreateUser,
+              canModifyProviderState: cap.canModifyProviderState,
+              requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
+              description: 'Token refresh dispatch (HOOK-02)'
+            })
           : null;
 
         let res;
@@ -3834,7 +3995,10 @@ export function createHostedDispatcher({
           inv,
           ctx,
           expectedOperation: 'token_refresh',
-          canMintSession: true,
+          canMintSession: cap.canMintSession,
+          canCreateUser: cap.canCreateUser,
+          canModifyProviderState: cap.canModifyProviderState,
+          requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
           testUser
         });
 
@@ -4070,16 +4234,22 @@ export function createHostedDispatcher({
           }
         }
 
-        // PRE-DISPATCH IN-FLIGHT OPERATION REGISTRATION (R14-01):
+        // PRE-DISPATCH IN-FLIGHT OPERATION REGISTRATION (R14-01, R15-02):
         // Register state mutation before network dispatch. Password is never exposed in metadata.
+        const cap = getEndpointCapabilities('SESSION-02') || {
+          canMintSession: false,
+          canCreateUser: false,
+          canModifyProviderState: true,
+          requiresCleanupReconciliation: true
+        };
         const op = inv?.registerInFlightOperation
           ? inv.registerInFlightOperation({
               probeId: 'SESSION-02',
               endpoint: `/auth/v1/admin/users/${userId}`,
-              canMintSession: false,
-              canCreateUser: false,
-              canModifyProviderState: true,
-              requiresCleanupReconciliation: true,
+              canMintSession: cap.canMintSession,
+              canCreateUser: cap.canCreateUser,
+              canModifyProviderState: cap.canModifyProviderState,
+              requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
               targetUserId: String(userId),
               description: 'Admin password update dispatch (SESSION-02)',
               metadata: { userId: String(userId), email: seedEmail }
@@ -4677,8 +4847,8 @@ export async function runHostedProbeRunner(options = {}) {
 
       requestCount++;
 
-      // Register runner-level in-flight operation for probe (R13-02, R14-01, R14-02)
-      const cap = Object.values(AUTH_ENDPOINT_CAPABILITIES).find(c => c.probeId === item.id) || null;
+      // Register runner-level in-flight operation for probe (R13-02, R14-01, R14-02, R15-02)
+      const cap = getEndpointCapabilities(item.id) || null;
       const canMint = cap ? Boolean(cap.canMintSession) : ['HOOK-01', 'HOOK-02', 'BYPASS-03'].includes(item.id);
       const canCreate = cap ? Boolean(cap.canCreateUser ?? cap.canCreateUsers) : ['BYPASS-01', 'BYPASS-02'].includes(item.id);
       const canModify = cap ? Boolean(cap.canModifyProviderState) : true;
@@ -4847,11 +5017,20 @@ export function createHostedAdminClient({
         return { data: null, error: { message: 'MISSING_PASSWORD: verifyUserCredentials requires string password' } };
       }
 
+      const cap = getEndpointCapabilities('verify_credentials') || {
+        canMintSession: true,
+        canCreateUser: false,
+        canModifyProviderState: true,
+        requiresCleanupReconciliation: true
+      };
       const op = inv?.registerInFlightOperation
         ? inv.registerInFlightOperation({
             probeId: 'verify_credentials',
             endpoint: '/auth/v1/token?grant_type=password',
-            canMintSession: true,
+            canMintSession: cap.canMintSession,
+            canCreateUser: cap.canCreateUser,
+            canModifyProviderState: cap.canModifyProviderState,
+            requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
             description: 'Seed password restoration credential verification'
           })
         : null;
@@ -4885,7 +5064,10 @@ export function createHostedAdminClient({
         transportError,
         inv,
         expectedOperation: 'token_issuance',
-        canMintSession: true,
+        canMintSession: cap.canMintSession,
+        canCreateUser: cap.canCreateUser,
+        canModifyProviderState: cap.canModifyProviderState,
+        requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
         testUser: email.trim()
       });
 
