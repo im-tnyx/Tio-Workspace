@@ -4426,7 +4426,19 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: async (url, opts) => {
-      calls.push({ url, method: opts.method || 'GET' });
+      calls.push({ url, method: opts.method || 'GET', auth: opts.headers?.Authorization });
+      if (url.includes('/auth/v1/token?grant_type=password')) {
+        const verifyToken = createMockJwt({ sub: 'u-s02-test', session_id: 'sess-s02-v' });
+        return {
+          status: 200,
+          ok: true,
+          json: async () => ({
+            access_token: verifyToken,
+            session_id: 'sess-s02-v',
+            user: { id: 'u-s02-test' }
+          })
+        };
+      }
       return { status: 200, ok: true, json: async () => ({}) };
     }
   });
@@ -4434,8 +4446,8 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
   const cleanupS02 = await invSession02.executeCleanup({ adminClient: adminClientS02 });
   assert.equal(cleanupS02.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(cleanupS02.sessionsRevoked, 1);
-  // Zero logout fetch calls because session was already marked revoked!
-  assert.equal(calls.filter(c => c.url.includes('/logout')).length, 0);
+  // Zero logout fetch calls for s02SessionId/s02Token because session was already marked revoked!
+  assert.equal(calls.filter(c => c.url.includes('/logout') && c.auth?.includes(s02Token)).length, 0);
 
   // 3. Idempotent cleanup execution:
   // First run revokes session; second run on same inventory is cleanly idempotent
@@ -5464,4 +5476,480 @@ test('81. Task 06I-B1-H1-R10 (R10-02): Exact identity binding, seed user correla
   const repIndetCleanup = await invIndet.executeCleanup({ adminClient: adminClientVerified });
   assert.equal(repIndetCleanup.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(verifiedEmailUsed, customSeedEmail, 'Cleanup credential verification MUST use the exact custom seed identity, not default');
+});
+
+test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty, and indeterminate verification responses', async () => {
+  const seedUserId = 'u-r11-seed-test';
+  const seedEmail = 'r11-seed@proof.invalid';
+  const seedPassword = 'TioSeedPassword2026!';
+  const realSessId = 'sess-r11-real-01';
+  const validToken = createMockJwt({ sub: seedUserId, session_id: realSessId });
+
+  // 1. HTTP 200 with valid JSON, real access token, and session ID -> verified: true, session revoked
+  const inv1 = new TestRunInventory('test-r11-case1');
+  const logoutCalls1 = [];
+  const client1 = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async (url, opts) => {
+      if (url.includes('/auth/v1/token?grant_type=password')) {
+        return {
+          status: 200,
+          ok: true,
+          json: async () => ({
+            access_token: validToken,
+            session_id: realSessId,
+            user: { id: seedUserId }
+          })
+        };
+      }
+      if (url.includes('/auth/v1/logout')) {
+        logoutCalls1.push({ url, auth: opts.headers?.Authorization });
+        return { status: 200, ok: true, json: async () => ({}) };
+      }
+      return { status: 200, ok: true, json: async () => ({}) };
+    }
+  });
+
+  const res1 = await client1.verifyUserCredentials(seedEmail, seedPassword, { inventory: inv1 });
+  assert.equal(res1.error, null);
+  assert.equal(res1.data?.verified, true);
+  assert.equal(res1.data?.userId, seedUserId);
+  assert.equal(res1.data?.sessionId, realSessId);
+  assert.equal(logoutCalls1.length, 1);
+  assert.equal(inv1.isSessionRevoked(realSessId), true, 'Verification session must be revoked immediately');
+
+  // 2. HTTP 200 with truncated JSON -> SyntaxError -> UNREADABLE_RESPONSE, indeterminateSession: true
+  const inv2 = new TestRunInventory('test-r11-case2');
+  const client2 = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async () => ({
+      status: 200,
+      ok: true,
+      json: async () => {
+        throw new SyntaxError('Unexpected end of JSON input');
+      }
+    })
+  });
+
+  const res2 = await client2.verifyUserCredentials(seedEmail, seedPassword, { inventory: inv2 });
+  assert.equal(res2.data, null);
+  assert.ok(res2.error);
+  assert.equal(res2.error.code, 'UNREADABLE_RESPONSE');
+  assert.equal(res2.sessionRevocationFailed, true);
+  assert.equal(res2.indeterminateSession, true);
+  assert.equal(inv2.untrackedSessionsCount, 1, 'Client-side parse failure must register untracked session risk');
+  assert.equal(res2.error.token, undefined, 'Raw token must never appear in error object');
+
+  // 3. HTTP 200 with unreadable/non-JSON body (e.g. HTML gateway page)
+  const inv3 = new TestRunInventory('test-r11-case3');
+  const client3 = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async () => ({
+      status: 200,
+      ok: true,
+      json: async () => {
+        throw new SyntaxError("Unexpected token '<', <html>502... is not valid JSON");
+      }
+    })
+  });
+
+  const res3 = await client3.verifyUserCredentials(seedEmail, seedPassword, { inventory: inv3 });
+  assert.equal(res3.data, null);
+  assert.equal(res3.error?.code, 'UNREADABLE_RESPONSE');
+  assert.equal(res3.indeterminateSession, true);
+  assert.equal(inv3.untrackedSessionsCount, 1);
+
+  // 4. HTTP 200 with empty {} body -> MISSING_ACCESS_TOKEN, indeterminateSession: true
+  const inv4 = new TestRunInventory('test-r11-case4');
+  const client4 = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async () => ({
+      status: 200,
+      ok: true,
+      json: async () => ({})
+    })
+  });
+
+  const res4 = await client4.verifyUserCredentials(seedEmail, seedPassword, { inventory: inv4 });
+  assert.equal(res4.data, null);
+  assert.equal(res4.error?.code, 'MISSING_ACCESS_TOKEN');
+  assert.equal(res4.sessionRevocationFailed, true);
+  assert.equal(res4.indeterminateSession, true);
+  assert.equal(inv4.untrackedSessionsCount, 1);
+
+  // 5. HTTP 200 with missing access_token (e.g. { user: { id: ... } })
+  const inv5 = new TestRunInventory('test-r11-case5');
+  const client5 = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async () => ({
+      status: 200,
+      ok: true,
+      json: async () => ({ user: { id: seedUserId } })
+    })
+  });
+
+  const res5 = await client5.verifyUserCredentials(seedEmail, seedPassword, { inventory: inv5 });
+  assert.equal(res5.data, null);
+  assert.equal(res5.error?.code, 'MISSING_ACCESS_TOKEN');
+  assert.equal(res5.indeterminateSession, true);
+
+  // 6. HTTP 200 with malformed token (whitespace only or non-string)
+  const inv6 = new TestRunInventory('test-r11-case6');
+  const client6 = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async () => ({
+      status: 200,
+      ok: true,
+      json: async () => ({ access_token: '   ', user: { id: seedUserId } })
+    })
+  });
+
+  const res6 = await client6.verifyUserCredentials(seedEmail, seedPassword, { inventory: inv6 });
+  assert.equal(res6.data, null);
+  assert.equal(res6.error?.code, 'MISSING_ACCESS_TOKEN');
+  assert.equal(res6.indeterminateSession, true);
+
+  // 7. HTTP 200 with token but no extractable session identity
+  const inv7 = new TestRunInventory('test-r11-case7');
+  const opaqueToken = 'opaque_provider_token_without_claims_or_periods';
+  const client7 = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async () => ({
+      status: 200,
+      ok: true,
+      json: async () => ({ access_token: opaqueToken, user: { id: seedUserId } })
+    })
+  });
+
+  const res7 = await client7.verifyUserCredentials(seedEmail, seedPassword, { inventory: inv7 });
+  assert.equal(res7.data, null);
+  assert.equal(res7.error?.code, 'UNTRACKED_SESSION');
+  assert.equal(res7.sessionRevocationFailed, true);
+  assert.equal(res7.indeterminateSession, true);
+  assert.equal(inv7.untrackedSessionsCount, 1);
+
+  // 8. HTTP 200 where server-side minting occurred but response is lost (network drop / timeout during fetch)
+  const client8 = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async () => {
+      throw new Error('ECONNRESET: Connection reset by peer');
+    }
+  });
+
+  const res8 = await client8.verifyUserCredentials(seedEmail, seedPassword);
+  assert.equal(res8.data, null);
+  assert.ok(res8.error?.message.includes('VERIFICATION_NETWORK_ERROR'));
+
+  // 9. Transport exception after request dispatch fails closed
+  const client9 = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async () => {
+      throw new Error('ETIMEDOUT: Socket connect timeout');
+    }
+  });
+
+  const res9 = await client9.verifyUserCredentials(seedEmail, seedPassword);
+  assert.equal(res9.data, null);
+  assert.ok(res9.error?.message.includes('ETIMEDOUT'));
+
+  // 10. HTTP 500 with uncertain mutation/session state fails closed
+  const client10 = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async () => ({
+      status: 500,
+      ok: false,
+      json: async () => ({ code: 'internal_error', message: 'Internal Server Error' })
+    })
+  });
+
+  const res10 = await client10.verifyUserCredentials(seedEmail, seedPassword);
+  assert.equal(res10.data, null);
+  assert.equal(res10.error?.status, 500);
+
+  // 11. Session logout succeeds and is verified (confirmed in item 1)
+
+  // 12. Logout returns HTTP 503 during verification
+  const inv12 = new TestRunInventory('test-r11-case12');
+  const sess12 = 'sess-r11-logout-503';
+  const token12 = createMockJwt({ sub: seedUserId, session_id: sess12 });
+  const client12 = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async (url) => {
+      if (url.includes('/auth/v1/token?grant_type=password')) {
+        return {
+          status: 200,
+          ok: true,
+          json: async () => ({ access_token: token12, session_id: sess12 })
+        };
+      }
+      if (url.includes('/auth/v1/logout')) {
+        return {
+          status: 503,
+          ok: false,
+          json: async () => ({ code: 'service_unavailable', message: 'Service Unavailable' })
+        };
+      }
+      return { status: 200, ok: true, json: async () => ({}) };
+    }
+  });
+
+  const res12 = await client12.verifyUserCredentials(seedEmail, seedPassword, { inventory: inv12 });
+  assert.equal(res12.data, null);
+  assert.equal(res12.sessionRevocationFailed, true);
+  assert.equal(res12.error?.code, 'LOGOUT_FAILED');
+  assert.equal(res12.error?.sessionId, sess12);
+  assert.equal(res12.error?.token, undefined);
+
+  // 13. Logout throws or times out during verification
+  const inv13 = new TestRunInventory('test-r11-case13');
+  const sess13 = 'sess-r11-logout-throw';
+  const token13 = createMockJwt({ sub: seedUserId, session_id: sess13 });
+  const client13 = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async (url) => {
+      if (url.includes('/auth/v1/token?grant_type=password')) {
+        return {
+          status: 200,
+          ok: true,
+          json: async () => ({ access_token: token13, session_id: sess13 })
+        };
+      }
+      if (url.includes('/auth/v1/logout')) {
+        throw new Error('ETIMEDOUT: Sign-out gateway timeout');
+      }
+      return { status: 200, ok: true, json: async () => ({}) };
+    }
+  });
+
+  const res13 = await client13.verifyUserCredentials(seedEmail, seedPassword, { inventory: inv13 });
+  assert.equal(res13.data, null);
+  assert.equal(res13.sessionRevocationFailed, true);
+  assert.equal(res13.error?.code, 'LOGOUT_EXCEPTION');
+  assert.equal(res13.error?.sessionId, sess13);
+  assert.equal(res13.error?.token, undefined);
+
+  // 14. Residual-session uncertainty blocks cleanup (executeCleanup fails closed on indeterminate session)
+  const inv14 = new TestRunInventory('test-r11-case14');
+  inv14.trackReferencedUser({ id: seedUserId, email: seedEmail, source: 'seed' });
+  inv14.registerSeedPasswordModification({
+    userId: seedUserId,
+    email: seedEmail,
+    originalPassword: seedPassword,
+    state: 'confirmed'
+  });
+
+  let deleteUserCalls14 = 0;
+  const adminClient14 = {
+    getUserById: async () => ({ data: { user: { id: seedUserId } }, error: null }),
+    deleteUser: async () => {
+      deleteUserCalls14++;
+      return { data: null, error: null };
+    },
+    signOut: async () => ({ data: null, error: null }),
+    updateUserById: async () => ({ data: { user: { id: seedUserId } }, error: null }),
+    // verifyUserCredentials returns indeterminate response (unreadable/truncated JSON simulation)
+    verifyUserCredentials: async (email, pass, opts = {}) => {
+      opts.inventory?.registerUntrackedSession();
+      return {
+        data: null,
+        error: {
+          message: 'INDETERMINATE_VERIFICATION_RESPONSE: Verification login returned HTTP 200 but response body was unreadable or malformed JSON (R11-01)',
+          code: 'UNREADABLE_RESPONSE',
+          status: 200
+        },
+        sessionRevocationFailed: true,
+        indeterminateSession: true
+      };
+    }
+  };
+
+  const rep14 = await inv14.executeCleanup({ adminClient: adminClient14, failClosed: false });
+  assert.equal(rep14.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.notEqual(rep14.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(inv14.seedCredentialRestorations[0].state, 'restoration_failed');
+  assert.ok(rep14.residualResources.some(r => r.type === 'untracked_session' && r.error.includes('INDETERMINATE_SESSION_LEAK')));
+  assert.ok(rep14.residualResources.some(r => r.type === 'seed_credential_restoration' && r.error.includes('RESTORE_VERIFICATION_INDETERMINATE')));
+
+  // failClosed: true throws CLEANUP_INCOMPLETE
+  await assert.rejects(
+    inv14.executeCleanup({ adminClient: adminClient14, failClosed: true }),
+    /CLEANUP_INCOMPLETE/
+  );
+
+  // 15. A verification login never deletes the pre-existing seed user
+  assert.equal(deleteUserCalls14, 0, 'Seed user must NEVER be deleted during cleanup or verification failure');
+  assert.equal(inv14.referencedUsers.has(seedUserId), true, 'Seed user must remain preserved in referencedUsers inventory');
+
+  // 16. Sanitized reports never contain raw tokens or passwords
+  const report14Str = JSON.stringify(rep14);
+  assert.equal(report14Str.includes(validToken), false, 'Report must not contain validToken');
+  assert.equal(report14Str.includes(seedPassword), false, 'Report must not contain seedPassword');
+  assert.equal(report14Str.includes(validTestServiceRoleKey), false, 'Report must not contain serviceRoleKey');
+});
+
+test('83. Task 06I-B1-H1-R11 (R11-02): Secret boundary enforcement, private cleanup token storage, and fail-closed residual reporting', async () => {
+  const seedUserId = 'u-r11-sec-seed';
+  const seedEmail = 'r11-sec-seed@proof.invalid';
+  const secretPassword = 'UltraSecretPassword#2026!';
+  const secretSessionId = 'sess-r11-sec-01';
+  const secretUserToken = createMockJwt({ sub: seedUserId, session_id: secretSessionId });
+
+  // 1. Error objects from verifyUserCredentials never contain a token property or raw secret
+  const invSec = new TestRunInventory('test-r11-sec-inv');
+  const failureShapes = [
+    // a) Parse error
+    { status: 200, json: async () => { throw new SyntaxError('bad json'); } },
+    // b) Non-object structure
+    { status: 200, json: async () => 'string-body' },
+    // c) Missing access_token
+    { status: 200, json: async () => ({ user: { id: seedUserId } }) },
+    // d) Missing session identity in token
+    { status: 200, json: async () => ({ access_token: 'opaque-token-no-claims' }) }
+  ];
+
+  for (const shape of failureShapes) {
+    const client = createHostedAdminClient({
+      serviceRoleKey: validTestServiceRoleKey,
+      projectRef: HARDCODED_TEMP_REF,
+      fetchFn: async () => ({ status: shape.status, ok: true, json: shape.json })
+    });
+    const res = await client.verifyUserCredentials(seedEmail, secretPassword, { inventory: invSec });
+    assert.ok(res.error, 'Must return error object');
+    assert.equal(res.error.token, undefined, 'Error object must never contain a token property');
+    const errStr = JSON.stringify(res.error);
+    assert.equal(errStr.includes(secretUserToken), false, 'Error object JSON must not leak user token');
+    assert.equal(errStr.includes(secretPassword), false, 'Error object JSON must not leak password');
+    assert.equal(errStr.includes(validTestServiceRoleKey), false, 'Error object JSON must not leak service role key');
+  }
+
+  // 2. Error objects from signOut never contain a token property or raw secret
+  const clientSignOutFail = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async () => ({
+      status: 500,
+      ok: false,
+      json: async () => ({ error_code: 'server_error', msg: 'Logout gateway down' })
+    })
+  });
+
+  const signOutRes = await clientSignOutFail.signOut(secretUserToken);
+  assert.ok(signOutRes.error);
+  assert.equal(signOutRes.error.token, undefined, 'signOut error must never contain token');
+  assert.equal(JSON.stringify(signOutRes.error).includes(secretUserToken), false, 'signOut error must not contain secret token');
+
+  // 3. Private inventory token map preserves token context for cleanup retry without leaking to { error }
+  const invRetry = new TestRunInventory('test-r11-sec-retry');
+  invRetry.trackReferencedUser({ id: seedUserId, email: seedEmail, source: 'seed' });
+  invRetry.registerSeedPasswordModification({
+    userId: seedUserId,
+    email: seedEmail,
+    originalPassword: secretPassword,
+    state: 'confirmed'
+  });
+
+  // Verification login succeeds but initial signOut fails
+  let initialSignOutAttempted = false;
+  let retrySignOutAttempted = false;
+  let retryAuthHeader = null;
+
+  const adminClientRetry = {
+    getUserById: async () => ({ data: { user: { id: seedUserId } }, error: null }),
+    deleteUser: async () => ({ data: null, error: null }),
+    updateUserById: async () => ({ data: { user: { id: seedUserId } }, error: null }),
+    verifyUserCredentials: async (email, pass, opts = {}) => {
+      // Register session privately in inventory
+      opts.inventory?.registerSession(secretSessionId, { accessToken: secretUserToken, source: 'verify_credentials' });
+      initialSignOutAttempted = true;
+      // Simulate initial signOut failure
+      return {
+        data: null,
+        error: {
+          message: 'VERIFICATION_SESSION_REVOCATION_FAILED: signOut failed: HTTP 503 Service Unavailable',
+          code: 'LOGOUT_FAILED',
+          sessionId: secretSessionId,
+          status: 503
+          // Notice: NO token in error!
+        },
+        sessionRevocationFailed: true
+      };
+    },
+    signOut: async (token, scope) => {
+      retrySignOutAttempted = true;
+      retryAuthHeader = token;
+      // Successful retry revocation
+      return { data: { scope }, error: null };
+    }
+  };
+
+  const repRetry = await invRetry.executeCleanup({ adminClient: adminClientRetry, failClosed: false });
+  assert.equal(initialSignOutAttempted, true, 'Initial verification signOut should be attempted');
+  assert.equal(retrySignOutAttempted, true, 'Cleanup fallback retry should use privately retrieved token');
+  assert.equal(retryAuthHeader, secretUserToken, 'Fallback retry must use the privately stored token from inventory');
+  assert.equal(repRetry.status, 'CLEANUP_VERIFIED_SUCCESS', 'Successful retry cleanup must result in CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(invRetry.isSessionRevoked(secretSessionId), true, 'Session must be marked revoked after retry');
+
+  // 4. Failed cleanup leaves passwords preserved in inventory (clearCredentials() is skipped) for admin remediation
+  const invFail = new TestRunInventory('test-r11-sec-fail');
+  invFail.trackReferencedUser({ id: seedUserId, email: seedEmail, source: 'seed' });
+  invFail.registerSeedPasswordModification({
+    userId: seedUserId,
+    email: seedEmail,
+    originalPassword: secretPassword,
+    state: 'confirmed'
+  });
+
+  const adminClientFail = {
+    getUserById: async () => ({ data: { user: { id: seedUserId } }, error: null }),
+    deleteUser: async () => ({ data: null, error: null }),
+    updateUserById: async () => ({ data: null, error: { message: 'Database down' } })
+  };
+
+  const repFail = await invFail.executeCleanup({ adminClient: adminClientFail, failClosed: false });
+  assert.equal(repFail.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  // Passwords MUST remain preserved for emergency admin recovery
+  assert.equal(invFail.seedCredentialRestorations[0].originalPassword, secretPassword, 'Failed cleanup must preserve original password in inventory');
+
+  // Residual resources report must not leak secrets
+  const repFailStr = JSON.stringify(repFail);
+  assert.equal(repFailStr.includes(secretPassword), false, 'Cleanup report must never serialize original password');
+  assert.equal(repFailStr.includes(validTestServiceRoleKey), false, 'Cleanup report must never serialize serviceRoleKey');
+
+  // 5. Successful cleanup sanitizes passwords (clearCredentials() sets '[CLEARED]')
+  const invSuccess = new TestRunInventory('test-r11-sec-succ');
+  invSuccess.trackReferencedUser({ id: seedUserId, email: seedEmail, source: 'seed' });
+  invSuccess.registerSeedPasswordModification({
+    userId: seedUserId,
+    email: seedEmail,
+    originalPassword: secretPassword,
+    targetPassword: 'TempPassword123!',
+    state: 'confirmed'
+  });
+
+  const adminClientSuccess = {
+    getUserById: async () => ({ data: { user: { id: seedUserId } }, error: null }),
+    deleteUser: async () => ({ data: null, error: null }),
+    updateUserById: async () => ({ data: { user: { id: seedUserId } }, error: null }),
+    verifyUserCredentials: async () => ({
+      data: { verified: true, userId: seedUserId, sessionId: 'sess-succ' },
+      error: null
+    })
+  };
+
+  const repSuccess = await invSuccess.executeCleanup({ adminClient: adminClientSuccess, failClosed: false });
+  assert.equal(repSuccess.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(invSuccess.seedCredentialRestorations[0].originalPassword, '[CLEARED]', 'Successful cleanup must clear original password');
+  assert.equal(invSuccess.seedCredentialRestorations[0].targetPassword, '[CLEARED]', 'Successful cleanup must clear target password');
 });

@@ -1,14 +1,14 @@
-# Phase 1.2 Task 06I-B1-H1-R10 — Verification Session Cleanup & Identity Binding Closure
+# Phase 1.2 Task 06I-B1-H1-R11 — Indeterminate Verification Response & Residual Session Closure
 
-> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R10. All outstanding review findings across PR #37 (including Codex P2 findings `PRRT_kwDOVtCmZc66tPnu` and `PRRT_kwDOVtCmZc66tPnx`) are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
+> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R11. All outstanding review findings across PR #37 (including Codex P2 finding `PRRT_kwDOVtCmZc66tz_m` and R11-02 secret boundary requirements) are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **LOCAL REMEDIATION COMPLETE (REVISION R10); ALL REVIEW FINDINGS RESOLVED (R10-01 CODEX P2: VERIFICATION SESSION REGISTERED IN INVENTORY IMMEDIATELY UPON ISSUANCE, `signOut` EXCEPTIONS AND `{ error }` ENVELOPES HANDLED WITHOUT SWALLOWING, FALLBACK CLEANUP RETRY, FAIL-CLOSED RESIDUAL SESSION REPORTING ON REVOCATION FAILURE, CLEANUP FAILURE OVERRIDES PASSWORD RESTORATION VERIFICATION SUCCESS; R10-02 CODEX P2: EXACT IDENTITY CORRELATION BETWEEN TARGET USER AND EMAIL, CUSTOM SEED EMAIL PROPAGATION FROM PLAN/ITEM, CROSS-USER BINDING CONFLICT REJECTION, CASE-INSENSITIVE COMPARISON, MISMATCH REJECTION IN `SESSION-02` AND CLEANUP); 85/85 RUNNER TESTS PASS; 153/153 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; GITHUB CI STATUS: 4/4 CHECKS PASS ON PREVIOUS HEAD; DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
-| Objective | Remediate Codex P2 review findings `PRRT_kwDOVtCmZc66tPnu` (R10-01: verification session logout failure must block cleanup) and `PRRT_kwDOVtCmZc66tPnx` (R10-02: bind restoration verification to actual seed identity) on PR #37 without executing any live hosted mutations. |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R10 slice |
-| Previous agent | Agent / Task 06I-B1-H1-R9 author |
-| Last audited HEAD | `b094f4afb216baa38cf0529af41b83671146d3aa` (PR #37 previous commit) |
+| Status | **LOCAL REMEDIATION COMPLETE (REVISION R11); ALL REVIEW FINDINGS RESOLVED (R11-01 CODEX P2: REJECTION OF UNREADABLE/TRUNCATED/MALFORMED/EMPTY/NO-TOKEN VERIFICATION RESPONSES INSTEAD OF ASSUMING ZERO SESSIONS, INDETERMINATE SESSION DETECTION, IMMEDIATE UNTRACKED SESSION INVENTORY REGISTRATION, FAIL-CLOSED RESIDUAL RESOURCE REPORTING BLOCKING CLEANUP_VERIFIED_SUCCESS; R11-02 SECRET BOUNDARY & REDACTION: TOKEN STRIPPED FROM RETURNED ERROR OBJECTS, SENSITIVE TOKENS ISOLATED IN PRIVATE RUN-SCOPED INVENTORY CONTEXT FOR CLEANUP RETRY, PASSWORDS PRESERVED ON CLEANUP FAILURE FOR ADMIN REMEDIATION AND CLEARED ONLY ON VERIFIED SUCCESS); 87/87 RUNNER TESTS PASS; 155/155 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; GITHUB CI STATUS: 4/4 CHECKS PASS ON PREVIOUS HEAD; DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
+| Objective | Remediate Codex P2 review finding `PRRT_kwDOVtCmZc66tz_m` (R11-01: reject unreadable verification responses instead of assuming zero sessions) and R11-02 (secret boundary & credential isolation) on PR #37 without executing any live hosted mutations. |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R11 slice |
+| Previous agent | Agent / Task 06I-B1-H1-R10 author |
+| Last audited HEAD | `2fd50c9bde6ba55c49c070f142018a721e5d44a8` (PR #37 previous commit) |
 | Tracking / approval | Task 06I-B1-H1-R10 remediation authorized by user prompt; LIVE hosted probe execution requires separate explicit owner authorization; mandates $0 cost ceiling and permanent immunity for `Tio-world` (`oykupyiitspujzpwwvuj`) and REAL `bsfwzvgynwriswapxpsp` |
 | Branch | `test/task06i-b1-h1-hosted-security-preflight` |
 | Base SHA / inspected HEAD | `716fb32061ffb6012d17eae9453c822a281fe6f1` (`main`) |
@@ -447,6 +447,58 @@ In accordance with findings R3-01, R3-02, R3-05, and R3-06, each probe case is s
      - Only cleared credentials in `finally` when cleanup verified complete success (`cleanupReport.status === 'CLEANUP_VERIFIED_SUCCESS'`).
   5. Added Test 81 validating custom seed identity propagation, mismatch rejection before mutation, cross-user conflict rejection, case-insensitive comparison, indeterminate state preservation, and exact bound email verification in cleanup.
 
+### 7.11 Revision R11 Remediation (Indeterminate Verification Response & Residual Session Closure)
+
+- **R11-01 — Fix Unreadable Verification Response False Success (Codex P2, `PRRT_kwDOVtCmZc66tz_m`):**
+  1. In `createHostedAdminClient.verifyUserCredentials(email, password, options = {})`:
+     - Eliminated the unsafe no-token success fallback (`if (!token) return { data: { verified: true }, error: null }`).
+     - Wrapped `res.json()` in strict try/catch on HTTP 200. If JSON parsing fails (unreadable, malformed, or truncated JSON), returns `{ data: null, error: { message: 'INDETERMINATE_VERIFICATION_RESPONSE...', code: 'UNREADABLE_RESPONSE', status: 200 }, sessionRevocationFailed: true, indeterminateSession: true }`.
+     - Calls `inv?.registerUntrackedSession()` to register an untracked session risk immediately.
+     - Enforces that parsed JSON body is a non-null object (`code: 'INVALID_RESPONSE_STRUCTURE'`).
+     - Rejects missing, empty, or whitespace-only `access_token` (`code: 'MISSING_ACCESS_TOKEN'`, `indeterminateSession: true`, `inv?.registerUntrackedSession()`).
+     - Extracts session ID from payload (`data.session_id`, `data.session?.id`) or JWT claims (`payload.session_id`). If token exists but session ID cannot be extracted, fails closed with `code: 'UNTRACKED_SESSION'`, `indeterminateSession: true`, and registers untracked session in inventory.
+     - When session ID and token are valid, registers session immediately in inventory (`inv.registerSession(sessionId, { accessToken: token, source: 'verify_credentials' })`).
+     - Calls `this.signOut(token, 'local')` immediately to revoke the verification session.
+  2. In `TestRunInventory.executeCleanup`:
+     - Differentiates `isRevocationFail` from `isIndeterminate`.
+     - If `verifyRes.indeterminateSession` is true, marks `item.state = 'restoration_failed'` and pushes residual resources:
+       - `{ type: 'seed_credential_restoration', userId: item.userId, error: 'RESTORE_VERIFICATION_INDETERMINATE...' }`
+       - `{ type: 'untracked_session', id: 'indeterminate_verification_session', error: 'INDETERMINATE_SESSION_LEAK...' }`
+     - Residual indeterminate session obligations block cleanup: `report.status = 'CLEANUP_FAILED_RESIDUAL_RESOURCES'`. Never reports `CLEANUP_VERIFIED_SUCCESS` when indeterminate session remains.
+     - With `failClosed: true` (default), throws `CLEANUP_INCOMPLETE`.
+     - Pre-existing seed user is never deleted (`this.referencedUsers` preserved).
+  3. Added Test 82 covering the full matrix of verification response shapes (valid token, truncated JSON, non-JSON body, empty `{}`, missing token, malformed token, missing session ID, network drop, HTTP 500, logout HTTP 503, logout throw, residual-session uncertainty blocking cleanup, seed user preservation, and secret redaction in reports).
+
+- **R11-02 — Secure Cleanup Error & Credential Boundaries:**
+  1. Stripped `token` property from all returned error objects in `verifyUserCredentials` and `signOut`.
+  2. Isolated sensitive tokens in private run-scoped inventory context (`this.sessionTokens.set(sessionId, accessToken)`).
+  3. In `executeCleanup`, retrieved `leakToken` privately via `this.getSessionToken(leakSessId)` for the fallback cleanup retry, preventing raw token values from appearing in externally visible `{ error }` shapes or logs.
+  4. Preserved original passwords in `item.originalPassword` on cleanup failure (skipping `clearCredentials()`) so that emergency admin remediation remains possible.
+  5. Only sanitized credentials (`this.clearCredentials()` sets `'[CLEARED]'`) on confirmed `CLEANUP_VERIFIED_SUCCESS`.
+  6. Added Test 83 validating secret boundary enforcement across error objects, `signOut` failures, private inventory token map usage, failed cleanup password preservation, and successful cleanup password clearing.
+
+### 7.12 Holistic Lifecycle Gap Register
+
+End-to-end audit across the Auth lifecycle (`Auth response → minted-session observation → JWT validation → inventory → password mutation → credential restoration → verification login → session revocation → cleanup → final status`):
+
+| Category | Item / Lifecycle Step | Description & Resolution / Bound |
+|---|---|---|
+| **Confirmed Defects Fixed in R11** | Unreadable verification response false success | `verifyUserCredentials` previously caught parse failures and returned false `verified: true`. Fixed: strictly requires readable JSON, non-blank access token, and extractable session ID; parse failures return `INDETERMINATE_VERIFICATION_RESPONSE` and register untracked session risk. |
+| **Confirmed Defects Fixed in R11** | Indeterminate verification session cleanup bypass | Verification login could mint a session that the client cannot read/revoke. Fixed: `executeCleanup` records `INDETERMINATE_SESSION_LEAK` residual resource, marks restoration failed, and fails closed (`CLEANUP_FAILED_RESIDUAL_RESOURCES`). |
+| **Confirmed Defects Fixed in R11** | Secret boundary & raw token in error object | R10 attached `token: ...` to error objects. Fixed: raw tokens stripped from all error shapes; tokens stored privately in `inv.sessionTokens` and retrieved via `inv.getSessionToken()`. Passwords preserved on failure for admin recovery, cleared only on verified success. |
+| **Unsupported Provider Operations** | Admin session-by-ID deletion | GoTrue lacks an admin session-by-ID deletion endpoint (`DELETE /auth/v1/admin/sessions/:id`). Session invalidation strictly requires access token context via `POST /auth/v1/logout?scope=local`. Probes without token context fail closed. |
+| **Unsupported Provider Operations** | Synchronous password revocation broadcast | Admin password update (`PUT /auth/v1/admin/users/:id`) does not emit a structured revocation guarantee across all consumers without affirmative `/auth/v1/user` probe. `SESSION-02` requires explicit post-reset probe proving `session_not_found`. |
+| **Testbed Provisioning Prerequisites** | Management API PATCH | Hosted TEMP project `wvdabiwbaavfggcmpizd` requires Management API PATCH to disable native signup (`DISABLE_SIGNUP: true`) and external providers before running `BYPASS-01` and `BYPASS-02`. |
+| **Testbed Provisioning Prerequisites** | SQL Hook Deployment | `experiments/task06i/sql/hooks.sql` must be deployed on TEMP to enable Custom Access Token Hook (`private_auth.custom_access_token_hook`) and Send Email Hook (`private_auth.send_email_hook`). |
+| **Testbed Provisioning Prerequisites** | Storage Probe Fixture | Storage bucket `task06i_probe_bucket` and probe object `probe.txt` must be provisioned before `SESSION-05` can verify bounded stateless JWT linger. |
+| **Testbed Provisioning Prerequisites** | Seed User Provisioning | Seed user with known initial password must be provisioned in TEMP before `SESSION-02` can test password mutation and credential restoration. |
+| **Hosted-Only Verification Requirements** | Provider-observed `session_not_found` | Proof of remote session invalidation in `SESSION-03` and `SESSION-06` requires live HTTP dispatch to observe GoTrue's exact error code `session_not_found`. |
+| **Hosted-Only Verification Requirements** | Custom Access Token Hook execution | Proof of hook claims injection (`amr_authenticated: true`, `app_metadata.amr`) requires live GoTrue token minting against deployed PostgreSQL hook. |
+| **Hosted-Only Verification Requirements** | Storage JWT stateless linger observation | Proof that Storage accepts valid unexpired JWTs (lifetime <= 300s) requires live HTTP GET against Storage endpoint. |
+| **Residual Risks (Not Provable Offline)** | Server-side minting with transport loss | If HTTP connection drops after GoTrue mints a session but before response arrives, client cannot know session ID; fails closed with untracked session risk. |
+| **Residual Risks (Not Provable Offline)** | Edge clock skew & stateless linger TTL | Minor clock skew across distributed edge nodes could theoretically affect stateless JWT expiry boundaries (mitigated by 300s hard cap). |
+| **Residual Risks (Not Provable Offline)** | Brevo external SMTP delivery | Brevo sending readiness requires authenticated domain; blocked until custom domain DNS records are configured. |
+
 ---
 
 ## 8. Verification Evidence Matrix
@@ -455,10 +507,10 @@ All verification checks were run locally and passed completely:
 
 ```bash
 node --test experiments/task06i/hosted-probe-runner.test.mjs
-# 85 passed, 0 failed, exit code 0
+# 87 passed, 0 failed, exit code 0 (including Tests 82 and 83)
 
 node --test experiments/task06i/*.test.mjs
-# 153 passed, 0 failed, exit code 0
+# 155 passed, 0 failed, exit code 0
 
 node experiments/task06i/sql-contract-parity.mjs
 # Status: POSTGRES_VERIFIED, 18/18 matched parity, exit code 0
@@ -477,7 +529,7 @@ git diff --check origin/main...HEAD
 
 ## 9. GitHub CI Status
 
-- **Status:** **4/4 CHECKS PASS** on remote commit `b094f4afb216baa38cf0529af41b83671146d3aa`:
+- **Status:** **4/4 CHECKS PASS** on remote commit `2fd50c9bde6ba55c49c070f142018a721e5d44a8`:
   1. `Attribution guard runner`: **PASS**
   2. `Commit attribution fixture tests`: **PASS**
   3. `Commit attribution guard` (App-owned required check ID `5032971`): **PASS**
@@ -498,7 +550,7 @@ git diff --check origin/main...HEAD
   - Project deletion perform nahi hua hai.
 
 **Readiness State:**
-- **Code readiness:** READY (Revision R10)
+- **Code readiness:** READY (Revision R11)
 - **GitHub CI:** PASS (4/4 on remote HEAD)
 - **Independent review:** PENDING (`im-tio`)
 - **Hosted testing:** NOT_AUTHORIZED
@@ -506,4 +558,4 @@ git diff --check origin/main...HEAD
 
 **Decision:** **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**
 
-> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all outstanding review findings (including Codex P2 findings `PRRT_kwDOVtCmZc66tPnu` and `PRRT_kwDOVtCmZc66tPnx`) is complete and fully covered by offline regression tests (85/85 runner tests, 153/153 task06i tests pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution. Awaiting independent re-review from `im-tio`.
+> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all outstanding review findings (including Codex P2 finding `PRRT_kwDOVtCmZc66tz_m` and R11-02 secret boundary requirements) is complete and fully covered by offline regression tests (87/87 runner tests, 155/155 task06i tests pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution. Awaiting independent re-review from `im-tio`.

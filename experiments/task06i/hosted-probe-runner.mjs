@@ -1976,14 +1976,18 @@ export class TestRunInventory {
                 }
 
                 if (verifyRes && verifyRes.error) {
-                  const isRevocationFail = verifyRes.sessionRevocationFailed || (typeof verifyRes.error.message === 'string' && verifyRes.error.message.includes('VERIFICATION_SESSION_REVOCATION_FAILED'));
+                  const isRevocationFail = verifyRes.sessionRevocationFailed ||
+                    (typeof verifyRes.error.message === 'string' && verifyRes.error.message.includes('VERIFICATION_SESSION_REVOCATION_FAILED'));
+                  const isIndeterminate = verifyRes.indeterminateSession ||
+                    (typeof verifyRes.error.message === 'string' && verifyRes.error.message.includes('INDETERMINATE_VERIFICATION_RESPONSE'));
 
-                  if (isRevocationFail) {
-                    const leakToken = verifyRes.error?.token;
-                    const leakSessId = verifyRes.error?.sessionId || 'verification_session';
+                  if (isRevocationFail && !isIndeterminate) {
+                    const leakSessId = verifyRes.error?.sessionId || null;
+                    // Retrieve token from private inventory store (R11-02: secret boundary)
+                    const leakToken = leakSessId ? this.getSessionToken(leakSessId) : null;
                     let retrySucceeded = false;
 
-                    // Attempt safe fallback cleanup retry if token context remains (R10-01)
+                    // Attempt safe fallback cleanup retry if private token context exists
                     if (leakToken && typeof adminClient.signOut === 'function') {
                       try {
                         const retryRes = await adminClient.signOut(leakToken, 'local');
@@ -2006,12 +2010,26 @@ export class TestRunInventory {
                       });
                       report.residualResources.push({
                         type: 'session',
-                        id: leakSessId,
-                        sessionId: leakSessId,
+                        id: leakSessId || 'verification_session',
+                        sessionId: leakSessId || 'verification_session',
                         error: `VERIFICATION_SESSION_LEAK: Verification login succeeded but session invalidation failed: ${item.error}`
                       });
                       continue;
                     }
+                  } else if (isIndeterminate) {
+                    item.state = 'restoration_failed';
+                    item.error = verifyRes.error.message || String(verifyRes.error);
+                    report.residualResources.push({
+                      type: 'seed_credential_restoration',
+                      userId: item.userId,
+                      error: `RESTORE_VERIFICATION_INDETERMINATE: ${item.error}`
+                    });
+                    report.residualResources.push({
+                      type: 'untracked_session',
+                      id: 'indeterminate_verification_session',
+                      error: `INDETERMINATE_SESSION_LEAK: Server may have minted session during verification login but client could not identify or revoke it: ${item.error} (R11-01)`
+                    });
+                    continue;
                   } else {
                     item.state = 'restoration_failed';
                     item.error = verifyRes.error.message || String(verifyRes.error);
@@ -3720,6 +3738,7 @@ export function createHostedAdminClient({
 
   return {
     async verifyUserCredentials(email, password, options = {}) {
+      const inv = options?.inventory || null;
       if (!email || typeof email !== 'string' || !email.trim()) {
         return { data: null, error: { message: 'MISSING_EMAIL: verifyUserCredentials requires non-empty email' } };
       }
@@ -3750,44 +3769,106 @@ export function createHostedAdminClient({
       }
 
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
+        let errBody = null;
+        try {
+          errBody = await res.json();
+        } catch {}
         return {
           data: null,
           error: {
-            message: body?.msg || body?.message || body?.error_description || `HTTP_${res.status}`,
+            message: errBody?.msg || errBody?.message || errBody?.error_description || `HTTP_${res.status}`,
             status: res.status,
-            code: body?.error_code || body?.code
+            code: (errBody?.error_code || errBody?.code || `HTTP_${res.status}`).toString()
           }
         };
       }
 
-      const data = await res.json().catch(() => ({}));
-      const token = data?.access_token || null;
+      // Parse JSON body on HTTP 200 (res.ok) (R11-01)
+      let data;
+      let parseFailed = false;
+      let parseError = null;
+      try {
+        data = await res.json();
+      } catch (err) {
+        parseFailed = true;
+        parseError = err;
+      }
 
-      // If response did not return an access token (e.g. test stub/mock), credentials verified with zero session
-      if (!token) {
+      // If parsing fails on HTTP 200, response was malformed/truncated.
+      // Server may have minted a session, but client cannot read token to identify or revoke it! (R11-01)
+      if (parseFailed) {
+        if (inv) {
+          inv.registerUntrackedSession();
+        }
         return {
-          data: {
-            verified: true,
-            userId: data?.user?.id || null
+          data: null,
+          error: {
+            message: `INDETERMINATE_VERIFICATION_RESPONSE: Verification login returned HTTP 200 but response body was unreadable or malformed JSON: ${parseError?.message || String(parseError)} (R11-01)`,
+            code: 'UNREADABLE_RESPONSE',
+            status: res.status
           },
-          error: null
+          sessionRevocationFailed: true,
+          indeterminateSession: true
         };
       }
 
-      // Extract session ID from response body or JWT payload (R10-01)
-      let sessionId = data?.session_id || data?.session?.id || null;
+      // HTTP 200 body must be a non-null object (R11-01)
+      if (!data || typeof data !== 'object') {
+        if (inv) {
+          inv.registerUntrackedSession();
+        }
+        return {
+          data: null,
+          error: {
+            message: 'INDETERMINATE_VERIFICATION_RESPONSE: Verification login returned HTTP 200 but response was not a valid JSON object (R11-01)',
+            code: 'INVALID_RESPONSE_STRUCTURE',
+            status: res.status
+          },
+          sessionRevocationFailed: true,
+          indeterminateSession: true
+        };
+      }
+
+      const token = typeof data.access_token === 'string' && data.access_token.trim().length > 0
+        ? data.access_token.trim()
+        : null;
+
+      // If HTTP 200 arrives without access_token, never assume zero sessions were created! (R11-01)
+      if (!token) {
+        if (inv) {
+          inv.registerUntrackedSession();
+        }
+        return {
+          data: null,
+          error: {
+            message: 'INDETERMINATE_VERIFICATION_RESPONSE: Verification login returned HTTP 200 but response lacked a valid access_token (R11-01)',
+            code: 'MISSING_ACCESS_TOKEN',
+            status: res.status
+          },
+          sessionRevocationFailed: true,
+          indeterminateSession: true
+        };
+      }
+
+      // Extract session ID from response payload or JWT claims (R10-01, R11-01)
+      let sessionId =
+        (typeof data.session_id === 'string' && data.session_id.trim()) ||
+        (typeof data.session?.id === 'string' && data.session.id.trim()) ||
+        null;
+
       if (!sessionId && token) {
         try {
           const parts = token.split('.');
           if (parts.length === 3) {
             const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-            if (payload?.session_id) sessionId = payload.session_id;
+            if (typeof payload?.session_id === 'string' && payload.session_id.trim()) {
+              sessionId = payload.session_id.trim();
+            }
           }
         } catch {}
       }
 
-      const inv = options.inventory || null;
+      // Register session in inventory immediately upon token issuance (R10-01, R11-01)
       if (inv) {
         if (sessionId) {
           inv.registerSession(sessionId, { accessToken: token, source: 'verify_credentials' });
@@ -3796,19 +3877,21 @@ export function createHostedAdminClient({
         }
       }
 
+      // If token exists but session ID cannot be determined:
       if (!sessionId) {
         return {
           data: null,
           error: {
-            message: 'VERIFICATION_SESSION_UNTRACKED: Verification login succeeded with access_token but session ID could not be extracted from payload or JWT claims',
+            message: 'INDETERMINATE_VERIFICATION_RESPONSE: Verification login returned access_token but session identifier could not be determined from payload or claims (R11-01)',
             code: 'UNTRACKED_SESSION',
-            token
+            status: res.status
           },
-          sessionRevocationFailed: true
+          sessionRevocationFailed: true,
+          indeterminateSession: true
         };
       }
 
-      // Immediately revoke verification session so no residual sessions leak (R9-01, R10-01)
+      // Immediately revoke verification session so no residual sessions leak (R9-01, R10-01, R11-01)
       let signOutRes;
       let signOutThrew = false;
       let signOutError = null;
@@ -3823,10 +3906,10 @@ export function createHostedAdminClient({
         return {
           data: null,
           error: {
-            message: `VERIFICATION_SESSION_REVOCATION_FAILED: signOut threw exception: ${signOutError?.message || String(signOutError)}`,
+            message: `VERIFICATION_SESSION_REVOCATION_FAILED: signOut threw exception: ${signOutError?.message || String(signOutError)} (R11-01)`,
             code: 'LOGOUT_EXCEPTION',
-            sessionId,
-            token
+            sessionId: String(sessionId)
+            // NOTE (R11-02): Raw token value is strictly omitted to prevent secret leakage
           },
           sessionRevocationFailed: true
         };
@@ -3836,17 +3919,17 @@ export function createHostedAdminClient({
         return {
           data: null,
           error: {
-            message: `VERIFICATION_SESSION_REVOCATION_FAILED: signOut failed with error: ${signOutRes.error.message || JSON.stringify(signOutRes.error)}`,
+            message: `VERIFICATION_SESSION_REVOCATION_FAILED: signOut failed: ${signOutRes.error.message || JSON.stringify(signOutRes.error)} (R11-01)`,
             code: 'LOGOUT_FAILED',
-            sessionId,
-            token,
+            sessionId: String(sessionId),
             status: signOutRes.error.status
+            // NOTE (R11-02): Raw token value is strictly omitted to prevent secret leakage
           },
           sessionRevocationFailed: true
         };
       }
 
-      // Successfully signed out - mark session revoked in inventory if present
+      // Successfully signed out - mark session revoked in inventory
       if (inv && sessionId) {
         inv.markSessionRevoked(sessionId);
       }
@@ -3855,7 +3938,7 @@ export function createHostedAdminClient({
         data: {
           verified: true,
           userId: data?.user?.id || null,
-          sessionId
+          sessionId: String(sessionId)
         },
         error: null
       };
