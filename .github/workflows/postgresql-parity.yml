@@ -1,0 +1,28 @@
+name: PostgreSQL parity
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    name: PostgreSQL parity
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Verify Docker is available
+        run: docker info --format '{{.ServerVersion}}'
+      - name: Run PostgreSQL parity check
+        run: node experiments/task06i/sql-contract-parity.mjs
