@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const PREVIEW_LABEL = 'tnyx-preview';
+const OPERATIONS = ['codespaces_live', 'publish_update', 'build_preview'];
 const OWNER = 'im-tnyx';
 const MAX_FILES = 100;
 const ALLOWED_PATH = /^(?:src|assets|tests|docs|\.ai)\//;
@@ -51,7 +52,9 @@ export function verifyExpoLivePr({
   trustedSha,
   expectedSha,
   expectedBranch = '',
+  operation = 'codespaces_live',
 }) {
+  assert(OPERATIONS.includes(operation), 'Unknown preview operation');
   assert(repository === 'im-tnyx/Tio-Workspace', 'Unexpected repository');
   const selected = String(selectedPrNumber);
   assert(PR_NUMBER.test(selected), 'PR number must be a positive integer string');
@@ -67,15 +70,21 @@ export function verifyExpoLivePr({
     assert(snapshot.head?.sha === expectedSha, 'PR head differs from the authorized SHA');
     assert(typeof snapshot.head?.ref === 'string' && snapshot.head.ref &&
       !['main', 'tnyx/expo-preview'].includes(snapshot.head.ref), 'Preview head branch is invalid');
-    assert(snapshot.labels?.filter((label) => label.name === PREVIEW_LABEL).length === 1,
-      'Preview PR needs exactly one tnyx-preview label');
+    if (operation === 'codespaces_live') {
+      assert(snapshot.labels?.filter((label) => label.name === PREVIEW_LABEL).length === 1,
+        'Live preview PR needs exactly one tnyx-preview label');
+    } else {
+      assert(snapshot.draft === false, 'EAS preview requires a non-draft PR');
+    }
   }
 
   assert(pr.head.ref === refreshedPr.head.ref, 'PR branch changed during validation');
   if (expectedBranch) assert(expectedBranch === pr.head.ref, 'Push branch is stale');
 
-  assert(Array.isArray(labeledPrNumbers) && labeledPrNumbers.length === 1 &&
-    String(labeledPrNumbers[0]) === selected, 'Exactly one open PR may carry tnyx-preview');
+  if (operation === 'codespaces_live') {
+    assert(Array.isArray(labeledPrNumbers) && labeledPrNumbers.length === 1 &&
+      String(labeledPrNumbers[0]) === selected, 'Exactly one open PR may carry tnyx-preview');
+  }
 
   verifyTreeDiff(rawDiff);
   return { prNumber: selected, headSha: expectedSha };
@@ -95,6 +104,7 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
       trustedSha: process.env.GITHUB_SHA,
       expectedSha: process.env.PREVIEW_SHA,
       expectedBranch: process.env.PUSH_BRANCH,
+      operation: process.env.PREVIEW_OPERATION,
     });
     console.log('Verified preview PR #' + verified.prNumber + ' at immutable SHA ' + verified.headSha);
   } catch (error) {

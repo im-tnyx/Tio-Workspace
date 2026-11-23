@@ -1,10 +1,19 @@
-# Expo Go previews for labeled pull requests
+# Tio-TNYX Expo Preview
 
-The TNYX Expo Go preview serves temporary, owner-authored pull requests targeting
-`main`. It uses the existing mock shell, Metro starter and Expo Go tunnel. The
-[legacy Codespaces preview](27-EXPO-GO-CODESPACES-LIVE-PREVIEW.md) stays active
-through acceptance. The [manual EAS preview](../.github/workflows/expo-pr-preview.yml)
-keeps its own workflow and credentials.
+[Tio-TNYX Expo Preview](../.github/workflows/expo-pr-preview.yml) is the Actions
+entry for Expo Go and EAS previews of temporary, owner-authored PRs targeting
+`main`. For a manual run choose the operation and platform, then enter the open
+PR number and its full head SHA.
+
+| Operation | Trigger | Result |
+|---|---|---|
+| `codespaces_live` | Owner adds `tnyx-preview`, pushes to that labeled PR, or dispatches manually | Serve the exact PR SHA via Expo Go in the dedicated Codespace. The platform selection does not limit the live tunnel |
+| `publish_update` | Owner dispatch only | Publish the prebuilt JavaScript bundle to EAS branch `pr-preview`, for a compatible installed preview build |
+| `build_preview` | Owner dispatch only when an installable build is needed | Queue the internal `preview` EAS profile for Android, iOS or both. The operator needs configured signing |
+
+The [legacy Codespaces preview](27-EXPO-GO-CODESPACES-LIVE-PREVIEW.md) stays
+available during rollout. The old standalone manual EAS entry is replaced by
+this workflow. Preview policy tests run with the existing shell checks.
 
 ## Eligibility and trust
 
@@ -17,14 +26,23 @@ keeps its own workflow and credentials.
   directories, nested package manifests, symlinks and submodules fail validation.
   A rename is checked at both paths. Workflow, root app/native configuration and
   dependency changes require a different verification path.
-- Manual runs require the PR number and full owner-approved head SHA. Automatic
-  runs require a successful first-attempt owner push signal at the current
-  labeled PR head. The feature branch must contain the signal from `main`.
-- The default-branch worker verifies metadata and a complete immutable Git tree
-  diff, checks the environment's exact-`main` branch policy, and revalidates
-  eligibility before wake and before SSH. Candidate Git objects are fetched as
-  data. The Actions runner executes the trusted `main` checkout with read-only
-  repository permissions and transfers the trusted script over SSH.
+- Manual runs require the PR number and full owner-approved head SHA. The
+  trusted `pull_request_target` entry admits only the owner's first-attempt
+  `tnyx-preview` label event or a push to that labeled same-repository PR.
+  Unrelated events schedule no preview runner. A feature branch can use the
+  main-based workflow without carrying a separate push signal.
+- Live validates the complete immutable Git tree diff, the environment's
+  exact-`main` branch policy and current PR metadata before wake and SSH.
+  Candidate Git objects are fetched as data. The Actions runner executes the
+  trusted `main` checkout with read-only repository permissions and transfers
+  the trusted script over SSH.
+- EAS requires an open non-draft PR. The same path and mode checks apply, so
+  native, dependency or Expo configuration changes first need their own reviewed
+  change on `main`. OTA export runs without EAS credentials and the publish job
+  accepts the prebuilt bundle from the same workflow run. EAS uses its pinned
+  CLI, the TNYX project, its preview environment and its internal profile.
+  App source is bundled or uploaded for preview. Candidate tests and lifecycle
+  scripts are outside the protected runner's execution path.
 - The Codespace is matched by API name, immutable numeric ID, owner, repo and
   display name. The sync refuses named branches other than `main`, dirty
   worktrees, ignored-file overwrite, dependency drift and nonmatching SHAs.
@@ -70,18 +88,28 @@ keeps its own workflow and credentials.
    ```
 
 5. Open an owner-authored, source-only feature PR targeting current `main`.
-   Apply `tnyx-preview` to that PR. In Actions, run **TNYX labeled PR Expo Go
-   preview** from `main` with its PR number and exact SHA. Later owner pushes
-   to that PR branch trigger the signal and trusted worker. Open TNYX from
-   Expo Go Projects using the matching preview account and a compatible SDK
-   58 client. Metro tunnel URLs should stay private.
+   Applying `tnyx-preview` starts Live. Later owner pushes refresh the preview
+   automatically. For an on-demand retry use **Tio-TNYX Expo Preview → Run
+   workflow** on `main` and select `codespaces_live` with the exact PR SHA.
+   Open TNYX from Expo Go Projects using the matching preview account and a
+   compatible SDK 58 client. Keep Metro tunnel URLs private.
+6. For EAS modes, configure the separate `eas-preview` GitHub environment with
+   a custom deployment branch policy allowing exact `main` only. Add the
+   project-scoped `PR_PREVIEW_EXPO_TOKEN` as an environment secret. Confirm the
+   Expo preview project and remote signing for the chosen platform. Use the
+   `preview` profile and verify that channel `pr-preview` is linked to branch
+   `pr-preview` before testing an OTA. The current mock app has no preview
+   environment inputs for JavaScript export. EAS builds only queue from manual
+   dispatch and may consume the owner's EAS quota.
 
 ## Acceptance before retiring the legacy path
 
 | Scenario | Evidence to record |
 |---|---|
 | Manual labeled PR | Workflow run URL, input PR and exact SHA, policy checks, dedicated Codespace selection and SSH sync success |
-| Owner push | Push signal and worker run URLs, exact new head SHA and successful sync |
+| Label and owner push | Apply the label once, push new source, and record the Live run URLs and exact served SHAs |
+| Unrelated activity | Non-preview labels, unlabeled PR pushes, forks and non-owner events do not enter Live or EAS jobs |
+| EAS modes | Verify a requested OTA lands on `pr-preview` and a compatible install loads it. Verify a requested internal build queues the selected platform with existing signing |
 | Stopped Codespace wake | Confirm dedicated Codespace is stopped, push eligible source, capture initial `Shutdown` followed by `Available` and successful sync |
 | Real device refresh | Owner records device OS, Expo Go version, PR SHA, visible mock UI change and whether refresh required reopening or manual reload |
 | Invalid or unauthorized PR | Missing label, stale SHA, second labeled PR or out-of-scope changes are rejected before wake or SSH. A non-owner dispatch skips the privileged path |
@@ -104,7 +132,7 @@ After the replacement is merged, accepted and owner-approved:
    inventory. Preserve the existing Codespace and its environment secret.
 2. Use a separately reviewed PR to remove the legacy push signal, trusted
    worker and branch sync script, and reconcile the legacy guide and sync
-   references. Leave the shared Metro starter, devcontainer and manual EAS
+   references. Leave the shared Metro starter, devcontainer and unified preview
    workflow in place. Verify main and the replacement again after that merge.
 3. Read the live legacy branch HEAD and create a permanent annotated backup tag,
    for example `backup/expo-preview-retired-20261123`, at that exact SHA. Verify

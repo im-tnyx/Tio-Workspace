@@ -74,3 +74,17 @@ covers manual dispatch, push, stopped wake, device refresh, rejection tests,
 backup tag and rollback. The legacy branch stays in service pending those gates.
 
 [Task guide](../README.md) · [Agent contract](../../../AGENTS.md)
+
+
+## Unified Actions entry
+
+The owner extended the consolidation to the three-operation dropdown from the
+[Tio-Money reference](https://github.com/im-tnyx/Tio-Money/blob/main/.github/workflows/tio-money-eas-pr-preview.yml).
+[PR #40](https://github.com/im-tnyx/Tio-Workspace/pull/40) carries the combined
+work from the proposal in PR #39 and the earlier consolidation. This revision
+replaces the standalone EAS and proposed Live entries with **Tio-TNYX Expo
+Preview** and moves preview policy tests into the existing shell CI. The trusted
+base event handles label application and eligible pushes without a separate
+feature-branch signal. OTA export is separated from EAS credentials, and build
+and publish stay owner-dispatched. The already working legacy fallback remains
+available until acceptance. The PR records exact-head validation and review.

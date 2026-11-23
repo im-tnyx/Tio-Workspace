@@ -4,6 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { verifyEasPreview } from '../.github/scripts/verify-eas-preview-config.mjs';
 import { verifyExpoLivePr } from '../.github/scripts/verify-expo-live-pr.mjs';
 
 const HEAD = 'a'.repeat(40);
@@ -110,29 +111,93 @@ function readRepoFile(path) {
   return readFileSync(new URL('../' + path, import.meta.url), 'utf8');
 }
 
-test('push signal contains no checkout, write permissions or credentials', () => {
-  const text = readRepoFile('.github/workflows/expo-pr-live-push-signal.yml');
-  assert.match(text, /^name: TNYX PR preview push signal$/m);
-  assert.match(text, /branches:\s*\n\s+- '\*\*'\s*\n\s+- '!main'\s*\n\s+- '!tnyx\/expo-preview'/);
-  assert.match(text, /^permissions:\s*\n  contents: read$/m);
-  assert.doesNotMatch(text, /secrets\.|environment:|actions\/checkout|pull_request_target/);
+for (const operation of ['publish_update', 'build_preview']) {
+  test(operation + ' accepts an immutable non-draft owner PR without a Live label', () => {
+    const f = fixture();
+    for (const snapshot of [f.pr, f.refreshedPr]) {
+      snapshot.draft = false;
+      snapshot.labels = [];
+    }
+    assert.equal(verifyExpoLivePr({ ...f, operation, labeledPrNumbers: [] }).headSha, HEAD);
+  });
+
+  test(operation + ' rejects drafts and native changes', () => {
+    const f = { ...fixture(), operation };
+    assert.throws(() => verifyExpoLivePr(f), /non-draft/);
+    f.pr.draft = false;
+    f.refreshedPr.draft = false;
+    f.rawDiff = diffRecord('app.json');
+    assert.throws(() => verifyExpoLivePr(f), /allowlist/);
+  });
+}
+
+test('rejects an unknown preview operation', () => {
+  assert.throws(() => verifyExpoLivePr({ ...fixture(), operation: 'release' }), /Unknown operation|Unknown preview operation/);
 });
 
-test('trusted workflow isolates the owner gate, protected environment and SSH steps', () => {
-  const text = readRepoFile('.github/workflows/expo-pr-live-preview.yml');
+test('one workflow exposes three operations; only owner label and synchronize events can start Live automatically', () => {
+  const text = readRepoFile('.github/workflows/expo-pr-preview.yml');
+  assert.match(text, /^name: Tio-TNYX Expo Preview$/m);
+  assert.match(text, /options:\n\s+- codespaces_live\n\s+- publish_update\n\s+- build_preview/);
+  assert.match(text, /pull_request_target:\n\s+branches: \[main\]\n\s+types: \[labeled, synchronize\]/);
   assert.match(text, /github\.ref == 'refs\/heads\/main'/);
   assert.match(text, /github\.triggering_actor == 'im-tnyx'/);
-  assert.match(text, /github\.event\.workflow_run\.actor\.login == 'im-tnyx'/);
-  assert.match(text, /github\.event\.workflow_run\.path == '\.github\/workflows\/expo-pr-live-push-signal\.yml'/);
-  assert.match(text, /github\.event\.workflow_run\.run_attempt == 1/);
-  assert.match(text, /environment: tnyx-expo-pr-preview-trusted/);
-  assert.match(text, /^  codespaces_live:[\s\S]*?^    concurrency:\n      group: tnyx-labeled-pr-expo-preview$/m);
+  assert.match(text, /github\.event\.sender\.login == 'im-tnyx'/);
+  assert.match(text, /contains\(github\.event\.pull_request\.labels\.\*\.name, 'tnyx-preview'\)/);
+  assert.match(text, /github\.event\.action == 'synchronize' \|\| github\.event\.label\.name == 'tnyx-preview'/);
+  assert.match(text, /inputs\.operation \|\| 'codespaces_live'/);
+  assert.doesNotMatch(text, /^  (?:push|schedule|workflow_run):/m);
   assert.doesNotMatch(text, /^concurrency:/m);
-  assert.equal([...text.matchAll(/ref: \$\{\{ github\.sha \}\}/g)].length, 2);
-  assert.equal([...text.matchAll(/check-expo-live-pr\.sh/g)].length, 3);
+});
+
+test('Live uses trusted checkout, scoped concurrency and a separate credential', () => {
+  const text = readRepoFile('.github/workflows/expo-pr-preview.yml').split('\n  codespaces_live:')[1].split('\n  prepare_update:')[0];
+  assert.match(text, /if: needs\.select\.outputs\.operation == 'codespaces_live'/);
+  assert.match(text, /environment: tnyx-expo-pr-preview-trusted/);
+  assert.match(text, /concurrency:\n      group: tnyx-labeled-pr-expo-preview/);
+  assert.match(text, /ref: \$\{\{ github\.sha \}\}/);
+  assert.equal([...text.matchAll(/check-expo-live-pr\.sh/g)].length, 2);
   assert.equal([...text.matchAll(/secrets\.PR_PREVIEW_CODESPACES_TOKEN/g)].length, 2);
   assert.match(text, /vars\.TNYX_PR_CODESPACE_ID/);
-  assert.doesNotMatch(text, /EXPO_TOKEN|pull_request_target|secrets: inherit|download-artifact|actions\/cache/);
+  assert.doesNotMatch(text, /EXPO_TOKEN|worktree add|npm ci|download-artifact|actions\/cache/);
+});
+
+test('OTA exports without credentials and EAS only runs on manual dispatch', () => {
+  const text = readRepoFile('.github/workflows/expo-pr-preview.yml');
+  const [exportJob, easJob] = text.split('\n  prepare_update:')[1].split('\n  eas_preview:');
+  assert.match(exportJob, /github\.event_name == 'workflow_dispatch'/);
+  assert.match(exportJob, /npm ci --ignore-scripts/);
+  assert.match(exportJob, /expo export/);
+  assert.doesNotMatch(exportJob, /environment:|secrets\.|npm run|actions\/cache/);
+  assert.match(easJob, /github\.event_name == 'workflow_dispatch'/);
+  assert.match(easJob, /environment: eas-preview/);
+  assert.match(easJob, /needs\.prepare_update\.result == 'success'/);
+  assert.match(easJob, /needs\.prepare_update\.result == 'skipped'/);
+  assert.equal([...easJob.matchAll(/secrets\.PR_PREVIEW_EXPO_TOKEN/g)].length, 1);
+  assert.match(easJob, /--branch pr-preview --environment preview --non-interactive/);
+  assert.match(easJob, /--skip-bundler --input-dir/);
+  assert.match(easJob, /build --profile preview --platform "\$PREVIEW_PLATFORM" --non-interactive --no-wait/);
+  assert.doesNotMatch(easJob, /npm run|npx|auto-submit|secrets\.PR_PREVIEW_CODESPACES_TOKEN/);
+});
+
+test('EAS config requires this project, preview-only configuration and pinned CLI integrity', () => {
+  const args = {
+    app: JSON.parse(readRepoFile('app.json')).expo,
+    eas: JSON.parse(readRepoFile('eas.json')),
+    manifest: JSON.parse(readRepoFile('.github/preview-eas-cli/package.json')),
+    lock: JSON.parse(readRepoFile('.github/preview-eas-cli/package-lock.json')),
+    platform: 'all',
+  };
+  verifyEasPreview(args);
+  assert.throws(() => verifyEasPreview({ ...args, platform: 'web' }), /platform/);
+  assert.throws(() => verifyEasPreview({ ...args, app: { ...args.app, slug: 'tio-money' } }), /slug/);
+  for (const change of [{ distribution: 'store' }, { channel: 'production' }, { environment: 'production' }]) {
+    const eas = { build: { preview: { ...args.eas.build.preview, ...change } } };
+    assert.throws(() => verifyEasPreview({ ...args, eas }));
+  }
+  const lock = structuredClone(args.lock);
+  lock.packages['node_modules/eas-cli'].integrity = '';
+  assert.throws(() => verifyEasPreview({ ...args, lock }), /Unverified EAS CLI dependency/);
 });
 
 test('Git validation fetches objects and compares trees without switching the runner worktree', () => {
