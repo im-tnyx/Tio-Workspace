@@ -48,8 +48,10 @@ export const AUTH_ENDPOINT_CAPABILITIES = Object.freeze({
     endpoint: '/auth/v1/otp',
     method: 'POST',
     canMintSession: false,
-    canModifyProviderState: true,
+    canCreateUser: true,
     canCreateUsers: true,
+    canModifyProviderState: true,
+    requiresCleanupReconciliation: true,
     canTriggerEmail: true,
     requiredEvidence: 'route_disabled (providerDisabled === true) and HTTP non-200',
     cleanupObligation: 'Track created user into createdUsers if created; track unexpected tokens if returned',
@@ -60,8 +62,10 @@ export const AUTH_ENDPOINT_CAPABILITIES = Object.freeze({
     endpoint: '/auth/v1/signup',
     method: 'POST',
     canMintSession: false,
-    canModifyProviderState: true,
+    canCreateUser: true,
     canCreateUsers: true,
+    canModifyProviderState: true,
+    requiresCleanupReconciliation: true,
     canTriggerEmail: true,
     requiredEvidence: 'signup_disabled === true, status !== 200, zero created user, zero tokens',
     cleanupObligation: 'Track created user into createdUsers; track unexpected tokens for cleanup',
@@ -72,8 +76,10 @@ export const AUTH_ENDPOINT_CAPABILITIES = Object.freeze({
     endpoint: '/auth/v1/verify',
     method: 'POST',
     canMintSession: true, // Verification challenge success issues tokens and session (R13-01)
-    canModifyProviderState: true,
+    canCreateUser: false,
     canCreateUsers: false,
+    canModifyProviderState: true,
+    requiresCleanupReconciliation: true,
     canTriggerEmail: false,
     requiredEvidence: 'hook_rejected === true (42501) and HTTP non-200, zero tokens',
     cleanupObligation: 'Track unexpected session for revocation; indeterminate HTTP 200 / transport loss creates untracked session risk',
@@ -84,8 +90,10 @@ export const AUTH_ENDPOINT_CAPABILITIES = Object.freeze({
     endpoint: '/auth/v1/recover',
     method: 'POST',
     canMintSession: false,
-    canModifyProviderState: true,
+    canCreateUser: false,
     canCreateUsers: false,
+    canModifyProviderState: true,
+    requiresCleanupReconciliation: false,
     canTriggerEmail: true,
     requiredEvidence: 'recovery_suppressed === true (42501) and zero recovery_token',
     cleanupObligation: 'Track unexpected tokens if issued',
@@ -96,8 +104,10 @@ export const AUTH_ENDPOINT_CAPABILITIES = Object.freeze({
     endpoint: '/auth/v1/token?grant_type=password',
     method: 'POST',
     canMintSession: true,
-    canModifyProviderState: true,
+    canCreateUser: false,
     canCreateUsers: false,
+    canModifyProviderState: true,
+    requiresCleanupReconciliation: true,
     canTriggerEmail: false,
     requiredEvidence: 'access_token, refresh_token, session_id, amr_authenticated: true, verified claims',
     cleanupObligation: 'Track session into trackedSessions for signOut revocation; unverified token captured for cleanup',
@@ -108,8 +118,10 @@ export const AUTH_ENDPOINT_CAPABILITIES = Object.freeze({
     endpoint: '/auth/v1/token?grant_type=refresh_token',
     method: 'POST',
     canMintSession: true,
-    canModifyProviderState: true,
+    canCreateUser: false,
     canCreateUsers: false,
+    canModifyProviderState: true,
+    requiresCleanupReconciliation: true,
     canTriggerEmail: false,
     requiredEvidence: 'refreshed access_token, amr_preserved: true, verified claims',
     cleanupObligation: 'Track refreshed session context for signOut revocation',
@@ -120,8 +132,10 @@ export const AUTH_ENDPOINT_CAPABILITIES = Object.freeze({
     endpoint: '/auth/v1/token?grant_type=password',
     method: 'POST',
     canMintSession: true,
-    canModifyProviderState: true,
+    canCreateUser: false,
     canCreateUsers: false,
+    canModifyProviderState: true,
+    requiresCleanupReconciliation: true,
     canTriggerEmail: false,
     requiredEvidence: 'HTTP 200 with access_token and session_id, followed by immediate verified local signOut',
     cleanupObligation: 'Immediate local signOut; on failure register verification session leak or untracked session',
@@ -132,8 +146,10 @@ export const AUTH_ENDPOINT_CAPABILITIES = Object.freeze({
     endpoint: '/auth/v1/admin/users/:id',
     method: 'PUT',
     canMintSession: false,
-    canModifyProviderState: true,
+    canCreateUser: false,
     canCreateUsers: false,
+    canModifyProviderState: true,
+    requiresCleanupReconciliation: true,
     canTriggerEmail: false,
     requiredEvidence: 'Admin password update confirmation, followed by affirmative session_not_found on probe',
     cleanupObligation: 'Pre-dispatch restoration registration; restore original password during cleanup',
@@ -144,8 +160,10 @@ export const AUTH_ENDPOINT_CAPABILITIES = Object.freeze({
     endpoint: '/auth/v1/logout',
     method: 'POST',
     canMintSession: false,
-    canModifyProviderState: true,
+    canCreateUser: false,
     canCreateUsers: false,
+    canModifyProviderState: true,
+    requiresCleanupReconciliation: false,
     canTriggerEmail: false,
     requiredEvidence: 'Sign-out confirmation followed by affirmative session_not_found on GET /auth/v1/user',
     cleanupObligation: 'Marks session as revoked in inventory (idempotent)',
@@ -686,14 +704,19 @@ export function observeAuthResponse({
   ctx = null,
   expectedOperation = 'token_issuance',
   canMintSession = false,
+  canCreateUser = false,
+  canModifyProviderState = false,
   testUser = null
 } = {}) {
   // 1. Transport error handling
   if (transportError) {
-    if (canMintSession) {
-      if (inv) {
-        inv.registerUntrackedSession();
-      }
+    if (canMintSession && inv) {
+      inv.registerUntrackedSession();
+    }
+    if (canCreateUser && inv) {
+      inv.registerUntrackedUser();
+    }
+    if (canMintSession || canCreateUser) {
       return {
         classification: 'AUTH_RESPONSE_INDETERMINATE',
         status: 0,
@@ -702,9 +725,10 @@ export function observeAuthResponse({
         userId: null,
         accessToken: null,
         refreshToken: null,
-        indeterminateSession: true,
+        indeterminateSession: Boolean(canMintSession),
+        indeterminateUserCreation: Boolean(canCreateUser),
         errorCode: 'TRANSPORT_ERROR_POST_DISPATCH',
-        error: `TRANSPORT_ERROR_POST_DISPATCH: Request dispatch threw transport error (${transportError?.message || String(transportError)}). Server may have minted session but client cannot observe response. Untracked session risk registered (R12-01).`,
+        error: `TRANSPORT_ERROR_POST_DISPATCH: Request dispatch threw transport error (${transportError?.message || String(transportError)}). Server may have minted session or created user but client cannot observe response. Untracked residual risk registered (R12-01, R14-02).`,
         body: null
       };
     }
@@ -717,6 +741,7 @@ export function observeAuthResponse({
       accessToken: null,
       refreshToken: null,
       indeterminateSession: false,
+      indeterminateUserCreation: false,
       errorCode: 'TRANSPORT_ERROR',
       error: `TRANSPORT_ERROR: Request dispatch failed: ${transportError?.message || String(transportError)}`,
       body: null
@@ -793,7 +818,12 @@ export function observeAuthResponse({
     // 3A: Parse error or malformed body structure
     if (parseStatus !== 'parsed' || !isBodyObject) {
       if (inv) {
-        inv.registerUntrackedSession();
+        if (canMintSession) {
+          inv.registerUntrackedSession();
+        }
+        if (canCreateUser) {
+          inv.registerUntrackedUser();
+        }
       }
       return {
         classification: 'AUTH_RESPONSE_INDETERMINATE',
@@ -803,9 +833,31 @@ export function observeAuthResponse({
         userId: null,
         accessToken: null,
         refreshToken: null,
-        indeterminateSession: true,
+        indeterminateSession: Boolean(canMintSession),
+        indeterminateUserCreation: Boolean(canCreateUser),
         errorCode: parseStatus === 'unreadable' ? 'UNREADABLE_RESPONSE' : 'INVALID_RESPONSE_STRUCTURE',
-        error: `INDETERMINATE_AUTH_RESPONSE: Server returned HTTP ${status} but response body was ${parseStatus}: ${parseError?.message || 'body is not a valid JSON object'} (R12-01)`,
+        error: `INDETERMINATE_AUTH_RESPONSE: Server returned HTTP ${status} but response body was ${parseStatus}: ${parseError?.message || 'body is not a valid JSON object'} (R12-01, R14-02)`,
+        body
+      };
+    }
+
+    // 3A-2: User creation endpoint returned 200 without extractable user ID (R14-02)
+    if (canCreateUser && !rawUserId) {
+      if (inv) {
+        inv.registerUntrackedUser();
+      }
+      return {
+        classification: 'AUTH_RESPONSE_INDETERMINATE',
+        status,
+        hasTokens: false,
+        sessionId: null,
+        userId: null,
+        accessToken: null,
+        refreshToken: null,
+        indeterminateSession: false,
+        indeterminateUserCreation: true,
+        errorCode: 'MISSING_USER_ID',
+        error: `INDETERMINATE_AUTH_RESPONSE: Server returned HTTP ${status} for user creation request but response lacked valid user identifier (R14-02)`,
         body
       };
     }
@@ -1870,6 +1922,7 @@ export class TestRunInventory {
     this.trackedStorageObjects = new Map(); // bucket -> Set(path)
     this.seedCredentialRestorations = []; // Seed users whose password was modified -> must be restored (R5-06)
     this.untrackedSessionsCount = 0; // Minted sessions whose ID could not be parsed (R5-04, R8-01)
+    this.untrackedUsersCount = 0; // Users created whose concrete ID was lost or unobserved (R14-02)
     this.inFlightOperations = new Map(); // opId -> operation record (R13-02)
     this._opSequence = 0;
     this.finalized = false; // Set to true once executeCleanup completes (R13-02)
@@ -2107,6 +2160,16 @@ export class TestRunInventory {
     this.untrackedSessionsCount++;
   }
 
+  registerUntrackedUser() {
+    if (this.finalized) {
+      this.postFinalizationMutations.push({
+        action: 'registerUntrackedUser',
+        attemptedAt: new Date().toISOString()
+      });
+    }
+    this.untrackedUsersCount++;
+  }
+
   markSessionRevoked(sessionId) {
     if (sessionId && typeof sessionId === 'string' && sessionId.trim().length > 0) {
       this.revokedSessions.add(sessionId.trim());
@@ -2152,13 +2215,17 @@ export class TestRunInventory {
   }
 
   /**
-   * Registers an in-flight operation before network dispatch begins (R13-02).
+   * Registers an in-flight operation before network dispatch begins (R13-02, R14-01, R14-02).
    * Lifecycle states: REGISTERED -> IN_FLIGHT -> SETTLED | TIMED_OUT_UNRESOLVED -> CLEANUP_REQUIRED -> CLEANUP_VERIFIED
    */
   registerInFlightOperation({
     probeId = 'unknown',
     endpoint = null,
     canMintSession = false,
+    canCreateUser = false,
+    canModifyProviderState = false,
+    requiresCleanupReconciliation = false,
+    targetUserId = null,
     description = null,
     metadata = {}
   } = {}) {
@@ -2179,6 +2246,10 @@ export class TestRunInventory {
       probeId,
       endpoint,
       canMintSession: Boolean(canMintSession),
+      canCreateUser: Boolean(canCreateUser),
+      canModifyProviderState: Boolean(canModifyProviderState),
+      requiresCleanupReconciliation: Boolean(requiresCleanupReconciliation),
+      targetUserId: targetUserId ? String(targetUserId).trim() : null,
       description,
       metadata: { ...metadata },
       state: 'IN_FLIGHT',
@@ -2243,12 +2314,15 @@ export class TestRunInventory {
   }
 
   /**
-   * Transitions active in-flight operations for a probe to TIMED_OUT_UNRESOLVED (R13-02).
-   * If operation had canMintSession=true, immediately records untracked session risk.
+   * Transitions active in-flight operations for a probe to TIMED_OUT_UNRESOLVED (R13-02, R14-01, R14-02).
+   * If operation had canMintSession=true, records untracked session risk.
+   * If operation had canCreateUser=true, records untracked user risk.
    */
   markProbeOperationsTimedOut(probeId, reason = 'TIMEOUT') {
     if (!probeId) return [];
     const affected = [];
+    let hadSessionMinting = false;
+    let hadUserCreation = false;
     for (const [opId, op] of this.inFlightOperations.entries()) {
       if (op.probeId === probeId && op.state === 'IN_FLIGHT') {
         op.state = 'TIMED_OUT_UNRESOLVED';
@@ -2257,9 +2331,18 @@ export class TestRunInventory {
         affected.push(op);
 
         if (op.canMintSession) {
-          this.registerUntrackedSession();
+          hadSessionMinting = true;
+        }
+        if (op.canCreateUser) {
+          hadUserCreation = true;
         }
       }
+    }
+    if (hadSessionMinting) {
+      this.registerUntrackedSession();
+    }
+    if (hadUserCreation) {
+      this.registerUntrackedUser();
     }
     return affected;
   }
@@ -2311,6 +2394,7 @@ export class TestRunInventory {
   isClean() {
     if (this.createdUsers.size > 0) return false;
     if (this.untrackedSessionsCount > 0) return false;
+    if (this.untrackedUsersCount > 0) return false;
     if (this.trackedSessions.size !== this.revokedSessions.size) return false;
     if (this.hasUnresolvedOperations()) return false;
     if (this.postFinalizationMutations.length > 0) return false;
@@ -2336,6 +2420,7 @@ export class TestRunInventory {
       trackedStorageObjectsCount: Array.from(this.trackedStorageObjects.values()).reduce((acc, s) => acc + s.size, 0),
       seedCredentialRestorationsCount: this.seedCredentialRestorations.length,
       untrackedSessionsCount: this.untrackedSessionsCount,
+      untrackedUsersCount: this.untrackedUsersCount,
       inFlightOperationsCount: this.inFlightOperations.size,
       unresolvedOperationsCount: this.getUnresolvedOperations().length,
       finalized: this.finalized,
@@ -2381,6 +2466,7 @@ export class TestRunInventory {
       this.trackedSessions.size > 0 ||
       this.seedCredentialRestorations.length > 0 ||
       this.untrackedSessionsCount > 0 ||
+      this.untrackedUsersCount > 0 ||
       unresolvedOps.length > 0 ||
       this.postFinalizationMutations.length > 0;
 
@@ -2400,7 +2486,7 @@ export class TestRunInventory {
       return report;
     }
 
-    // 0. Untracked minted sessions blocker & Unresolved dispatch obligations (R5-04, R8-01, R13-02)
+    // 0A. Untracked minted sessions blocker (R5-04, R8-01, R13-02)
     if (this.untrackedSessionsCount > 0) {
       report.residualResources.push({
         type: 'untracked_session',
@@ -2409,6 +2495,16 @@ export class TestRunInventory {
       });
     }
 
+    // 0B. Indeterminate user creation risk blocker (R14-02)
+    if (this.untrackedUsersCount > 0) {
+      report.residualResources.push({
+        type: 'unresolved_user_creation_risk',
+        count: this.untrackedUsersCount,
+        error: 'UNRESOLVED_USER_CREATION_RISK: User creation endpoint (e.g. signup) timed out, encountered transport reset, or returned unreadable response post-dispatch; orphaned user may exist without tracked identifier (R14-02)'
+      });
+    }
+
+    // 0C. Unresolved dispatch obligations (R13-02, R14-01, R14-02)
     for (const op of unresolvedOps) {
       if (op.canMintSession) {
         report.residualResources.push({
@@ -2417,6 +2513,34 @@ export class TestRunInventory {
           probeId: op.probeId,
           state: op.state,
           error: `UNRESOLVED_DISPATCH_OBLIGATION: Operation '${op.opId}' (${op.probeId}) was in state '${op.state}' with canMintSession=true; provider may have minted session server-side that was not observed before cleanup (R13-02)`
+        });
+      }
+      if (op.canCreateUser) {
+        report.residualResources.push({
+          type: 'unresolved_user_creation',
+          opId: op.opId,
+          probeId: op.probeId,
+          state: op.state,
+          error: `UNRESOLVED_USER_CREATION: Operation '${op.opId}' (${op.probeId}) was in state '${op.state}' with canCreateUser=true; user may have been created on provider without confirmation (R14-02)`
+        });
+      }
+      if (op.canModifyProviderState) {
+        report.residualResources.push({
+          type: 'unresolved_provider_mutation',
+          opId: op.opId,
+          probeId: op.probeId,
+          targetUserId: op.targetUserId || null,
+          state: op.state,
+          error: `UNRESOLVED_PROVIDER_MUTATION: Operation '${op.opId}' (${op.probeId}) was in state '${op.state}' with canModifyProviderState=true; delayed mutation may land after cleanup and overwrite restored state (R14-01)`
+        });
+      }
+      if (!op.canMintSession && !op.canCreateUser && !op.canModifyProviderState && op.requiresCleanupReconciliation) {
+        report.residualResources.push({
+          type: 'unresolved_in_flight_operation',
+          opId: op.opId,
+          probeId: op.probeId,
+          state: op.state,
+          error: `UNRESOLVED_DISPATCH_OBLIGATION: Operation '${op.opId}' (${op.probeId}) was in state '${op.state}' requiring cleanup reconciliation`
         });
       }
     }
@@ -2635,6 +2759,23 @@ export class TestRunInventory {
               error: `IDENTITY_MISMATCH: Restoration record email '${item.email}' does not match tracked user email '${trackedEmail}' for user ID '${item.userId}' (R10-02)`
             });
             item.state = 'restoration_failed';
+            continue;
+          }
+
+          // Concurrent / unresolved password mutation check (R14-01)
+          const concurrentMutation = unresolvedOps.find(
+            op => op.canModifyProviderState && (
+              (op.targetUserId && String(op.targetUserId).trim() === String(item.userId).trim()) ||
+              op.probeId === 'SESSION-02'
+            )
+          );
+          if (concurrentMutation) {
+            item.state = 'restoration_failed';
+            report.residualResources.push({
+              type: 'seed_credential_restoration',
+              userId: item.userId,
+              error: `CONCURRENT_UNRESOLVED_PASSWORD_MUTATION: Cannot verify password restoration for user '${item.userId}' because mutation operation '${concurrentMutation.opId}' (${concurrentMutation.probeId}) remains in state '${concurrentMutation.state}'. Delayed mutation could overwrite restored password (R14-01).`
+            });
             continue;
           }
 
@@ -3332,6 +3473,19 @@ export function createHostedDispatcher({
       }
 
       case 'BYPASS-02': {
+        const op = inv?.registerInFlightOperation
+          ? inv.registerInFlightOperation({
+              probeId: 'BYPASS-02',
+              endpoint: '/auth/v1/signup',
+              canMintSession: false,
+              canCreateUser: true,
+              canModifyProviderState: true,
+              requiresCleanupReconciliation: true,
+              description: 'Signup probe dispatch (BYPASS-02)',
+              metadata: { email: testUser }
+            })
+          : null;
+
         let res;
         let transportError = null;
         try {
@@ -3357,8 +3511,14 @@ export function createHostedDispatcher({
           ctx,
           expectedOperation: 'rejection',
           canMintSession: false,
+          canCreateUser: true,
+          canModifyProviderState: true,
           testUser
         });
+
+        if (op && inv?.settleInFlightOperation) {
+          inv.settleInFlightOperation(op.opId, { observed, error: transportError });
+        }
 
         const body = parseEnv?.body || null;
         const errText = (body?.msg || body?.message || body?.error_description || body?.error || '').toLowerCase();
@@ -3376,6 +3536,7 @@ export function createHostedDispatcher({
           status: observed.status,
           signup_disabled: signupDisabled,
           user_created: Boolean(createdUserId),
+          indeterminate_user_creation: Boolean(observed.indeterminateUserCreation),
           error_code: body?.error_code || null,
           tokens: extractObservedTokens(body) ? body : null,
           error: body?.msg || body?.message || body?.error_description || (observed.hasTokens ? 'SECURITY_INVARIANT_VIOLATION: POST /auth/v1/signup unexpectedly issued tokens!' : null)
@@ -3909,6 +4070,22 @@ export function createHostedDispatcher({
           }
         }
 
+        // PRE-DISPATCH IN-FLIGHT OPERATION REGISTRATION (R14-01):
+        // Register state mutation before network dispatch. Password is never exposed in metadata.
+        const op = inv?.registerInFlightOperation
+          ? inv.registerInFlightOperation({
+              probeId: 'SESSION-02',
+              endpoint: `/auth/v1/admin/users/${userId}`,
+              canMintSession: false,
+              canCreateUser: false,
+              canModifyProviderState: true,
+              requiresCleanupReconciliation: true,
+              targetUserId: String(userId),
+              description: 'Admin password update dispatch (SESSION-02)',
+              metadata: { userId: String(userId), email: seedEmail }
+            })
+          : null;
+
         let res;
         let body;
         let fetchThrew = false;
@@ -3937,6 +4114,18 @@ export function createHostedDispatcher({
             restorationRecord.indeterminateAt = new Date().toISOString();
             restorationRecord.error = fetchError?.message || String(fetchError);
           }
+          if (op && inv?.settleInFlightOperation) {
+            if (signal?.aborted || fetchError?.name === 'AbortError' || fetchError?.code === 'ETIMEDOUT') {
+              // Operation timed out / was aborted while in flight; server state is indeterminate (R14-01)
+              if (op.state === 'IN_FLIGHT') {
+                op.state = 'TIMED_OUT_UNRESOLVED';
+                op.timedOutAt = new Date().toISOString();
+                op.timeoutReason = 'DISPATCH_ABORTED_OR_TIMED_OUT';
+              }
+            } else {
+              inv.settleInFlightOperation(op.opId, { error: fetchError });
+            }
+          }
           return {
             passed: false,
             status: 0,
@@ -3955,6 +4144,10 @@ export function createHostedDispatcher({
         }
 
         const resetSucceeded = res.status === 200 && (body?.id === userId || body?.user?.id === userId);
+
+        if (op && inv?.settleInFlightOperation) {
+          inv.settleInFlightOperation(op.opId, { outcome: { status: res.status, resetSucceeded } });
+        }
 
         if (resetSucceeded) {
           if (restorationRecord) {
@@ -4484,13 +4677,22 @@ export async function runHostedProbeRunner(options = {}) {
 
       requestCount++;
 
-      // Register runner-level in-flight operation for probe (R13-02)
-      const canMint = ['HOOK-01', 'HOOK-02', 'BYPASS-03'].includes(item.id);
+      // Register runner-level in-flight operation for probe (R13-02, R14-01, R14-02)
+      const cap = Object.values(AUTH_ENDPOINT_CAPABILITIES).find(c => c.probeId === item.id) || null;
+      const canMint = cap ? Boolean(cap.canMintSession) : ['HOOK-01', 'HOOK-02', 'BYPASS-03'].includes(item.id);
+      const canCreate = cap ? Boolean(cap.canCreateUser ?? cap.canCreateUsers) : ['BYPASS-01', 'BYPASS-02'].includes(item.id);
+      const canModify = cap ? Boolean(cap.canModifyProviderState) : true;
+      const reqReconcile = cap ? Boolean(cap.requiresCleanupReconciliation) : true;
+
       const runnerOp = activeInventory?.registerInFlightOperation
         ? activeInventory.registerInFlightOperation({
             probeId: item.id,
             endpoint: item.target,
             canMintSession: canMint,
+            canCreateUser: canCreate,
+            canModifyProviderState: canModify,
+            requiresCleanupReconciliation: reqReconcile,
+            targetUserId: item.id === 'SESSION-02' && activeRunContext?.activeUserId ? String(activeRunContext.activeUserId) : null,
             description: `Runner execution for probe ${item.id}`
           })
         : null;
@@ -4577,7 +4779,12 @@ export async function runHostedProbeRunner(options = {}) {
     const cleanupSuccess = !isLive || (cleanupReport && cleanupReport.status === 'CLEANUP_VERIFIED_SUCCESS');
     if (isLive && !cleanupSuccess) {
       aborted = true;
-      abortReason = `CLEANUP_FAILURE: Test run cleanup did not verify complete resource removal. Status: ${cleanupReport?.status || 'UNKNOWN'}. Residual users: ${cleanupReport?.residualUsers?.length || 0}, Residual resources: ${cleanupReport?.residualResources?.length || 0}. Error: ${cleanupReport?.error || 'Unverified cleanup'}`;
+      const cleanupErrText = `CLEANUP_FAILURE: Test run cleanup did not verify complete resource removal. Status: ${cleanupReport?.status || 'UNKNOWN'}. Residual users: ${cleanupReport?.residualUsers?.length || 0}, Residual resources: ${cleanupReport?.residualResources?.length || 0}. Error: ${cleanupReport?.error || 'Unverified cleanup'}`;
+      if (!abortReason) {
+        abortReason = cleanupErrText;
+      } else {
+        abortReason = `${abortReason} (${cleanupErrText})`;
+      }
     }
 
     // Status is COMPLETED only if zero cases failed, all planned cases executed, and cleanup verified

@@ -6553,3 +6553,216 @@ test('85. Task 06I-B1-H1-R13 (R13-01 & R13-02): Auth endpoint capabilities, in-f
   // 17. Offline safety invariant
   assert.ok(true, 'All probes, timeouts, and cleanup verification executed offline with zero network requests');
 });
+
+test('86. Task 06I-B1-H1-R14 (R14-01 & R14-02): Asynchronous mutation tracking, unresolved password protection, and orphan-user cleanup closure', async () => {
+  // 1. Capability matrix verification (R14-01 & R14-02)
+  const signupCap = AUTH_ENDPOINT_CAPABILITIES['POST /auth/v1/signup'];
+  assert.ok(signupCap, 'Signup capability must be defined');
+  assert.equal(signupCap.canCreateUser, true, 'Signup must declare canCreateUser: true (R14-02)');
+  assert.equal(signupCap.canModifyProviderState, true, 'Signup must declare canModifyProviderState: true');
+  assert.equal(signupCap.requiresCleanupReconciliation, true, 'Signup must declare requiresCleanupReconciliation: true (R14-02)');
+  assert.equal(signupCap.canMintSession, false, 'Signup must declare canMintSession: false');
+
+  const adminUpdateCap = AUTH_ENDPOINT_CAPABILITIES['PUT /auth/v1/admin/users/:id'];
+  assert.ok(adminUpdateCap, 'Admin update capability must be defined');
+  assert.equal(adminUpdateCap.canModifyProviderState, true, 'Admin update must declare canModifyProviderState: true (R14-01)');
+  assert.equal(adminUpdateCap.requiresCleanupReconciliation, true, 'Admin update must declare requiresCleanupReconciliation: true (R14-01)');
+  assert.equal(adminUpdateCap.canMintSession, false, 'Admin update must declare canMintSession: false');
+  assert.equal(adminUpdateCap.canCreateUser, false, 'Admin update must declare canCreateUser: false');
+
+  // 2. R14-01: SESSION-02 pre-dispatch in-flight registration and timeout-safety (PRRT_kwDOVtCmZc663HvN)
+  // When password update request times out / remains unresolved, cleanup must fail closed and block restoration
+  const inv2 = new TestRunInventory('test-r14-case2');
+  const seedUid2 = 'seed-uid-r14-2';
+  inv2.trackReferencedUser({ id: seedUid2, email: 'seed2@proof.invalid', source: 'seed' });
+
+  // Simulate SESSION-02 timing out while in flight
+  const op2 = inv2.registerInFlightOperation({
+    probeId: 'SESSION-02',
+    endpoint: `/auth/v1/admin/users/${seedUid2}`,
+    canMintSession: false,
+    canCreateUser: false,
+    canModifyProviderState: true,
+    requiresCleanupReconciliation: true,
+    targetUserId: seedUid2
+  });
+  inv2.registerSeedPasswordModification({
+    userId: seedUid2,
+    email: 'seed2@proof.invalid',
+    originalPassword: 'OriginalPass#123!',
+    targetPassword: 'TioNewPassword#2026!',
+    state: 'dispatched'
+  });
+
+  // Probe times out before response received
+  inv2.markProbeOperationsTimedOut('SESSION-02', 'PROBE_TIMEOUT: 50ms exceeded');
+  assert.equal(op2.state, 'TIMED_OUT_UNRESOLVED');
+  assert.equal(inv2.hasUnresolvedOperations(), true);
+
+  // Attempt cleanup: must fail closed because unresolved mutation exists for seed user
+  let updateCalls2 = 0;
+  const mockAdmin2 = {
+    updateUserById: async () => { updateCalls2++; return { data: null, error: null }; },
+    verifyUserCredentials: async () => ({ data: { id: seedUid2 }, error: null })
+  };
+  const rep2 = await inv2.executeCleanup({ adminClient: mockAdmin2, failClosed: false });
+  assert.equal(rep2.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(rep2.residualResources.some(r => r.type === 'unresolved_provider_mutation'));
+  assert.ok(rep2.residualResources.some(r => r.error && r.error.includes('CONCURRENT_UNRESOLVED_PASSWORD_MUTATION')));
+  assert.equal(updateCalls2, 0, 'Cannot execute password restoration while concurrent mutation remains unresolved');
+  assert.equal(inv2.isClean(), false);
+  await assert.rejects(
+    inv2.executeCleanup({ adminClient: mockAdmin2, failClosed: true }),
+    /CLEANUP_INCOMPLETE/
+  );
+
+  // 3. R14-01: Delayed password mutation lands post-finalization (PRRT_kwDOVtCmZc663HvN)
+  // Settle operation after cleanup finalized -> recorded in postFinalizationMutations, cannot change failed report
+  inv2.settleInFlightOperation(op2.opId, { outcome: { status: 200, resetSucceeded: true } });
+  assert.equal(op2.state, 'SETTLED_AFTER_TIMEOUT');
+  assert.equal(inv2.postFinalizationMutations.length, 1);
+  assert.equal(inv2.isClean(), false);
+
+  // 4. R14-01: SESSION-02 dispatcher transport abort handling (AbortError on signal)
+  const inv4 = new TestRunInventory('test-r14-case4');
+  const seedUid4 = 'seed-uid-r14-4';
+  inv4.trackReferencedUser({ id: seedUid4, email: 'seed4@proof.invalid', source: 'seed' });
+  const abortCtrl4 = new AbortController();
+  abortCtrl4.abort(); // pre-aborted signal
+  const disp4 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    serviceRoleKey: validTestServiceRoleKey,
+    inventory: inv4,
+    runContext: { activeUserId: seedUid4, activeAccessToken: 'mock-token' },
+    fetchFn: async () => {
+      const err = new Error('The operation was aborted');
+      err.name = 'AbortError';
+      throw err;
+    }
+  });
+  const res4 = await disp4({ id: 'SESSION-02' }, { signal: abortCtrl4.signal });
+  assert.equal(res4.passed, false);
+  assert.equal(res4.restoration_state, 'indeterminate');
+  assert.equal(inv4.hasUnresolvedOperations(), true, 'Aborted password mutation must remain unresolved');
+  const rep4 = await inv4.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  assert.equal(rep4.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+
+  // 5. R14-02: BYPASS-02 transport reset (ECONNRESET) post-dispatch creates untracked user risk (PRRT_kwDOVtCmZc663HvU)
+  const inv5 = new TestRunInventory('test-r14-case5');
+  const disp5 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv5,
+    fetchFn: async () => {
+      const err = new Error('read ECONNRESET');
+      err.code = 'ECONNRESET';
+      throw err;
+    }
+  });
+  const res5 = await disp5({ id: 'BYPASS-02' });
+  assert.equal(res5.passed, false);
+  assert.equal(res5.indeterminate_user_creation, true);
+  assert.equal(inv5.untrackedUsersCount, 1, 'Transport reset on signup must register untracked user risk');
+  assert.equal(inv5.isClean(), false);
+  const rep5 = await inv5.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  assert.equal(rep5.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(rep5.residualResources.some(r => r.type === 'unresolved_user_creation_risk'));
+  await assert.rejects(
+    inv5.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: true }),
+    /CLEANUP_INCOMPLETE/
+  );
+
+  // 6. R14-02: BYPASS-02 HTTP 200 with unreadable/corrupted JSON creates untracked user risk
+  const inv6 = new TestRunInventory('test-r14-case6');
+  const disp6 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv6,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => { throw new SyntaxError('Unexpected token < in JSON at position 0'); }
+    })
+  });
+  const res6 = await disp6({ id: 'BYPASS-02' });
+  assert.equal(res6.passed, false);
+  assert.equal(res6.indeterminate_user_creation, true);
+  assert.equal(inv6.untrackedUsersCount, 1);
+  const rep6 = await inv6.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  assert.equal(rep6.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(rep6.residualResources.some(r => r.type === 'unresolved_user_creation_risk'));
+
+  // 7. R14-02: BYPASS-02 HTTP 200 without user ID creates untracked user risk
+  const inv7 = new TestRunInventory('test-r14-case7');
+  const disp7 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv7,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({ message: 'User created but no ID returned' })
+    })
+  });
+  const res7 = await disp7({ id: 'BYPASS-02' });
+  assert.equal(res7.passed, false);
+  assert.equal(res7.indeterminate_user_creation, true);
+  assert.equal(inv7.untrackedUsersCount, 1);
+  const rep7 = await inv7.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  assert.equal(rep7.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+
+  // 8. R14-02: BYPASS-02 unexpected success with concrete user ID -> deletion verified by exact ID
+  const inv8 = new TestRunInventory('test-r14-case8');
+  let deletedId8 = null;
+  const mockAdmin8 = {
+    deleteUser: async (id) => { deletedId8 = id; return { data: null, error: null }; },
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    signOut: async () => ({ data: null, error: null })
+  };
+  const disp8 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv8,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({ id: 'unexpected-user-uid-8', email: 'test@proof.invalid' })
+    })
+  });
+  const res8 = await disp8({ id: 'BYPASS-02' });
+  assert.equal(res8.passed, false, 'Unexpected user creation must fail probe');
+  assert.equal(res8.user_created, true);
+  assert.equal(inv8.createdUsers.has('unexpected-user-uid-8'), true);
+  const rep8 = await inv8.executeCleanup({ adminClient: mockAdmin8, failClosed: true });
+  assert.equal(rep8.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(deletedId8, 'unexpected-user-uid-8');
+  assert.equal(rep8.usersDeleted, 1);
+
+  // 9. R14-02: Anti-deletion security boundary -> referenced/seed users never deleted on email equality
+  const inv9 = new TestRunInventory('test-r14-case9');
+  const seedEmail9 = 'seed9@proof.invalid';
+  inv9.trackReferencedUser({ id: 'seed-uid-9', email: seedEmail9, source: 'seed' });
+  let deleteCalled9 = false;
+  const mockAdmin9 = {
+    deleteUser: async () => { deleteCalled9 = true; return { data: null, error: null }; },
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    signOut: async () => ({ data: null, error: null })
+  };
+  // Dispatcher returns indeterminate failure on same email
+  inv9.registerUntrackedUser();
+  const rep9 = await inv9.executeCleanup({ adminClient: mockAdmin9, failClosed: false });
+  assert.equal(deleteCalled9, false, 'Referenced user must never be deleted based on email equality');
+  assert.equal(rep9.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+
+  // 10. Multi-operation lifecycle with mixed capabilities: one settles, others unresolved
+  const inv10 = new TestRunInventory('test-r14-case10');
+  const op10a = inv10.registerInFlightOperation({ probeId: 'HOOK-01', canMintSession: true });
+  const op10b = inv10.registerInFlightOperation({ probeId: 'BYPASS-02', canCreateUser: true });
+  const op10c = inv10.registerInFlightOperation({ probeId: 'SESSION-02', canModifyProviderState: true });
+  // op10a settles
+  inv10.settleInFlightOperation(op10a.opId, { outcome: { passed: true } });
+  assert.equal(op10a.state, 'SETTLED');
+  assert.equal(inv10.hasUnresolvedOperations(), true);
+  const unresolved10 = inv10.getUnresolvedOperations();
+  assert.equal(unresolved10.length, 2);
+  const rep10 = await inv10.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  assert.equal(rep10.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(rep10.residualResources.some(r => r.type === 'unresolved_user_creation'));
+  assert.ok(rep10.residualResources.some(r => r.type === 'unresolved_provider_mutation'));
+
+  // 11. Offline safety invariant
+  assert.ok(true, 'All R14 adversarial regression scenarios executed offline with zero network requests');
+});

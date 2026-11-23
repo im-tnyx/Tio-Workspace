@@ -1,15 +1,15 @@
-# Phase 1.2 Task 06I-B1-H1-R13 — In-Flight Auth Request Tracking & Timeout-Safe Cleanup Closure
+# Phase 1.2 Task 06I-B1-H1-R14 — Asynchronous Mutation & Orphan-User Cleanup Closure
 
-> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R13. All outstanding review findings across PR #37 (including Codex P2 finding `PRRT_kwDOVtCmZc66vvkp` on verify endpoint session minting and Codex P2 finding `PRRT_kwDOVtCmZc66vvky` on in-flight timeout-versus-cleanup race closure) are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
+> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R14. All outstanding review findings across PR #37 (including Codex P2 finding `PRRT_kwDOVtCmZc663HvN` on unresolved password mutation cleanup blocking and Codex P2 finding `PRRT_kwDOVtCmZc663HvU` on indeterminate signup user-creation retention) are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **LOCAL REMEDIATION COMPLETE (REVISION R13); ALL REVIEW FINDINGS RESOLVED (R13-01 CODEX P2: AUTH ENDPOINT CAPABILITY MATRIX AND VERIFY SESSION-MINTING SEMANTICS WITH `canMintSession=true` ON BYPASS-03; R13-02 CODEX P2: IN-FLIGHT OPERATION LIFECYCLE, PRE-DISPATCH OBLIGATION REGISTRATION, TIMEOUT-SAFE CLEANUP, MANDATORY REPRODUCTION PASSING (5ms timeout with 20ms delayed response body cannot return CLEANUP_VERIFIED_SUCCESS, fails closed with CLEANUP_FAILED_RESIDUAL_RESOURCES); LATE POST-FINALIZATION MUTATIONS PREVENTED FROM SILENT CLEANUP OVERRIDE); 89/89 RUNNER TESTS PASS; 157/157 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
-| Objective | Remediate Codex P2 review findings `PRRT_kwDOVtCmZc66vvkp` (R13-01: verify endpoint session minting and capability matrix) and `PRRT_kwDOVtCmZc66vvky` (R13-02: in-flight operation tracking and timeout-safe cleanup) on PR #37 without executing any live hosted mutations. |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R13 slice |
-| Previous agent | Agent / Task 06I-B1-H1-R12 author |
-| Last audited HEAD | `c53d5d3cf842aca442520fcac5e049cc8e907654` (PR #37 previous commit) |
-| Tracking / approval | Task 06I-B1-H1-R10 remediation authorized by user prompt; LIVE hosted probe execution requires separate explicit owner authorization; mandates $0 cost ceiling and permanent immunity for `Tio-world` (`oykupyiitspujzpwwvuj`) and REAL `bsfwzvgynwriswapxpsp` |
+| Status | **LOCAL REMEDIATION COMPLETE (REVISION R14); ALL REVIEW FINDINGS RESOLVED (R14-01 CODEX P2 `PRRT_kwDOVtCmZc663HvN`: UNRESOLVED PASSWORD MUTATION BLOCKS CLEANUP SUCCESS, PRE-DISPATCH IN-FLIGHT REGISTRATION, CONCURRENT PASSWORD MUTATION AUDIT IN STEP 6, ABORT/TIMEOUT STATE RETENTION, POST-FINALIZATION IMMUTABILITY; R14-02 CODEX P2 `PRRT_kwDOVtCmZc663HvU`: INDETERMINATE SIGNUP RETAINS USER-CREATION OBLIGATION ACROSS TRANSPORT RESETS, UNREADABLE RESPONSES, AND MISSING USER IDS; UNTRACKED USER CREATION RISK FAILS CLEANUP CLOSED; PRE-EXISTING ACCOUNTS PRESERVED AGAINST EMAIL EQUALITY DELETION); 90/90 RUNNER TESTS PASS; 158/158 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
+| Objective | Remediate Codex P2 review findings `PRRT_kwDOVtCmZc663HvN` (R14-01: block cleanup success for unresolved password mutations) and `PRRT_kwDOVtCmZc663HvU` (R14-02: retain indeterminate user-creation obligations after signup) on PR #37 without executing any live hosted mutations. |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R14 slice |
+| Previous agent | Agent / Task 06I-B1-H1-R13 author |
+| Last audited HEAD | `2e2e23cec2717ce79850ddc04879c6e9d503a36b` (PR #37 previous commit) |
+| Tracking / approval | Task 06I-B1-H1-R14 remediation authorized by user prompt; LIVE hosted probe execution requires separate explicit owner authorization; mandates $0 cost ceiling and permanent immunity for `Tio-world` (`oykupyiitspujzpwwvuj`) and REAL `bsfwzvgynwriswapxpsp` |
 | Branch | `test/task06i-b1-h1-hosted-security-preflight` |
 | Base SHA / inspected HEAD | `716fb32061ffb6012d17eae9453c822a281fe6f1` (`main`) |
 | Platform and file scope | Documentation, `.ai/` context, runner CLI hardening & LIVE dispatcher contract in `experiments/task06i/hosted-probe-runner.mjs`, testbed fixture specification in `experiments/task06i/sql/testbed-fixtures.sql`, and offline verification tests in `experiments/task06i/hosted-probe-runner.test.mjs`; zero client Expo UI, production schema, or live Auth mutations |
@@ -573,6 +573,26 @@ Compact invariant matrix verifying the 10 lifecycle invariant classes across cod
   7. Mandatory reproduction test passing: 5ms probe timeout with 20ms delayed response body cannot return `CLEANUP_VERIFIED_SUCCESS`, fails closed with `CLEANUP_FAILED_RESIDUAL_RESOURCES`.
   8. Added comprehensive regression Test 85 with 17 offline regression scenarios.
 
+### 7.16 Revision R14 Remediation Details
+
+- **R14-01 — Block Cleanup Success for Unresolved Password Mutations (Codex P2, `PRRT_kwDOVtCmZc663HvN`):**
+  1. Identified that when `SESSION-02` issued an Admin password update (`PUT /auth/v1/admin/users/:id`), previously an unresolved operation was ignored during cleanup because `canMintSession === false`. Cleanup then called `updateUserById` to restore the original password and reported `CLEANUP_VERIFIED_SUCCESS`, while a delayed `PUT` request could commit afterwards and overwrite the restored password.
+  2. Classified `PUT /auth/v1/admin/users/:id` in `AUTH_ENDPOINT_CAPABILITIES` as state-mutating: `canModifyProviderState: true`, `requiresCleanupReconciliation: true`, `canMintSession: false`, `canCreateUser: false`.
+  3. Pre-dispatch in-flight operation registration: `createHostedDispatcher` registers operation with `canModifyProviderState: true`, `requiresCleanupReconciliation: true`, and `targetUserId: String(userId)` before network dispatch. Password values are never exposed in logs or operation metadata.
+  4. Abort and timeout safety: on timeout or AbortController abort, the operation is transitioned to `TIMED_OUT_UNRESOLVED` and never assumed to have rolled back server-side.
+  5. Audit in `executeCleanup`: Step 0C flags unresolved provider mutations (`unresolved_provider_mutation`) in `residualResources`. Step 6 specifically checks if any unresolved operation targets `item.userId`: if an unresolved mutation is pending, password restoration cannot be verified, `item.state` transitions to `'restoration_failed'`, `CONCURRENT_UNRESOLVED_PASSWORD_MUTATION` is recorded, and cleanup fails closed with `CLEANUP_FAILED_RESIDUAL_RESOURCES`.
+  6. Late settlement immutability: any mutation settling post-finalization is recorded in `postFinalizationMutations` and cannot override a finalized cleanup failure report.
+
+- **R14-02 — Retain Indeterminate User-Creation Obligations After Signup (Codex P2, `PRRT_kwDOVtCmZc663HvU`):**
+  1. Identified that `BYPASS-02` calls `POST /auth/v1/signup`, which creates user records even when no session token is issued. Previously, `canMintSession: false` caused transport errors (`ECONNRESET`), timeouts, or unreadable bodies to be treated as generic provider failures, leaving the inventory empty and reporting false `CLEANUP_VERIFIED_SUCCESS` while an orphaned user was created on the provider.
+  2. Classified `POST /auth/v1/signup` in `AUTH_ENDPOINT_CAPABILITIES` with `canCreateUser: true`, `canModifyProviderState: true`, `requiresCleanupReconciliation: true`, and `canMintSession: false`.
+  3. Added `untrackedUsersCount` tracking and `registerUntrackedUser()` in `TestRunInventory`.
+  4. In `createHostedDispatcher` for `BYPASS-02`: registered in-flight operation with `canCreateUser: true` before dispatch.
+  5. In `observeAuthResponse`: on transport reset (`ECONNRESET`), unreadable JSON, or HTTP 200 without user ID, if `canCreateUser: true`, `inv.registerUntrackedUser()` is called and the response is classified as `AUTH_RESPONSE_INDETERMINATE`.
+  6. Audit in `executeCleanup`: Step 0B records `unresolved_user_creation_risk` when `untrackedUsersCount > 0`, and Step 0C records `unresolved_user_creation` for unresolved in-flight ops with `canCreateUser: true`. Cleanup fails closed with `CLEANUP_FAILED_RESIDUAL_RESOURCES` and throws `CLEANUP_INCOMPLETE` under `failClosed: true`.
+  7. Deletion safety boundary: only concrete user IDs observed as created this run are deletion-eligible. Pre-existing referenced and seed accounts are strictly preserved and never deleted based on email equality.
+  8. Added comprehensive regression Test 86 with 11 offline regression scenarios.
+
 ---
 
 ## 8. Verification Evidence Matrix
@@ -581,10 +601,10 @@ All verification checks were run locally and passed completely:
 
 ```bash
 node --test experiments/task06i/hosted-probe-runner.test.mjs
-# 89 passed, 0 failed, exit code 0 (including Tests 82, 83, 84, and 85)
+# 90 passed, 0 failed, exit code 0 (including Tests 82, 83, 84, 85, and 86)
 
 node --test experiments/task06i/*.test.mjs
-# 157 passed, 0 failed, exit code 0
+# 158 passed, 0 failed, exit code 0
 
 node experiments/task06i/sql-contract-parity.mjs
 # Status: POSTGRES_VERIFIED, 18/18 matched parity, exit code 0
@@ -603,7 +623,7 @@ git diff --check origin/main...HEAD
 
 ## 9. GitHub CI Status
 
-- **Status:** **4/4 CHECKS PASS** on remote commit `c53d5d3cf842aca442520fcac5e049cc8e907654`:
+- **Status:** **4/4 CHECKS PASS** on remote commit `2e2e23cec2717ce79850ddc04879c6e9d503a36b`:
   1. `Attribution guard runner`: **PASS**
   2. `Commit attribution fixture tests`: **PASS**
   3. `Commit attribution guard` (App-owned required check ID `5032971`): **PASS**
@@ -624,12 +644,12 @@ git diff --check origin/main...HEAD
   - Project deletion perform nahi hua hai.
 
 **Readiness State:**
-- **Code readiness:** READY (Revision R13)
-- **GitHub CI:** PASS (4/4 on remote HEAD `c53d5d3`)
+- **Code readiness:** READY (Revision R14)
+- **GitHub CI:** PASS (4/4 on remote HEAD `2e2e23c`)
 - **Independent review:** PENDING (`im-tio`)
 - **Hosted testing:** NOT_AUTHORIZED
 - **Production Auth:** STRICT NO-GO
 
 **Decision:** **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**
 
-> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all outstanding review findings (including Codex P2 finding `PRRT_kwDOVtCmZc66vvkp` on verify session minting and `PRRT_kwDOVtCmZc66vvky` on in-flight timeout-safe cleanup race closure) is complete and fully covered by offline regression tests (89/89 runner tests, 157/157 task06i tests pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution. Awaiting independent re-review from `im-tio`.
+> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all outstanding review findings (including Codex P2 finding `PRRT_kwDOVtCmZc663HvN` on unresolved password mutation cleanup blocking and `PRRT_kwDOVtCmZc663HvU` on indeterminate signup user-creation retention) is complete and fully covered by offline regression tests (90/90 runner tests, 158/158 task06i tests pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution. Awaiting independent re-review from `im-tio`.
