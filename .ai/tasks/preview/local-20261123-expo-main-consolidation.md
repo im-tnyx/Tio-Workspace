@@ -88,3 +88,14 @@ base event handles label application and eligible pushes without a separate
 feature-branch signal. OTA export is separated from EAS credentials, and build
 and publish stay owner-dispatched. The already working legacy fallback remains
 available until acceptance. The PR records exact-head validation and review.
+
+## Live recovery add-on
+
+The owner approved exact already-running Codespaces conflict handling and a
+ten-minute verified start deadline. The trusted remote starter now shares one
+Linux lock across ownership verification, checkout and Metro startup. Stale
+records recover only when the recorded process and group are absent and the
+Metro port is free. Ambiguous ownership fails closed. Regression fixtures cover
+the 409, deadline, stopped wake with stale record, PID reuse, foreign port,
+record changes, concurrent manual/push sync and healthy reuse. Hosted wake and
+phone verification remain acceptance checks.

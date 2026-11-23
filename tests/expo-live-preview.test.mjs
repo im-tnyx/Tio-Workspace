@@ -265,13 +265,15 @@ test('Git validation fetches objects and compares trees without switching the ru
   assert.doesNotMatch(text, /git (?:switch|checkout|reset)|secrets\./);
 });
 
-test('remote sync refuses dirty or named feature worktrees and requires trusted dependencies', () => {
-  const text = readRepoFile('.github/scripts/sync-expo-pr-live-preview.sh');
-  assert.match(text, /git status --porcelain=v1 --untracked-files=normal/);
-  assert.match(text, /switch --detach --no-overwrite-ignore/);
-  assert.match(text, /test "\$\(git rev-parse HEAD\)" = "\$target_sha"\nrequire_clean_worktree/);
-  assert.match(text, /git diff --quiet "\$trusted_sha" "\$target_sha" -- scripts\/start-codespace-expo\.mjs package\.json package-lock\.json/);
-  assert.match(text, /dependency-manifests\.sha256/);
-  assert.match(text, /node scripts\/start-codespace-expo\.mjs/);
-  assert.doesNotMatch(text, /git (?:reset|clean|stash)|EXPO_TOKEN|CODESPACES_TOKEN|npm ci/);
+test('remote sync loads only the trusted main starter and locks before workspace changes', () => {
+  const sync = readRepoFile('.github/scripts/sync-expo-pr-live-preview.sh');
+  const starter = readRepoFile('scripts/start-codespace-expo.mjs');
+  assert.match(sync, /git diff --quiet "\$trusted_sha" "\$target_sha" -- "\$\{runtime_files\[@\]\}" package\.json package-lock\.json/);
+  assert.match(sync, /git show "\$trusted_sha:\$file"/);
+  assert.match(sync, /node "\$runtime_dir\/start-codespace-expo\.mjs" --sync/);
+  assert.match(starter, /git\('status', '--porcelain=v1', '--untracked-files=normal'\)/);
+  assert.match(starter, /'switch', '--detach', '--no-overwrite-ignore'/);
+  assert.match(starter, /withMetroLock\(stateDirectory, async \(\) =>/);
+  assert.match(starter, /dependency-manifests\.sha256/);
+  assert.doesNotMatch(sync, /git (?:reset|clean|stash)|EXPO_TOKEN|CODESPACES_TOKEN|npm ci/);
 });

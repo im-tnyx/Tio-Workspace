@@ -125,36 +125,7 @@ jobs:
           GH_TOKEN: ${{ secrets.PR_PREVIEW_CODESPACES_TOKEN }}
           CODESPACE_NAME: ${{ vars.TNYX_PR_CODESPACE_NAME }}
           CODESPACE_ID: ${{ vars.TNYX_PR_CODESPACE_ID }}
-        run: |
-          set -euo pipefail
-          [[ -n "$GH_TOKEN" && "$CODESPACE_NAME" =~ ^[a-z0-9-]+$ && "$CODESPACE_ID" =~ ^[1-9][0-9]*$ ]] || {
-            echo '::error::Configure the dedicated Codespace ID, name and environment token.'
-            exit 1
-          }
-          read_state() {
-            gh api "/user/codespaces/$CODESPACE_NAME" | jq -er --arg name "$CODESPACE_NAME" --arg id "$CODESPACE_ID" '
-              select(.name == $name and (.id | tostring) == $id and
-                .display_name == "TNYX PR Preview Only" and
-                .repository.full_name == "im-tnyx/Tio-Workspace" and .owner.login == "im-tnyx") | .state'
-          }
-          state="$(read_state)"
-          echo "Initial Codespace state: $state"
-          case "$state" in
-            Shutdown) gh api --method POST "/user/codespaces/$CODESPACE_NAME/start" >/dev/null ;;
-            Available|Starting) ;;
-            *) echo '::error::Dedicated Codespace is in an unexpected state.'; exit 1 ;;
-          esac
-          for attempt in $(seq 1 120); do
-            state="$(read_state)"
-            if [[ "$state" == "Available" ]]; then
-              echo "name=$CODESPACE_NAME" >> "$GITHUB_OUTPUT"
-              exit 0
-            fi
-            if [[ "$state" == "Deleted" || "$state" == "Failed" ]]; then exit 1; fi
-            sleep 5
-          done
-          echo '::error::Dedicated Codespace did not become Available.'
-          exit 1
+        run: bash .github/scripts/start-preview-codespace.sh
 
       - name: Revalidate immediately before remote execution
         env:

@@ -28,48 +28,26 @@ if [[ "$origin" != "$expected_origin" &&
   exit 1
 fi
 
-active_branch="$(git branch --show-current)"
-if [[ -n "$active_branch" && "$active_branch" != "main" ]]; then
-  printf 'Refusing preview: expected a dedicated main-based or detached preview worktree, found %s.\n' "$active_branch" >&2
-  exit 1
-fi
-
-require_clean_worktree() {
-  local worktree_status
-  worktree_status="$(git status --porcelain=v1 --untracked-files=normal)"
-  if [[ -n "$worktree_status" ]]; then
-    printf 'Refusing preview: dedicated Codespace has uncommitted or untracked work.\n' >&2
-    exit 1
-  fi
-}
-require_clean_worktree
-
 git -c core.hooksPath=/dev/null fetch --no-tags --no-recurse-submodules origin "$target_sha"
 if [[ "$(git rev-parse 'FETCH_HEAD^{commit}')" != "$target_sha" ]]; then
   printf 'Refusing preview: fetched commit differs from immutable PR SHA.\n' >&2
   exit 1
 fi
 
-# Validate the trusted starter and dependency manifests before changing files.
+# Load the validated main programs before the checkout. The starter holds
+# the local ownership lock through preflight, checkout and Metro reuse/start.
+readonly runtime_files=(
+  scripts/start-codespace-expo.mjs
+  scripts/codespace-metro-ownership.mjs
+  scripts/stop-owned-metro.py
+)
 git merge-base --is-ancestor "$trusted_sha" "$target_sha"
-git diff --quiet "$trusted_sha" "$target_sha" -- scripts/start-codespace-expo.mjs package.json package-lock.json
-if ! git diff --quiet HEAD "$trusted_sha" -- package.json package-lock.json; then
-  printf 'Refusing preview: reviewed main has different dependency manifests.\n' >&2
-  exit 1
-fi
+git diff --quiet "$trusted_sha" "$target_sha" -- "${runtime_files[@]}" package.json package-lock.json
+runtime_dir="$(mktemp -d)"
+trap 'rm -rf -- "$runtime_dir"' EXIT
+for file in "${runtime_files[@]}"; do
+  git show "$trusted_sha:$file" > "$runtime_dir/${file##*/}"
+done
 
-readonly dependency_marker="${HOME}/.cache/tnyx-expo-preview/dependency-manifests.sha256"
-dependency_hash="$(sha256sum package.json package-lock.json | sha256sum | cut -d ' ' -f 1)"
-if [[ ! -x node_modules/.bin/expo || ! -f "$dependency_marker" || "$(<"$dependency_marker")" != "$dependency_hash" ]]; then
-  printf 'Refusing preview: bootstrap dependencies for the reviewed main lockfile first.\n' >&2
-  exit 1
-fi
-
-if [[ -n "$active_branch" || "$(git rev-parse HEAD)" != "$target_sha" ]]; then
-  git -c core.hooksPath=/dev/null switch --detach --no-overwrite-ignore --no-recurse-submodules "$target_sha"
-fi
-test "$(git rev-parse HEAD)" = "$target_sha"
-require_clean_worktree
-
-node scripts/start-codespace-expo.mjs
+node "$runtime_dir/start-codespace-expo.mjs" --sync "$target_sha" "$trusted_sha"
 printf 'Dedicated worktree synced to %s and Expo tunnel is ready.\n' "$target_sha"

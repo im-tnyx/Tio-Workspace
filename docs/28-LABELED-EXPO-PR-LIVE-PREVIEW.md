@@ -104,6 +104,26 @@ this workflow. Preview policy tests run with the existing shell checks.
    environment inputs for JavaScript export. EAS builds only queue from manual
    dispatch and may consume the owner's EAS quota.
 
+## Live wake and Metro recovery
+
+The wake step verifies Codespace identity on every poll. The exact GitHub CLI
+already-running HTTP 409 response allows polling to continue. Availability
+must still be confirmed. If the deadline expires, the run fails with
+`START_TIMEOUT` and does not proceed to SSH.
+
+The Codespace starter keeps a private `metro.json` record and a Linux
+`flock` shared by preflight, checkout and startup. It clears a stale record
+only after verifying the recorded PID and process group are absent and the
+Metro port has no listener. A live process needs matching boot and process
+identity plus listener ownership before it can be reused. PID reuse, a
+foreign listener, changed state files or incomplete evidence stop the run.
+Explicit stop and restart use Python 3 Linux pidfds for verified process
+instances. If that support is unavailable, the stop fails closed.
+
+Use a new dedicated Codespace for the merged flow. If a workspace still has
+a legacy `metro.pid`, stop its old trusted starter before upgrading. The
+new starter does not adopt a process from the old PID-only record.
+
 ## Acceptance before retiring the legacy path
 
 | Scenario | Evidence to record |
@@ -112,7 +132,7 @@ this workflow. Preview policy tests run with the existing shell checks.
 | Label and owner push | Apply the label once, push new source, and record the Live run URLs and exact served SHAs |
 | Unrelated activity | Non-preview labels, unlabeled PR pushes, forks and non-owner events do not enter Live or EAS jobs |
 | EAS modes | Verify a requested OTA lands on `pr-preview` and a compatible install loads it. Verify a requested internal build queues the selected platform with existing signing |
-| Stopped Codespace wake | Confirm dedicated Codespace is stopped, push eligible source, capture initial `Shutdown` followed by `Available` and successful sync |
+| Stopped Codespace wake | Confirm dedicated Codespace is stopped, push eligible source, capture `Shutdown` followed by verified `Available` and successful sync. Record stale Metro recovery if its previous PID is gone |
 | Real device refresh | Owner records device OS, Expo Go version, PR SHA, visible mock UI change and whether refresh required reopening or manual reload |
 | Invalid or unauthorized PR | Missing label, stale SHA, second labeled PR or out-of-scope changes are rejected before wake or SSH. A non-owner dispatch skips the privileged path |
 | Isolation | Confirm the old Codespace and tunnel remain usable and EAS preview configuration is intact |
