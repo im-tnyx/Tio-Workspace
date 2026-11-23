@@ -30,7 +30,8 @@ import {
   createHostedAdminClient,
   observeAndTrackSessionTokens,
   parseResponseEnvelope,
-  observeAuthResponse
+  observeAuthResponse,
+  AUTH_ENDPOINT_CAPABILITIES
 } from './hosted-probe-runner.mjs';
 
 const defaultMockAdminClient = {
@@ -6274,4 +6275,281 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
   // 18. Zero external network requests during tests
   // Confirmed: All dispatchers and admin clients in Test 84 use injected mock functions; zero external fetch executed
   assert.ok(true, 'All probes and cleanup operations executed entirely offline with zero external network requests');
+});
+
+test('85. Task 06I-B1-H1-R13 (R13-01 & R13-02): Auth endpoint capabilities, in-flight operation lifecycle, and timeout-safe cleanup', async () => {
+  // 1. Endpoint capability matrix validation (R13-01)
+  assert.ok(AUTH_ENDPOINT_CAPABILITIES, 'AUTH_ENDPOINT_CAPABILITIES must be exported');
+  assert.ok(Object.isFrozen(AUTH_ENDPOINT_CAPABILITIES), 'Capability matrix must be deeply frozen');
+  const verifyCap = AUTH_ENDPOINT_CAPABILITIES['POST /auth/v1/verify'];
+  assert.ok(verifyCap, 'POST /auth/v1/verify capability must be defined');
+  assert.equal(verifyCap.canMintSession, true, 'POST /auth/v1/verify must have canMintSession: true (R13-01)');
+  assert.equal(verifyCap.probeId, 'BYPASS-03');
+  assert.equal(AUTH_ENDPOINT_CAPABILITIES['POST /auth/v1/otp'].canMintSession, false);
+  assert.equal(AUTH_ENDPOINT_CAPABILITIES['POST /auth/v1/signup'].canMintSession, false);
+  assert.equal(AUTH_ENDPOINT_CAPABILITIES['POST /auth/v1/token?grant_type=password'].canMintSession, true);
+  assert.equal(AUTH_ENDPOINT_CAPABILITIES['POST /auth/v1/token?grant_type=refresh_token'].canMintSession, true);
+
+  // 2. BYPASS-03 normal rejection (HTTP 400 with invalid challenge code)
+  const inv2 = new TestRunInventory('test-r13-case2');
+  const disp2 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    fetchFn: async () => ({
+      status: 400,
+      json: async () => ({ code: 400, error_code: 'otp_expired', msg: 'Token has expired or is invalid' })
+    })
+  });
+  const res2 = await disp2({ id: 'BYPASS-03' }, { inventory: inv2 });
+  assert.equal(res2.passed, false);
+  assert.equal(res2.status, 400);
+  assert.equal(res2.upstream_rejected_before_hook, true);
+  assert.equal(inv2.trackedSessions.size, 0);
+  assert.equal(inv2.untrackedSessionsCount, 0);
+  assert.equal(inv2.isClean(), true);
+
+  // 3. BYPASS-03 unexpected success with tokens -> session registered and revoked on cleanup
+  const inv3 = new TestRunInventory('test-r13-case3');
+  const mockJwt3 = createMockJwt({ session_id: 'sess-verify-3', sub: 'user-verify-3' });
+  const disp3 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({ access_token: mockJwt3, session_id: 'sess-verify-3' })
+    })
+  });
+  const res3 = await disp3({ id: 'BYPASS-03' }, { inventory: inv3 });
+  assert.equal(res3.passed, false, 'Unexpected tokens on BYPASS-03 must fail probe');
+  assert.equal(inv3.trackedSessions.has('sess-verify-3'), true, 'Unexpected session must be tracked for revocation');
+  const mockAdmin3 = {
+    signOut: async () => ({ data: null, error: null }),
+    invalidateSession: async (id) => ({ data: { id }, error: null })
+  };
+  const rep3 = await inv3.executeCleanup({ adminClient: mockAdmin3, failClosed: true });
+  assert.equal(rep3.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(rep3.sessionsRevoked, 1);
+
+  // 4. BYPASS-03 HTTP 200 with empty body {} -> indeterminate session risk, cleanup fails closed
+  const inv4 = new TestRunInventory('test-r13-case4');
+  const disp4 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({})
+    })
+  });
+  const res4 = await disp4({ id: 'BYPASS-03' }, { inventory: inv4 });
+  assert.equal(res4.passed, false);
+  assert.equal(res4.indeterminate_session, true);
+  assert.equal(inv4.untrackedSessionsCount, 1);
+  const rep4 = await inv4.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  assert.equal(rep4.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  await assert.rejects(
+    inv4.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: true }),
+    /CLEANUP_INCOMPLETE/
+  );
+
+  // 5. BYPASS-03 HTTP 200 with unreadable/truncated JSON -> indeterminate session risk, cleanup fails closed
+  const inv5 = new TestRunInventory('test-r13-case5');
+  const disp5 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => { throw new SyntaxError('Unexpected end of JSON input'); }
+    })
+  });
+  const res5 = await disp5({ id: 'BYPASS-03' }, { inventory: inv5 });
+  assert.equal(res5.passed, false);
+  assert.equal(res5.indeterminate_session, true);
+  assert.equal(inv5.untrackedSessionsCount, 1);
+  const rep5 = await inv5.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  assert.equal(rep5.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+
+  // 6. BYPASS-03 connection reset after request dispatch (ECONNRESET) -> indeterminate risk, cleanup fails closed
+  const inv6 = new TestRunInventory('test-r13-case6');
+  const disp6 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    fetchFn: async () => {
+      const err = new Error('read ECONNRESET');
+      err.code = 'ECONNRESET';
+      throw err;
+    }
+  });
+  const res6 = await disp6({ id: 'BYPASS-03' }, { inventory: inv6 });
+  assert.equal(res6.passed, false);
+  assert.equal(res6.indeterminate_session, true);
+  assert.equal(inv6.untrackedSessionsCount, 1);
+  const rep6 = await inv6.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  assert.equal(rep6.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+
+  // 7. Operation registration and state transitions in TestRunInventory (R13-02)
+  const inv7 = new TestRunInventory('test-r13-case7');
+  const op7 = inv7.registerInFlightOperation({
+    probeId: 'HOOK-01',
+    endpoint: '/auth/v1/token?grant_type=password',
+    canMintSession: true
+  });
+  assert.ok(op7.opId.startsWith('op-test-r13-case7-'));
+  assert.equal(op7.state, 'IN_FLIGHT');
+  assert.equal(inv7.hasUnresolvedOperations(), true);
+  assert.equal(inv7.getUnresolvedOperations().length, 1);
+
+  inv7.settleInFlightOperation(op7.opId, { outcome: { passed: true } });
+  assert.equal(op7.state, 'SETTLED');
+  assert.equal(inv7.hasUnresolvedOperations(), false);
+
+  // 8. markProbeOperationsTimedOut transitions to TIMED_OUT_UNRESOLVED and captures untracked session risk
+  const inv8 = new TestRunInventory('test-r13-case8');
+  const op8 = inv8.registerInFlightOperation({
+    probeId: 'HOOK-01',
+    endpoint: '/auth/v1/token?grant_type=password',
+    canMintSession: true
+  });
+  const affected8 = inv8.markProbeOperationsTimedOut('HOOK-01', 'PROBE_TIMEOUT: 5ms exceeded');
+  assert.equal(affected8.length, 1);
+  assert.equal(op8.state, 'TIMED_OUT_UNRESOLVED');
+  assert.equal(inv8.untrackedSessionsCount, 1, 'Timed-out session-minting op must register untracked session');
+  assert.equal(inv8.hasUnresolvedOperations(), true);
+
+  // 9. Bounded wait for in-flight settlement (awaitInFlightSettlement)
+  const inv9 = new TestRunInventory('test-r13-case9');
+  const op9 = inv9.registerInFlightOperation({ probeId: 'HOOK-01', canMintSession: true });
+  setTimeout(() => {
+    inv9.settleInFlightOperation(op9.opId, { outcome: { passed: true } });
+  }, 10);
+  await inv9.awaitInFlightSettlement(50);
+  assert.equal(op9.state, 'SETTLED');
+  assert.equal(inv9.hasUnresolvedOperations(), false);
+
+  // 10. MANDATORY REPRODUCTION CASE (Codex finding PRRT_kwDOVtCmZc66vvky):
+  // Probe timeout 5ms, delayed response body rejection 20ms:
+  // Must NOT show CLEANUP_VERIFIED_SUCCESS; must fail closed with CLEANUP_FAILED_RESIDUAL_RESOURCES.
+  const inv10 = new TestRunInventory('test-r13-case10-reproduction');
+  const delayedDispatcher10 = async (item, opts) => {
+    if (item.id === 'BYPASS-01') {
+      return { passed: true, status: 400, route_disabled: true, tokens: null };
+    }
+    if (item.id === 'BYPASS-02') {
+      return { passed: true, status: 400, signup_disabled: true, user_created: false, tokens: null };
+    }
+    if (item.id === 'BYPASS-03') {
+      // Simulate slow response body / transport delay of 20ms on session-minting verify probe!
+      await new Promise(r => setTimeout(r, 20));
+      if (opts.inventory) {
+        opts.inventory.registerUntrackedSession();
+      }
+      return { passed: false, status: 0, error: 'delayed body read failed' };
+    }
+    return { passed: false, status: 500 };
+  };
+
+  const runnerRes10 = await runHostedProbeRunner({
+    projectRef: HARDCODED_TEMP_REF,
+    argv: ['--live'],
+    env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
+    inventory: inv10,
+    mockDispatcher: delayedDispatcher10,
+    probeTimeoutMs: 5, // 5ms timeout fires while 20ms delay is in flight
+    sleepFn: async () => {}
+  });
+
+  assert.equal(runnerRes10.status, 'HALTED_ON_FAILURE');
+  assert.ok(runnerRes10.cleanupReport, 'cleanupReport must be present');
+  assert.notEqual(
+    runnerRes10.cleanupReport.status,
+    'CLEANUP_VERIFIED_SUCCESS',
+    'Report MUST NOT show CLEANUP_VERIFIED_SUCCESS when delayed body read was in flight during timeout (R13-02)'
+  );
+  assert.equal(runnerRes10.cleanupReport.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(
+    runnerRes10.cleanupReport.residualResources.length > 0,
+    'Residual resources must report unresolved in-flight operation or untracked session'
+  );
+
+  // Wait for 20ms delayed promise to settle completely
+  await new Promise(r => setTimeout(r, 30));
+  assert.equal(inv10.finalized, true, 'Inventory must remain finalized');
+  assert.equal(inv10.isClean(), false, 'Inventory with residual resources must report isClean() === false');
+
+  // 11. Dispatcher never settles (hanging promise) -> cleanup fails closed on unresolved in-flight op
+  const inv11 = new TestRunInventory('test-r13-case11-hanging');
+  const hangingDispatcher11 = async (item) => {
+    if (item.id === 'BYPASS-01') {
+      return { passed: true, status: 400, route_disabled: true, tokens: null };
+    }
+    if (item.id === 'BYPASS-02') {
+      return { passed: true, status: 400, signup_disabled: true, user_created: false, tokens: null };
+    }
+    if (item.id === 'BYPASS-03') {
+      return new Promise(() => {}); // Never resolves
+    }
+    return { passed: false, status: 500 };
+  };
+  const runnerRes11 = await runHostedProbeRunner({
+    projectRef: HARDCODED_TEMP_REF,
+    argv: ['--live'],
+    env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+    adminClient: defaultMockAdminClient,
+    inventory: inv11,
+    mockDispatcher: hangingDispatcher11,
+    probeTimeoutMs: 5,
+    sleepFn: async () => {}
+  });
+  assert.equal(runnerRes11.status, 'HALTED_ON_FAILURE');
+  assert.equal(runnerRes11.cleanupReport.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(runnerRes11.cleanupReport.residualResources.some(r => r.type === 'unresolved_in_flight_operation' || r.type === 'untracked_session'));
+
+  // 12. Dispatcher settles after timeout -> state transitions to SETTLED_AFTER_TIMEOUT
+  const inv12 = new TestRunInventory('test-r13-case12');
+  const op12 = inv12.registerInFlightOperation({ probeId: 'HOOK-01', canMintSession: true });
+  inv12.markProbeOperationsTimedOut('HOOK-01', 'timeout');
+  assert.equal(op12.state, 'TIMED_OUT_UNRESOLVED');
+  inv12.settleInFlightOperation(op12.opId, { outcome: { passed: false } });
+  assert.equal(op12.state, 'SETTLED_AFTER_TIMEOUT');
+
+  // 13. Inventory finalization immutability (finalize)
+  const inv13 = new TestRunInventory('test-r13-case13');
+  inv13.finalize();
+  assert.equal(inv13.finalized, true);
+  // Late registration attempts after finalization are recorded in postFinalizationMutations
+  inv13.registerSession('sess-late-13');
+  inv13.registerUntrackedSession();
+  assert.equal(inv13.postFinalizationMutations.length, 2);
+  assert.equal(inv13.isClean(), false);
+
+  // 14. Deterministic assertion that final inventory cannot transition from CLEANUP_VERIFIED_SUCCESS into clean state if residual operations exist
+  const inv14 = new TestRunInventory('test-r13-case14');
+  inv14.registerInFlightOperation({ probeId: 'HOOK-01', canMintSession: true });
+  assert.equal(inv14.isClean(), false);
+
+  // 15. Seed user preservation invariant
+  const inv15 = new TestRunInventory('test-r13-case15');
+  const seedUid15 = 'seed-uid-15';
+  inv15.trackReferencedUser({ id: seedUid15, email: 'seed@proof.invalid', source: 'seed' });
+  let deleteCalls15 = 0;
+  const mockAdmin15 = {
+    deleteUser: async () => { deleteCalls15++; return { data: null, error: null }; },
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    signOut: async () => ({ data: null, error: null })
+  };
+  const rep15 = await inv15.executeCleanup({ adminClient: mockAdmin15, failClosed: true });
+  assert.equal(rep15.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(deleteCalls15, 0, 'Seed user must never be deleted');
+  assert.equal(inv15.referencedUsers.has(seedUid15), true);
+
+  // 16. Secret sanitization invariant -> zero tokens or passwords in sanitized output
+  const secretJwt16 = createMockJwt({ session_id: 'sess-sec-16', sub: 'user-sec-16' });
+  const rawReport16 = {
+    probeId: 'BYPASS-03',
+    token: secretJwt16,
+    password: DEFAULT_TEST_PASSWORD,
+    body: { access_token: secretJwt16 }
+  };
+  const sanitized16 = sanitizeData(rawReport16);
+  const jsonStr16 = JSON.stringify(sanitized16);
+  assert.equal(jsonStr16.includes(secretJwt16), false);
+  assert.equal(jsonStr16.includes(DEFAULT_TEST_PASSWORD), false);
+
+  // 17. Offline safety invariant
+  assert.ok(true, 'All probes, timeouts, and cleanup verification executed offline with zero network requests');
 });

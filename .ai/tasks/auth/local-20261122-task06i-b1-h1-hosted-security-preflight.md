@@ -1,14 +1,14 @@
-# Phase 1.2 Task 06I-B1-H1-R12 — Shared Auth Response Observation & Residual Session Safety Closure
+# Phase 1.2 Task 06I-B1-H1-R13 — In-Flight Auth Request Tracking & Timeout-Safe Cleanup Closure
 
-> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R12. All outstanding review findings across PR #37 (including Codex P2 finding `PRRT_kwDOVtCmZc66u-GX` on HOOK-01 unreadable success and R12-02 shared fail-closed Auth response boundary) are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
+> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R13. All outstanding review findings across PR #37 (including Codex P2 finding `PRRT_kwDOVtCmZc66vvkp` on verify endpoint session minting and Codex P2 finding `PRRT_kwDOVtCmZc66vvky` on in-flight timeout-versus-cleanup race closure) are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **LOCAL REMEDIATION COMPLETE (REVISION R12); ALL REVIEW FINDINGS RESOLVED (R12-01 CODEX P2: REJECTION OF UNREADABLE/TRUNCATED/MALFORMED/EMPTY/NO-TOKEN SUCCESS RESPONSES IN HOOK-01 AND DISPATCHER, IMMEDIATE UNTRACKED SESSION INVENTORY REGISTRATION, FAIL-CLOSED RESIDUAL REPORTING BLOCKING CLEANUP_VERIFIED_SUCCESS; R12-02 SHARED FAIL-CLOSED AUTH RESPONSE BOUNDARY ACROSS ALL PROBES AND ADMIN VERIFICATION VIA `observeAuthResponse` AND `parseResponseEnvelope`; COMPLETE 10-CLASS LIFECYCLE AUDIT MATRIX COMPILED); 88/88 RUNNER TESTS PASS; 155/155 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; GITHUB CI STATUS: 4/4 CHECKS PASS ON PREVIOUS HEAD; DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
-| Objective | Remediate Codex P2 review finding `PRRT_kwDOVtCmZc66u-GX` (R12-01: treat HOOK-01 unreadable success as residual session) and R12-02 (shared fail-closed Auth response boundary) on PR #37 without executing any live hosted mutations. |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R12 slice |
-| Previous agent | Agent / Task 06I-B1-H1-R11 author |
-| Last audited HEAD | `3581e22c56bbaa9a7ca64f82a9e662a3e69a30bd` (PR #37 previous commit) |
+| Status | **LOCAL REMEDIATION COMPLETE (REVISION R13); ALL REVIEW FINDINGS RESOLVED (R13-01 CODEX P2: AUTH ENDPOINT CAPABILITY MATRIX AND VERIFY SESSION-MINTING SEMANTICS WITH `canMintSession=true` ON BYPASS-03; R13-02 CODEX P2: IN-FLIGHT OPERATION LIFECYCLE, PRE-DISPATCH OBLIGATION REGISTRATION, TIMEOUT-SAFE CLEANUP, MANDATORY REPRODUCTION PASSING (5ms timeout with 20ms delayed response body cannot return CLEANUP_VERIFIED_SUCCESS, fails closed with CLEANUP_FAILED_RESIDUAL_RESOURCES); LATE POST-FINALIZATION MUTATIONS PREVENTED FROM SILENT CLEANUP OVERRIDE); 89/89 RUNNER TESTS PASS; 157/157 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
+| Objective | Remediate Codex P2 review findings `PRRT_kwDOVtCmZc66vvkp` (R13-01: verify endpoint session minting and capability matrix) and `PRRT_kwDOVtCmZc66vvky` (R13-02: in-flight operation tracking and timeout-safe cleanup) on PR #37 without executing any live hosted mutations. |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R13 slice |
+| Previous agent | Agent / Task 06I-B1-H1-R12 author |
+| Last audited HEAD | `c53d5d3cf842aca442520fcac5e049cc8e907654` (PR #37 previous commit) |
 | Tracking / approval | Task 06I-B1-H1-R10 remediation authorized by user prompt; LIVE hosted probe execution requires separate explicit owner authorization; mandates $0 cost ceiling and permanent immunity for `Tio-world` (`oykupyiitspujzpwwvuj`) and REAL `bsfwzvgynwriswapxpsp` |
 | Branch | `test/task06i-b1-h1-hosted-security-preflight` |
 | Base SHA / inspected HEAD | `716fb32061ffb6012d17eae9453c822a281fe6f1` (`main`) |
@@ -537,7 +537,41 @@ Compact invariant matrix verifying the 10 lifecycle invariant classes across cod
 | **7. User Absence Verification** | User deletion verified by structured HTTP 404 from `getUserById`; 503 or generic error fails closed | `hosted-probe-runner.mjs:2210-2245` (`executeCleanup`) | Test 60 (R4-06), Test 65 (R5-03), Test 84 (R12-02) | Network errors during verification block cleanup completion |
 | **8. Storage & Table Fixture Lifecycle** | Storage bucket objects and table rows registered into inventory and deleted during cleanup | `hosted-probe-runner.mjs:1880-1920`, `2350-2395` (`executeCleanup`) | Test 69 (R5-07), Test 72 (R6-02) | Requires probe bucket and table pre-created on testbed before probe dispatch |
 | **9. Credential Binding & Key Validation** | Service role & anon keys validated against project ref in JWT claims (`ref`, `iss`); forged claims fail closed | `hosted-probe-runner.mjs:2567-2620` (`validateProjectCredentialBinding`) | Test 53 (R3-10), Test 55 (R4-01) | Prevents accidental targeting of REAL project with TEMP keys or vice versa |
-| **10. Secret Boundary Enforcement & Redaction** | JWTs, passwords, and service role keys redacted from error objects, logs, and serialized reports | `hosted-probe-runner.mjs:144-260` (`redactSensitiveFields`), `262-310` (`sanitizeData`), `4260-4285` | Test 9 (R1-02), Test 21 (R1-04), Test 29 (R2-03), Test 83 (R11-02), Test 84 (R12-02) | Offline validated; secrets cleared on verified cleanup, preserved in memory on failure for recovery |
+| **10. Secret Boundary Enforcement & Redaction** | JWTs, passwords, and service role keys redacted from error objects, logs, and serialized reports | `hosted-probe-runner.mjs:144-260` (`redactSensitiveFields`), `262-310` (`sanitizeData`), `4260-4285` | Test 9 (R1-02), Test 21 (R1-04), Test 29 (R2-03), Test 83 (R11-02), Test 84 (R12-02), Test 85 (R13-02) | Offline validated; secrets cleared on verified cleanup, preserved in memory on failure for recovery |
+
+### 7.15 Revision R13 Remediation Details
+
+- **R13-01 — Verify Endpoint Session Minting & Canonical Capabilities (Codex P2, `PRRT_kwDOVtCmZc66vvkp`):**
+  1. Identified that `BYPASS-03` calls `POST /auth/v1/verify`, which is capable of issuing tokens and minting server-side sessions on challenge success, but previously passed `canMintSession: false`.
+  2. Fixed `BYPASS-03` to pass `canMintSession: true` to `observeAuthResponse` and registered pre-dispatch in-flight operation.
+  3. Established fail-closed semantics across all outcome variants for `POST /auth/v1/verify`:
+     - Unexpected success with tokens (HTTP 200) registers session for revocation in inventory and fails the probe (`passed: false`).
+     - HTTP 200 with truncated, unreadable, or empty body `{}` classifies as `AUTH_RESPONSE_INDETERMINATE`, registers untracked session risk, and fails cleanup closed.
+     - Post-dispatch connection reset (`ECONNRESET`) or network error classifies as `AUTH_RESPONSE_INDETERMINATE`, registers untracked session risk, and fails cleanup closed.
+     - Expected rejection (HTTP 400 `otp_expired` or hook rejection 42501) cleanly passes or flags precondition missing without session leakage.
+  4. Built and exported `AUTH_ENDPOINT_CAPABILITIES` matrix across all Auth endpoints:
+     - `POST /auth/v1/otp`: `canMintSession: false`, `canCreateUsers: true`, `canTriggerEmail: true`
+     - `POST /auth/v1/signup`: `canMintSession: false`, `canCreateUsers: true`, `canTriggerEmail: true`
+     - `POST /auth/v1/verify`: `canMintSession: true`, `canModifyProviderState: true`
+     - `POST /auth/v1/recover`: `canMintSession: false`, `canTriggerEmail: true`
+     - `POST /auth/v1/token?grant_type=password`: `canMintSession: true`
+     - `POST /auth/v1/token?grant_type=refresh_token`: `canMintSession: true`
+     - `POST /auth/v1/token?grant_type=password (verifyUserCredentials)`: `canMintSession: true`
+     - `PUT /auth/v1/admin/users/:id`: `canMintSession: false`, `canModifyProviderState: true`
+     - `POST /auth/v1/logout?scope=local`: `canMintSession: false`, `canModifyProviderState: true`
+
+- **R13-02 — In-Flight Operation Lifecycle & Timeout-Safe Cleanup (Codex P2, `PRRT_kwDOVtCmZc66vvky`):**
+  1. Root cause: When `runHostedProbeRunner` timed out (e.g. 5ms), `controller.abort()` was called, but if the dispatcher was still awaiting a delayed response body (e.g. 20ms), cleanup ran while the inventory was empty and reported false `CLEANUP_VERIFIED_SUCCESS`. 15ms later the dispatcher rejected/observed an indeterminate session, but cleanup had already finalized and exited.
+  2. Implemented an explicit in-flight operation lifecycle:
+     - States: `REGISTERED` -> `IN_FLIGHT` -> `SETTLED` | `TIMED_OUT_UNRESOLVED` -> `CLEANUP_REQUIRED` -> `CLEANUP_VERIFIED` | `RESIDUAL_RISK`.
+     - In `TestRunInventory`: added `inFlightOperations` (Map), `_opSequence`, `finalized`, `postFinalizationMutations`, `_settlementListeners`.
+     - Methods: `registerInFlightOperation`, `settleInFlightOperation`, `markProbeOperationsTimedOut`, `hasUnresolvedOperations`, `getUnresolvedOperations`, `awaitInFlightSettlement(timeoutMs)`, `finalize()`, `isClean()`.
+  3. Pre-dispatch registration: every session-minting Auth dispatch is registered as `IN_FLIGHT` before network requests begin.
+  4. Immediate timeout risk capture: `markProbeOperationsTimedOut` transitions in-flight ops to `TIMED_OUT_UNRESOLVED` and immediately calls `registerUntrackedSession()` for any operation with `canMintSession: true`.
+  5. Bounded grace wait: `awaitInFlightSettlement(Math.min(probeTimeoutMs, 100))` in `performCleanup()` and `executeCleanup()` provides a bounded window for in-flight requests to settle before auditing cleanup items.
+  6. Finalization immutability: calling `finalize()` permanently locks the inventory. Any subsequent attempt to mutate the inventory (`registerSession`, `registerUntrackedSession`, `registerCreatedUser`, `registerSeedPasswordModification`, `settleInFlightOperation`) is captured in `postFinalizationMutations`. Late provider responses cannot silently flip or corrupt a finalized cleanup report.
+  7. Mandatory reproduction test passing: 5ms probe timeout with 20ms delayed response body cannot return `CLEANUP_VERIFIED_SUCCESS`, fails closed with `CLEANUP_FAILED_RESIDUAL_RESOURCES`.
+  8. Added comprehensive regression Test 85 with 17 offline regression scenarios.
 
 ---
 
@@ -547,10 +581,10 @@ All verification checks were run locally and passed completely:
 
 ```bash
 node --test experiments/task06i/hosted-probe-runner.test.mjs
-# 88 passed, 0 failed, exit code 0 (including Tests 82, 83, and 84)
+# 89 passed, 0 failed, exit code 0 (including Tests 82, 83, 84, and 85)
 
 node --test experiments/task06i/*.test.mjs
-# 155 passed, 0 failed, exit code 0
+# 157 passed, 0 failed, exit code 0
 
 node experiments/task06i/sql-contract-parity.mjs
 # Status: POSTGRES_VERIFIED, 18/18 matched parity, exit code 0
@@ -569,7 +603,7 @@ git diff --check origin/main...HEAD
 
 ## 9. GitHub CI Status
 
-- **Status:** **4/4 CHECKS PASS** on remote commit `3581e22c56bbaa9a7ca64f82a9e662a3e69a30bd`:
+- **Status:** **4/4 CHECKS PASS** on remote commit `c53d5d3cf842aca442520fcac5e049cc8e907654`:
   1. `Attribution guard runner`: **PASS**
   2. `Commit attribution fixture tests`: **PASS**
   3. `Commit attribution guard` (App-owned required check ID `5032971`): **PASS**
@@ -590,12 +624,12 @@ git diff --check origin/main...HEAD
   - Project deletion perform nahi hua hai.
 
 **Readiness State:**
-- **Code readiness:** READY (Revision R12)
-- **GitHub CI:** PASS (4/4 on remote HEAD)
+- **Code readiness:** READY (Revision R13)
+- **GitHub CI:** PASS (4/4 on remote HEAD `c53d5d3`)
 - **Independent review:** PENDING (`im-tio`)
 - **Hosted testing:** NOT_AUTHORIZED
 - **Production Auth:** STRICT NO-GO
 
 **Decision:** **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**
 
-> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all outstanding review findings (including Codex P2 finding `PRRT_kwDOVtCmZc66u-GX` on HOOK-01 unreadable success, R12-02 shared fail-closed Auth response boundary, and the full 10-class lifecycle audit matrix) is complete and fully covered by offline regression tests (88/88 runner tests, 155/155 task06i tests pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution. Awaiting independent re-review from `im-tio`.
+> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all outstanding review findings (including Codex P2 finding `PRRT_kwDOVtCmZc66vvkp` on verify session minting and `PRRT_kwDOVtCmZc66vvky` on in-flight timeout-safe cleanup race closure) is complete and fully covered by offline regression tests (89/89 runner tests, 157/157 task06i tests pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution. Awaiting independent re-review from `im-tio`.

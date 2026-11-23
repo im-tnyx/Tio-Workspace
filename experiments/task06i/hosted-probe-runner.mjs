@@ -37,6 +37,122 @@ export const BREVO_AUDIT_BASELINE = Object.freeze({
   deliveryPolicy: 'Transactional OTP delivery via external SMTP is BLOCKED until an authenticated domain is configured and owner-authorized; native email routes are suppressed fail-closed by Send Email Hook (SQLSTATE 42501).'
 });
 
+/**
+ * Canonical Auth endpoint capability matrix (R13-01).
+ * Specifies session-minting capability, provider mutation ability, user creation,
+ * email triggers, evidence expectations, cleanup obligations, and indeterminate behavior.
+ */
+export const AUTH_ENDPOINT_CAPABILITIES = Object.freeze({
+  'POST /auth/v1/otp': Object.freeze({
+    probeId: 'BYPASS-01',
+    endpoint: '/auth/v1/otp',
+    method: 'POST',
+    canMintSession: false,
+    canModifyProviderState: true,
+    canCreateUsers: true,
+    canTriggerEmail: true,
+    requiredEvidence: 'route_disabled (providerDisabled === true) and HTTP non-200',
+    cleanupObligation: 'Track created user into createdUsers if created; track unexpected tokens if returned',
+    indeterminateBehavior: 'AUTH_RESPONSE_PROVIDER_FAILURE (no session minting capability)'
+  }),
+  'POST /auth/v1/signup': Object.freeze({
+    probeId: 'BYPASS-02',
+    endpoint: '/auth/v1/signup',
+    method: 'POST',
+    canMintSession: false,
+    canModifyProviderState: true,
+    canCreateUsers: true,
+    canTriggerEmail: true,
+    requiredEvidence: 'signup_disabled === true, status !== 200, zero created user, zero tokens',
+    cleanupObligation: 'Track created user into createdUsers; track unexpected tokens for cleanup',
+    indeterminateBehavior: 'Track created user if present; report indeterminate failure'
+  }),
+  'POST /auth/v1/verify': Object.freeze({
+    probeId: 'BYPASS-03',
+    endpoint: '/auth/v1/verify',
+    method: 'POST',
+    canMintSession: true, // Verification challenge success issues tokens and session (R13-01)
+    canModifyProviderState: true,
+    canCreateUsers: false,
+    canTriggerEmail: false,
+    requiredEvidence: 'hook_rejected === true (42501) and HTTP non-200, zero tokens',
+    cleanupObligation: 'Track unexpected session for revocation; indeterminate HTTP 200 / transport loss creates untracked session risk',
+    indeterminateBehavior: 'AUTH_RESPONSE_INDETERMINATE, register untracked session, fail cleanup closed'
+  }),
+  'POST /auth/v1/recover': Object.freeze({
+    probeId: 'BYPASS-05',
+    endpoint: '/auth/v1/recover',
+    method: 'POST',
+    canMintSession: false,
+    canModifyProviderState: true,
+    canCreateUsers: false,
+    canTriggerEmail: true,
+    requiredEvidence: 'recovery_suppressed === true (42501) and zero recovery_token',
+    cleanupObligation: 'Track unexpected tokens if issued',
+    indeterminateBehavior: 'AUTH_RESPONSE_PROVIDER_FAILURE (no session minting capability)'
+  }),
+  'POST /auth/v1/token?grant_type=password': Object.freeze({
+    probeId: 'HOOK-01',
+    endpoint: '/auth/v1/token?grant_type=password',
+    method: 'POST',
+    canMintSession: true,
+    canModifyProviderState: true,
+    canCreateUsers: false,
+    canTriggerEmail: false,
+    requiredEvidence: 'access_token, refresh_token, session_id, amr_authenticated: true, verified claims',
+    cleanupObligation: 'Track session into trackedSessions for signOut revocation; unverified token captured for cleanup',
+    indeterminateBehavior: 'AUTH_RESPONSE_INDETERMINATE, register untracked session, fail cleanup closed'
+  }),
+  'POST /auth/v1/token?grant_type=refresh_token': Object.freeze({
+    probeId: 'HOOK-02',
+    endpoint: '/auth/v1/token?grant_type=refresh_token',
+    method: 'POST',
+    canMintSession: true,
+    canModifyProviderState: true,
+    canCreateUsers: false,
+    canTriggerEmail: false,
+    requiredEvidence: 'refreshed access_token, amr_preserved: true, verified claims',
+    cleanupObligation: 'Track refreshed session context for signOut revocation',
+    indeterminateBehavior: 'AUTH_RESPONSE_INDETERMINATE, register untracked session, fail cleanup closed'
+  }),
+  'POST /auth/v1/token?grant_type=password (verifyUserCredentials)': Object.freeze({
+    probeId: 'verify_credentials',
+    endpoint: '/auth/v1/token?grant_type=password',
+    method: 'POST',
+    canMintSession: true,
+    canModifyProviderState: true,
+    canCreateUsers: false,
+    canTriggerEmail: false,
+    requiredEvidence: 'HTTP 200 with access_token and session_id, followed by immediate verified local signOut',
+    cleanupObligation: 'Immediate local signOut; on failure register verification session leak or untracked session',
+    indeterminateBehavior: 'AUTH_RESPONSE_INDETERMINATE, register untracked session, fail cleanup closed'
+  }),
+  'PUT /auth/v1/admin/users/:id': Object.freeze({
+    probeId: 'SESSION-02',
+    endpoint: '/auth/v1/admin/users/:id',
+    method: 'PUT',
+    canMintSession: false,
+    canModifyProviderState: true,
+    canCreateUsers: false,
+    canTriggerEmail: false,
+    requiredEvidence: 'Admin password update confirmation, followed by affirmative session_not_found on probe',
+    cleanupObligation: 'Pre-dispatch restoration registration; restore original password during cleanup',
+    indeterminateBehavior: 'State transitions to indeterminate; obligation preserved for cleanup restoration'
+  }),
+  'POST /auth/v1/logout?scope=local': Object.freeze({
+    probeId: 'SESSION-03',
+    endpoint: '/auth/v1/logout',
+    method: 'POST',
+    canMintSession: false,
+    canModifyProviderState: true,
+    canCreateUsers: false,
+    canTriggerEmail: false,
+    requiredEvidence: 'Sign-out confirmation followed by affirmative session_not_found on GET /auth/v1/user',
+    cleanupObligation: 'Marks session as revoked in inventory (idempotent)',
+    indeterminateBehavior: 'Session remains unconfirmed; subsequent GET /user probe determines revocation state'
+  })
+});
+
 export const TIO_SUPABASE_REAL_REF = HARDCODED_REAL_REF;
 export const TIO_SUPABASE_TEMP_REF = process.env.TIO_SUPABASE_TEMP_REF || HARDCODED_TEMP_REF;
 
@@ -1754,6 +1870,11 @@ export class TestRunInventory {
     this.trackedStorageObjects = new Map(); // bucket -> Set(path)
     this.seedCredentialRestorations = []; // Seed users whose password was modified -> must be restored (R5-06)
     this.untrackedSessionsCount = 0; // Minted sessions whose ID could not be parsed (R5-04, R8-01)
+    this.inFlightOperations = new Map(); // opId -> operation record (R13-02)
+    this._opSequence = 0;
+    this.finalized = false; // Set to true once executeCleanup completes (R13-02)
+    this.postFinalizationMutations = []; // Late mutations attempted after finalization (R13-02)
+    this._settlementListeners = [];
   }
 
   // Backward-compatible getter: returns combined map of tracked users
@@ -1766,6 +1887,15 @@ export class TestRunInventory {
    * Deletion eligible upon cleanup.
    */
   registerCreatedUser({ id, email, source = 'test_signup' } = {}) {
+    if (this.finalized) {
+      this.postFinalizationMutations.push({
+        action: 'registerCreatedUser',
+        id,
+        email,
+        source,
+        attemptedAt: new Date().toISOString()
+      });
+    }
     if (!id || typeof id !== 'string' || id.trim().length === 0) {
       throw new Error('registerCreatedUser requires non-empty string id');
     }
@@ -1784,6 +1914,15 @@ export class TestRunInventory {
    * Tracked for audit and correlation, but NEVER deleted during cleanup (R3-09).
    */
   registerReferencedUser({ id, email, source = 'test_login' } = {}) {
+    if (this.finalized) {
+      this.postFinalizationMutations.push({
+        action: 'registerReferencedUser',
+        id,
+        email,
+        source,
+        attemptedAt: new Date().toISOString()
+      });
+    }
     if (!id || typeof id !== 'string' || id.trim().length === 0) {
       throw new Error('registerReferencedUser requires non-empty string id');
     }
@@ -1824,6 +1963,14 @@ export class TestRunInventory {
     } else if (sessionOrId && typeof sessionOrId === 'object') {
       sessionId = (sessionOrId.sessionId || sessionOrId.id || '').trim();
       accessToken = sessionOrId.accessToken || sessionOrId.jwt || sessionOrId.token || null;
+    }
+
+    if (this.finalized) {
+      this.postFinalizationMutations.push({
+        action: 'registerSession',
+        sessionId,
+        attemptedAt: new Date().toISOString()
+      });
     }
 
     if (sessionId) {
@@ -1876,6 +2023,14 @@ export class TestRunInventory {
   }
 
   registerSeedPasswordModification({ userId, email, originalPassword, newPassword, targetPassword, state = 'pending' } = {}) {
+    if (this.finalized) {
+      this.postFinalizationMutations.push({
+        action: 'registerSeedPasswordModification',
+        userId,
+        email,
+        attemptedAt: new Date().toISOString()
+      });
+    }
     if (!userId || typeof userId !== 'string' || !userId.trim()) {
       throw new Error('registerSeedPasswordModification requires non-empty string userId');
     }
@@ -1943,6 +2098,12 @@ export class TestRunInventory {
   }
 
   registerUntrackedSession() {
+    if (this.finalized) {
+      this.postFinalizationMutations.push({
+        action: 'registerUntrackedSession',
+        attemptedAt: new Date().toISOString()
+      });
+    }
     this.untrackedSessionsCount++;
   }
 
@@ -1990,6 +2151,179 @@ export class TestRunInventory {
     return Array.from(new Set(emails));
   }
 
+  /**
+   * Registers an in-flight operation before network dispatch begins (R13-02).
+   * Lifecycle states: REGISTERED -> IN_FLIGHT -> SETTLED | TIMED_OUT_UNRESOLVED -> CLEANUP_REQUIRED -> CLEANUP_VERIFIED
+   */
+  registerInFlightOperation({
+    probeId = 'unknown',
+    endpoint = null,
+    canMintSession = false,
+    description = null,
+    metadata = {}
+  } = {}) {
+    if (this.finalized) {
+      const mutation = {
+        action: 'registerInFlightOperation',
+        probeId,
+        endpoint,
+        attemptedAt: new Date().toISOString()
+      };
+      this.postFinalizationMutations.push(mutation);
+      throw new Error(`INVENTORY_FINALIZED: Cannot register in-flight operation '${probeId}' after inventory finalization (R13-02)`);
+    }
+
+    const opId = `op-${this.runId}-${++this._opSequence}`;
+    const op = {
+      opId,
+      probeId,
+      endpoint,
+      canMintSession: Boolean(canMintSession),
+      description,
+      metadata: { ...metadata },
+      state: 'IN_FLIGHT',
+      registeredAt: new Date().toISOString(),
+      dispatchedAt: new Date().toISOString(),
+      settledAt: null,
+      timedOutAt: null,
+      timeoutReason: null,
+      error: null,
+      observed: null,
+      outcome: null
+    };
+    this.inFlightOperations.set(opId, op);
+    return op;
+  }
+
+  /**
+   * Settles an in-flight operation upon resolution or rejection (R13-02).
+   * If operation was previously marked TIMED_OUT_UNRESOLVED, transitions to SETTLED_AFTER_TIMEOUT.
+   */
+  settleInFlightOperation(opId, { observed = null, error = null, outcome = null } = {}) {
+    if (!opId || typeof opId !== 'string') return null;
+    const op = this.inFlightOperations.get(opId.trim());
+    if (!op) return null;
+
+    if (this.finalized) {
+      const mutation = {
+        action: 'settleInFlightOperation',
+        opId,
+        probeId: op.probeId,
+        priorState: op.state,
+        error: error?.message || (typeof error === 'string' ? error : null),
+        attemptedAt: new Date().toISOString()
+      };
+      this.postFinalizationMutations.push(mutation);
+    }
+
+    const priorState = op.state;
+    if (priorState === 'TIMED_OUT_UNRESOLVED') {
+      op.state = 'SETTLED_AFTER_TIMEOUT';
+    } else {
+      op.state = 'SETTLED';
+    }
+
+    op.settledAt = new Date().toISOString();
+    if (error) op.error = error?.message || String(error);
+    if (observed) op.observed = observed;
+    if (outcome) op.outcome = outcome;
+
+    // Notify waiting settlement listeners
+    if (this._settlementListeners.length > 0) {
+      const activePending = Array.from(this.inFlightOperations.values()).filter(o => o.state === 'IN_FLIGHT');
+      if (activePending.length === 0) {
+        for (const listener of this._settlementListeners) {
+          try { listener(); } catch {}
+        }
+        this._settlementListeners = [];
+      }
+    }
+
+    return op;
+  }
+
+  /**
+   * Transitions active in-flight operations for a probe to TIMED_OUT_UNRESOLVED (R13-02).
+   * If operation had canMintSession=true, immediately records untracked session risk.
+   */
+  markProbeOperationsTimedOut(probeId, reason = 'TIMEOUT') {
+    if (!probeId) return [];
+    const affected = [];
+    for (const [opId, op] of this.inFlightOperations.entries()) {
+      if (op.probeId === probeId && op.state === 'IN_FLIGHT') {
+        op.state = 'TIMED_OUT_UNRESOLVED';
+        op.timedOutAt = new Date().toISOString();
+        op.timeoutReason = reason;
+        affected.push(op);
+
+        if (op.canMintSession) {
+          this.registerUntrackedSession();
+        }
+      }
+    }
+    return affected;
+  }
+
+  hasUnresolvedOperations() {
+    for (const op of this.inFlightOperations.values()) {
+      if (op.state === 'IN_FLIGHT' || op.state === 'TIMED_OUT_UNRESOLVED') {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  getUnresolvedOperations() {
+    const list = [];
+    for (const op of this.inFlightOperations.values()) {
+      if (op.state === 'IN_FLIGHT' || op.state === 'TIMED_OUT_UNRESOLVED') {
+        list.push(op);
+      }
+    }
+    return list;
+  }
+
+  async awaitInFlightSettlement(timeoutMs = 50) {
+    const pendingOps = Array.from(this.inFlightOperations.values()).filter(o => o.state === 'IN_FLIGHT');
+    if (pendingOps.length === 0 || timeoutMs <= 0) {
+      return;
+    }
+
+    await new Promise(resolve => {
+      let timer = null;
+      const onDone = () => {
+        if (timer) clearTimeout(timer);
+        resolve();
+      };
+      this._settlementListeners.push(onDone);
+      timer = setTimeout(() => {
+        const idx = this._settlementListeners.indexOf(onDone);
+        if (idx !== -1) this._settlementListeners.splice(idx, 1);
+        resolve();
+      }, timeoutMs);
+    });
+  }
+
+  finalize() {
+    this.finalized = true;
+  }
+
+  isClean() {
+    if (this.createdUsers.size > 0) return false;
+    if (this.untrackedSessionsCount > 0) return false;
+    if (this.trackedSessions.size !== this.revokedSessions.size) return false;
+    if (this.hasUnresolvedOperations()) return false;
+    if (this.postFinalizationMutations.length > 0) return false;
+    if (this.seedCredentialRestorations.some(r => r.state !== 'restored')) return false;
+    for (const rows of this.trackedTableRows.values()) {
+      if (rows.size > 0) return false;
+    }
+    for (const objs of this.trackedStorageObjects.values()) {
+      if (objs.size > 0) return false;
+    }
+    return true;
+  }
+
   getSummary() {
     return {
       runId: this.runId,
@@ -2001,7 +2335,11 @@ export class TestRunInventory {
       trackedTableRowsCount: Array.from(this.trackedTableRows.values()).reduce((acc, s) => acc + s.size, 0),
       trackedStorageObjectsCount: Array.from(this.trackedStorageObjects.values()).reduce((acc, s) => acc + s.size, 0),
       seedCredentialRestorationsCount: this.seedCredentialRestorations.length,
-      untrackedSessionsCount: this.untrackedSessionsCount
+      untrackedSessionsCount: this.untrackedSessionsCount,
+      inFlightOperationsCount: this.inFlightOperations.size,
+      unresolvedOperationsCount: this.getUnresolvedOperations().length,
+      finalized: this.finalized,
+      postFinalizationMutationsCount: this.postFinalizationMutations.length
     };
   }
 
@@ -2011,9 +2349,9 @@ export class TestRunInventory {
    * Restores modified seed user credentials (R5-06).
    * Handles Supabase Admin { data, error } responses.
    * Verifies absence of residual resources and fails closed if residual resources remain.
-   * Resolves PRRT_kwDOVtCmZc66lOOU, PRRT_kwDOVtCmZc66lo-q, PRRT_kwDOVtCmZc66lq3S, PRRT_kwDOVtCmZc66mPVg (R5-02), PRRT_kwDOVtCmZc66mPVn (R5-03), and PRRT_kwDOVtCmZc66mP9a (R5-06).
+   * Resolves PRRT_kwDOVtCmZc66lOOU, PRRT_kwDOVtCmZc66lo-q, PRRT_kwDOVtCmZc66lq3S, PRRT_kwDOVtCmZc66mPVg (R5-02), PRRT_kwDOVtCmZc66mPVn (R5-03), PRRT_kwDOVtCmZc66mP9a (R5-06), and PRRT_kwDOVtCmZc66vvky (R13-02).
    */
-  async executeCleanup({ adminClient, failClosed = true } = {}) {
+  async executeCleanup({ adminClient, failClosed = true, settlementTimeoutMs = 50 } = {}) {
     const report = {
       runId: this.runId,
       createdUsersAttempted: this.createdUsers.size,
@@ -2029,34 +2367,65 @@ export class TestRunInventory {
       status: 'CLEANUP_PENDING'
     };
 
+    // Await bounded grace period for in-flight requests to settle before auditing cleanup items (R13-02)
+    if (settlementTimeoutMs > 0) {
+      await this.awaitInFlightSettlement(settlementTimeoutMs);
+    }
+
+    const unresolvedOps = this.getUnresolvedOperations();
+
     const hasCleanupEligibleItems =
       this.createdUsers.size > 0 ||
       this.trackedTableRows.size > 0 ||
       this.trackedStorageObjects.size > 0 ||
       this.trackedSessions.size > 0 ||
       this.seedCredentialRestorations.length > 0 ||
-      this.untrackedSessionsCount > 0;
+      this.untrackedSessionsCount > 0 ||
+      unresolvedOps.length > 0 ||
+      this.postFinalizationMutations.length > 0;
 
     if (!hasCleanupEligibleItems) {
       report.status = 'CLEANUP_VERIFIED_SUCCESS';
+      this.finalize();
       return report;
     }
 
     if (!adminClient) {
       report.residualResources.push({ type: 'client', error: 'MISSING_ADMIN_CLIENT' });
       report.status = 'CLEANUP_FAILED_RESIDUAL_RESOURCES';
+      this.finalize();
       if (failClosed) {
         throw new Error('CLEANUP_CLIENT_REQUIRED: executeCleanup requires authenticated adminClient when resources are tracked');
       }
       return report;
     }
 
-    // 0. Untracked minted sessions blocker (R5-04, R8-01)
+    // 0. Untracked minted sessions blocker & Unresolved dispatch obligations (R5-04, R8-01, R13-02)
     if (this.untrackedSessionsCount > 0) {
       report.residualResources.push({
         type: 'untracked_session',
         count: this.untrackedSessionsCount,
-        error: 'UNTRACKED_MINTED_SESSION: Authentication response minted token but session identifier could not be extracted; residual session cannot be tracked'
+        error: 'UNTRACKED_MINTED_SESSION: Authentication response minted token or timed out before response observation; residual session cannot be tracked'
+      });
+    }
+
+    for (const op of unresolvedOps) {
+      if (op.canMintSession) {
+        report.residualResources.push({
+          type: 'unresolved_in_flight_operation',
+          opId: op.opId,
+          probeId: op.probeId,
+          state: op.state,
+          error: `UNRESOLVED_DISPATCH_OBLIGATION: Operation '${op.opId}' (${op.probeId}) was in state '${op.state}' with canMintSession=true; provider may have minted session server-side that was not observed before cleanup (R13-02)`
+        });
+      }
+    }
+
+    if (this.postFinalizationMutations.length > 0) {
+      report.residualResources.push({
+        type: 'post_finalization_mutations',
+        count: this.postFinalizationMutations.length,
+        error: `POST_FINALIZATION_MUTATIONS: ${this.postFinalizationMutations.length} mutation(s) occurred after inventory was finalized`
       });
     }
 
@@ -2391,6 +2760,7 @@ export class TestRunInventory {
 
     if (report.residualUsers.length > 0 || report.residualResources.length > 0) {
       report.status = 'CLEANUP_FAILED_RESIDUAL_RESOURCES';
+      this.finalize();
       if (failClosed) {
         const detail = report.residualUsers.length > 0
           ? `${report.residualUsers.length} synthetic user(s) remain in database after cleanup`
@@ -2400,6 +2770,7 @@ export class TestRunInventory {
     } else {
       report.status = 'CLEANUP_VERIFIED_SUCCESS';
       this.clearCredentials();
+      this.finalize();
     }
 
     return report;
@@ -3012,6 +3383,10 @@ export function createHostedDispatcher({
       }
 
       case 'BYPASS-03': {
+        const op = inv?.registerInFlightOperation
+          ? inv.registerInFlightOperation({ probeId: 'BYPASS-03', endpoint: '/auth/v1/verify', canMintSession: true })
+          : null;
+
         // Direct verify with fake/unverified token returns 400 before hook execution (R3-06).
         // Hook is verified only if GoTrue actually invokes custom_access_token_hook.
         let res;
@@ -3038,9 +3413,13 @@ export function createHostedDispatcher({
           inv,
           ctx,
           expectedOperation: 'rejection',
-          canMintSession: false,
+          canMintSession: true, // Verification challenge success issues tokens and session (R13-01)
           testUser
         });
+
+        if (op && inv?.settleInFlightOperation) {
+          inv.settleInFlightOperation(op.opId, { observed, error: transportError });
+        }
 
         const body = parseEnv?.body || null;
         const errText = (body?.msg || body?.message || body?.error_description || body?.error || '').toLowerCase();
@@ -3048,6 +3427,31 @@ export function createHostedDispatcher({
           observed.status >= 400 &&
           (body?.error_code === 'hook_error' || errText.includes('42501') || errText.includes('error invoking access token hook'));
         const isUpstreamTokenError = body?.error_code === 'otp_expired' || errText.includes('token has expired') || errText.includes('invalid');
+
+        if (observed.classification === 'AUTH_RESPONSE_INDETERMINATE') {
+          return {
+            passed: false,
+            status: observed.status,
+            hook_rejected: false,
+            indeterminate_session: true,
+            upstream_rejected_before_hook: false,
+            tokens: extractObservedTokens(body) ? body : null,
+            error: observed.error,
+            reason: observed.error
+          };
+        }
+
+        if (observed.hasTokens) {
+          return {
+            passed: false,
+            status: observed.status,
+            hook_rejected: false,
+            indeterminate_session: false,
+            upstream_rejected_before_hook: false,
+            tokens: extractObservedTokens(body) ? body : null,
+            error: 'SECURITY_INVARIANT_VIOLATION: POST /auth/v1/verify unexpectedly issued tokens for unverified challenge!'
+          };
+        }
 
         return {
           passed: observed.status !== 200 && hookRejected === true && !observed.hasTokens,
@@ -3124,6 +3528,10 @@ export function createHostedDispatcher({
       }
 
       case 'HOOK-01': {
+        const op = inv?.registerInFlightOperation
+          ? inv.registerInFlightOperation({ probeId: 'HOOK-01', endpoint: '/auth/v1/token?grant_type=password', canMintSession: true })
+          : null;
+
         let res;
         let transportError = null;
         try {
@@ -3151,6 +3559,10 @@ export function createHostedDispatcher({
           canMintSession: true,
           testUser
         });
+
+        if (op && inv?.settleInFlightOperation) {
+          inv.settleInFlightOperation(op.opId, { observed, error: transportError });
+        }
 
         if (observed.classification === 'AUTH_RESPONSE_INDETERMINATE') {
           return {
@@ -3233,6 +3645,10 @@ export function createHostedDispatcher({
           };
         }
 
+        const op = inv?.registerInFlightOperation
+          ? inv.registerInFlightOperation({ probeId: 'HOOK-02', endpoint: '/auth/v1/token?grant_type=refresh_token', canMintSession: true })
+          : null;
+
         let res;
         let transportError = null;
         try {
@@ -3260,6 +3676,10 @@ export function createHostedDispatcher({
           canMintSession: true,
           testUser
         });
+
+        if (op && inv?.settleInFlightOperation) {
+          inv.settleInFlightOperation(op.opId, { observed, error: transportError });
+        }
 
         if (observed.classification === 'AUTH_RESPONSE_INDETERMINATE') {
           return {
@@ -4033,7 +4453,8 @@ export async function runHostedProbeRunner(options = {}) {
     cleanupExecuted = true;
     if (isLive && activeInventory && adminClient) {
       try {
-        cleanupReport = await activeInventory.executeCleanup({ adminClient, failClosed: false });
+        await activeInventory.awaitInFlightSettlement(Math.min(probeTimeoutMs, 100));
+        cleanupReport = await activeInventory.executeCleanup({ adminClient, failClosed: false, settlementTimeoutMs: 50 });
       } catch (err) {
         cleanupReport = {
           status: 'CLEANUP_FAILED',
@@ -4063,13 +4484,27 @@ export async function runHostedProbeRunner(options = {}) {
 
       requestCount++;
 
-      // Enforce bounded per-probe deadline with AbortController (PRRT_kwDOVtCmZc66jOw5)
+      // Register runner-level in-flight operation for probe (R13-02)
+      const canMint = ['HOOK-01', 'HOOK-02', 'BYPASS-03'].includes(item.id);
+      const runnerOp = activeInventory?.registerInFlightOperation
+        ? activeInventory.registerInFlightOperation({
+            probeId: item.id,
+            endpoint: item.target,
+            canMintSession: canMint,
+            description: `Runner execution for probe ${item.id}`
+          })
+        : null;
+
+      // Enforce bounded per-probe deadline with AbortController (PRRT_kwDOVtCmZc66jOw5, R13-02)
       const controller = new AbortController();
       let timeoutTimer;
 
       const timeoutPromise = new Promise((_, reject) => {
         timeoutTimer = setTimeout(() => {
           controller.abort();
+          if (activeInventory?.markProbeOperationsTimedOut) {
+            activeInventory.markProbeOperationsTimedOut(item.id, `PROBE_TIMEOUT: probe ${item.id} exceeded deadline of ${probeTimeoutMs}ms`);
+          }
           const timeoutErr = new Error(`PROBE_TIMEOUT: probe ${item.id} exceeded deadline of ${probeTimeoutMs}ms`);
           timeoutErr.code = 'ETIMEDOUT';
           reject(timeoutErr);
@@ -4093,8 +4528,20 @@ export async function runHostedProbeRunner(options = {}) {
         // Attach no-op rejection handler so late rejection after timeout/abort never leaks unhandledRejection (PRRT_kwDOVtCmZc66jd3O)
         dispatchPromise.catch(() => {});
         rawOutcome = await Promise.race([dispatchPromise, timeoutPromise]);
+        if (runnerOp && activeInventory?.settleInFlightOperation) {
+          activeInventory.settleInFlightOperation(runnerOp.opId, { outcome: rawOutcome });
+        }
       } catch (err) {
         const isTimeout = err?.code === 'ETIMEDOUT' || (typeof err?.message === 'string' && err.message.includes('PROBE_TIMEOUT'));
+        if (isTimeout) {
+          if (activeInventory?.markProbeOperationsTimedOut) {
+            activeInventory.markProbeOperationsTimedOut(item.id, `PROBE_TIMEOUT: probe ${item.id} exceeded deadline of ${probeTimeoutMs}ms`);
+          }
+        } else {
+          if (runnerOp && activeInventory?.settleInFlightOperation) {
+            activeInventory.settleInFlightOperation(runnerOp.opId, { error: err });
+          }
+        }
         rawOutcome = {
           passed: false,
           status: 0,
@@ -4192,6 +4639,16 @@ export function createHostedAdminClient({
       if (!password || typeof password !== 'string') {
         return { data: null, error: { message: 'MISSING_PASSWORD: verifyUserCredentials requires string password' } };
       }
+
+      const op = inv?.registerInFlightOperation
+        ? inv.registerInFlightOperation({
+            probeId: 'verify_credentials',
+            endpoint: '/auth/v1/token?grant_type=password',
+            canMintSession: true,
+            description: 'Seed password restoration credential verification'
+          })
+        : null;
+
       const keyToUse = anonKey || serviceRoleKey;
       let res;
       let transportError = null;
@@ -4224,6 +4681,10 @@ export function createHostedAdminClient({
         canMintSession: true,
         testUser: email.trim()
       });
+
+      if (op && inv?.settleInFlightOperation) {
+        inv.settleInFlightOperation(op.opId, { observed, error: transportError });
+      }
 
       if (observed.classification === 'AUTH_RESPONSE_INDETERMINATE') {
         const errorMsg = transportError
