@@ -1,5 +1,9 @@
 # Expo Go live preview from GitHub Codespaces
 
+This is the legacy branch preview and rollout fallback. See the [labeled PR
+preview guide](28-LABELED-EXPO-PR-LIVE-PREVIEW.md) for the main-based replacement
+and the owner-approved retirement process.
+
 | Field | Value |
 |---|---|
 | Status | **PR #18 merged; owner confirmed Expo Go UI; preview-branch push and trusted Codespaces sync succeeded; stopped-to-start and post-push phone refresh QA still pending** |

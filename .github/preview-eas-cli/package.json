@@ -1,0 +1,61 @@
+{
+  "name": "tnyx-preview-eas-cli",
+  "version": "0.0.0",
+  "private": true,
+  "dependencies": {
+    "eas-cli": "27.4.1"
+  },
+  "devDependencies": {
+    "typescript": "5.9.3"
+  },
+  "overrides": {
+    "@babel/helper-module-transforms": "7.29.13",
+    "@babel/plugin-transform-modules-commonjs": "7.29.7",
+    "node-forge@1.4.0": "1.4.3",
+    "minimatch@5.1.2": "5.1.8",
+    "nanoid@3.3.8": "3.3.18",
+    "tar@7.5.19": "7.5.21",
+    "eas-cli@27.4.1": {
+      "joi": "17.13.9",
+      "ajv": "8.18.0",
+      "yaml": "2.8.3",
+      "ts-deepmerge": "8.0.0"
+    },
+    "@expo/eas-json@27.4.1": {
+      "joi": "17.13.9"
+    },
+    "@expo/build-tools@27.4.1": {
+      "joi": "17.13.9"
+    },
+    "@expo/config@55.0.10": {
+      "glob": "14.0.2"
+    },
+    "@expo/config@11.0.13": {
+      "glob": "14.0.2"
+    },
+    "@expo/config-plugins@55.0.7": {
+      "glob": "14.0.2"
+    },
+    "@expo/config-plugins@10.1.2": {
+      "glob": "14.0.2"
+    },
+    "sucrase@3.35.0": {
+      "glob": "14.0.2"
+    },
+    "glob@14.0.2": {
+      "minimatch": "11.0.1"
+    },
+    "@oclif/core@4.14.0": {
+      "minimatch": "11.0.1"
+    },
+    "@expo/bunyan@4.0.1": {
+      "uuid": "11.1.1"
+    },
+    "@expo/rudder-sdk-node@1.1.1": {
+      "uuid": "11.1.1"
+    },
+    "xcode@3.0.1": {
+      "uuid": "11.1.1"
+    }
+  }
+}

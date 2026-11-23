@@ -59,7 +59,8 @@
 | 24 | [Phase 1.1 shell implementation guide](24-PHASE-1-1-SHELL.md) | Merged mock shell, PR-head CI/review evidence, remaining native QA and out-of-scope features |
 | 25 | [Proposed minimal cloud profile + local onboarding (ADR-019)](25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md) | Fixed Email → OTP → Password; Account Setup has required Username + optional Mobile, then required Name/DOB/Sex, local fitness, a real progress → Done → Continue screen, plus proposed private **`avatar_url` / Storage photo lifecycle** with Name initials fallback (`Tnyx Tio` → `TT`), later Google signup import, server-owned Free Plan and latest Platform/OS/App build snapshot; owner-selected short provisional-row cleanup target, proposed 30-day profile-incomplete and separate 12-month free-account cleanup review gates — no live deletion |
 | 26 | [Commit attribution guard](26-COMMIT-ATTRIBUTION-GUARD.md) | Multi-agent `.ai/` identity records, AI co-author prevention, trusted GitHub checks and owner activation gate |
-| 27 | [Expo Go live preview from Codespaces](27-EXPO-GO-CODESPACES-LIVE-PREVIEW.md) | Push-triggered sync for the dedicated `tnyx/expo-preview` branch; requires one manually created Codespace and an environment-scoped Actions token secret; no product/Auth/DB changes |
+| 27 | [Expo Go live preview from Codespaces](27-EXPO-GO-CODESPACES-LIVE-PREVIEW.md) | Legacy branch sync retained during the labeled PR rollout |
+| 28 | [Tio-TNYX Expo Preview](28-LABELED-EXPO-PR-LIVE-PREVIEW.md) | Unified Live, OTA and internal builds, device acceptance and legacy retirement |
 
 ## 🔁 How documents stay reliable
 

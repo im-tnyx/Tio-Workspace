@@ -115,7 +115,7 @@ git switch -c $NewBranch
 
 Use the appropriate `docs/`, `feat/` or `fix/` branch prefix and follow [CONTRIBUTING.md](../CONTRIBUTING.md). Do not reuse a merged source branch, begin Auth/SQLCipher/Supabase implementation merely from a merged ADR, or push to `main` directly. A new PR needs its **own** review, required App-owned `Commit attribution guard` check, and separate owner merge authorization.
 
-**Preview branch exception:** `tnyx/expo-preview` is a dedicated Codespaces sync trigger, **not a disposable ordinary PR branch**. Do not delete or rewrite it during routine cleanup. A qualifying push invokes the [Codespaces preview workflow](../docs/27-EXPO-GO-CODESPACES-LIVE-PREVIEW.md); a `main` merge alone is not proof that the phone received new UI.
+**Preview rollout:** Preserve `tnyx/expo-preview` and its Codespace while the [main-based labeled PR preview](../docs/28-LABELED-EXPO-PR-LIVE-PREVIEW.md) completes physical-device acceptance. Follow the documented backup tag and separate owner deletion approval before retiring the branch.
 
 ## 8. Post-merge task handoff
 

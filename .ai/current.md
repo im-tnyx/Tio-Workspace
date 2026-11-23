@@ -16,6 +16,10 @@
 | PR #21 final gate | `im-tio` formally **APPROVED** exact PR HEAD `fe91eb77ec32a5b2e98b3d441e23161318a7631e`; earlier P2 threads resolved; required App-owned check PASS; merge `6b0ec5b` verified. |
 | Temporary guard exception | Owner states `ATTRIBUTION_GUARD_CHANGE_APPROVED_PR_HEAD` was **removed** after PR #21; current environment-variable absence was not independently inspected. Normal App-required check and Main Protection remain in place. |
 
+## Parallel Expo preview work
+
+The [Expo consolidation task](tasks/preview/local-20261123-expo-main-consolidation.md) tracks the scoped Codespaces migration and retirement gates. The Auth task above is recorded separately.
+
 ## Merge history, operational status and outstanding evidence
 
 - [PR #17](https://github.com/im-tnyx/Tio-Workspace/pull/17) merged at `fdc33d719975940058018dd283c7e9b4915c0286`; [PR #18](https://github.com/im-tnyx/Tio-Workspace/pull/18) merged at `941484bbd6109fd263681ca49200bf689e24d9e2`; [PR #21](https://github.com/im-tnyx/Tio-Workspace/pull/21) merged on 2026-11-16 at `6b0ec5b0413cf3a22c3c631368ac883f7f29d630`. None of these merges authorize new product functionality.
@@ -101,6 +105,6 @@ Task 06G empirical proof that default Supabase CLI / Docker Desktop on Windows p
 2. **Managed-Hosted Auth Boundary Proof:** Review [Task 06F](tasks/auth/local-20261117-managed-auth-boundary-cutover.md) and decide whether to authorize a disposable managed Supabase Auth proof to test if server-side Edge Functions / Admin API can enforce AUTH-12/17/22. Production project `bsfwzvgynwriswapxpsp` remains untouched.
 3. Separately review [proposed ADR-019](../docs/25-MINIMAL-CLOUD-PROFILE-AND-LOCAL-ONBOARDING.md), [Phase 1 readiness](../docs/21-PHASE-1-READINESS.md), and [open Phase 0 issue #2](https://github.com/im-tnyx/Tio-Workspace/issues/2).
 
-**Ops QA still pending:** prove a genuinely stopped Codespace can auto-start after an eligible new push, then verify the changed view on Expo Go hardware. The separate manual EAS preview uses `EXPO_TOKEN` in `eas-preview`; it is not the `CODESPACES_TOKEN` in `expo-codespaces-trusted`. No iOS signing or production release is implied.
+**Ops QA still pending:** [PR #40](https://github.com/im-tnyx/Tio-Workspace/pull/40) tracks the unified Actions entry. Verify labeled Live wake and phone refresh, then validate each opted-in EAS mode with separate preview credentials. Follow the [Tio-TNYX Expo Preview guide](../docs/28-LABELED-EXPO-PR-LIVE-PREVIEW.md).
 
 [Archived tasks](archive/2026/) · [AGENTS](../AGENTS.md) · [Post-merge playbook](../docs/12-POST-MERGE-PLAYBOOK.md)
