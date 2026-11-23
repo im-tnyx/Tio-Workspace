@@ -1,15 +1,15 @@
-# Phase 1.2 Task 06I-B1-H1-R9 — Pre-Dispatch Password Restoration & Cleanup Integrity Closure
+# Phase 1.2 Task 06I-B1-H1-R10 — Verification Session Cleanup & Identity Binding Closure
 
-> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R9. All outstanding review findings across PR #37 (including Codex P2 finding `PRRT_kwDOVtCmZc66s2Pf`) are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
+> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R10. All outstanding review findings across PR #37 (including Codex P2 findings `PRRT_kwDOVtCmZc66tPnu` and `PRRT_kwDOVtCmZc66tPnx`) are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **LOCAL REMEDIATION COMPLETE (REVISION R9); ALL REVIEW FINDINGS RESOLVED (R9-01 CODEX P2: PRE-DISPATCH RESTORATION REGISTRATION IN `SESSION-02`, EXPLICIT STATE LIFECYCLE TRACKING, INDETERMINATE TRANSPORT EXCEPTION HANDLING, CONTROLLED POST-RESTORATION AUTHENTICATION VERIFICATION VIA `adminClient.verifyUserCredentials`, IMMEDIATE VERIFICATION TOKEN REVOCATION, BOUNDARY PROTECTION PREVENTING UNTRACKED USER MODIFICATION, AND CREDENTIAL SANITIZATION VIA `clearCredentials()`); 83/83 RUNNER TESTS PASS; 151/151 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; GITHUB CI STATUS: 4/4 CHECKS PASS ON PREVIOUS HEAD; DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
-| Objective | Remediate Codex P2 review finding `PRRT_kwDOVtCmZc66s2Pf` on PR #37 (pre-dispatch password restoration registration and cleanup integrity closure) without executing any live hosted mutations. |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R9 slice |
-| Previous agent | Agent / Task 06I-B1-H1-R8 author |
-| Last audited HEAD | `1e6a941fe32b276605cab9a7d026a9afcd111f08` (PR #37 previous commit) |
-| Tracking / approval | Task 06I-B1-H1-R9 remediation authorized by user prompt; LIVE hosted probe execution requires separate explicit owner authorization; mandates $0 cost ceiling and permanent immunity for `Tio-world` (`oykupyiitspujzpwwvuj`) and REAL `bsfwzvgynwriswapxpsp` |
+| Status | **LOCAL REMEDIATION COMPLETE (REVISION R10); ALL REVIEW FINDINGS RESOLVED (R10-01 CODEX P2: VERIFICATION SESSION REGISTERED IN INVENTORY IMMEDIATELY UPON ISSUANCE, `signOut` EXCEPTIONS AND `{ error }` ENVELOPES HANDLED WITHOUT SWALLOWING, FALLBACK CLEANUP RETRY, FAIL-CLOSED RESIDUAL SESSION REPORTING ON REVOCATION FAILURE, CLEANUP FAILURE OVERRIDES PASSWORD RESTORATION VERIFICATION SUCCESS; R10-02 CODEX P2: EXACT IDENTITY CORRELATION BETWEEN TARGET USER AND EMAIL, CUSTOM SEED EMAIL PROPAGATION FROM PLAN/ITEM, CROSS-USER BINDING CONFLICT REJECTION, CASE-INSENSITIVE COMPARISON, MISMATCH REJECTION IN `SESSION-02` AND CLEANUP); 85/85 RUNNER TESTS PASS; 153/153 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; GITHUB CI STATUS: 4/4 CHECKS PASS ON PREVIOUS HEAD; DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
+| Objective | Remediate Codex P2 review findings `PRRT_kwDOVtCmZc66tPnu` (R10-01: verification session logout failure must block cleanup) and `PRRT_kwDOVtCmZc66tPnx` (R10-02: bind restoration verification to actual seed identity) on PR #37 without executing any live hosted mutations. |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R10 slice |
+| Previous agent | Agent / Task 06I-B1-H1-R9 author |
+| Last audited HEAD | `b094f4afb216baa38cf0529af41b83671146d3aa` (PR #37 previous commit) |
+| Tracking / approval | Task 06I-B1-H1-R10 remediation authorized by user prompt; LIVE hosted probe execution requires separate explicit owner authorization; mandates $0 cost ceiling and permanent immunity for `Tio-world` (`oykupyiitspujzpwwvuj`) and REAL `bsfwzvgynwriswapxpsp` |
 | Branch | `test/task06i-b1-h1-hosted-security-preflight` |
 | Base SHA / inspected HEAD | `716fb32061ffb6012d17eae9453c822a281fe6f1` (`main`) |
 | Platform and file scope | Documentation, `.ai/` context, runner CLI hardening & LIVE dispatcher contract in `experiments/task06i/hosted-probe-runner.mjs`, testbed fixture specification in `experiments/task06i/sql/testbed-fixtures.sql`, and offline verification tests in `experiments/task06i/hosted-probe-runner.test.mjs`; zero client Expo UI, production schema, or live Auth mutations |
@@ -414,6 +414,39 @@ In accordance with findings R3-01, R3-02, R3-05, and R3-06, each probe case is s
      - Once cleanup verifies complete resource removal (`CLEANUP_VERIFIED_SUCCESS`), called `this.clearCredentials()` to sanitize sensitive secrets.
   7. Added unit tests 78 and 79 validating pre-dispatch registration, transport drop handling, unreadable JSON, HTTP 500 indeterminate state, controlled post-restoration verification, untracked user boundaries, and credential sanitization.
 
+### 7.10 Revision R10 Remediation (Verification Session Cleanup & Identity Binding Closure)
+
+- **R10-01 — Verification Session Cleanup & Invalidation Failure Detection (Codex P2, `PRRT_kwDOVtCmZc66tPnu`):**
+  1. In `createHostedAdminClient.verifyUserCredentials(email, password, options = {})`:
+     - Extracted session ID from response body or unverified JWT claims (`session_id`).
+     - If `options.inventory` is provided: registered minted session in `inventory.trackedSessions` immediately upon token issuance (`inv.registerSession(sessionId, { accessToken: token, source: 'verify_credentials' })`). If session ID cannot be extracted from payload or JWT claims, recorded `inv.registerUntrackedSession()` and failed closed (`code: 'UNTRACKED_SESSION'`).
+     - Handled both returned `{ error }` and thrown exceptions from `this.signOut(token, 'local')`. If sign-out fails, returns `{ data: null, error: { message: 'VERIFICATION_SESSION_REVOCATION_FAILED...', sessionId, token }, sessionRevocationFailed: true }`.
+     - On successful sign-out, marks session revoked in inventory (`inv.markSessionRevoked(sessionId)`).
+  2. In `TestRunInventory.executeCleanup`:
+     - Step 6 inspects `verifyRes.sessionRevocationFailed`.
+     - If verification session logout fails, attempts fallback retry cleanup `adminClient.signOut(leakToken, 'local')`.
+     - If retry fails, records residual session resource (`type: 'session', id: leakSessId, error: 'VERIFICATION_SESSION_LEAK...'`), marks `item.state = 'restoration_failed'`, pushes residual restoration resource, and fails cleanup closed with `CLEANUP_FAILED_RESIDUAL_RESOURCES`.
+     - In `runHostedProbeRunner`, cleanup failure overrides password restoration verification success (`cleanupSuccess = !isLive || (cleanupReport && cleanupReport.status === 'CLEANUP_VERIFIED_SUCCESS')`).
+  3. Added Test 80 validating immediate inventory registration, 503 error handling, thrown exception handling, untracked session detection, false-proof rejection, fallback retry recovery, and runner halt on cleanup failure.
+
+- **R10-02 — Seed Identity Correlation & Mismatch Rejection (Codex P2, `PRRT_kwDOVtCmZc66tPnx`):**
+  1. In `createHostedDispatcher` for `SESSION-02`:
+     - Resolved email identity explicitly by prioritizing `inv.getUserEmail(userId)` and `item.testUser || options.testEmail || options.testUser || ctx?.testEmail`.
+     - Enforced exact identity correlation: if candidate email and tracked user email disagree, fails closed with `status: 0, error: 'IDENTITY_MISMATCH...'` before dispatching any password mutation request.
+     - Checked cross-user binding conflicts across `referencedUsers` and `createdUsers`. If email is bound to another user ID, fails closed with `IDENTITY_MISMATCH`.
+     - Validated test identity with `validateTestIdentity(seedEmail)` and propagated to `ctx.testEmail`.
+  2. In `TestRunInventory.registerSeedPasswordModification`:
+     - Enforced identity correlation between `normEmail` and `trackedEmail`.
+     - Rejected cross-user restoration record conflicts where the same email is bound to another unrestored user ID.
+  3. In `TestRunInventory.executeCleanup`:
+     - Step 6 validates `trackedEmail.trim().toLowerCase() === item.email.trim().toLowerCase()`. Mismatched identities fail closed as `IDENTITY_MISMATCH` and skip password mutation.
+     - Controlled credential verification invokes `adminClient.verifyUserCredentials` with the exact bound email.
+  4. In `runHostedProbeRunner`:
+     - Propagated `testEmail` into `createRunContext({ ...options, testEmail })`.
+     - Forwarded `testEmail` and `testUser` from probe item or context into `mockDispatcher`.
+     - Only cleared credentials in `finally` when cleanup verified complete success (`cleanupReport.status === 'CLEANUP_VERIFIED_SUCCESS'`).
+  5. Added Test 81 validating custom seed identity propagation, mismatch rejection before mutation, cross-user conflict rejection, case-insensitive comparison, indeterminate state preservation, and exact bound email verification in cleanup.
+
 ---
 
 ## 8. Verification Evidence Matrix
@@ -422,10 +455,10 @@ All verification checks were run locally and passed completely:
 
 ```bash
 node --test experiments/task06i/hosted-probe-runner.test.mjs
-# 83 passed, 0 failed, exit code 0
+# 85 passed, 0 failed, exit code 0
 
 node --test experiments/task06i/*.test.mjs
-# 151 passed, 0 failed, exit code 0
+# 153 passed, 0 failed, exit code 0
 
 node experiments/task06i/sql-contract-parity.mjs
 # Status: POSTGRES_VERIFIED, 18/18 matched parity, exit code 0
@@ -444,7 +477,7 @@ git diff --check origin/main...HEAD
 
 ## 9. GitHub CI Status
 
-- **Status:** **4/4 CHECKS PASS** on remote commit `1e6a941fe32b276605cab9a7d026a9afcd111f08`:
+- **Status:** **4/4 CHECKS PASS** on remote commit `b094f4afb216baa38cf0529af41b83671146d3aa`:
   1. `Attribution guard runner`: **PASS**
   2. `Commit attribution fixture tests`: **PASS**
   3. `Commit attribution guard` (App-owned required check ID `5032971`): **PASS**
@@ -465,7 +498,7 @@ git diff --check origin/main...HEAD
   - Project deletion perform nahi hua hai.
 
 **Readiness State:**
-- **Code readiness:** READY (Revision R9)
+- **Code readiness:** READY (Revision R10)
 - **GitHub CI:** PASS (4/4 on remote HEAD)
 - **Independent review:** PENDING (`im-tio`)
 - **Hosted testing:** NOT_AUTHORIZED
@@ -473,4 +506,4 @@ git diff --check origin/main...HEAD
 
 **Decision:** **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**
 
-> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all outstanding review findings (including Codex P2 finding `PRRT_kwDOVtCmZc66s2Pf`) is complete and fully covered by offline regression tests (83/83 runner tests, 151/151 task06i tests pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution. Awaiting independent re-review from `im-tio`.
+> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all outstanding review findings (including Codex P2 findings `PRRT_kwDOVtCmZc66tPnu` and `PRRT_kwDOVtCmZc66tPnx`) is complete and fully covered by offline regression tests (85/85 runner tests, 153/153 task06i tests pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution. Awaiting independent re-review from `im-tio`.

@@ -1555,18 +1555,36 @@ export class TestRunInventory {
       throw new Error('registerSeedPasswordModification requires string originalPassword');
     }
     const uid = userId.trim();
+    const normEmail = typeof email === 'string' && email.trim() ? email.trim().toLowerCase() : null;
+    const trackedEmail = this.getUserEmail(uid) ? this.getUserEmail(uid).trim().toLowerCase() : null;
+
+    if (normEmail && trackedEmail && normEmail !== trackedEmail) {
+      throw new Error(`IDENTITY_MISMATCH: Attempted restoration registration for user '${uid}' with email '${normEmail}', but user is tracked with '${trackedEmail}' (R10-02)`);
+    }
+
+    const resolvedEmail = normEmail || trackedEmail || null;
+
+    // Ensure no other unrestored record exists with same email but different user ID (R10-02)
+    if (resolvedEmail) {
+      const otherConflict = this.seedCredentialRestorations.find(
+        r => r.email === resolvedEmail && r.userId !== uid && r.state !== 'restored'
+      );
+      if (otherConflict) {
+        throw new Error(`IDENTITY_MISMATCH: Email '${resolvedEmail}' is already bound to restoration record for user '${otherConflict.userId}', cannot bind to '${uid}' (R10-02)`);
+      }
+    }
+
     const existing = this.seedCredentialRestorations.find(r => r.userId === uid && r.state !== 'restored');
     if (existing) {
-      if (email && !existing.email) existing.email = email.trim().toLowerCase();
+      if (!existing.email) existing.email = resolvedEmail;
       if (targetPassword || newPassword) existing.targetPassword = targetPassword || newPassword;
       if (state) existing.state = state;
       return existing;
     }
     const target = targetPassword || newPassword || null;
-    const userEmail = typeof email === 'string' && email.trim() ? email.trim().toLowerCase() : (this.getUserEmail(uid) || null);
     const record = {
       userId: uid,
-      email: userEmail,
+      email: resolvedEmail,
       originalPassword,
       targetPassword: target,
       state, // 'pending' | 'dispatched' | 'confirmed' | 'indeterminate' | 'restored' | 'restoration_failed'
@@ -1911,6 +1929,18 @@ export class TestRunInventory {
             continue;
           }
 
+          // Exact identity correlation check (R10-02)
+          const trackedEmail = this.getUserEmail(item.userId);
+          if (trackedEmail && item.email && trackedEmail.trim().toLowerCase() !== item.email.trim().toLowerCase()) {
+            report.residualResources.push({
+              type: 'seed_credential_restoration',
+              userId: item.userId,
+              error: `IDENTITY_MISMATCH: Restoration record email '${item.email}' does not match tracked user email '${trackedEmail}' for user ID '${item.userId}' (R10-02)`
+            });
+            item.state = 'restoration_failed';
+            continue;
+          }
+
           // If already restored in this cleanup cycle, skip redundant update
           if (item.state === 'restored') {
             report.seedCredentialsRestored++;
@@ -1930,21 +1960,68 @@ export class TestRunInventory {
               continue;
             }
 
-            // Post-restoration verification via controlled authentication (R9-01):
+            // Post-restoration verification via controlled authentication (R9-01, R10-01):
             // If adminClient provides verifyUserCredentials, verify that the restored password actually works
             if (typeof adminClient.verifyUserCredentials === 'function') {
-              const testEmail = item.email || this.getUserEmail(item.userId);
+              const testEmail = item.email || trackedEmail;
               if (testEmail) {
-                const verifyRes = await adminClient.verifyUserCredentials(testEmail, item.originalPassword);
+                let verifyRes;
+                try {
+                  verifyRes = await adminClient.verifyUserCredentials(testEmail, item.originalPassword, { inventory: this });
+                } catch (verifyErr) {
+                  verifyRes = {
+                    data: null,
+                    error: { message: `VERIFY_EXCEPTION: ${verifyErr?.message || String(verifyErr)}` }
+                  };
+                }
+
                 if (verifyRes && verifyRes.error) {
-                  item.state = 'restoration_failed';
-                  item.error = verifyRes.error.message || String(verifyRes.error);
-                  report.residualResources.push({
-                    type: 'seed_credential_restoration',
-                    userId: item.userId,
-                    error: `RESTORE_VERIFICATION_FAILED: ${item.error}`
-                  });
-                  continue;
+                  const isRevocationFail = verifyRes.sessionRevocationFailed || (typeof verifyRes.error.message === 'string' && verifyRes.error.message.includes('VERIFICATION_SESSION_REVOCATION_FAILED'));
+
+                  if (isRevocationFail) {
+                    const leakToken = verifyRes.error?.token;
+                    const leakSessId = verifyRes.error?.sessionId || 'verification_session';
+                    let retrySucceeded = false;
+
+                    // Attempt safe fallback cleanup retry if token context remains (R10-01)
+                    if (leakToken && typeof adminClient.signOut === 'function') {
+                      try {
+                        const retryRes = await adminClient.signOut(leakToken, 'local');
+                        if (retryRes && !retryRes.error) {
+                          retrySucceeded = true;
+                          if (leakSessId) this.markSessionRevoked(leakSessId);
+                        }
+                      } catch {
+                        // retry failed
+                      }
+                    }
+
+                    if (!retrySucceeded) {
+                      item.state = 'restoration_failed';
+                      item.error = verifyRes.error.message || String(verifyRes.error);
+                      report.residualResources.push({
+                        type: 'seed_credential_restoration',
+                        userId: item.userId,
+                        error: `RESTORE_VERIFICATION_FAILED: ${item.error}`
+                      });
+                      report.residualResources.push({
+                        type: 'session',
+                        id: leakSessId,
+                        sessionId: leakSessId,
+                        error: `VERIFICATION_SESSION_LEAK: Verification login succeeded but session invalidation failed: ${item.error}`
+                      });
+                      continue;
+                    }
+                  } else {
+                    item.state = 'restoration_failed';
+                    item.error = verifyRes.error.message || String(verifyRes.error);
+                    report.residualResources.push({
+                      type: 'seed_credential_restoration',
+                      userId: item.userId,
+                      error: `RESTORE_VERIFICATION_FAILED: ${item.error}`
+                    });
+                    continue;
+                  }
                 }
                 item.verifiedAt = new Date().toISOString();
               }
@@ -1999,20 +2076,27 @@ export function getRunTestPassword(options = {}) {
  * Resolves PRRT_kwDOVtCmZc66lOOP.
  */
 export function createRunContext(options = {}) {
+  const testEmail = options.testEmail || options.testUser || null;
   return {
     testPassword: getRunTestPassword(options),
+    testEmail: testEmail ? String(testEmail).trim().toLowerCase() : null,
     activeAccessToken: null,
     activeRefreshToken: null,
     activeUserId: null,
     activeSessionId: null,
     preInvalidationSessionValid: false,
     passwordResetCompleted: false,
+    originalSeedPassword: null,
+    activeSeedPassword: null,
     clear() {
       this.activeAccessToken = null;
       this.activeRefreshToken = null;
       this.testPassword = null;
+      this.testEmail = null;
       this.activeSessionId = null;
       this.activeUserId = null;
+      this.originalSeedPassword = null;
+      this.activeSeedPassword = null;
     }
   };
 }
@@ -2482,7 +2566,7 @@ export function createHostedDispatcher({
     const ctx = options.runContext || runContext;
     const inv = options.inventory || inventory;
     const testPassword = options.testPassword || ctx?.testPassword || getRunTestPassword(options);
-    const testUser = item.testUser || 'tio-test-user-06i@proof.invalid';
+    const testUser = item?.testUser || options.testEmail || options.testUser || ctx?.testEmail || 'tio-test-user-06i@proof.invalid';
 
     const headers = {
       'apikey': anonKey,
@@ -2865,7 +2949,50 @@ export function createHostedDispatcher({
           };
         }
 
-        const seedEmail = ctx?.testEmail || options.testEmail || DEFAULT_TEST_EMAIL;
+        const trackedEmail = (inv && userId) ? inv.getUserEmail(userId) : null;
+        const candidateEmail = item?.testUser || options.testEmail || options.testUser || ctx?.testEmail || null;
+        const normCandidate = candidateEmail ? String(candidateEmail).trim().toLowerCase() : null;
+        const normTracked = trackedEmail ? String(trackedEmail).trim().toLowerCase() : null;
+
+        if (normTracked && normCandidate && normTracked !== normCandidate) {
+          return {
+            passed: false,
+            status: 0,
+            password_reset_completed: false,
+            session_revoked: false,
+            session_revocation_verified: false,
+            remaining_sessions: null,
+            restoration_registered: false,
+            restoration_state: 'rejected',
+            error: `IDENTITY_MISMATCH: SESSION-02 candidate email '${normCandidate}' does not match tracked user email '${normTracked}' for user ID '${userId}' (R10-02)`
+          };
+        }
+
+        const seedEmail = normTracked || normCandidate || DEFAULT_TEST_EMAIL;
+        validateTestIdentity(seedEmail);
+
+        if (ctx) {
+          ctx.testEmail = seedEmail;
+        }
+
+        if (inv) {
+          for (const [id, user] of [...inv.referencedUsers.entries(), ...inv.createdUsers.entries()]) {
+            if (user?.email && user.email.toLowerCase() === seedEmail.toLowerCase() && String(id) !== String(userId)) {
+              return {
+                passed: false,
+                status: 0,
+                password_reset_completed: false,
+                session_revoked: false,
+                session_revocation_verified: false,
+                remaining_sessions: null,
+                restoration_registered: false,
+                restoration_state: 'rejected',
+                error: `IDENTITY_MISMATCH: Email '${seedEmail}' is already bound to user ID '${id}', cannot mutate different user ID '${userId}' (R10-02)`
+              };
+            }
+          }
+        }
+
         const origPassword = ctx?.originalSeedPassword || ctx?.testPassword || options.testPassword || DEFAULT_TEST_PASSWORD;
         const newPassword = 'TioNewPassword#2026!';
 
@@ -3417,7 +3544,7 @@ export async function runHostedProbeRunner(options = {}) {
   }
 
   const activeInventory = inventory || new TestRunInventory();
-  const activeRunContext = runContext || createRunContext(options);
+  const activeRunContext = runContext || createRunContext({ ...options, testEmail });
   const adminClient = options.adminClient || null;
   let cleanupReport = null;
   let cleanupExecuted = false;
@@ -3493,6 +3620,8 @@ export async function runHostedProbeRunner(options = {}) {
             inventory: activeInventory,
             runContext: activeRunContext,
             testPassword: activeRunContext.testPassword,
+            testEmail: item.testUser || activeRunContext.testEmail || testEmail,
+            testUser: item.testUser || activeRunContext.testEmail || testEmail,
             activeRefreshToken: activeRunContext.activeRefreshToken
           })
         );
@@ -3562,7 +3691,9 @@ export async function runHostedProbeRunner(options = {}) {
     // Ensure cleanup always executes even on unexpected exceptions (PRRT_kwDOVtCmZc66lo-q, R3-07)
     await performCleanup();
     if (activeInventory && typeof activeInventory.clearCredentials === 'function') {
-      activeInventory.clearCredentials();
+      if (!isLive || (cleanupReport && cleanupReport.status === 'CLEANUP_VERIFIED_SUCCESS')) {
+        activeInventory.clearCredentials();
+      }
     }
   }
 }
@@ -3588,7 +3719,7 @@ export function createHostedAdminClient({
   const baseUrl = `https://${projectRef}.supabase.co`;
 
   return {
-    async verifyUserCredentials(email, password) {
+    async verifyUserCredentials(email, password, options = {}) {
       if (!email || typeof email !== 'string' || !email.trim()) {
         return { data: null, error: { message: 'MISSING_EMAIL: verifyUserCredentials requires non-empty email' } };
       }
@@ -3596,17 +3727,28 @@ export function createHostedAdminClient({
         return { data: null, error: { message: 'MISSING_PASSWORD: verifyUserCredentials requires string password' } };
       }
       const keyToUse = anonKey || serviceRoleKey;
-      const res = await fetchFn(`${baseUrl}/auth/v1/token?grant_type=password`, {
-        method: 'POST',
-        headers: {
-          apikey: keyToUse,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          email: email.trim(),
-          password
-        })
-      });
+      let res;
+      try {
+        res = await fetchFn(`${baseUrl}/auth/v1/token?grant_type=password`, {
+          method: 'POST',
+          headers: {
+            apikey: keyToUse,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            email: email.trim(),
+            password
+          })
+        });
+      } catch (err) {
+        return {
+          data: null,
+          error: {
+            message: `VERIFICATION_NETWORK_ERROR: ${err?.message || String(err)}`
+          }
+        };
+      }
+
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         return {
@@ -3618,19 +3760,102 @@ export function createHostedAdminClient({
           }
         };
       }
+
       const data = await res.json().catch(() => ({}));
-      // Immediately revoke verification access token so no residual sessions leak (R9-01)
-      if (data?.access_token) {
+      const token = data?.access_token || null;
+
+      // If response did not return an access token (e.g. test stub/mock), credentials verified with zero session
+      if (!token) {
+        return {
+          data: {
+            verified: true,
+            userId: data?.user?.id || null
+          },
+          error: null
+        };
+      }
+
+      // Extract session ID from response body or JWT payload (R10-01)
+      let sessionId = data?.session_id || data?.session?.id || null;
+      if (!sessionId && token) {
         try {
-          await this.signOut(data.access_token, 'local');
-        } catch {
-          // Best-effort immediate revocation of verification session
+          const parts = token.split('.');
+          if (parts.length === 3) {
+            const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+            if (payload?.session_id) sessionId = payload.session_id;
+          }
+        } catch {}
+      }
+
+      const inv = options.inventory || null;
+      if (inv) {
+        if (sessionId) {
+          inv.registerSession(sessionId, { accessToken: token, source: 'verify_credentials' });
+        } else {
+          inv.registerUntrackedSession();
         }
       }
+
+      if (!sessionId) {
+        return {
+          data: null,
+          error: {
+            message: 'VERIFICATION_SESSION_UNTRACKED: Verification login succeeded with access_token but session ID could not be extracted from payload or JWT claims',
+            code: 'UNTRACKED_SESSION',
+            token
+          },
+          sessionRevocationFailed: true
+        };
+      }
+
+      // Immediately revoke verification session so no residual sessions leak (R9-01, R10-01)
+      let signOutRes;
+      let signOutThrew = false;
+      let signOutError = null;
+      try {
+        signOutRes = await this.signOut(token, 'local');
+      } catch (err) {
+        signOutThrew = true;
+        signOutError = err;
+      }
+
+      if (signOutThrew) {
+        return {
+          data: null,
+          error: {
+            message: `VERIFICATION_SESSION_REVOCATION_FAILED: signOut threw exception: ${signOutError?.message || String(signOutError)}`,
+            code: 'LOGOUT_EXCEPTION',
+            sessionId,
+            token
+          },
+          sessionRevocationFailed: true
+        };
+      }
+
+      if (signOutRes && signOutRes.error) {
+        return {
+          data: null,
+          error: {
+            message: `VERIFICATION_SESSION_REVOCATION_FAILED: signOut failed with error: ${signOutRes.error.message || JSON.stringify(signOutRes.error)}`,
+            code: 'LOGOUT_FAILED',
+            sessionId,
+            token,
+            status: signOutRes.error.status
+          },
+          sessionRevocationFailed: true
+        };
+      }
+
+      // Successfully signed out - mark session revoked in inventory if present
+      if (inv && sessionId) {
+        inv.markSessionRevoked(sessionId);
+      }
+
       return {
         data: {
           verified: true,
-          userId: data?.user?.id || null
+          userId: data?.user?.id || null,
+          sessionId
         },
         error: null
       };
