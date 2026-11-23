@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ "$GITHUB_REPOSITORY" == "im-tnyx/Tio-Workspace" ]]
+[[ "$SELECTED_PR" =~ ^[1-9][0-9]*$ ]]
+[[ "$PREVIEW_SHA" =~ ^[0-9a-f]{40}$ && "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+
+evidence="$(mktemp -d)"
+trap 'rm -rf -- "$evidence"' EXIT
+gh api "repos/$GITHUB_REPOSITORY/pulls/$SELECTED_PR" > "$evidence/pr.json"
+# Reject a stale or unrelated object before fetching it.
+jq -e --arg head "$PREVIEW_SHA" --arg base "$GITHUB_SHA" --arg repo "$GITHUB_REPOSITORY" '
+  .state == "open" and .user.login == "im-tnyx" and .base.ref == "main" and
+  .head.repo.full_name == $repo and .base.repo.full_name == $repo and
+  .head.sha == $head and .base.sha == $base and
+  any(.labels[]?; .name == "tnyx-preview")
+' "$evidence/pr.json" >/dev/null
+
+# Fetch objects only. No checkout, hooks or execution from the candidate tree.
+git -c core.hooksPath=/dev/null fetch --no-tags --no-recurse-submodules origin "$PREVIEW_SHA"
+test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$PREVIEW_SHA"
+git merge-base --is-ancestor "$GITHUB_SHA" "$PREVIEW_SHA"
+git diff --raw --no-abbrev --no-renames --no-ext-diff --no-textconv --ignore-submodules=none -z \
+  "$GITHUB_SHA" "$PREVIEW_SHA" -- > "$evidence/diff"
+gh api --paginate "repos/$GITHUB_REPOSITORY/issues?state=open&labels=tnyx-preview&per_page=100" \
+  --jq '.[] | select(.pull_request != null) | .number' > "$evidence/labeled.txt"
+gh api "repos/$GITHUB_REPOSITORY/pulls/$SELECTED_PR" > "$evidence/latest-pr.json"
+test "$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq '.object.sha')" = "$GITHUB_SHA"
+node .github/scripts/verify-expo-live-pr.mjs "$evidence/pr.json" \
+  "$evidence/latest-pr.json" "$evidence/diff" "$evidence/labeled.txt"
