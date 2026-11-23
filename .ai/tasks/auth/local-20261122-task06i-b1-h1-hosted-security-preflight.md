@@ -612,6 +612,12 @@ Compact invariant matrix verifying the 10 lifecycle invariant classes across cod
   3. Synchronized all dispatchers in `createHostedDispatcher` (`BYPASS-01`, `BYPASS-02`, `BYPASS-03`, `BYPASS-05`, `HOOK-01`, `HOOK-02`, `SESSION-02`), `verifyUserCredentials`, and runner-level operations in `runHostedProbeRunner` to resolve capabilities via `getEndpointCapabilities`.
   4. Added comprehensive regression Test 87 covering 13 adversarial scenarios, capability consistency, and anti-deletion protections.
 
+- **R15-03 — PostgreSQL Parity Container Startup Socket Timing Race Hardening:**
+  1. Root cause: In official `postgres:17` containers, `pg_isready` initially succeeds on the temporary bootstrap server before `docker-entrypoint.sh` executes fast shutdown and starts the permanent daemon. In container CI runners, this caused transient `connection to server on socket "/var/run/postgresql/.s.PGSQL.5432" failed: No such file or directory` in `verifyRoleGrantsAndRevocations`.
+  2. In `verifyParityMatrix`: readiness check now verifies both `pg_isready` and the permanent server daemon startup confirmation (`PostgreSQL init process complete; ready for start up`) from `docker logs`.
+  3. In `verifyRoleGrantsAndRevocations`: added a 10-attempt retry loop with 500ms delay to absorb any transient socket recreation delay.
+  4. In `executePostgresCase`: added a 5-attempt retry loop with 300ms delay for query execution resilience.
+
 ---
 
 ## 8. Verification Evidence Matrix

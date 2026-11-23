@@ -319,10 +319,18 @@ export function executePostgresCase(containerName, testCase) {
     END $$;
   `;
 
-  const res = spawnSync('docker', ['exec', '-i', containerName, 'psql', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'postgres', '-c', query], {
-    encoding: 'utf8',
-    timeout: 5000
-  });
+  let res;
+  for (let attempt = 0; attempt < 5; attempt++) {
+    res = spawnSync('docker', ['exec', '-i', containerName, 'psql', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'postgres', '-c', query], {
+      encoding: 'utf8',
+      timeout: 5000
+    });
+    const output = (res.stdout || '') + (res.stderr || '');
+    if (res.status === 0 || output.includes('SUCCESS_RESULT:') || output.includes('FAILED_SQLSTATE:')) {
+      break;
+    }
+    sleepSync(300);
+  }
 
   const output = (res.stdout || '') + (res.stderr || '');
 
@@ -381,10 +389,15 @@ export function verifyRoleGrantsAndRevocations(containerName) {
       has_function_privilege('public', 'private_auth.send_email_hook(jsonb)', 'EXECUTE') AS public_can_email;
   `;
 
-  const res = spawnSync('docker', ['exec', '-i', containerName, 'psql', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'postgres', '-t', '-A', '-F', ',', '-c', query], {
-    encoding: 'utf8',
-    timeout: 5000
-  });
+  let res;
+  for (let attempt = 0; attempt < 10; attempt++) {
+    res = spawnSync('docker', ['exec', '-i', containerName, 'psql', '-v', 'ON_ERROR_STOP=1', '-U', 'postgres', '-d', 'postgres', '-t', '-A', '-F', ',', '-c', query], {
+      encoding: 'utf8',
+      timeout: 5000
+    });
+    if (res.status === 0) break;
+    sleepSync(500);
+  }
 
   if (res.status !== 0) {
     throw new Error(`Failed to query role grants: ${res.stderr || res.stdout}`);
@@ -433,11 +446,19 @@ export function verifyParityMatrix() {
         throw new Error(`Failed to start postgres container: ${runRes.stderr || runRes.stdout}`);
       }
 
-      // Wait for postgres to be ready using portable Node.js sleep
+      // Wait for postgres to be ready using portable Node.js sleep.
+      // Must wait for the permanent server daemon, past the initdb temporary-server shutdown/restart window.
       let ready = false;
-      for (let i = 0; i < 20; i++) {
+      for (let i = 0; i < 30; i++) {
         const ping = spawnSync('docker', ['exec', '-i', containerName, 'pg_isready', '-U', 'postgres'], { timeout: 2000 });
-        if (ping.status === 0) { ready = true; break; }
+        if (ping.status === 0) {
+          const logs = spawnSync('docker', ['logs', containerName], { encoding: 'utf8', timeout: 2000 });
+          const logText = (logs.stdout || '') + (logs.stderr || '');
+          if (logText.includes('PostgreSQL init process complete; ready for start up') || i >= 20) {
+            ready = true;
+            break;
+          }
+        }
         sleepSync(400); // portable sleep
       }
 
