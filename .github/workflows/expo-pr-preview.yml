@@ -218,8 +218,8 @@ jobs:
             *) exit 1 ;;
           esac
           env -u GH_TOKEN -u GITHUB_TOKEN ./node_modules/.bin/expo export \
-            "${platforms[@]}" --dump-assetmap --output-dir "$RUNNER_TEMP/ota-bundle"
-          test -s "$RUNNER_TEMP/ota-bundle/metadata.json"
+            "${platforms[@]}" --output-dir "$RUNNER_TEMP/ota-bundle"
+          node "$GITHUB_WORKSPACE/.github/scripts/verify-expo-ota-bundle.mjs" "$RUNNER_TEMP/ota-bundle"
       - name: Upload prebuilt OTA bundle
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
@@ -285,9 +285,13 @@ jobs:
           SELECTED_PR: ${{ needs.select.outputs.pr_number }}
           PREVIEW_SHA: ${{ needs.select.outputs.head_sha }}
           PREVIEW_OPERATION: ${{ needs.select.outputs.operation }}
+          PREVIEW_PLATFORM: ${{ inputs.platform }}
         run: |
           set -euo pipefail
           bash .github/scripts/check-expo-live-pr.sh
+          if [[ "$PREVIEW_OPERATION" == publish_update ]]; then
+            node .github/scripts/verify-expo-ota-bundle.mjs "$RUNNER_TEMP/ota-bundle"
+          fi
           source_dir="$RUNNER_TEMP/eas-preview-source"
           git -c core.hooksPath=/dev/null worktree add --detach "$source_dir" "$PREVIEW_SHA"
           # EAS config resolution can read trusted, preinstalled Expo dependencies.
@@ -319,7 +323,9 @@ jobs:
                 --message "Tio-TNYX PR #$SELECTED_PR (${PREVIEW_SHA:0:7})"
               ;;
             build_preview)
-              "$eas" build --profile preview --platform "$PREVIEW_PLATFORM" --non-interactive --no-wait
+              node --require "$GITHUB_WORKSPACE/.github/scripts/freeze-expo-preview-keystore.cjs" \
+                "$eas" build --profile preview --platform "$PREVIEW_PLATFORM" \
+                --non-interactive --freeze-credentials --no-wait
               ;;
             *) exit 1 ;;
           esac

@@ -13,13 +13,18 @@ export function verifyEasPreview({ app, eas, platform, manifest, lock }) {
 
   assert.deepEqual(Object.keys(eas.build ?? {}), ['preview'], 'Expected only the preview build profile');
   const profile = eas.build.preview;
-  assert.equal(profile.distribution, 'internal', 'Expected internal distribution');
-  assert.equal(profile.channel, 'pr-preview', 'Unexpected preview channel');
-  assert([undefined, 'preview'].includes(profile.environment), 'Expected preview EAS environment');
   assert.equal(profile.android?.buildType, 'apk', 'Expected an Android preview APK');
   for (const config of [profile, profile.android, profile.ios]) {
     assert([undefined, 'remote'].includes(config?.credentialsSource), 'Expected preconfigured remote signing');
     assert(!config?.extends && !config?.withoutCredentials, 'Unexpected preview signing configuration');
+  }
+  for (const overrides of [profile.android, profile.ios]) {
+    // EAS merges platform properties over the shared profile.
+    const effective = { ...profile, ...overrides };
+    assert.equal(effective.distribution, 'internal', 'Expected internal distribution');
+    assert.equal(effective.channel, 'pr-preview', 'Unexpected preview channel');
+    assert([undefined, 'preview'].includes(effective.environment) && !effective.developmentClient,
+      'Expected the preview EAS environment and an internal preview client');
   }
   if (platform !== 'ios') assert.equal(app.android?.package, 'com.tnyx.tio', 'Unexpected Android identifier');
   if (platform !== 'android') assert.equal(app.ios?.bundleIdentifier, 'com.tnyx.tio', 'Unexpected iOS identifier');

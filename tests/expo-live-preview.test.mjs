@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { verifyOtaBundle } from '../.github/scripts/verify-expo-ota-bundle.mjs';
 import { verifyEasPreview } from '../.github/scripts/verify-eas-preview-config.mjs';
 import { verifyExpoLivePr } from '../.github/scripts/verify-expo-live-pr.mjs';
 
@@ -176,7 +177,10 @@ test('OTA exports without credentials and EAS only runs on manual dispatch', () 
   assert.equal([...easJob.matchAll(/secrets\.PR_PREVIEW_EXPO_TOKEN/g)].length, 1);
   assert.match(easJob, /--branch pr-preview --environment preview --non-interactive/);
   assert.match(easJob, /--skip-bundler --input-dir/);
-  assert.match(easJob, /build --profile preview --platform "\$PREVIEW_PLATFORM" --non-interactive --no-wait/);
+  assert.match(easJob, /verify-expo-ota-bundle\.mjs/);
+  assert.match(easJob, /build --profile preview --platform "\$PREVIEW_PLATFORM"/);
+  assert.match(easJob, /--non-interactive --freeze-credentials --no-wait/);
+  assert.match(easJob, /--require ".*freeze-expo-preview-keystore\.cjs"/);
   assert.doesNotMatch(easJob, /npm run|npx|auto-submit|secrets\.PR_PREVIEW_CODESPACES_TOKEN/);
 });
 
@@ -195,9 +199,47 @@ test('EAS config requires this project, preview-only configuration and pinned CL
     const eas = { build: { preview: { ...args.eas.build.preview, ...change } } };
     assert.throws(() => verifyEasPreview({ ...args, eas }));
   }
+  for (const change of [{ channel: 'production' }, { environment: 'production' },
+    { distribution: 'store' }, { developmentClient: true }]) {
+    const preview = { ...args.eas.build.preview, ios: change };
+    assert.throws(() => verifyEasPreview({ ...args, eas: { build: { preview } } }));
+  }
   const lock = structuredClone(args.lock);
   lock.packages['node_modules/eas-cli'].integrity = '';
   assert.throws(() => verifyEasPreview({ ...args, lock }), /Unverified EAS CLI dependency/);
+});
+
+test('OTA artifact confines metadata to the requested platforms and regular bundle files', () => {
+  const folder = mkdtempSync(join(tmpdir(), 'tnyx-ota-policy-'));
+  try {
+    mkdirSync(join(folder, '_expo/static/js/ios'), { recursive: true });
+    mkdirSync(join(folder, 'assets'));
+    const bundle = '_expo/static/js/ios/entry-ab12.hbc';
+    const asset = 'assets/ac47';
+    writeFileSync(join(folder, bundle), 'fixture');
+    writeFileSync(join(folder, asset), 'fixture');
+    const metadata = { bundler: 'metro', version: 0, fileMetadata: {
+      ios: { bundle, assets: [{ path: asset, ext: 'png' }] },
+    } };
+    const write = () => writeFileSync(join(folder, 'metadata.json'), JSON.stringify(metadata));
+    write();
+    verifyOtaBundle(folder, 'ios');
+    assert.throws(() => verifyOtaBundle(folder, 'all'), /platform metadata/);
+    metadata.fileMetadata.ios.bundle = '../outside.hbc';
+    write();
+    assert.throws(() => verifyOtaBundle(folder, 'ios'), /bundle path/);
+    metadata.fileMetadata.ios.bundle = bundle;
+    metadata.fileMetadata.ios.assets[0].path = 'assets/../outside';
+    write();
+    assert.throws(() => verifyOtaBundle(folder, 'ios'), /asset path/);
+    metadata.fileMetadata.ios.assets[0].path = asset;
+    write();
+    rmSync(join(folder, asset));
+    symlinkSync(join(folder, bundle), join(folder, asset));
+    assert.throws(() => verifyOtaBundle(folder, 'ios'), /non-regular file/);
+  } finally {
+    rmSync(folder, { recursive: true, force: true });
+  }
 });
 
 test('Git validation fetches objects and compares trees without switching the runner worktree', () => {

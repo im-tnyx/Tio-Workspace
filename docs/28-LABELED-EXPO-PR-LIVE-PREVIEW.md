@@ -96,7 +96,8 @@ this workflow. Preview policy tests run with the existing shell checks.
 6. For EAS modes, configure the separate `eas-preview` GitHub environment with
    a custom deployment branch policy allowing exact `main` only. Add the
    project-scoped `PR_PREVIEW_EXPO_TOKEN` as an environment secret. Confirm the
-   Expo preview project and remote signing for the chosen platform. Use the
+   Expo preview project and remote signing for the chosen platform. CI fails
+   closed when required signing is missing. Use the
    `preview` profile and verify that channel `pr-preview` is linked to branch
    `pr-preview` before testing an OTA. The current mock app has no preview
    environment inputs for JavaScript export. EAS builds only queue from manual
