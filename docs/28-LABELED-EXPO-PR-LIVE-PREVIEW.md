@@ -1,9 +1,9 @@
 # Tio-TNYX Expo Preview
 
 [Tio-TNYX Expo Preview](../.github/workflows/expo-pr-preview.yml) is the Actions
-entry for Expo Go and EAS previews of temporary, owner-authored PRs targeting
-`main`. For a manual run choose the operation and platform, then enter the open
-PR number and its full head SHA.
+workflow for Live Expo Go, OTA updates and internal builds from eligible
+owner-authored PRs targeting `main`. For a manual run, choose the operation and
+platform and enter the PR number and full head SHA.
 
 | Operation | Trigger | Result |
 |---|---|---|
@@ -107,8 +107,8 @@ this workflow. Preview policy tests run with the existing shell checks.
 
 The wake step verifies Codespace identity on every poll. The exact GitHub CLI
 already-running HTTP 409 response allows polling to continue. Availability
-must still be confirmed. If the deadline expires, the run fails with
-`START_TIMEOUT` and does not proceed to SSH.
+must be confirmed within ten minutes. On timeout, Live stops before SSH and
+reports `START_TIMEOUT`.
 
 The Codespace starter keeps a private `metro.json` record and a Linux
 `flock` shared by preflight, checkout and startup. It clears a stale record

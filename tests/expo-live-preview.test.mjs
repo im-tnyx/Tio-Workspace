@@ -194,7 +194,7 @@ test('EAS config requires this project, preview-only configuration and pinned CL
   };
   verifyEasPreview(args);
   assert.throws(() => verifyEasPreview({ ...args, platform: 'web' }), /platform/);
-  assert.throws(() => verifyEasPreview({ ...args, app: { ...args.app, slug: 'tio-money' } }), /slug/);
+  assert.throws(() => verifyEasPreview({ ...args, app: { ...args.app, slug: 'wrong-preview-slug' } }), /slug/);
   for (const change of [{ distribution: 'store' }, { channel: 'production' }, { environment: 'production' }]) {
     const eas = { build: { preview: { ...args.eas.build.preview, ...change } } };
     assert.throws(() => verifyEasPreview({ ...args, eas }));

@@ -1,10 +1,9 @@
-# Consolidate Expo Go preview onto main
+# Tio-TNYX Expo Preview implementation
 
 | Field | Value |
 |---|---|
-| Status | Review pending. Labeled preview activation and legacy retirement pending |
+| Status | Implemented in PR #40. Formal review, rollout acceptance and legacy retirement pending |
 | Implementation owner | Codex Cloud session for the consolidation task |
-| Previous agent | See the separate [labeled preview proposal PR #39](https://github.com/im-tnyx/Tio-Workspace/pull/39) |
 | Last commit agent | Codex Cloud. The consolidation PR's Commits tab records the reviewed SHA |
 | Approval | Owner's Cloud-only consolidation request. Merge and legacy deletion have separate approval gates |
 | Branch | `fix/consolidate-expo-preview` |
@@ -23,11 +22,8 @@ outside the execution environment.
 |---|---|---|---|
 | `main` | `716fb32061ffb6012d17eae9453c822a281fe6f1` | 0 / 0 | `716fb32061ffb6012d17eae9453c822a281fe6f1` |
 | `tnyx/expo-preview` | `b366ff856f0faad761ed7315530198cf72078861` | 8 / 56 | `6b0ec5b0413cf3a22c3c631368ac883f7f29d630` |
-| `feat/expo-label-live-preview` | `da4ea526500f003fcf17da7132f68044f3486ec9` | 9 / 0 | `716fb32061ffb6012d17eae9453c822a281fe6f1` |
 
-The legacy and feature refs share merge base
-`6b0ec5b0413cf3a22c3c631368ac883f7f29d630` and have 8 and 65 unique commits,
-respectively. All eight legacy commits were inspected.
+All eight commits unique to the legacy branch were inspected.
 
 | Legacy commit | Disposition |
 |---|---|
@@ -57,10 +53,10 @@ environment and was left intact.
 
 ## Review and verification
 
-The proposal on PR #39 was inspected without changing its branch. The
-consolidation uses exact Git trees instead of REST compare file pagination,
-adds mode checks and fresh revalidation, and requires an explicit manual SHA.
-It preserves the legacy path until approval and device acceptance.
+The workflow validates complete Git tree diffs, checks file modes, and
+revalidates PR eligibility before privileged steps. Manual dispatch requires
+the full PR head SHA. The legacy preview stays available through device
+acceptance.
 
 The [Main Protection ruleset](https://github.com/im-tnyx/Tio-Workspace/rules/27218050)
 requires the strict App-owned `Commit attribution guard` check (App ID
@@ -78,21 +74,23 @@ backup tag and rollback. The legacy branch stays in service pending those gates.
 
 ## Unified Actions entry
 
-The owner extended the consolidation to the three-operation dropdown from the
-[Tio-Money reference](https://github.com/im-tnyx/Tio-Money/blob/main/.github/workflows/tio-money-eas-pr-preview.yml).
-[PR #40](https://github.com/im-tnyx/Tio-Workspace/pull/40) carries the combined
-work from the proposal in PR #39 and the earlier consolidation. This revision
-replaces the standalone EAS and proposed Live entries with **Tio-TNYX Expo
-Preview** and moves preview policy tests into the existing shell CI. The trusted
-base event handles label application and eligible pushes without a separate
-feature-branch signal. OTA export is separated from EAS credentials, and build
-and publish stay owner-dispatched. The already working legacy fallback remains
-available until acceptance. The PR records exact-head validation and review.
+[PR #40](https://github.com/im-tnyx/Tio-Workspace/pull/40) implements
+**Tio-TNYX Expo Preview** with three operations.
 
-## Live recovery add-on
+| Operation | Behavior |
+|---|---|
+| `codespaces_live` | Serves the verified PR revision in the dedicated Codespace after an eligible label, owner push or manual dispatch |
+| `publish_update` | Publishes the validated OTA bundle to the exclusive `pr-preview` branch on owner dispatch |
+| `build_preview` | Queues a signed internal Android or iOS preview build on owner dispatch |
 
-The owner approved exact already-running Codespaces conflict handling and a
-ten-minute verified start deadline. The trusted remote starter now shares one
+OTA export runs without EAS credentials. The existing shell CI runs the
+preview policy and recovery tests.
+
+## Codespace wake and Metro recovery
+
+Live continues polling only on the exact already-running Codespaces HTTP 409
+response and fails with `START_TIMEOUT` if availability remains unverified
+after ten minutes. The trusted remote starter now shares one
 Linux lock across ownership verification, checkout and Metro startup. Stale
 records recover only when the recorded process and group are absent and the
 Metro port is free. Ambiguous ownership fails closed. Regression fixtures cover
