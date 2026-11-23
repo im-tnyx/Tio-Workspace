@@ -1221,7 +1221,7 @@ function validateSessionRevocationProof(item, rawOutcome, allowedStatuses, isRev
   }
 
   if (item.id === 'SESSION-04' || item.id === 'SESSION-05') {
-    // Stateless linger window documentation check (PRRT_kwDOVtCmZc66jNbH, R3-03)
+    // Stateless linger window documentation check (PRRT_kwDOVtCmZc66jNbH, R3-03, R7-02)
     if (status !== 200) {
       return {
         passed: false,
@@ -1234,6 +1234,35 @@ function validateSessionRevocationProof(item, rawOutcome, allowedStatuses, isRev
         passed: false,
         status,
         reason: `MISSING_EVIDENCE: ${item.id} requires token to be unexpired (now < exp) during linger window demonstration (R3-03)`
+      };
+    }
+    // Mandatory 300s JWT lifetime contract validation (PRRT_kwDOVtCmZc66r92y, R7-02)
+    if (typeof rawOutcome.jwt_lifetime_seconds !== 'number' || !Number.isFinite(rawOutcome.jwt_lifetime_seconds)) {
+      return {
+        passed: false,
+        status,
+        reason: `MISSING_EVIDENCE: ${item.id} requires valid numeric jwt_lifetime_seconds claim evidence (R7-02)`
+      };
+    }
+    if (rawOutcome.jwt_lifetime_seconds <= 0) {
+      return {
+        passed: false,
+        status,
+        reason: `INVALID_JWT_LIFETIME: ${item.id} token lifetime must be strictly positive, got ${rawOutcome.jwt_lifetime_seconds}s (R7-02)`
+      };
+    }
+    if (rawOutcome.jwt_lifetime_seconds > 300) {
+      return {
+        passed: false,
+        status,
+        reason: `EXCESSIVE_JWT_LIFETIME: ${item.id} token lifetime (${rawOutcome.jwt_lifetime_seconds}s) exceeds approved 300s bound (R7-02)`
+      };
+    }
+    if (rawOutcome.lifetime_bounded !== true) {
+      return {
+        passed: false,
+        status,
+        reason: `MISSING_EVIDENCE: ${item.id} requires affirmative lifetime_bounded flag (R7-02)`
       };
     }
     const hasNonEmptyLingerEvidence =
@@ -2811,11 +2840,23 @@ export function createHostedDispatcher({
         }
         const token = ctx.activeAccessToken;
         let tokenExpiry = null;
+        let tokenIat = null;
+        let jwtLifetimeSeconds = null;
+        let lifetimeBounded = false;
         try {
           const parts = token.split('.');
           if (parts.length === 3) {
             const p = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-            tokenExpiry = p?.exp;
+            if (typeof p?.exp === 'number' && Number.isFinite(p.exp)) {
+              tokenExpiry = p.exp;
+            }
+            if (typeof p?.iat === 'number' && Number.isFinite(p.iat)) {
+              tokenIat = p.iat;
+            }
+            if (tokenExpiry !== null && tokenIat !== null && tokenExpiry > tokenIat) {
+              jwtLifetimeSeconds = tokenExpiry - tokenIat;
+              lifetimeBounded = jwtLifetimeSeconds > 0 && jwtLifetimeSeconds <= 300;
+            }
           }
         } catch {}
 
@@ -2829,8 +2870,21 @@ export function createHostedDispatcher({
         });
         const body = await parseResponseBody(res);
 
-        // Stateless linger is observed ONLY when token is unexpired AND PostgREST accepts it with HTTP 200 (R3-03)
-        const lingerObserved = res.status === 200 && tokenUnexpired;
+        // Stateless linger is observed ONLY when token is unexpired AND lifetime is strictly bounded (<= 300s) AND PostgREST accepts it with HTTP 200 (R3-03, R7-02)
+        const lingerObserved = res.status === 200 && tokenUnexpired && lifetimeBounded;
+
+        let error = null;
+        if (res.status === 401) {
+          error = 'POSTGREST_TOKEN_REJECTED: PostgREST returned HTTP 401; linger not observed';
+        } else if (!tokenUnexpired) {
+          error = 'TOKEN_ALREADY_EXPIRED';
+        } else if (tokenIat === null || tokenExpiry === null) {
+          error = 'MISSING_JWT_TIMESTAMPS: Token missing valid numeric iat or exp claims (R7-02)';
+        } else if (tokenExpiry <= tokenIat) {
+          error = 'INVALID_EXP_TEMPORAL_INCONSISTENCY: Token exp must be strictly greater than iat (R7-02)';
+        } else if (jwtLifetimeSeconds > 300) {
+          error = `EXCESSIVE_JWT_LIFETIME: Token lifetime (${jwtLifetimeSeconds}s) exceeds approved 300s bound (R7-02)`;
+        }
 
         return {
           passed: lingerObserved,
@@ -2838,13 +2892,16 @@ export function createHostedDispatcher({
           stateless_linger_documented: lingerObserved,
           token_unexpired: tokenUnexpired,
           jwt_exp: tokenExpiry,
+          jwt_iat: tokenIat,
+          jwt_lifetime_seconds: jwtLifetimeSeconds,
+          lifetime_bounded: lifetimeBounded,
           evidence: lingerObserved
-            ? `PostgREST Data API stateless JWT linger confirmed (HTTP 200 before exp ${tokenExpiry}); bounded by short jwt_exp (300s)`
-            : `PostgREST did not demonstrate stateless linger (status ${res.status}, unexpired: ${tokenUnexpired})`,
+            ? `PostgREST Data API stateless JWT linger confirmed (HTTP 200 before exp ${tokenExpiry}); verified short jwt_exp lifetime (${jwtLifetimeSeconds}s <= 300s)`
+            : `PostgREST did not demonstrate valid bounded stateless linger (status ${res.status}, unexpired: ${tokenUnexpired}, lifetime: ${jwtLifetimeSeconds}s)`,
           postgrest_linger_observed: lingerObserved,
-          bounded_by_jwt_exp: true,
+          bounded_by_jwt_exp: lifetimeBounded,
           data: body,
-          error: res.status === 401 ? 'POSTGREST_TOKEN_REJECTED: PostgREST returned HTTP 401; linger not observed' : (!tokenUnexpired ? 'TOKEN_ALREADY_EXPIRED' : null)
+          error
         };
       }
 
@@ -2859,11 +2916,23 @@ export function createHostedDispatcher({
         }
         const token = ctx.activeAccessToken;
         let tokenExpiry = null;
+        let tokenIat = null;
+        let jwtLifetimeSeconds = null;
+        let lifetimeBounded = false;
         try {
           const parts = token.split('.');
           if (parts.length === 3) {
             const p = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-            tokenExpiry = p?.exp;
+            if (typeof p?.exp === 'number' && Number.isFinite(p.exp)) {
+              tokenExpiry = p.exp;
+            }
+            if (typeof p?.iat === 'number' && Number.isFinite(p.iat)) {
+              tokenIat = p.iat;
+            }
+            if (tokenExpiry !== null && tokenIat !== null && tokenExpiry > tokenIat) {
+              jwtLifetimeSeconds = tokenExpiry - tokenIat;
+              lifetimeBounded = jwtLifetimeSeconds > 0 && jwtLifetimeSeconds <= 300;
+            }
           }
         } catch {}
 
@@ -2877,8 +2946,23 @@ export function createHostedDispatcher({
         });
         const body = await parseResponseBody(res);
 
-        // Stateless linger is observed ONLY when token is unexpired AND Storage accepts it with HTTP 200 (R3-03)
-        const lingerObserved = res.status === 200 && tokenUnexpired;
+        // Stateless linger is observed ONLY when token is unexpired AND lifetime is strictly bounded (<= 300s) AND Storage accepts it with HTTP 200 (R3-03, R7-02)
+        const lingerObserved = res.status === 200 && tokenUnexpired && lifetimeBounded;
+
+        let error = null;
+        if (res.status === 404) {
+          error = 'STORAGE_FIXTURE_MISSING: Storage probe file returned HTTP 404 (PROVIDER_PRECONDITION_MISSING: task06i_probe_bucket/probe.txt must be provisioned before test, R5-07)';
+        } else if (res.status === 401) {
+          error = 'STORAGE_TOKEN_REJECTED: Storage returned HTTP 401';
+        } else if (!tokenUnexpired) {
+          error = 'TOKEN_ALREADY_EXPIRED';
+        } else if (tokenIat === null || tokenExpiry === null) {
+          error = 'MISSING_JWT_TIMESTAMPS: Token missing valid numeric iat or exp claims (R7-02)';
+        } else if (tokenExpiry <= tokenIat) {
+          error = 'INVALID_EXP_TEMPORAL_INCONSISTENCY: Token exp must be strictly greater than iat (R7-02)';
+        } else if (jwtLifetimeSeconds > 300) {
+          error = `EXCESSIVE_JWT_LIFETIME: Token lifetime (${jwtLifetimeSeconds}s) exceeds approved 300s bound (R7-02)`;
+        }
 
         return {
           passed: lingerObserved,
@@ -2886,15 +2970,16 @@ export function createHostedDispatcher({
           stateless_linger_documented: lingerObserved,
           token_unexpired: tokenUnexpired,
           jwt_exp: tokenExpiry,
+          jwt_iat: tokenIat,
+          jwt_lifetime_seconds: jwtLifetimeSeconds,
+          lifetime_bounded: lifetimeBounded,
           evidence: lingerObserved
-            ? `Storage API stateless JWT linger confirmed (HTTP 200 before exp ${tokenExpiry}); bounded by short jwt_exp (300s)`
-            : `Storage API did not demonstrate stateless linger (status ${res.status}, unexpired: ${tokenUnexpired})`,
+            ? `Storage API stateless JWT linger confirmed (HTTP 200 before exp ${tokenExpiry}); verified short jwt_exp lifetime (${jwtLifetimeSeconds}s <= 300s)`
+            : `Storage API did not demonstrate valid bounded stateless linger (status ${res.status}, unexpired: ${tokenUnexpired}, lifetime: ${jwtLifetimeSeconds}s)`,
           storage_linger_observed: lingerObserved,
-          bounded_by_jwt_exp: true,
+          bounded_by_jwt_exp: lifetimeBounded,
           data: body,
-          error: res.status === 404
-            ? 'STORAGE_FIXTURE_MISSING: Storage probe file returned HTTP 404 (PROVIDER_PRECONDITION_MISSING: task06i_probe_bucket/probe.txt must be provisioned before test, R5-07)'
-            : (res.status === 401 ? 'STORAGE_TOKEN_REJECTED: Storage returned HTTP 401' : (!tokenUnexpired ? 'TOKEN_ALREADY_EXPIRED' : null))
+          error
         };
       }
 
@@ -3190,6 +3275,154 @@ export async function runHostedProbeRunner(options = {}) {
   }
 }
 
+/**
+ * Factory for the hosted admin client adapter used by cleanup and admin operations.
+ * Strictly binds to HARDCODED_TEMP_REF; rejects real and tio-world projects.
+ * Resolves PRRT_kwDOVtCmZc66sBa5 (R7-01).
+ */
+export function createHostedAdminClient({
+  serviceRoleKey,
+  projectRef = HARDCODED_TEMP_REF,
+  fetchFn = fetch
+} = {}) {
+  if (projectRef !== HARDCODED_TEMP_REF) {
+    throw new Error(`SECURITY_BOUNDARY_VIOLATION: createHostedAdminClient strictly permitted only against TEMP project '${HARDCODED_TEMP_REF}', attempted '${projectRef}'`);
+  }
+  if (!serviceRoleKey || typeof serviceRoleKey !== 'string' || !serviceRoleKey.trim()) {
+    throw new Error('MISSING_HOSTED_CREDENTIALS: createHostedAdminClient requires non-empty serviceRoleKey');
+  }
+
+  const baseUrl = `https://${projectRef}.supabase.co`;
+
+  return {
+    async deleteUser(userId) {
+      if (!userId || typeof userId !== 'string' || !userId.trim()) {
+        return { data: null, error: { message: 'MISSING_USER_ID: deleteUser requires non-empty userId' } };
+      }
+      const res = await fetchFn(`${baseUrl}/auth/v1/admin/users/${encodeURIComponent(userId.trim())}`, {
+        method: 'DELETE',
+        headers: {
+          apikey: serviceRoleKey,
+          Authorization: `Bearer ${serviceRoleKey}`
+        }
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        return { error: body?.msg || body?.message || `HTTP_${res.status}` };
+      }
+      return { data: { user: { id: userId } }, error: null };
+    },
+
+    async getUserById(userId) {
+      if (!userId || typeof userId !== 'string' || !userId.trim()) {
+        return { data: null, error: { message: 'MISSING_USER_ID: getUserById requires non-empty userId' } };
+      }
+      const res = await fetchFn(`${baseUrl}/auth/v1/admin/users/${encodeURIComponent(userId.trim())}`, {
+        method: 'GET',
+        headers: {
+          apikey: serviceRoleKey,
+          Authorization: `Bearer ${serviceRoleKey}`
+        }
+      });
+      if (res.status === 404) return { data: null, error: { message: 'User not found', status: 404 } };
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        return { data: null, error: body };
+      }
+      const data = await res.json();
+      return { data, error: null };
+    },
+
+    async signOut(token, scope = 'local') {
+      if (!token || typeof token !== 'string' || !token.trim()) {
+        return { error: { message: 'MISSING_TOKEN: signOut requires non-empty user access token' } };
+      }
+      const res = await fetchFn(`${baseUrl}/auth/v1/logout?scope=${encodeURIComponent(scope)}`, {
+        method: 'POST',
+        headers: {
+          apikey: serviceRoleKey,
+          Authorization: `Bearer ${token.trim()}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        return { error: body?.msg || body?.message || `HTTP_${res.status}` };
+      }
+      return { data: { scope }, error: null };
+    },
+
+    async invalidateSession(sessionId, token) {
+      if (!token || typeof token !== 'string' || !token.trim()) {
+        return {
+          error: {
+            status: 400,
+            message: `UNSUPPORTED_SESSION_REVOCATION: GoTrue lacks an admin session-by-id deletion endpoint; access token context is required for targeted local sign-out of session '${sessionId}' (R6-01)`
+          }
+        };
+      }
+      return this.signOut(token.trim(), 'local');
+    },
+
+    async updateUserById(userId, attributes) {
+      if (!userId || typeof userId !== 'string' || !userId.trim()) {
+        return { data: null, error: { message: 'MISSING_USER_ID: updateUserById requires non-empty userId' } };
+      }
+      const res = await fetchFn(`${baseUrl}/auth/v1/admin/users/${encodeURIComponent(userId.trim())}`, {
+        method: 'PUT',
+        headers: {
+          apikey: serviceRoleKey,
+          Authorization: `Bearer ${serviceRoleKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(attributes)
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        return { data: null, error: body?.msg || body?.message || `HTTP_${res.status}` };
+      }
+      const data = await res.json().catch(() => ({ id: userId }));
+      return { data, error: null };
+    },
+
+    async deleteTableRow(table, id) {
+      if (!table || !id) {
+        return { data: null, error: { message: 'MISSING_PARAMS: deleteTableRow requires table and id' } };
+      }
+      const res = await fetchFn(`${baseUrl}/rest/v1/${encodeURIComponent(table)}?id=eq.${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: {
+          apikey: serviceRoleKey,
+          Authorization: `Bearer ${serviceRoleKey}`
+        }
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        return { error: body?.msg || body?.message || `HTTP_${res.status}` };
+      }
+      return { data: { table, id }, error: null };
+    },
+
+    async deleteStorageObject(bucket, path) {
+      if (!bucket || !path) {
+        return { data: null, error: { message: 'MISSING_PARAMS: deleteStorageObject requires bucket and path' } };
+      }
+      const res = await fetchFn(`${baseUrl}/storage/v1/object/${encodeURIComponent(bucket)}/${encodeURIComponent(path)}`, {
+        method: 'DELETE',
+        headers: {
+          apikey: serviceRoleKey,
+          Authorization: `Bearer ${serviceRoleKey}`
+        }
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        return { error: body?.msg || body?.message || `HTTP_${res.status}` };
+      }
+      return { data: { bucket, path }, error: null };
+    }
+  };
+}
+
 // Standalone CLI execution: defaults strictly to DRY_RUN
 if (process.argv[1] && process.argv[1].endsWith('hosted-probe-runner.mjs')) {
   const argv = process.argv.slice(2);
@@ -3269,87 +3502,11 @@ if (process.argv[1] && process.argv[1].endsWith('hosted-probe-runner.mjs')) {
       process.exit(1);
     }
 
-    const adminClient = {
-      async deleteUser(userId) {
-        const res = await fetch(`https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/admin/users/${userId}`, {
-          method: 'DELETE',
-          headers: {
-            apikey: serviceRoleKey,
-            Authorization: `Bearer ${serviceRoleKey}`
-          }
-        });
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          return { error: body?.msg || body?.message || `HTTP_${res.status}` };
-        }
-        return { data: { user: { id: userId } }, error: null };
-      },
-      async getUserById(userId) {
-        const res = await fetch(`https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/admin/users/${userId}`, {
-          method: 'GET',
-          headers: {
-            apikey: serviceRoleKey,
-            Authorization: `Bearer ${serviceRoleKey}`
-          }
-        });
-        if (res.status === 404) return { data: null, error: { message: 'User not found', status: 404 } };
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          return { data: null, error: body };
-        }
-        const data = await res.json();
-        return { data, error: null };
-      },
-      async signOut(token, scope = 'local') {
-        if (!token || typeof token !== 'string' || !token.trim()) {
-          return { error: { message: 'MISSING_TOKEN: signOut requires non-empty user access token' } };
-        }
-        const res = await fetch(`https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/logout?scope=${encodeURIComponent(scope)}`, {
-          method: 'POST',
-          headers: {
-            apikey: serviceRoleKey,
-            Authorization: `Bearer ${token.trim()}`,
-            'Content-Type': 'application/json'
-          }
-        });
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          return { error: body?.msg || body?.message || `HTTP_${res.status}` };
-        }
-        return { data: { scope }, error: null };
-      },
-      async invalidateSession(sessionId, token) {
-        if (!token) {
-          return {
-            error: {
-              status: 400,
-              message: `UNSUPPORTED_SESSION_REVOCATION: GoTrue lacks an admin session-by-id deletion endpoint; access token context is required for targeted local sign-out of session '${sessionId}' (R6-01)`
-            }
-          };
-        }
-        return this.signOut(token, 'local');
-      },
-      async updateUserById(userId, attributes) {
-        const res = await fetch(`https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/admin/users/${userId}`, {
-          method: 'PUT',
-          headers: {
-            apikey: serviceRoleKey,
-            Authorization: `Bearer ${serviceRoleKey}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(attributes)
-        });
-        if (!res.ok) {
-          const body = await res.json().catch(() => ({}));
-          return { data: null, error: body?.msg || body?.message || `HTTP_${res.status}` };
-        }
-        const data = await res.json().catch(() => ({ id: userId }));
-        return { data, error: null };
-      },
-      async signOut(sessionId) {
-        return this.invalidateSession(sessionId);
-      }
-    };
+    const adminClient = createHostedAdminClient({
+      serviceRoleKey,
+      projectRef: HARDCODED_TEMP_REF,
+      fetchFn: fetch
+    });
 
     runHostedProbeRunner({
       projectRef: HARDCODED_TEMP_REF,

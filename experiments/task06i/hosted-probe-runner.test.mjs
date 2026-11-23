@@ -26,7 +26,8 @@ import {
   createRunContext,
   validateProjectCredentialBinding,
   createMockProjectKey,
-  HOSTED_PROBE_SPECIFICATIONS
+  HOSTED_PROBE_SPECIFICATIONS,
+  createHostedAdminClient
 } from './hosted-probe-runner.mjs';
 
 const defaultMockAdminClient = {
@@ -40,14 +41,18 @@ const validTestServiceRoleKey = createMockProjectKey(HARDCODED_TEMP_REF, 'servic
 
 function createMockJwt(claims = {}) {
   const header = { alg: 'HS256', typ: 'JWT' };
+  const now = Math.floor(Date.now() / 1000);
+  const exp = claims.exp !== undefined ? claims.exp : now + 300;
+  const iat = claims.iat !== undefined ? claims.iat : (typeof exp === 'number' ? exp - 300 : now);
   const payload = {
     sub: 'user-uuid-1234',
     session_id: 'session-uuid-5678',
     iss: `https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1`,
     aud: 'authenticated',
-    exp: Math.floor(Date.now() / 1000) + 300,
+    iat,
+    exp,
     amr_authenticated: 'true',
-    amr: [{ method: 'password', timestamp: Math.floor(Date.now() / 1000) }],
+    amr: [{ method: 'password', timestamp: typeof iat === 'number' ? iat : now }],
     ...claims
   };
   const b64Header = Buffer.from(JSON.stringify(header)).toString('base64url');
@@ -393,7 +398,7 @@ test('12. Throttling interval is enforced between consecutive requests and legit
       };
     }
     if (item.id === 'SESSION-04' || item.id === 'SESSION-05') {
-      return { passed: true, status: 200, token_unexpired: true, stateless_linger_documented: true, note: 'stateless linger window verified and documented' };
+      return { passed: true, status: 200, token_unexpired: true, jwt_lifetime_seconds: 300, lifetime_bounded: true, stateless_linger_documented: true, note: 'stateless linger window verified and documented' };
     }
     if (item.id === 'SESSION-06') {
       return {
@@ -701,7 +706,7 @@ test('22. Session cases fail closed without explicit evidence of session state (
   assert.equal(validateProbeOutcome(session04, { passed: true, status: 200 }).passed, false);
   assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, stateless_linger_documented: true }).passed, false);
   assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, token_unexpired: true, stateless_linger_documented: true, note: '' }).passed, false);
-  assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, token_unexpired: true, stateless_linger_documented: true, note: 'linger window verified' }).passed, true);
+  assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, token_unexpired: true, jwt_lifetime_seconds: 300, lifetime_bounded: true, stateless_linger_documented: true, note: 'linger window verified' }).passed, true);
 });
 
 test('23. Top-level abortReason is sanitized against leaked secrets (PRRT_kwDOVtCmZc66jG6Y)', async () => {
@@ -870,7 +875,7 @@ test('26. validateProbeOutcome rejects status 0, missing status, and false-posit
   assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, stateless_linger_documented: true }).passed, false);
   assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, token_unexpired: true, stateless_linger_documented: true, note: '' }).passed, false);
   assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, token_unexpired: true, stateless_linger_documented: true, evidence: {} }).passed, false);
-  assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, token_unexpired: true, stateless_linger_documented: true, note: 'linger window verified' }).passed, true);
+  assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, token_unexpired: true, jwt_lifetime_seconds: 300, lifetime_bounded: true, stateless_linger_documented: true, note: 'linger window verified' }).passed, true);
 
   // BYPASS-05 recovery suppression without affirmative evidence
   const bypass05 = { id: 'BYPASS-05', category: 'Native Bypass' };
@@ -2476,11 +2481,13 @@ test('46. Task 06I-B1-H1-R3 (R3-03): JWT linger evidence rejects contradictory o
   assert.equal(resExpired.passed, false);
   assert.match(resExpired.reason, /MISSING_EVIDENCE.*unexpired/);
 
-  // Pass ONLY with HTTP 200 + unexpired token + documentation
+  // Pass ONLY with HTTP 200 + unexpired token + documentation + 300s lifetime bound (R7-02)
   const resPass = validateProbeOutcome(session04, {
     passed: true,
     status: 200,
     token_unexpired: true,
+    jwt_lifetime_seconds: 300,
+    lifetime_bounded: true,
     stateless_linger_documented: true,
     note: 'HTTP 200 signature-verified access within bounded 300s exp'
   });
@@ -2842,7 +2849,7 @@ test('56. Task 06I-B1-H1-R4 (R4-02): LIVE runner fails preflight if cleanup capa
       if (item.id === 'SESSION-01') return { passed: true, status: 200, session_created: true, session_id: 'session-uuid-5678' };
       if (item.id === 'SESSION-02') return { passed: true, status: 200, password_reset_completed: true, session_revoked: true, session_revocation_verified: true, remaining_sessions: 0 };
       if (item.id === 'SESSION-03') return { passed: true, status: 403, pre_reset_baseline_verified: true, reset_completed: true, session_id: 'session-uuid-5678', correlated_session_id: 'session-uuid-5678', pre_session_id: 'session-uuid-5678', same_session_correlated: true, error_code: 'session_not_found' };
-      if (item.id === 'SESSION-04' || item.id === 'SESSION-05') return { passed: true, status: 200, token_unexpired: true, stateless_linger_documented: true, note: 'linger window verified' };
+      if (item.id === 'SESSION-04' || item.id === 'SESSION-05') return { passed: true, status: 200, token_unexpired: true, jwt_lifetime_seconds: 300, lifetime_bounded: true, stateless_linger_documented: true, note: 'linger window verified' };
       if (item.id === 'SESSION-06') return { passed: true, status: 403, pre_reset_baseline_verified: true, reset_completed: true, session_id: 'session-uuid-5678', correlated_session_id: 'session-uuid-5678', pre_session_id: 'session-uuid-5678', same_session_correlated: true, error_code: 'AuthSessionMissingError' };
       return { passed: true, status: 200 };
     },
@@ -3804,4 +3811,346 @@ test('73. Task 06I-B1-H1-R6 (R6-03): SESSION-06 accepts genuine provider-observe
   const valBadJwt = validateProbeOutcome(session06, outBadJwt);
   assert.equal(valBadJwt.passed, false);
   assert.match(valBadJwt.reason, /FALSE_PROOF_REJECTED/);
+});
+
+// ---------------------------------------------------------------------------
+// Task 06I-B1-H1-R7: Session Cleanup & JWT Lifetime Evidence Closure
+// ---------------------------------------------------------------------------
+
+test('74. Task 06I-B1-H1-R7 (R7-01): createHostedAdminClient adapter implements session revocation, user lifecycle, and resource cleanup without duplicate method shadowing', async () => {
+  // 1. Factory security boundaries: strictly permitted only against HARDCODED_TEMP_REF
+  assert.throws(
+    () => createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, projectRef: HARDCODED_REAL_REF }),
+    /SECURITY_BOUNDARY_VIOLATION.*bsfwzvgynwriswapxpsp/
+  );
+  assert.throws(
+    () => createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, projectRef: HARDCODED_TIO_WORLD_REF }),
+    /SECURITY_BOUNDARY_VIOLATION/
+  );
+  assert.throws(
+    () => createHostedAdminClient({ serviceRoleKey: '', projectRef: HARDCODED_TEMP_REF }),
+    /MISSING_HOSTED_CREDENTIALS/
+  );
+
+  // 2. Inspect method definitions: verify NO duplicate signOut method exists
+  const calls = [];
+  const deletedUsers = new Set();
+  const mockFetch = async (url, opts) => {
+    calls.push({ url, method: opts?.method, headers: opts?.headers, body: opts?.body });
+    if (url.includes('/auth/v1/logout')) {
+      return { ok: true, status: 200, json: async () => ({}) };
+    }
+    if (url.includes('/auth/v1/admin/users/')) {
+      const userIdMatch = url.match(/\/auth\/v1\/admin\/users\/([^?]+)/);
+      const targetUserId = userIdMatch ? decodeURIComponent(userIdMatch[1]) : null;
+      if (opts?.method === 'DELETE') {
+        if (targetUserId) deletedUsers.add(targetUserId);
+        return { ok: true, status: 200, json: async () => ({}) };
+      }
+      if (opts?.method === 'GET') {
+        if (targetUserId && deletedUsers.has(targetUserId)) {
+          return { ok: false, status: 404, json: async () => ({ message: 'User not found', status: 404 }) };
+        }
+        return { ok: true, status: 200, json: async () => ({ id: targetUserId || 'u-r7-01', email: 'test@proof.invalid' }) };
+      }
+      if (opts?.method === 'PUT') {
+        return { ok: true, status: 200, json: async () => ({ id: targetUserId || 'u-r7-01' }) };
+      }
+    }
+    if (url.includes('/rest/v1/')) {
+      return { ok: true, status: 200, json: async () => ([]) };
+    }
+    if (url.includes('/storage/v1/object/')) {
+      return { ok: true, status: 200, json: async () => ({}) };
+    }
+    return { ok: false, status: 500, json: async () => ({ message: 'unexpected URL' }) };
+  };
+
+  const adminClient = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: mockFetch
+  });
+
+  // Verify all required methods exist as functions
+  assert.equal(typeof adminClient.deleteUser, 'function');
+  assert.equal(typeof adminClient.getUserById, 'function');
+  assert.equal(typeof adminClient.signOut, 'function');
+  assert.equal(typeof adminClient.invalidateSession, 'function');
+  assert.equal(typeof adminClient.updateUserById, 'function');
+  assert.equal(typeof adminClient.deleteTableRow, 'function');
+  assert.equal(typeof adminClient.deleteStorageObject, 'function');
+
+  // Verify signOut takes (token, scope) and is NOT shadowed by (sessionId)
+  // Calling invalidateSession(sessionId, token) must invoke signOut(token, 'local')
+  calls.length = 0;
+  const testToken = createMockJwt();
+  const resInvalidate = await adminClient.invalidateSession('sess-r7-01', testToken);
+  assert.equal(resInvalidate.error, null);
+  assert.equal(resInvalidate.data?.scope, 'local');
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /\/auth\/v1\/logout\?scope=local/);
+  assert.equal(calls[0].method, 'POST');
+  assert.equal(calls[0].headers.Authorization, `Bearer ${testToken}`);
+  assert.equal(calls[0].headers.apikey, validTestServiceRoleKey);
+
+  // Calling invalidateSession without token fails closed with UNSUPPORTED_SESSION_REVOCATION
+  calls.length = 0;
+  const resNoToken = await adminClient.invalidateSession('sess-r7-01', null);
+  assert.ok(resNoToken.error);
+  assert.equal(resNoToken.error.status, 400);
+  assert.match(resNoToken.error.message, /UNSUPPORTED_SESSION_REVOCATION/);
+  assert.equal(calls.length, 0, 'No fetch must be dispatched without token');
+
+  // Calling signOut without token fails closed with MISSING_TOKEN
+  const resEmptySignOut = await adminClient.signOut('');
+  assert.ok(resEmptySignOut.error);
+  assert.match(resEmptySignOut.error.message, /MISSING_TOKEN/);
+
+  // Calling deleteUser without userId fails closed
+  const resEmptyDeleteUser = await adminClient.deleteUser('');
+  assert.ok(resEmptyDeleteUser.error);
+  assert.match(resEmptyDeleteUser.error.message, /MISSING_USER_ID/);
+
+  // Calling deleteUser with valid userId dispatches DELETE /auth/v1/admin/users/:id
+  calls.length = 0;
+  const resDelUser = await adminClient.deleteUser('u-test-123');
+  assert.equal(resDelUser.error, null);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /\/auth\/v1\/admin\/users\/u-test-123/);
+  assert.equal(calls[0].method, 'DELETE');
+
+  // Calling getUserById with 404 response returns clean 404 object without throwing
+  const mock404Fetch = async () => ({ ok: false, status: 404, json: async () => ({}) });
+  const admin404 = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: mock404Fetch });
+  const res404 = await admin404.getUserById('u-nonexistent');
+  assert.equal(res404.data, null);
+  assert.equal(res404.error?.status, 404);
+
+  // 3. Integration with executeCleanup: executeCleanup with actual createHostedAdminClient
+  const inv = new TestRunInventory('inv-r7-01');
+  const sessToken = createMockJwt();
+  inv.registerSession('sess-tracked-01', { accessToken: sessToken });
+  inv.registerCreatedUser({ id: 'u-created-01', email: 'created@proof.invalid' });
+  inv.registerCreatedUser({ id: 'u-created-02', email: 'created2@proof.invalid' });
+
+  calls.length = 0;
+  const cleanupReport = await inv.executeCleanup({ adminClient });
+  assert.equal(cleanupReport.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(cleanupReport.sessionsRevoked, 1);
+  assert.equal(cleanupReport.usersDeleted, 2);
+  assert.equal(cleanupReport.residualResources.length, 0);
+  assert.equal(cleanupReport.residualUsers.length, 0);
+});
+
+test('75. Task 06I-B1-H1-R7 (R7-02): 300-second JWT lifetime contract enforcement in SESSION-04 and SESSION-05', async () => {
+  const session04 = { id: 'SESSION-04', category: 'Session & Consumer' };
+  const session05 = { id: 'SESSION-05', category: 'Session & Consumer' };
+  const now = Math.floor(Date.now() / 1000);
+
+  // 1. validateProbeOutcome contract tests:
+  // Approved 300s token lifetime PASSES
+  const pass300 = validateProbeOutcome(session04, {
+    passed: true,
+    status: 200,
+    token_unexpired: true,
+    jwt_lifetime_seconds: 300,
+    lifetime_bounded: true,
+    stateless_linger_documented: true,
+    note: 'verified 300s linger'
+  });
+  assert.equal(pass300.passed, true);
+
+  // Shorter bounded lifetime (e.g. 120s) PASSES
+  const pass120 = validateProbeOutcome(session05, {
+    passed: true,
+    status: 200,
+    token_unexpired: true,
+    jwt_lifetime_seconds: 120,
+    lifetime_bounded: true,
+    stateless_linger_documented: true,
+    note: 'verified 120s linger'
+  });
+  assert.equal(pass120.passed, true);
+
+  // Oversized 301s token FAILS with EXCESSIVE_JWT_LIFETIME
+  const fail301 = validateProbeOutcome(session04, {
+    passed: true,
+    status: 200,
+    token_unexpired: true,
+    jwt_lifetime_seconds: 301,
+    lifetime_bounded: false,
+    stateless_linger_documented: true,
+    note: '301s token'
+  });
+  assert.equal(fail301.passed, false);
+  assert.match(fail301.reason, /EXCESSIVE_JWT_LIFETIME: SESSION-04 token lifetime \(301s\) exceeds approved 300s bound/);
+
+  // Oversized 86400s (24h) token FAILS with EXCESSIVE_JWT_LIFETIME (PRRT_kwDOVtCmZc66r92y reproduction)
+  const fail86400 = validateProbeOutcome(session04, {
+    passed: true,
+    status: 200,
+    token_unexpired: true,
+    jwt_lifetime_seconds: 86400,
+    lifetime_bounded: false,
+    stateless_linger_documented: true,
+    note: '24h token'
+  });
+  assert.equal(fail86400.passed, false);
+  assert.match(fail86400.reason, /EXCESSIVE_JWT_LIFETIME: SESSION-04 token lifetime \(86400s\) exceeds approved 300s bound/);
+
+  // Missing jwt_lifetime_seconds FAILS with MISSING_EVIDENCE
+  const failMissingLifetime = validateProbeOutcome(session04, {
+    passed: true,
+    status: 200,
+    token_unexpired: true,
+    lifetime_bounded: true,
+    stateless_linger_documented: true,
+    note: 'missing lifetime'
+  });
+  assert.equal(failMissingLifetime.passed, false);
+  assert.match(failMissingLifetime.reason, /MISSING_EVIDENCE: SESSION-04 requires valid numeric jwt_lifetime_seconds/);
+
+  // Non-finite jwt_lifetime_seconds (NaN) FAILS
+  const failNanLifetime = validateProbeOutcome(session04, {
+    passed: true,
+    status: 200,
+    token_unexpired: true,
+    jwt_lifetime_seconds: NaN,
+    lifetime_bounded: true,
+    stateless_linger_documented: true,
+    note: 'nan lifetime'
+  });
+  assert.equal(failNanLifetime.passed, false);
+  assert.match(failNanLifetime.reason, /MISSING_EVIDENCE: SESSION-04 requires valid numeric jwt_lifetime_seconds/);
+
+  // Zero or negative lifetime FAILS with INVALID_JWT_LIFETIME
+  const failZeroLifetime = validateProbeOutcome(session04, {
+    passed: true,
+    status: 200,
+    token_unexpired: true,
+    jwt_lifetime_seconds: 0,
+    lifetime_bounded: true,
+    stateless_linger_documented: true,
+    note: 'zero lifetime'
+  });
+  assert.equal(failZeroLifetime.passed, false);
+  assert.match(failZeroLifetime.reason, /INVALID_JWT_LIFETIME: SESSION-04 token lifetime must be strictly positive/);
+
+  // lifetime_bounded === false FAILS with MISSING_EVIDENCE
+  const failUnbounded = validateProbeOutcome(session04, {
+    passed: true,
+    status: 200,
+    token_unexpired: true,
+    jwt_lifetime_seconds: 300,
+    lifetime_bounded: false,
+    stateless_linger_documented: true,
+    note: 'unbounded flag'
+  });
+  assert.equal(failUnbounded.passed, false);
+  assert.match(failUnbounded.reason, /MISSING_EVIDENCE: SESSION-04 requires affirmative lifetime_bounded flag/);
+
+  // Expired token (token_unexpired: false) with 300s lifetime FAILS
+  const failExpired = validateProbeOutcome(session04, {
+    passed: true,
+    status: 200,
+    token_unexpired: false,
+    jwt_lifetime_seconds: 300,
+    lifetime_bounded: true,
+    stateless_linger_documented: true,
+    note: 'expired token'
+  });
+  assert.equal(failExpired.passed, false);
+  assert.match(failExpired.reason, /MISSING_EVIDENCE: SESSION-04 requires token to be unexpired/);
+
+  // 2. Dispatcher integration tests:
+  // Token with valid 300s lifetime passes both dispatcher and validator
+  const valid300Token = createMockJwt({ iat: now, exp: now + 300 });
+  const runCtxValid = createRunContext();
+  runCtxValid.activeAccessToken = valid300Token;
+  const dispValid = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtxValid,
+    fetchFn: async () => ({ status: 200, json: async () => ([]) })
+  });
+  const out04Valid = await dispValid(session04);
+  assert.equal(out04Valid.passed, true);
+  assert.equal(out04Valid.lifetime_bounded, true);
+  assert.equal(out04Valid.jwt_lifetime_seconds, 300);
+  const val04Valid = validateProbeOutcome(session04, out04Valid);
+  assert.equal(val04Valid.passed, true);
+
+  // Token with oversized 86400s (24h) lifetime fails dispatcher and validator
+  const oversizedToken = createMockJwt({ iat: now, exp: now + 86400 });
+  const runCtxOversized = createRunContext();
+  runCtxOversized.activeAccessToken = oversizedToken;
+  const dispOversized = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtxOversized,
+    fetchFn: async () => ({ status: 200, json: async () => ([]) })
+  });
+  const out04Oversized = await dispOversized(session04);
+  assert.equal(out04Oversized.passed, false);
+  assert.equal(out04Oversized.lifetime_bounded, false);
+  assert.equal(out04Oversized.jwt_lifetime_seconds, 86400);
+  assert.match(out04Oversized.error, /EXCESSIVE_JWT_LIFETIME/);
+  const val04Oversized = validateProbeOutcome(session04, out04Oversized);
+  assert.equal(val04Oversized.passed, false);
+
+  // Token missing iat fails dispatcher and validator
+  const header = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const payloadNoIat = Buffer.from(JSON.stringify({
+    sub: 'u-1',
+    session_id: 's-1',
+    iss: `https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1`,
+    aud: 'authenticated',
+    exp: now + 300
+  })).toString('base64url');
+  const sig = Buffer.from('mock_sig').toString('base64url');
+  const tokenNoIat = `${header}.${payloadNoIat}.${sig}`;
+
+  const runCtxNoIat = createRunContext();
+  runCtxNoIat.activeAccessToken = tokenNoIat;
+  const dispNoIat = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtxNoIat,
+    fetchFn: async () => ({ status: 200, json: async () => ([]) })
+  });
+  const out04NoIat = await dispNoIat(session04);
+  assert.equal(out04NoIat.passed, false);
+  assert.match(out04NoIat.error, /MISSING_JWT_TIMESTAMPS/);
+
+  // Token with exp <= iat fails dispatcher and validator
+  const tokenInconsistent = createMockJwt({ iat: now + 300, exp: now + 100 });
+  const runCtxInconsistent = createRunContext();
+  runCtxInconsistent.activeAccessToken = tokenInconsistent;
+  const dispInconsistent = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtxInconsistent,
+    fetchFn: async () => ({ status: 200, json: async () => ([]) })
+  });
+  const out04Inconsistent = await dispInconsistent(session04);
+  assert.equal(out04Inconsistent.passed, false);
+  assert.match(out04Inconsistent.error, /INVALID_EXP_TEMPORAL_INCONSISTENCY/);
+
+  // Storage SESSION-05 similarly validates 300s lifetime bound
+  const runCtxStorage = createRunContext();
+  runCtxStorage.activeAccessToken = valid300Token;
+  const dispStorage = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtxStorage,
+    fetchFn: async () => ({ status: 200, json: async () => ({}) })
+  });
+  const out05Valid = await dispStorage(session05);
+  assert.equal(out05Valid.passed, true);
+  assert.equal(out05Valid.jwt_lifetime_seconds, 300);
+  assert.equal(out05Valid.lifetime_bounded, true);
+  const val05Valid = validateProbeOutcome(session05, out05Valid);
+  assert.equal(val05Valid.passed, true);
+
+  // Storage SESSION-05 with 24h token fails
+  runCtxStorage.activeAccessToken = oversizedToken;
+  const out05Oversized = await dispStorage(session05);
+  assert.equal(out05Oversized.passed, false);
+  assert.match(out05Oversized.error, /EXCESSIVE_JWT_LIFETIME/);
 });

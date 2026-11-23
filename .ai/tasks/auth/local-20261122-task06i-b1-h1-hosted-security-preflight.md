@@ -1,15 +1,15 @@
-# Phase 1.2 Task 06I-B1-H1-R6 — Session Cleanup, Storage Fixture & Evidence Contract Closure
+# Phase 1.2 Task 06I-B1-H1-R7 — Final Session Cleanup & JWT Lifetime Evidence Closure
 
-> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R6. All 3 outstanding Codex security review findings across PR #37 are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
+> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R7. All outstanding review findings across PR #37 (R7-01 and R7-02) are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **LOCAL REMEDIATION COMPLETE (REVISION R6); ALL 3 OUTSTANDING CODEX REVIEW FINDINGS RESOLVED (R6-01 TO R6-03); 77/77 RUNNER TESTS PASS; 145/145 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; R6-01: SUPPORTED GOTRUE LOCAL SIGN-OUT WIRED WITH ACCESS TOKEN CONTEXT & STANDALONE CLI ADAPTER REPLACED; R6-02: METADATA-ONLY SQL REMOVED & REAL STORAGE API UPLOAD MANDATED; R6-03: VALIDATOR & DISPATCHER REVOCATION-CODE ALIGNMENT (AFFIRMATIVE `SESSION_NOT_FOUND` ACCEPTED); CI STATUS: `CI_BLOCKED_INFRASTRUCTURE` (GITHUB ACCOUNT BILLING / SPENDING LIMIT REFUSAL; 0 CODE/SECURITY DEFECTS); DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
-| Objective | Remediate all 3 outstanding Codex review findings on PR #37 (R6-01 to R6-03) without executing any live hosted mutations, resolving supported session revocation for cleanup, real storage object provisioning, and genuine session_not_found provider error code acceptance in SESSION-06 validation. |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R6 slice |
-| Previous agent | Agent / Task 06I-B1-H1-R5 author |
-| Last audited HEAD | `a7ddf6c7e24d4b04e458056d88c9be7b8d6781d3` (PR #37 previous commit) |
-| Tracking / approval | Task 06I-B1-H1-R6 remediation authorized by user prompt; LIVE hosted probe execution requires separate explicit owner authorization; mandates $0 cost ceiling and permanent immunity for `Tio-world` (`oykupyiitspujzpwwvuj`) and REAL `bsfwzvgynwriswapxpsp` |
+| Status | **LOCAL REMEDIATION COMPLETE (REVISION R7); ALL REVIEW FINDINGS RESOLVED (R7-01 P1 DUPLICATE `SIGNOUT` REMOVED & `createHostedAdminClient` FACTORY EXPORTED; R7-02 P2 300-SECOND JWT LIFETIME CONTRACT ENFORCED IN `SESSION-04` & `SESSION-05`); 79/79 RUNNER TESTS PASS; 147/147 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; GITHUB CI STATUS: 4/4 CHECKS PASS ON REMOTE HEAD (BILLING RESTRICTION RESOLVED BY OWNER); DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
+| Objective | Remediate all outstanding review findings on PR #37 (R7-01 duplicate signOut method override & testable admin adapter, R7-02 300s JWT lifetime contract enforcement) without executing any live hosted mutations. |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R7 slice |
+| Previous agent | Agent / Task 06I-B1-H1-R6 author |
+| Last audited HEAD | `1960195effb1d03455978a68743650e93be68a92` (PR #37 previous commit) |
+| Tracking / approval | Task 06I-B1-H1-R7 remediation authorized by user prompt; LIVE hosted probe execution requires separate explicit owner authorization; mandates $0 cost ceiling and permanent immunity for `Tio-world` (`oykupyiitspujzpwwvuj`) and REAL `bsfwzvgynwriswapxpsp` |
 | Branch | `test/task06i-b1-h1-hosted-security-preflight` |
 | Base SHA / inspected HEAD | `716fb32061ffb6012d17eae9453c822a281fe6f1` (`main`) |
 | Platform and file scope | Documentation, `.ai/` context, runner CLI hardening & LIVE dispatcher contract in `experiments/task06i/hosted-probe-runner.mjs`, testbed fixture specification in `experiments/task06i/sql/testbed-fixtures.sql`, and offline verification tests in `experiments/task06i/hosted-probe-runner.test.mjs`; zero client Expo UI, production schema, or live Auth mutations |
@@ -341,6 +341,38 @@ In accordance with findings R3-01, R3-02, R3-05, and R3-06, each probe case is s
   3. Rejected generic 401/403 Forbidden without provider error code (`MISSING_EVIDENCE`), false proof (`bad_jwt`, `jwt_expired`, `invalid_token` fail closed as `FALSE_PROOF_REJECTED`), and session correlation mismatches.
   4. Covered by unit test 73 and updated unit test 28 in `experiments/task06i/hosted-probe-runner.test.mjs`.
 
+### 7.7 Revision R7 Review Finding Remediation
+
+#### R7-01: Remove Duplicate `signOut` Method Shadowing & Export `createHostedAdminClient` (im-tio P1, `PRRT_kwDOVtCmZc66sBa5`)
+- **Root Cause:** In `experiments/task06i/hosted-probe-runner.mjs`, the standalone CLI `adminClient` object literal defined `async signOut(token, scope = 'local')` at line 3303, but then had a second property `async signOut(sessionId) { return this.invalidateSession(sessionId); }` at line 3349. In JavaScript object literals, duplicate property definitions silently shadow preceding ones. When `invalidateSession(sessionId, token)` was invoked during cleanup, it called `this.signOut(token, 'local')`, which dispatched to the second override without the second `token` parameter, deterministically triggering `UNSUPPORTED_SESSION_REVOCATION` / `MISSING_TOKEN` and failing cleanup on every session.
+- **Remediation:**
+  1. Extracted and exported `createHostedAdminClient({ serviceRoleKey, projectRef = HARDCODED_TEMP_REF, fetchFn = fetch })` as a reusable, testable factory.
+  2. Enforced strict security boundary: `projectRef` must equal `HARDCODED_TEMP_REF` (`wvdabiwbaavfggcmpizd`), throwing `SECURITY_BOUNDARY_VIOLATION` on real or foreign refs. Requires non-empty `serviceRoleKey`.
+  3. Implemented authoritative single `signOut(token, scope = 'local')` that validates non-empty `token` and dispatches `POST /auth/v1/logout?scope=${scope}`.
+  4. Implemented `invalidateSession(sessionId, token)` requiring non-empty `token` and delegating to `this.signOut(token, 'local')`.
+  5. Implemented `deleteUser`, `getUserById`, `updateUserById`, `deleteTableRow`, and `deleteStorageObject` for full resource lifecycle.
+  6. Eliminated the second `signOut(sessionId)` override entirely.
+  7. Replaced the inline object literal in the standalone CLI block with `createHostedAdminClient(...)`.
+  8. Added unit test 74 verifying no duplicate method exists, testing token requirement, parameter dispatch, error handling, and integration with `TestRunInventory.executeCleanup()`.
+
+#### R7-02: Enforce 300-Second JWT Lifetime Contract in `SESSION-04` and `SESSION-05` (Codex P2, `PRRT_kwDOVtCmZc66r92y`)
+- **Root Cause:** In `SESSION-04` (PostgREST Data API linger) and `SESSION-05` (Storage linger), the dispatcher and validator previously verified only `token_unexpired` (`now < exp`), without calculating or validating the issuance window `exp - iat`. An oversized token with `exp - iat = 86400` (24 hours) could pass with HTTP 200 while falsely claiming the documented `bounded by short jwt_exp (300s)` contract.
+- **Remediation:**
+  1. In `createHostedDispatcher` for both `SESSION-04` and `SESSION-05`:
+     - Extracted `iat` and `exp` from `ctx.activeAccessToken`.
+     - Validated that both are finite numbers with `exp > iat`.
+     - Calculated `jwtLifetimeSeconds = exp - iat`.
+     - Calculated `lifetimeBounded = jwtLifetimeSeconds > 0 && jwtLifetimeSeconds <= 300`.
+     - Enforced that stateless linger is observed ONLY when `status === 200 && tokenUnexpired && lifetimeBounded`.
+     - Returned `jwt_lifetime_seconds`, `jwt_iat`, `jwt_exp`, and `lifetime_bounded` in the outcome without logging raw tokens.
+     - Failed closed with `EXCESSIVE_JWT_LIFETIME` if `jwtLifetimeSeconds > 300`.
+  2. In `validateProbeOutcome` for `SESSION-04` and `SESSION-05`:
+     - Strictly required `typeof rawOutcome.jwt_lifetime_seconds === 'number' && Number.isFinite(...)`.
+     - Strictly required `rawOutcome.jwt_lifetime_seconds > 0` and `rawOutcome.jwt_lifetime_seconds <= 300`.
+     - Failed closed with `EXCESSIVE_JWT_LIFETIME: ${item.id} token lifetime (${rawOutcome.jwt_lifetime_seconds}s) exceeds approved 300s bound` if lifetime exceeds 300 seconds.
+     - Strictly required `rawOutcome.lifetime_bounded === true`.
+  3. Added unit test 75 covering approved 300s lifetime (pass), shorter 120s lifetime (pass), 301s and 86400s oversized lifetimes (fail), missing timestamps (fail), temporal inconsistency `exp <= iat` (fail), non-finite claims (fail), and Storage integration.
+
 ---
 
 ## 8. Verification Evidence Matrix
@@ -349,10 +381,10 @@ All verification checks were run locally and passed completely:
 
 ```bash
 node --test experiments/task06i/hosted-probe-runner.test.mjs
-# 77 passed, 0 failed, exit code 0
+# 79 passed, 0 failed, exit code 0
 
 node --test experiments/task06i/*.test.mjs
-# 145 passed, 0 failed, exit code 0
+# 147 passed, 0 failed, exit code 0
 
 node experiments/task06i/sql-contract-parity.mjs
 # Status: POSTGRES_VERIFIED, 18/18 matched parity, exit code 0
@@ -369,16 +401,15 @@ git diff --check origin/main...HEAD
 
 ---
 
-## 9. GitHub CI Infrastructure Blocker Diagnostics
+## 9. GitHub CI Status
 
-Inspection of GitHub Actions workflow runs on commit `a7ddf6c`:
-- **Run IDs:** `45105774888` (Commit attribution guard), `45105776782` (Security experiment checks), `45105776798` (Commit attribution fixture tests).
-- **Failure Annotation:**
-  `The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings.`
-- **Classification:** **`CI_BLOCKED_INFRASTRUCTURE`**
-  - This is an account-level payment/spending limit restriction on GitHub, not a code defect, attribution guard failure, or security regression.
-  - Per `AGENTS.md` operating rules, required checks cannot be bypassed or weakened. The PR remains merge-blocked until required checks genuinely execute and pass under repository policy.
-  - External Action Required: Repository owner must resolve GitHub billing/spending limit in account settings so GitHub Actions runners can execute.
+- **Status:** **4/4 CHECKS PASS** on remote commit `1960195effb1d03455978a68743650e93be68a92`:
+  1. `Attribution guard runner`: **PASS**
+  2. `Commit attribution fixture tests`: **PASS**
+  3. `Commit attribution guard` (App-owned required check ID `5032971`): **PASS**
+  4. `Task 06I Security Contract Tests`: **PASS**
+- The account-level billing/spending limit restriction observed in Revision R5 has been resolved by the repository owner.
+- All required checks execute and succeed on GitHub Actions infrastructure.
 
 ---
 
@@ -394,12 +425,12 @@ Inspection of GitHub Actions workflow runs on commit `a7ddf6c`:
   - Project deletion perform nahi hua hai.
 
 **Readiness State:**
-- **Code readiness:** READY
-- **GitHub CI:** `CI_BLOCKED_INFRASTRUCTURE`
-- **Independent review:** PENDING
+- **Code readiness:** READY (Revision R7)
+- **GitHub CI:** PASS (4/4 on remote HEAD)
+- **Independent review:** PENDING (`im-tio`)
 - **Hosted testing:** NOT_AUTHORIZED
 - **Production Auth:** STRICT NO-GO
 
 **Decision:** **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**
 
-> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all 3 outstanding Codex review findings (R6-01 through R6-03) is complete and fully covered by offline regression tests (77/77 runner tests, 145/145 task06i tests pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution, and GitHub CI is blocked on account-level infrastructure. Awaiting independent re-review from `im-tio`.
+> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all outstanding review findings (R7-01 and R7-02) is complete and fully covered by offline regression tests (79/79 runner tests, 147/147 task06i tests pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution. Awaiting independent re-review from `im-tio`.
