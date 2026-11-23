@@ -73,3 +73,38 @@ for (const [label, mutate] of [
     assert.throws(() => verifyExpoLivePr(f));
   });
 }
+
+
+import { readFileSync } from 'node:fs';
+
+test('push signal contains no checkout, write permissions or credentials', () => {
+  const text = readFileSync(new URL('../.github/workflows/expo-pr-live-push-signal.yml', import.meta.url), 'utf8');
+  assert.match(text, /^name: TNYX PR preview push signal$/m);
+  assert.match(text, /branches:\s*\n\s+- '\*\*'\s*\n\s+- '!main'/);
+  assert.match(text, /^permissions:\s*\n  contents: read$/m);
+  assert.doesNotMatch(text, /secrets\.|environment:|actions\/checkout|pull_request_target/);
+});
+
+test('trusted-main workflow isolates owner gate and credential-bearing steps', () => {
+  const text = readFileSync(new URL('../.github/workflows/expo-pr-live-preview.yml', import.meta.url), 'utf8');
+  assert.match(text, /github\.ref == 'refs\/heads\/main'/);
+  assert.match(text, /github\.triggering_actor == 'im-tnyx'/);
+  assert.match(text, /github\.event\.workflow_run\.actor\.login == 'im-tnyx'/);
+  assert.match(text, /type: string/);
+  assert.match(text, /environment: tnyx-expo-pr-preview-trusted/);
+  assert.match(text, /github\.sha/);
+  assert.match(text, /verify-expo-live-pr\.mjs/);
+  assert.match(text, /sync-expo-pr-live-preview\.sh/);
+  assert.match(text, /vars\.TNYX_PR_CODESPACE_ID/);
+  assert.match(text, /secrets\.CODESPACES_TOKEN/);
+  assert.doesNotMatch(text, /EXPO_TOKEN|pull_request_target|secrets: inherit/);
+});
+
+test('trusted sync refuses dirty or named feature worktrees and never resets', () => {
+  const text = readFileSync(new URL('../.github/scripts/sync-expo-pr-live-preview.sh', import.meta.url), 'utf8');
+  assert.match(text, /git status --porcelain=v1 --untracked-files=normal/);
+  assert.match(text, /git switch --detach/);
+  assert.match(text, /git fetch --no-tags origin/);
+  assert.match(text, /node scripts\/start-codespace-expo\.mjs/);
+  assert.doesNotMatch(text, /git (?:reset|clean|stash)|EXPO_TOKEN|CODESPACES_TOKEN/);
+});
