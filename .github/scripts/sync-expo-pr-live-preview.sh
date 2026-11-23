@@ -34,11 +34,15 @@ if [[ -n "$active_branch" && "$active_branch" != "main" ]]; then
   exit 1
 fi
 
-worktree_status="$(git status --porcelain=v1 --untracked-files=normal)"
-if [[ -n "$worktree_status" ]]; then
-  printf 'Refusing preview: dedicated Codespace has uncommitted or untracked work.\n' >&2
-  exit 1
-fi
+require_clean_worktree() {
+  local worktree_status
+  worktree_status="$(git status --porcelain=v1 --untracked-files=normal)"
+  if [[ -n "$worktree_status" ]]; then
+    printf 'Refusing preview: dedicated Codespace has uncommitted or untracked work.\n' >&2
+    exit 1
+  fi
+}
+require_clean_worktree
 
 git -c core.hooksPath=/dev/null fetch --no-tags --no-recurse-submodules origin "$target_sha"
 if [[ "$(git rev-parse 'FETCH_HEAD^{commit}')" != "$target_sha" ]]; then
@@ -65,6 +69,7 @@ if [[ -n "$active_branch" || "$(git rev-parse HEAD)" != "$target_sha" ]]; then
   git -c core.hooksPath=/dev/null switch --detach --no-overwrite-ignore --no-recurse-submodules "$target_sha"
 fi
 test "$(git rev-parse HEAD)" = "$target_sha"
+require_clean_worktree
 
 node scripts/start-codespace-expo.mjs
-printf 'Dedicated Expo Go Codespace now serves PR commit %s.\n' "$target_sha"
+printf 'Dedicated worktree synced to %s and Expo tunnel is ready.\n' "$target_sha"

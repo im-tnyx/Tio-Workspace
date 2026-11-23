@@ -23,6 +23,16 @@ test "$(git rev-parse 'FETCH_HEAD^{commit}')" = "$PREVIEW_SHA"
 git merge-base --is-ancestor "$GITHUB_SHA" "$PREVIEW_SHA"
 git diff --raw --no-abbrev --no-renames --no-ext-diff --no-textconv --ignore-submodules=none -z \
   "$GITHUB_SHA" "$PREVIEW_SHA" -- > "$evidence/diff"
+# An environment can be auto-created or reconfigured. Recheck the exact
+# deployment policy in the protected job as well as before scheduling it.
+env_api="https://api.github.com/repos/$GITHUB_REPOSITORY/environments/tnyx-expo-pr-preview-trusted"
+curl -fsS --max-time 20 "$env_api" | jq -e '
+  .deployment_branch_policy.custom_branch_policies == true and
+  .deployment_branch_policy.protected_branches == false' >/dev/null
+curl -fsS --max-time 20 "$env_api/deployment-branch-policies?per_page=100" | jq -e '
+  .total_count == 1 and (.branch_policies | length) == 1 and
+  .branch_policies[0].type == "branch" and .branch_policies[0].name == "main"' >/dev/null
+
 gh api --paginate "repos/$GITHUB_REPOSITORY/issues?state=open&labels=tnyx-preview&per_page=100" \
   --jq '.[] | select(.pull_request != null) | .number' > "$evidence/labeled.txt"
 gh api "repos/$GITHUB_REPOSITORY/pulls/$SELECTED_PR" > "$evidence/latest-pr.json"

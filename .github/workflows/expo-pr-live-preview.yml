@@ -23,10 +23,6 @@ permissions:
   pull-requests: read # Read the PR and its immutable base/head metadata.
   issues: read # Enumerate open PRs with the preview label.
 
-concurrency:
-  group: tnyx-labeled-pr-expo-preview
-  cancel-in-progress: false
-
 jobs:
   select:
     name: Verify preview eligibility
@@ -84,15 +80,6 @@ jobs:
             export SELECTED_PR="${matched[0]}"
           fi
           bash .github/scripts/check-expo-live-pr.sh
-          # Environments can be auto-created without protections. Check the
-          # required deployment policy before scheduling a protected job.
-          env_api="https://api.github.com/repos/$GITHUB_REPOSITORY/environments/tnyx-expo-pr-preview-trusted"
-          curl -fsS --max-time 20 "$env_api" | jq -e '
-            .deployment_branch_policy.custom_branch_policies == true and
-            .deployment_branch_policy.protected_branches == false' >/dev/null
-          curl -fsS --max-time 20 "$env_api/deployment-branch-policies?per_page=100" | jq -e '
-            .total_count == 1 and (.branch_policies | length) == 1 and
-            .branch_policies[0].type == "branch" and .branch_policies[0].name == "main"' >/dev/null
           {
             echo "pr_number=$SELECTED_PR"
             echo "head_sha=$PREVIEW_SHA"
@@ -102,6 +89,10 @@ jobs:
     name: Sync the dedicated preview Codespace
     needs: select
     if: needs.select.outputs.pr_number != ''
+    # Unrelated or ineligible push signals never enter this queue.
+    concurrency:
+      group: tnyx-labeled-pr-expo-preview
+      cancel-in-progress: false
     runs-on: ubuntu-latest
     timeout-minutes: 25
     environment: tnyx-expo-pr-preview-trusted

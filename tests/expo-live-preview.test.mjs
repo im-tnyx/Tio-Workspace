@@ -126,7 +126,8 @@ test('trusted workflow isolates the owner gate, protected environment and SSH st
   assert.match(text, /github\.event\.workflow_run\.path == '\.github\/workflows\/expo-pr-live-push-signal\.yml'/);
   assert.match(text, /github\.event\.workflow_run\.run_attempt == 1/);
   assert.match(text, /environment: tnyx-expo-pr-preview-trusted/);
-  assert.match(text, /\.branch_policies\[0\]\.name == "main"/);
+  assert.match(text, /^  codespaces_live:[\s\S]*?^    concurrency:\n      group: tnyx-labeled-pr-expo-preview$/m);
+  assert.doesNotMatch(text, /^concurrency:/m);
   assert.equal([...text.matchAll(/ref: \$\{\{ github\.sha \}\}/g)].length, 2);
   assert.equal([...text.matchAll(/check-expo-live-pr\.sh/g)].length, 3);
   assert.equal([...text.matchAll(/secrets\.PR_PREVIEW_CODESPACES_TOKEN/g)].length, 2);
@@ -139,6 +140,7 @@ test('Git validation fetches objects and compares trees without switching the ru
   assert.match(text, /git merge-base --is-ancestor "\$GITHUB_SHA" "\$PREVIEW_SHA"/);
   assert.match(text, /git diff --raw --no-abbrev --no-renames --no-ext-diff --no-textconv --ignore-submodules=none -z/);
   assert.match(text, /git\/ref\/heads\/main/);
+  assert.match(text, /\.branch_policies\[0\]\.name == "main"/);
   assert.doesNotMatch(text, /git (?:switch|checkout|reset)|secrets\./);
 });
 
@@ -146,6 +148,7 @@ test('remote sync refuses dirty or named feature worktrees and requires trusted 
   const text = readRepoFile('.github/scripts/sync-expo-pr-live-preview.sh');
   assert.match(text, /git status --porcelain=v1 --untracked-files=normal/);
   assert.match(text, /switch --detach --no-overwrite-ignore/);
+  assert.match(text, /test "\$\(git rev-parse HEAD\)" = "\$target_sha"\nrequire_clean_worktree/);
   assert.match(text, /git diff --quiet "\$trusted_sha" "\$target_sha" -- scripts\/start-codespace-expo\.mjs package\.json package-lock\.json/);
   assert.match(text, /dependency-manifests\.sha256/);
   assert.match(text, /node scripts\/start-codespace-expo\.mjs/);
