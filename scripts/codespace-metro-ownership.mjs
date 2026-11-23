@@ -76,7 +76,9 @@ function readProcess(pid) {
   const group = Number(fields[2]);
   const session = Number(fields[3]);
   const startTicks = fields[19];
-  assert(Number.isInteger(group) && group > 0 && Number.isInteger(session) && session > 0 &&
+  // Kernel tasks can have group and session zero. They cannot match a managed Metro leader.
+  assert(Number.isSafeInteger(group) && /^\d+$/.test(fields[2] ?? '') &&
+    Number.isSafeInteger(session) && /^\d+$/.test(fields[3] ?? '') &&
     /^\d+$/.test(startTicks ?? ''), 'Cannot read Linux process identity');
   return { pid, group, session, startTicks, status: fields[0] };
 }

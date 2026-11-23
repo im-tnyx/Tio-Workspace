@@ -80,7 +80,6 @@ this workflow. Preview policy tests run with the existing shell checks.
    test "$(git rev-parse HEAD)" = "$(git rev-parse FETCH_HEAD)"
    node scripts/start-codespace-expo.mjs --stop
    npm ci
-   mkdir -p "$HOME/.cache/tnyx-expo-preview"
    sha256sum package.json package-lock.json | sha256sum | cut -d ' ' -f 1 \
      > "$HOME/.cache/tnyx-expo-preview/dependency-manifests.sha256"
    npx expo login
