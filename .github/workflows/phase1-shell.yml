@@ -12,6 +12,12 @@ on:
       - 'eslint.config.cjs'
       - 'scripts/**'
       - '.github/workflows/phase1-shell.yml'
+      - '.github/workflows/expo-pr-preview.yml'
+      - '.github/scripts/*expo*preview*'
+      - '.github/scripts/check-expo-live-pr.sh'
+      - '.github/scripts/start-preview-codespace.sh'
+      - '.github/scripts/verify-expo-live-pr.mjs'
+      - '.github/preview-eas-cli/**'
   push:
     branches: [main]
     paths:
@@ -24,6 +30,12 @@ on:
       - 'eslint.config.cjs'
       - 'scripts/**'
       - '.github/workflows/phase1-shell.yml'
+      - '.github/workflows/expo-pr-preview.yml'
+      - '.github/scripts/*expo*preview*'
+      - '.github/scripts/check-expo-live-pr.sh'
+      - '.github/scripts/start-preview-codespace.sh'
+      - '.github/scripts/verify-expo-live-pr.mjs'
+      - '.github/preview-eas-cli/**'
 
 permissions:
   contents: read
@@ -63,3 +75,9 @@ jobs:
         run: npm run lint
       - name: Pure shell contract tests
         run: npm test
+      - name: Verify Expo preview policy
+        run: |
+          node --test tests/expo-live-preview.test.mjs tests/expo-preview-recovery.test.mjs
+          bash -n .github/scripts/check-expo-live-pr.sh
+          bash -n .github/scripts/start-preview-codespace.sh
+          bash -n .github/scripts/sync-expo-pr-live-preview.sh

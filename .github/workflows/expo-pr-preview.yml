@@ -1,22 +1,19 @@
-name: Expo PR preview
+name: Tio-TNYX Expo Preview
 
 on:
   workflow_dispatch:
     inputs:
-      pr_number:
-        description: Open PR number targeting main
-        required: true
-        type: number
       operation:
-        description: Publish an OTA preview or build an installable preview app
+        description: Live Expo Go, publish OTA, or build an internal preview
         required: true
-        default: publish_update
+        default: codespaces_live
         type: choice
         options:
+          - codespaces_live
           - publish_update
           - build_preview
       platform:
-        description: Android credentials are configured; choose iOS or all only after EAS iOS signing credentials are configured
+        description: EAS target (Live serves both platforms; builds require configured signing)
         required: true
         default: android
         type: choice
@@ -24,132 +21,292 @@ on:
           - android
           - ios
           - all
+      pr_number:
+        description: Open owner-authored PR targeting main
+        required: true
+        type: string
+      head_sha:
+        description: Exact 40-character PR head SHA approved for this operation
+        required: true
+        type: string
+  # GitHub loads this event from the trusted base, even on feature PRs.
+  pull_request_target:
+    branches: [main]
+    types: [labeled, synchronize]
 
 permissions:
   contents: read
-  pull-requests: read
-
-concurrency:
-  group: eas-pr-preview
-  cancel-in-progress: true
+  pull-requests: read # Read immutable PR head and base metadata.
+  issues: read # Read the global inventory of active live-preview labels.
 
 jobs:
-  preview:
+  select:
+    name: Verify preview eligibility
+    if: >-
+      github.repository == 'im-tnyx/Tio-Workspace' &&
+      github.ref == 'refs/heads/main' &&
+      github.run_attempt == '1' &&
+      github.actor == 'im-tnyx' &&
+      github.triggering_actor == 'im-tnyx' &&
+      (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event_name == 'pull_request_target' &&
+         github.event.sender.login == 'im-tnyx' &&
+         github.event.pull_request.user.login == 'im-tnyx' &&
+         github.event.pull_request.head.repo.full_name == github.repository &&
+         github.event.pull_request.head.ref != 'main' &&
+         github.event.pull_request.head.ref != 'tnyx/expo-preview' &&
+         contains(github.event.pull_request.labels.*.name, 'tnyx-preview') &&
+         (github.event.action == 'synchronize' || github.event.label.name == 'tnyx-preview'))
+      )
     runs-on: ubuntu-latest
-    timeout-minutes: 45
-    environment: eas-preview
+    timeout-minutes: 10
+    outputs:
+      pr_number: ${{ steps.pr.outputs.pr_number }}
+      head_sha: ${{ steps.pr.outputs.head_sha }}
+      operation: ${{ steps.pr.outputs.operation }}
     steps:
-      - name: Validate PR and resolve exact head
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Validate the exact PR revision and operation
         id: pr
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ inputs.pr_number }}
-          DISPATCH_ACTOR: ${{ github.actor }}
+          SELECTED_PR: ${{ inputs.pr_number || github.event.pull_request.number }}
+          PREVIEW_SHA: ${{ inputs.head_sha || github.event.pull_request.head.sha }}
+          PREVIEW_OPERATION: ${{ inputs.operation || 'codespaces_live' }}
+          PREVIEW_PLATFORM: ${{ inputs.platform || 'all' }}
+          PUSH_BRANCH: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
-          if [ "$DISPATCH_ACTOR" != "im-tnyx" ]; then
-            echo "Only the repository owner may publish or build an Expo preview." >&2
-            exit 1
+          case "$PREVIEW_PLATFORM" in android|ios|all) ;; *) exit 1 ;; esac
+          bash .github/scripts/check-expo-live-pr.sh
+          if [[ "$PREVIEW_OPERATION" != codespaces_live ]]; then
+            node .github/scripts/verify-eas-preview-config.mjs
           fi
-          if ! [[ "$PR_NUMBER" =~ ^[0-9]+$ ]]; then
-            echo "PR number must be numeric" >&2
-            exit 1
-          fi
+          {
+            echo "pr_number=$SELECTED_PR"
+            echo "head_sha=$PREVIEW_SHA"
+            echo "operation=$PREVIEW_OPERATION"
+          } >> "$GITHUB_OUTPUT"
 
-          gh api "repos/${GITHUB_REPOSITORY}/pulls/${PR_NUMBER}" > "$RUNNER_TEMP/pull-request.json"
-          jq -e \
-            --arg repo "$GITHUB_REPOSITORY" \
-            '.state == "open" and
-             .head.repo.full_name == $repo and
-             .base.repo.full_name == $repo and
-             .base.ref == "main" and
-             .user.login == "im-tnyx"' \
-            "$RUNNER_TEMP/pull-request.json" > /dev/null
-
-          echo "head_sha=$(jq -r '.head.sha' "$RUNNER_TEMP/pull-request.json")" >> "$GITHUB_OUTPUT"
-          echo "base_sha=$(jq -r '.base.sha' "$RUNNER_TEMP/pull-request.json")" >> "$GITHUB_OUTPUT"
-
-      - name: Checkout selected PR head
-        uses: actions/checkout@v4
+  codespaces_live:
+    name: Sync the dedicated preview Codespace
+    needs: select
+    if: needs.select.outputs.operation == 'codespaces_live'
+    # Unrelated or ineligible push signals never enter this queue.
+    concurrency:
+      group: tnyx-labeled-pr-expo-preview
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: tnyx-expo-pr-preview-trusted
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          fetch-depth: 0
-          ref: ${{ steps.pr.outputs.head_sha }}
           persist-credentials: false
-
-      - name: Fetch immutable design-token baseline
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - name: Revalidate before accessing Codespaces
         env:
           GH_TOKEN: ${{ github.token }}
-          PR_BASE_SHA: ${{ steps.pr.outputs.base_sha }}
+          SELECTED_PR: ${{ needs.select.outputs.pr_number }}
+          PREVIEW_SHA: ${{ needs.select.outputs.head_sha }}
+          PUSH_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PREVIEW_OPERATION: codespaces_live
+        run: bash .github/scripts/check-expo-live-pr.sh
+
+      - name: Validate exact dedicated Codespace and wake if stopped
+        id: codespace
+        env:
+          GH_TOKEN: ${{ secrets.PR_PREVIEW_CODESPACES_TOKEN }}
+          CODESPACE_NAME: ${{ vars.TNYX_PR_CODESPACE_NAME }}
+          CODESPACE_ID: ${{ vars.TNYX_PR_CODESPACE_ID }}
+        run: bash .github/scripts/start-preview-codespace.sh
+
+      - name: Revalidate immediately before remote execution
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SELECTED_PR: ${{ needs.select.outputs.pr_number }}
+          PREVIEW_SHA: ${{ needs.select.outputs.head_sha }}
+          PUSH_BRANCH: ${{ github.event.pull_request.head.ref }}
+          PREVIEW_OPERATION: codespaces_live
+        run: bash .github/scripts/check-expo-live-pr.sh
+
+      - name: Sync exact verified source into the dedicated Codespace
+        env:
+          GH_TOKEN: ${{ secrets.PR_PREVIEW_CODESPACES_TOKEN }}
+          CODESPACE_NAME: ${{ steps.codespace.outputs.name }}
+          VERIFIED_SHA: ${{ needs.select.outputs.head_sha }}
         run: |
           set -euo pipefail
-          auth_header="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w 0)"
-          git -c "http.https://github.com/.extraheader=AUTHORIZATION: basic ${auth_header}" \
-            fetch --no-tags origin b8e0250f5b7973b5798399d40fb67b1aa241dcbf "$PR_BASE_SHA"
+          [[ "$VERIFIED_SHA" =~ ^[0-9a-f]{40}$ && "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]]
+          gh codespace ssh --codespace "$CODESPACE_NAME" -- \
+            bash -s -- "$VERIFIED_SHA" "$GITHUB_SHA" < .github/scripts/sync-expo-pr-live-preview.sh
 
-      - name: Setup Node
-        uses: actions/setup-node@v4
+  prepare_update:
+    name: Export OTA bundle without EAS credentials
+    needs: select
+    if: github.event_name == 'workflow_dispatch' && needs.select.outputs.operation == 'publish_update'
+    permissions:
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
-          node-version: 22.13.0
-          cache: npm
-
-      - name: Install locked dependencies
-        run: npm ci --no-audit --no-fund
-
-      - name: Verify selected PR
-        run: npm run verify
-
-      - name: Block OTA publish for native-affecting PRs
-        if: ${{ inputs.operation == 'publish_update' }}
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Verify source scope and export candidate JavaScript
         env:
-          PR_BASE_SHA: ${{ steps.pr.outputs.base_sha }}
-          PR_SHA: ${{ steps.pr.outputs.head_sha }}
+          GH_TOKEN: ${{ github.token }}
+          SELECTED_PR: ${{ needs.select.outputs.pr_number }}
+          PREVIEW_SHA: ${{ needs.select.outputs.head_sha }}
+          PREVIEW_OPERATION: publish_update
+          PREVIEW_PLATFORM: ${{ inputs.platform }}
+          EXPO_NO_TELEMETRY: '1'
+          EXPO_NO_DOTENV: '1'
         run: |
           set -euo pipefail
-          changed_paths="$RUNNER_TEMP/pr-changed-paths.nul"
-          git diff --name-only -z "$PR_BASE_SHA...$PR_SHA" > "$changed_paths"
-          native_change=0
-          while IFS= read -r -d '' path; do
-            case "$path" in
-              app.json|app.config.js|app.config.jsx|app.config.ts|app.config.tsx|app.config.mjs|app.config.cjs|eas.json|package.json|package-lock.json|npm-shrinkwrap.json|yarn.lock|pnpm-lock.yaml|bun.lock|bun.lockb|expo-module.config.json|android/*|ios/*|plugins/*|modules/*|native/*)
-                echo "OTA publish blocked: $path can change the native runtime. Run build_preview for this PR, install that preview build, then publish an update from a JS-only PR." >&2
-                native_change=1
-                ;;
-            esac
-          done < "$changed_paths"
-          if [ "$native_change" -ne 0 ]; then
-            exit 1
-          fi
+          bash .github/scripts/check-expo-live-pr.sh
+          source_dir="$RUNNER_TEMP/ota-source"
+          git -c core.hooksPath=/dev/null worktree add --detach "$source_dir" "$PREVIEW_SHA"
+          cd "$source_dir"
+          test "$(git rev-parse HEAD)" = "$PREVIEW_SHA"
+          # The manifest, lock and Expo tooling compare equal to trusted main.
+          env -u GH_TOKEN -u GITHUB_TOKEN npm ci --ignore-scripts --no-audit --no-fund
+          case "$PREVIEW_PLATFORM" in
+            android|ios) platforms=(--platform "$PREVIEW_PLATFORM") ;;
+            all) platforms=(--platform ios --platform android) ;;
+            *) exit 1 ;;
+          esac
+          env -u GH_TOKEN -u GITHUB_TOKEN ./node_modules/.bin/expo export \
+            "${platforms[@]}" --output-dir "$RUNNER_TEMP/ota-bundle"
+          node "$GITHUB_WORKSPACE/.github/scripts/verify-expo-ota-bundle.mjs" "$RUNNER_TEMP/ota-bundle"
+      - name: Upload prebuilt OTA bundle
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: tnyx-ota-${{ needs.select.outputs.head_sha }}
+          path: ${{ runner.temp }}/ota-bundle
+          if-no-files-found: error
+          retention-days: 1
 
-      - name: Publish preview update
-        if: ${{ inputs.operation == 'publish_update' }}
+  eas_preview:
+    name: Publish OTA or queue internal preview build
+    needs: [select, prepare_update]
+    # Keep auto-label/push events and failed OTA exports outside this environment.
+    if: >-
+      !cancelled() && github.event_name == 'workflow_dispatch' &&
+      needs.select.result == 'success' &&
+      (
+        (needs.select.outputs.operation == 'publish_update' && needs.prepare_update.result == 'success') ||
+        (needs.select.outputs.operation == 'build_preview' && needs.prepare_update.result == 'skipped')
+      )
+    concurrency:
+      group: tnyx-eas-pr-preview
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      pull-requests: read
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    environment: eas-preview
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          ref: ${{ github.sha }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+      - name: Validate exact project and install only reviewed tooling
         env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-          PR_NUMBER: ${{ inputs.pr_number }}
-          PR_SHA: ${{ steps.pr.outputs.head_sha }}
+          GH_TOKEN: ${{ github.token }}
+          SELECTED_PR: ${{ needs.select.outputs.pr_number }}
+          PREVIEW_SHA: ${{ needs.select.outputs.head_sha }}
+          PREVIEW_OPERATION: ${{ needs.select.outputs.operation }}
+          PREVIEW_PLATFORM: ${{ inputs.platform }}
         run: |
           set -euo pipefail
-          if [ -z "$EXPO_TOKEN" ]; then
-            echo "Configure the EXPO_TOKEN repository secret before running this workflow." >&2
-            exit 1
-          fi
-          npx eas-cli@latest update \
-            --branch pr-preview \
-            --message "Manual preview for PR #${PR_NUMBER} (${PR_SHA:0:7})" \
-            --environment preview \
-            --non-interactive
-
-      - name: Build preview app
-        if: ${{ inputs.operation == 'build_preview' }}
+          bash .github/scripts/check-expo-live-pr.sh
+          node .github/scripts/verify-eas-preview-config.mjs
+          npm ci --prefix .github/preview-eas-cli --ignore-scripts --no-audit --no-fund \
+            --registry=https://registry.npmjs.org
+          npm audit signatures --prefix .github/preview-eas-cli --registry=https://registry.npmjs.org
+          # Install the main lockfile without lifecycle hooks outside the candidate worktree.
+          npm ci --ignore-scripts --no-audit --no-fund
+      - name: Download only the bundle prepared in this run
+        if: needs.select.outputs.operation == 'publish_update'
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: tnyx-ota-${{ needs.select.outputs.head_sha }}
+          path: ${{ runner.temp }}/ota-bundle
+      - name: Revalidate access and materialize immutable source
         env:
-          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
-          PLATFORM: ${{ inputs.platform }}
+          GH_TOKEN: ${{ github.token }}
+          SELECTED_PR: ${{ needs.select.outputs.pr_number }}
+          PREVIEW_SHA: ${{ needs.select.outputs.head_sha }}
+          PREVIEW_OPERATION: ${{ needs.select.outputs.operation }}
+          PREVIEW_PLATFORM: ${{ inputs.platform }}
         run: |
           set -euo pipefail
-          if [ -z "$EXPO_TOKEN" ]; then
-            echo "Configure the EXPO_TOKEN repository secret before running this workflow." >&2
-            exit 1
+          bash .github/scripts/check-expo-live-pr.sh
+          if [[ "$PREVIEW_OPERATION" == publish_update ]]; then
+            node .github/scripts/verify-expo-ota-bundle.mjs "$RUNNER_TEMP/ota-bundle"
           fi
-          npx eas-cli@latest build \
-            --profile preview \
-            --platform "$PLATFORM" \
-            --non-interactive
+          source_dir="$RUNNER_TEMP/eas-preview-source"
+          git -c core.hooksPath=/dev/null worktree add --detach "$source_dir" "$PREVIEW_SHA"
+          # EAS config resolution can read trusted, preinstalled Expo dependencies.
+          # Move the actual tree so a build upload can exclude node_modules normally.
+          mv node_modules "$source_dir/node_modules"
+          test "$(git -C "$source_dir" rev-parse HEAD)" = "$PREVIEW_SHA"
+          source_status="$(git -C "$source_dir" status --porcelain=v1 --untracked-files=normal)"
+          test -z "$source_status"
+      - name: Publish to the preview branch or queue the internal preview profile
+        env:
+          EXPO_TOKEN: ${{ secrets.PR_PREVIEW_EXPO_TOKEN }}
+          EXPO_NO_TELEMETRY: '1'
+          SELECTED_PR: ${{ needs.select.outputs.pr_number }}
+          PREVIEW_SHA: ${{ needs.select.outputs.head_sha }}
+          PREVIEW_OPERATION: ${{ needs.select.outputs.operation }}
+          PREVIEW_PLATFORM: ${{ inputs.platform }}
+        run: |
+          set -euo pipefail
+          [[ -n "$EXPO_TOKEN" && "$SELECTED_PR" =~ ^[1-9][0-9]*$ && "$PREVIEW_SHA" =~ ^[0-9a-f]{40}$ ]]
+          case "$PREVIEW_PLATFORM" in android|ios|all) ;; *) exit 1 ;; esac
+          eas="$GITHUB_WORKSPACE/.github/preview-eas-cli/node_modules/.bin/eas"
+          cd "$RUNNER_TEMP/eas-preview-source"
+          test "$(git rev-parse HEAD)" = "$PREVIEW_SHA"
+          case "$PREVIEW_OPERATION" in
+            publish_update)
+              test -s "$RUNNER_TEMP/ota-bundle/metadata.json"
+              routes="$(mktemp)"
+              page="$(mktemp)"
+              trap 'rm -f -- "$routes" "$page"' EXIT
+              for (( offset=0; ; offset+=25 )); do
+                "$eas" channel:list --json --limit 25 --offset "$offset" > "$page"
+                count="$(jq -er '.currentPage | if type == "array" then length else error("invalid channels") end' "$page")"
+                jq -c '.currentPage[]' "$page" >> "$routes"
+                if (( count < 25 )); then break; fi
+              done
+              jq -s '.' "$routes" | node "$GITHUB_WORKSPACE/.github/scripts/verify-eas-preview-config.mjs" --channels
+              "$eas" update --branch pr-preview --environment preview --non-interactive \
+                --platform "$PREVIEW_PLATFORM" --skip-bundler --input-dir "$RUNNER_TEMP/ota-bundle" \
+                --message "Tio-TNYX PR #$SELECTED_PR (${PREVIEW_SHA:0:7})"
+              ;;
+            build_preview)
+              node --require "$GITHUB_WORKSPACE/.github/scripts/freeze-expo-preview-keystore.cjs" \
+                "$eas" build --profile preview --platform "$PREVIEW_PLATFORM" \
+                --non-interactive --freeze-credentials --no-wait
+              ;;
+            *) exit 1 ;;
+          esac

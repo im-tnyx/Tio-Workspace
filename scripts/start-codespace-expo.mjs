@@ -1,70 +1,32 @@
-import { spawn } from 'node:child_process';
-import {
-  closeSync,
-  existsSync,
-  mkdirSync,
-  openSync,
-  readFileSync,
-  readlinkSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { execFileSync, spawn } from 'node:child_process';
+import { accessSync, closeSync, constants, ftruncateSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createServer } from 'node:net';
+import {
+  clearStaleMetro, inspectMetro, openMetroLog, recordMetro, verifyMetroObservation, withMetroLock,
+} from './codespace-metro-ownership.mjs';
 
-const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const scriptDirectory = dirname(fileURLToPath(import.meta.url));
+const [operation, targetSha, trustedSha] = process.argv.slice(2);
+const projectRoot = operation === '--sync' ? process.cwd() : resolve(scriptDirectory, '..');
 const stateDirectory = join(homedir(), '.cache', 'tnyx-expo-preview');
-const lockPath = join(stateDirectory, 'start.lock');
-const pidPath = join(stateDirectory, 'metro.pid');
+const recordPath = join(stateDirectory, 'metro.json');
 const logPath = join(stateDirectory, 'metro.log');
 const metroPort = 8081;
 const startupTimeoutMs = 300_000;
-const shouldRestart = process.argv.includes('--restart');
-const shouldStop = process.argv.includes('--stop');
-
-mkdirSync(stateDirectory, { recursive: true, mode: 0o700 });
 
 function delay(milliseconds) {
   return new Promise((resolveDelay) => setTimeout(resolveDelay, milliseconds));
 }
 
-function processExists(pid) {
-  try {
-    process.kill(pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === 'EPERM';
-  }
-}
+const observeMetro = () => inspectMetro(recordPath, projectRoot, metroPort);
 
-function processGroupExists(pid) {
-  try {
-    process.kill(-pid, 0);
-    return true;
-  } catch (error) {
-    return error.code === 'EPERM';
-  }
-}
-
-function readManagedPid() {
-  if (!existsSync(pidPath)) return null;
-
-  const pid = Number(readFileSync(pidPath, 'utf8').trim());
-  if (!Number.isInteger(pid) || pid < 1) return null;
-
-  try {
-    const command = readFileSync(`/proc/${pid}/cmdline`, 'utf8').replaceAll('\0', ' ');
-    const workingDirectory = resolve(readlinkSync(`/proc/${pid}/cwd`));
-    const looksLikeMobileScript = command.includes('npm')
-      && command.includes('run')
-      && command.includes('mobile');
-
-    return workingDirectory === projectRoot && looksLikeMobileScript ? pid : null;
-  } catch {
-    return null;
-  }
+function currentMetro(previous) {
+  const current = observeMetro();
+  verifyMetroObservation(previous, current);
+  return current;
 }
 
 async function expoServerIsReady() {
@@ -122,145 +84,155 @@ async function assertMetroPortIsFree() {
   });
 }
 
-async function acquireLock() {
-  const deadline = Date.now() + startupTimeoutMs;
+function syncCheckout() {
+  const git = (...args) => execFileSync('git', ['-c', 'core.hooksPath=/dev/null', ...args], {
+    cwd: projectRoot,
+    encoding: 'utf8',
+  }).trim();
 
-  while (Date.now() < deadline) {
-    try {
-      const file = openSync(lockPath, 'wx', 0o600);
-      writeFileSync(file, String(process.pid));
-      return () => {
-        closeSync(file);
-        rmSync(lockPath, { force: true });
-      };
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-
-      let lockPid = 0;
-      try {
-        lockPid = Number(readFileSync(lockPath, 'utf8').trim());
-      } catch {
-        // An empty or unreadable lock is stale and is removed below.
-      }
-
-      if (!Number.isInteger(lockPid) || lockPid < 1 || !processExists(lockPid)) {
-        rmSync(lockPath, { force: true });
-      }
-
-      await delay(1_000);
+  const activeBranch = git('branch', '--show-current');
+  if (activeBranch && activeBranch !== 'main') throw new Error('Refusing preview outside main or a detached worktree');
+  function requireCleanWorktree() {
+    if (git('status', '--porcelain=v1', '--untracked-files=normal')) {
+      throw new Error('Refusing preview: dedicated Codespace has uncommitted or untracked work');
     }
   }
+  requireCleanWorktree();
+  git('diff', '--quiet', 'HEAD', trustedSha, '--', 'package.json', 'package-lock.json');
 
-  throw new Error(`Timed out waiting for the Expo startup lock. See ${logPath}.`);
+  const hash = execFileSync('bash', ['-o', 'pipefail', '-c',
+    "sha256sum package.json package-lock.json | sha256sum | cut -d ' ' -f 1"], {
+    cwd: projectRoot,
+    encoding: 'utf8',
+  }).trim();
+  const marker = readFileSync(join(stateDirectory, 'dependency-manifests.sha256'), 'utf8').trim();
+  if (hash !== marker) throw new Error('Bootstrap the reviewed main lockfile before syncing');
+  accessSync(join(projectRoot, 'node_modules/.bin/expo'), constants.X_OK);
+
+  if (activeBranch || git('rev-parse', 'HEAD') !== targetSha) {
+    git('switch', '--detach', '--no-overwrite-ignore', '--no-recurse-submodules', targetSha);
+  }
+  if (git('rev-parse', 'HEAD') !== targetSha) throw new Error('Worktree differs from the selected preview SHA');
+  requireCleanWorktree();
 }
 
-async function stopManagedServer() {
-  const pid = readManagedPid();
-  if (!pid) {
-    if (await expoServerIsReady()) {
-      throw new Error('Expo is running but is not owned by this starter; refusing to stop it.');
-    }
-    rmSync(pidPath, { force: true });
+function discardStale(observation) {
+  if (observation.state === 'stale') {
+    clearStaleMetro(recordPath, projectRoot, metroPort, observation);
+    console.log('Cleared the stale Metro ownership record.');
+  }
+}
+
+async function stopOwnedMetro(observation) {
+  if (observation.state !== 'owned') {
+    discardStale(observation);
     return;
   }
-
-  try {
-    process.kill(-pid, 'SIGTERM');
-  } catch (error) {
-    if (error.code !== 'ESRCH') throw error;
-  }
-
-  const deadline = Date.now() + 10_000;
-  while (Date.now() < deadline && ((await expoServerIsReady()) || processGroupExists(pid))) {
+  // pidfds bind signals to the observed process instances. There is no
+  // numeric-PID or process-group fallback if the kernel check is unavailable.
+  const current = currentMetro(observation);
+  execFileSync('python3', [join(scriptDirectory, 'stop-owned-metro.py')], {
+    input: JSON.stringify(current.members),
+    stdio: ['pipe', 'ignore', 'inherit'],
+  });
+  const deadline = performance.now() + 10_000;
+  while (performance.now() < deadline) {
     await delay(250);
-  }
-
-  if ((await expoServerIsReady()) || processGroupExists(pid)) {
     try {
-      process.kill(-pid, 'SIGKILL');
+      const after = observeMetro();
+      if (after.state === 'stale') {
+        verifyMetroObservation({ ...observation, state: 'stale' }, after);
+        discardStale(after);
+        return;
+      }
+      verifyMetroObservation(observation, after);
     } catch (error) {
-      if (error.code !== 'ESRCH') throw error;
+      // The session leader may exit while its own descendants drain. Wait
+      // only for that known orphaned state; all other failures stop here.
+      if (error.code !== 'METRO_DRAINING') throw error;
     }
   }
-
-  rmSync(pidPath, { force: true });
+  throw new Error('Managed Metro did not stop cleanly; leaving its record in place');
 }
 
 async function startServer() {
   await assertMetroPortIsFree();
+  if (observeMetro().state !== 'vacant') throw new Error('Metro state changed before startup');
 
-  const logFile = openSync(logPath, 'w', 0o600);
-  const child = spawn('npm', ['run', 'mobile'], {
-    cwd: projectRoot,
-    detached: true,
-    env: {
-      ...process.env,
-      EXPO_NO_TELEMETRY: '1',
-    },
-    stdio: ['ignore', logFile, logFile],
-  });
-  closeSync(logFile);
+  const logFile = openMetroLog(logPath);
+  let child;
+  try {
+    ftruncateSync(logFile, 0);
+    child = spawn('npm', ['run', 'mobile'], {
+      cwd: projectRoot,
+      detached: true,
+      env: { ...process.env, EXPO_NO_TELEMETRY: '1' },
+      stdio: ['ignore', logFile, logFile],
+    });
+  } finally {
+    closeSync(logFile);
+  }
 
-  if (!child.pid) throw new Error(`Could not launch Expo. See ${logPath}.`);
-
-  let exit = null;
-  child.once('error', (error) => {
-    exit = { error };
+  await new Promise((resolveSpawn, rejectSpawn) => {
+    child.once('spawn', resolveSpawn);
+    child.once('error', rejectSpawn);
   });
-  child.once('exit', (code, signal) => {
-    exit = { code, signal };
-  });
-  writeFileSync(pidPath, String(child.pid), { mode: 0o600 });
+  let exited = false;
+  child.once('exit', () => { exited = true; });
+  recordMetro(recordPath, projectRoot, metroPort, child.pid);
   child.unref();
 
-  const deadline = Date.now() + startupTimeoutMs;
-  while (Date.now() < deadline) {
-    if (exit) {
-      try {
-        process.kill(-child.pid, 'SIGTERM');
-      } catch (error) {
-        if (error.code !== 'ESRCH') throw error;
-      }
-      rmSync(pidPath, { force: true });
-      const reason = exit.error?.message ?? `exit ${exit.code ?? exit.signal}`;
-      throw new Error(`Expo exited before Metro and the tunnel became ready (${reason}). See ${logPath}.`);
-    }
-    if ((await expoServerIsReady()) && (await expoTunnelIsReady()) && !exit) {
+  const deadline = performance.now() + startupTimeoutMs;
+  while (performance.now() < deadline) {
+    if (exited) break;
+    const observation = observeMetro();
+    if (observation.state === 'owned' && observation.listening &&
+      await expoServerIsReady() && await expoTunnelIsReady() && currentMetro(observation).listening) {
       console.log(`Expo Go dev server is running on the Codespace tunnel. Log: ${logPath}`);
       return;
     }
+    if (observation.state !== 'owned') break;
     await delay(1_000);
   }
-
-  await stopManagedServer();
-  throw new Error(`Expo Metro and tunnel did not become ready within 5 minutes. See ${logPath}.`);
+  // Retain the attestation so recovery or an explicit stop can verify it.
+  throw new Error(`Metro or its tunnel did not become ready. See ${logPath}.`);
 }
 
 async function main() {
-  if (!process.platform.startsWith('linux')) {
-    throw new Error('This starter is intended to run inside a Linux GitHub Codespace.');
+  if (process.platform !== 'linux') throw new Error('This starter requires a Linux GitHub Codespace');
+  if (![undefined, '--sync', '--stop', '--restart'].includes(operation)) {
+    throw new Error('Unknown Metro starter operation');
+  }
+  if (operation === '--sync' &&
+    (!/^[0-9a-f]{40}$/.test(targetSha ?? '') || !/^[0-9a-f]{40}$/.test(trustedSha ?? ''))) {
+    throw new Error('Sync requires exact preview and main SHAs');
   }
 
-  const releaseLock = await acquireLock();
-
-  try {
-    if (shouldStop) {
-      await stopManagedServer();
-      console.log('Expo Go dev server stopped.');
-      return;
+  await withMetroLock(stateDirectory, async () => {
+    // Preflight, checkout and startup share this ownership lock.
+    const observation = observeMetro();
+    if (operation === '--stop' || operation === '--restart') {
+      await stopOwnedMetro(observation);
+      if (operation === '--stop') {
+        console.log('Expo Go dev server is stopped.');
+        return;
+      }
+    } else {
+      if (observation.state === 'owned' &&
+        (!observation.listening || !await expoServerIsReady() || !await expoTunnelIsReady())) {
+        throw new Error(`Managed Metro is not healthy. Use --restart after inspecting ${logPath}.`);
+      }
+      if (operation === '--sync') syncCheckout();
+      const current = currentMetro(observation);
+      if (current.state === 'owned') {
+        if (!current.listening) throw new Error('Managed Metro listener disappeared');
+        console.log('Expo Go dev server is already running.');
+        return;
+      }
+      discardStale(current);
     }
-
-    if (shouldRestart) {
-      await stopManagedServer();
-    } else if (readManagedPid() && (await expoServerIsReady()) && (await expoTunnelIsReady())) {
-      console.log('Expo Go dev server is already running.');
-      return;
-    }
-
     await startServer();
-  } finally {
-    releaseLock();
-  }
+  });
 }
 
 main().catch((error) => {
