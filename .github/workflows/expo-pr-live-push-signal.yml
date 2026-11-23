@@ -1,0 +1,20 @@
+name: TNYX PR preview push signal
+
+# Unprivileged signal only. Never checkout pushed code or expose secrets here.
+on:
+  push:
+    branches:
+      - '**'
+      - '!main'
+      - '!tnyx/expo-preview'
+
+permissions:
+  contents: read
+
+jobs:
+  signal:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Record candidate preview push
+        run: echo "Candidate preview push $GITHUB_SHA (validation is delegated to trusted main)"
