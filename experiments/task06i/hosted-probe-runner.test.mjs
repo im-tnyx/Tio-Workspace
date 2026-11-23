@@ -27,7 +27,8 @@ import {
   validateProjectCredentialBinding,
   createMockProjectKey,
   HOSTED_PROBE_SPECIFICATIONS,
-  createHostedAdminClient
+  createHostedAdminClient,
+  observeAndTrackSessionTokens
 } from './hosted-probe-runner.mjs';
 
 const defaultMockAdminClient = {
@@ -4153,4 +4154,318 @@ test('75. Task 06I-B1-H1-R7 (R7-02): 300-second JWT lifetime contract enforcemen
   const out05Oversized = await dispStorage(session05);
   assert.equal(out05Oversized.passed, false);
   assert.match(out05Oversized.error, /EXCESSIVE_JWT_LIFETIME/);
+});
+
+test('76. Task 06I-B1-H1-R8 (R8-01): Unexpected session tracking captures session identity and cleanup obligations across negative probes', async () => {
+  // 1. observeAndTrackSessionTokens helper unit validation
+  const emptyObs = observeAndTrackSessionTokens(null);
+  assert.equal(emptyObs.hasTokens, false);
+  assert.equal(emptyObs.sessionId, null);
+
+  const invUnit = new TestRunInventory('test-run-r8-01-unit');
+  const tokenWithSession = createMockJwt({ session_id: 'sess-observed-123', sub: 'u-observed-123' });
+  const obsWithToken = observeAndTrackSessionTokens({
+    access_token: tokenWithSession,
+    refresh_token: 'refresh-abc'
+  }, { inv: invUnit, probeId: 'BYPASS-03', testUser: 'seed-user@proof.invalid' });
+
+  assert.equal(obsWithToken.hasTokens, true);
+  assert.equal(obsWithToken.sessionId, 'sess-observed-123');
+  assert.equal(obsWithToken.userId, 'u-observed-123');
+  assert.equal(invUnit.trackedSessions.has('sess-observed-123'), true);
+  assert.equal(invUnit.sessionTokens.get('sess-observed-123'), tokenWithSession);
+  // Negative probe with seed user registers referencedUser, NOT createdUser (R3-09, R8-01)
+  assert.equal(invUnit.referencedUsers.has('u-observed-123'), true);
+  assert.equal(invUnit.createdUsers.has('u-observed-123'), false);
+
+  // For BYPASS-02 (signup probe), unexpected user registration is deletion eligible (createdUsers)
+  observeAndTrackSessionTokens({
+    access_token: tokenWithSession,
+    user: { id: 'u-signup-456' }
+  }, { inv: invUnit, probeId: 'BYPASS-02', testUser: 'signup-user@proof.invalid' });
+  assert.equal(invUnit.createdUsers.has('u-signup-456'), true);
+
+  // Untracked session: token present but session ID unextractable
+  const rawTokenWithoutClaims = 'header.e30.signature'; // payload is {}
+  const obsUntracked = observeAndTrackSessionTokens({
+    access_token: rawTokenWithoutClaims
+  }, { inv: invUnit, probeId: 'BYPASS-03', testUser: 'seed-user@proof.invalid' });
+  assert.equal(obsUntracked.hasTokens, true);
+  assert.equal(obsUntracked.sessionId, null);
+  assert.equal(invUnit.untrackedSessionsCount, 1);
+
+  // 2. Dispatcher negative probe (BYPASS-03) unexpectedly receiving tokens:
+  // Fails as security invariant violation, records session in inventory, and cleanup revokes it
+  const invBypass = new TestRunInventory('test-run-bypass03-unexpected');
+  const unexpectedSessionId = 'sess-bypass03-minted';
+  const unexpectedToken = createMockJwt({ session_id: unexpectedSessionId, sub: 'u-seed-bypass03' });
+  const calls = [];
+  const mockFetchBypass = async (url, opts) => {
+    calls.push({ url, method: opts.method || 'GET', headers: opts.headers });
+    if (url.includes('/auth/v1/verify')) {
+      // Unexpectedly returns HTTP 200 with tokens
+      return {
+        status: 200,
+        ok: true,
+        json: async () => ({
+          access_token: unexpectedToken,
+          refresh_token: 'refresh-bypass03',
+          session_id: unexpectedSessionId,
+          user: { id: 'u-seed-bypass03', email: 'tio-test-user-06i@proof.invalid' }
+        })
+      };
+    }
+    if (url.includes('/auth/v1/logout')) {
+      return { status: 200, ok: true, json: async () => ({}) };
+    }
+    return { status: 200, ok: true, json: async () => ({}) };
+  };
+
+  const dispBypass = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: invBypass,
+    fetchFn: mockFetchBypass
+  });
+
+  const bypassOutcome = await dispBypass({ id: 'BYPASS-03', category: 'Auth Bypass & Registration' });
+  assert.equal(bypassOutcome.passed, false, 'Probe must fail when tokens are unexpectedly issued');
+  assert.ok(bypassOutcome.tokens, 'Observed tokens must be preserved in outcome');
+  assert.match(bypassOutcome.error, /SECURITY_INVARIANT_VIOLATION/);
+
+  // Verify session was tracked in inventory despite probe failure!
+  assert.equal(invBypass.trackedSessions.has(unexpectedSessionId), true);
+  assert.equal(invBypass.sessionTokens.get(unexpectedSessionId), unexpectedToken);
+  assert.equal(invBypass.referencedUsers.has('u-seed-bypass03'), true);
+  assert.equal(invBypass.createdUsers.size, 0, 'Seed user must NOT be registered as created user');
+
+  // Verify cleanup revokes the unexpectedly minted session via logout
+  const adminClientBypass = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: mockFetchBypass
+  });
+  calls.length = 0;
+  const bypassCleanup = await invBypass.executeCleanup({ adminClient: adminClientBypass });
+  assert.equal(bypassCleanup.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(bypassCleanup.sessionsRevoked, 1);
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].url, /\/auth\/v1\/logout\?scope=local/);
+  assert.equal(calls[0].headers.Authorization, `Bearer ${unexpectedToken}`);
+
+  // 3. Normal negative probe rejection (no tokens) does NOT populate sessions
+  const invNormal = new TestRunInventory('test-run-normal-rejection');
+  const dispNormal = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: invNormal,
+    fetchFn: async () => ({
+      status: 400,
+      ok: false,
+      json: async () => ({ error_code: 'otp_expired', msg: 'Token expired' })
+    })
+  });
+  const normalOutcome = await dispNormal({ id: 'BYPASS-03', category: 'Auth Bypass & Registration' });
+  assert.equal(normalOutcome.passed, false);
+  assert.equal(invNormal.trackedSessions.size, 0);
+  assert.equal(invNormal.untrackedSessionsCount, 0);
+  assert.equal(invNormal.createdUsers.size, 0);
+  assert.equal(invNormal.referencedUsers.size, 0);
+
+  // 4. Untracked minted session fails cleanup closed
+  const invUntrackedFail = new TestRunInventory('test-run-untracked-fail');
+  invUntrackedFail.registerUntrackedSession();
+  const untrackedReport = await invUntrackedFail.executeCleanup({ adminClient: adminClientBypass, failClosed: false });
+  assert.equal(untrackedReport.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(untrackedReport.residualResources.some(r => r.type === 'untracked_session' && r.error.includes('UNTRACKED_MINTED_SESSION')));
+});
+
+test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed session absence handling', async () => {
+  const calls = [];
+  const testToken = createMockJwt({ session_id: 'sess-idemp-1' });
+
+  // 1. createHostedAdminClient.signOut provider responses
+  // 1a. HTTP 200 normal logout succeeds
+  const client200 = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async () => ({ status: 200, ok: true, json: async () => ({}) })
+  });
+  const res200 = await client200.signOut(testToken);
+  assert.equal(res200.error, null);
+  assert.equal(res200.data.scope, 'local');
+
+  // 1b. HTTP 403 session_not_found treated as affirmative absence (succeeds with alreadyRevoked: true)
+  const clientNotFound = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async () => ({
+      status: 403,
+      ok: false,
+      json: async () => ({
+        code: 403,
+        error_code: 'session_not_found',
+        msg: 'Session from session_id claim in JWT does not exist'
+      })
+    })
+  });
+  const resNotFound = await clientNotFound.signOut(testToken);
+  assert.equal(resNotFound.error, null);
+  assert.equal(resNotFound.session_not_found, true);
+  assert.equal(resNotFound.data.alreadyRevoked, true);
+
+  // 1c. HTTP 400 authsessionmissingerror treated as affirmative absence
+  const clientMissing = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async () => ({
+      status: 400,
+      ok: false,
+      json: async () => ({
+        code: 400,
+        error_code: 'authsessionmissingerror',
+        msg: 'Auth session missing!'
+      })
+    })
+  });
+  const resMissing = await clientMissing.signOut(testToken);
+  assert.equal(resMissing.error, null);
+  assert.equal(resMissing.session_not_found, true);
+
+  // 1d. False proof: HTTP 401 bad_jwt fails closed
+  const clientBadJwt = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async () => ({
+      status: 401,
+      ok: false,
+      json: async () => ({ code: 401, error_code: 'bad_jwt', msg: 'Invalid JWT' })
+    })
+  });
+  const resBadJwt = await clientBadJwt.signOut(testToken);
+  assert.ok(resBadJwt.error);
+  assert.equal(resBadJwt.error.status, 401);
+
+  // 1e. False proof: HTTP 401 jwt_expired fails closed
+  const clientExpired = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async () => ({
+      status: 401,
+      ok: false,
+      json: async () => ({ code: 401, error_code: 'jwt_expired', msg: 'JWT expired' })
+    })
+  });
+  const resExpired = await clientExpired.signOut(testToken);
+  assert.ok(resExpired.error);
+
+  // 1f. Generic HTTP 403 Forbidden fails closed
+  const clientGeneric403 = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async () => ({
+      status: 403,
+      ok: false,
+      json: async () => ({ code: 403, msg: 'Forbidden' })
+    })
+  });
+  const resGeneric403 = await clientGeneric403.signOut(testToken);
+  assert.ok(resGeneric403.error);
+
+  // 1g. HTTP 500 fails closed
+  const client500 = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async () => ({
+      status: 500,
+      ok: false,
+      json: async () => ({ code: 500, msg: 'Internal server error' })
+    })
+  });
+  const res500 = await client500.signOut(testToken);
+  assert.ok(res500.error);
+
+  // 2. SESSION-02 marks session revoked in inventory when revocation is proven
+  const invSession02 = new TestRunInventory('test-run-session02-marking');
+  const s02SessionId = 'sess-s02-verified';
+  const s02Token = createMockJwt({ session_id: s02SessionId });
+  invSession02.registerSession(s02SessionId, { accessToken: s02Token });
+
+  const runCtxS02 = createRunContext();
+  runCtxS02.activeUserId = 'u-s02-test';
+  runCtxS02.activeSessionId = s02SessionId;
+  runCtxS02.activeAccessToken = s02Token;
+
+  const dispS02 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    serviceRoleKey: validTestServiceRoleKey,
+    inventory: invSession02,
+    runContext: runCtxS02,
+    fetchFn: async (url, opts) => {
+      calls.push({ url, method: opts.method || 'GET' });
+      if (url.includes('/auth/v1/admin/users/')) {
+        return { status: 200, ok: true, json: async () => ({ id: 'u-s02-test' }) };
+      }
+      if (url.includes('/auth/v1/user')) {
+        // Post-reset check affirmatively proves revocation
+        return {
+          status: 403,
+          ok: false,
+          json: async () => ({ error_code: 'session_not_found', msg: 'Session not found' })
+        };
+      }
+      return { status: 200, ok: true, json: async () => ({}) };
+    }
+  });
+
+  const outS02 = await dispS02({ id: 'SESSION-02', category: 'Session & Consumer' });
+  assert.equal(outS02.passed, true);
+  assert.equal(invSession02.isSessionRevoked(s02SessionId), true, 'SESSION-02 must mark session as revoked in inventory');
+
+  // When cleanup runs on invSession02, it skips calling logout for already-revoked session
+  calls.length = 0;
+  const adminClientS02 = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async (url, opts) => {
+      calls.push({ url, method: opts.method || 'GET' });
+      return { status: 200, ok: true, json: async () => ({}) };
+    }
+  });
+
+  const cleanupS02 = await invSession02.executeCleanup({ adminClient: adminClientS02 });
+  assert.equal(cleanupS02.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(cleanupS02.sessionsRevoked, 1);
+  // Zero logout fetch calls because session was already marked revoked!
+  assert.equal(calls.filter(c => c.url.includes('/logout')).length, 0);
+
+  // 3. Idempotent cleanup execution:
+  // First run revokes session; second run on same inventory is cleanly idempotent
+  const invIdemp = new TestRunInventory('test-run-idempotency');
+  invIdemp.registerSession('sess-run-1', { accessToken: createMockJwt({ session_id: 'sess-run-1' }) });
+  invIdemp.registerSession('sess-run-2', { accessToken: createMockJwt({ session_id: 'sess-run-2' }) });
+
+  calls.length = 0;
+  const adminClientIdemp = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: async (url, opts) => {
+      calls.push({ url, method: opts.method || 'GET' });
+      return { status: 200, ok: true, json: async () => ({}) };
+    }
+  });
+
+  // First cleanup call
+  const firstCleanup = await invIdemp.executeCleanup({ adminClient: adminClientIdemp });
+  assert.equal(firstCleanup.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(firstCleanup.sessionsRevoked, 2);
+  const firstLogoutCount = calls.filter(c => c.url.includes('/logout')).length;
+  assert.equal(firstLogoutCount, 2, 'First cleanup must call logout for both sessions');
+
+  // Second cleanup call on same inventory
+  calls.length = 0;
+  const secondCleanup = await invIdemp.executeCleanup({ adminClient: adminClientIdemp });
+  assert.equal(secondCleanup.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(secondCleanup.sessionsRevoked, 2);
+  assert.equal(secondCleanup.residualResources.length, 0);
+  const secondLogoutCount = calls.filter(c => c.url.includes('/logout')).length;
+  assert.equal(secondLogoutCount, 0, 'Second cleanup must be idempotent and make ZERO logout calls');
 });

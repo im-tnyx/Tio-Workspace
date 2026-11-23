@@ -522,6 +522,101 @@ function extractObservedTokens(rawOutcome) {
 }
 
 /**
+ * Shared helper to observe and immediately track session tokens across all probes.
+ * Captures session identity and cleanup obligations whenever provider responses contain concrete tokens or session evidence.
+ * If token is issued but session ID cannot be determined, records untracked session obligation via inv.registerUntrackedSession().
+ * For BYPASS-02 (signup), registers user as created for deletion; for all other probes (seed user/login), registers as referenced user.
+ * Resolves PRRT_kwDOVtCmZc66sSyk (R8-01).
+ */
+export function observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser } = {}) {
+  if (!body || typeof body !== 'object') {
+    return { hasTokens: false, sessionId: null, userId: null, accessToken: null, refreshToken: null };
+  }
+
+  // Detect presence of token(s)
+  const accessToken =
+    (typeof body.access_token === 'string' && body.access_token.trim()) ||
+    (typeof body.token === 'string' && body.token.trim()) ||
+    (typeof body.tokens?.access_token === 'string' && body.tokens.access_token.trim()) ||
+    (typeof body.tokens?.token === 'string' && body.tokens.token.trim()) ||
+    (typeof body.session?.access_token === 'string' && body.session.access_token.trim()) ||
+    null;
+
+  const refreshToken =
+    (typeof body.refresh_token === 'string' && body.refresh_token.trim()) ||
+    (typeof body.tokens?.refresh_token === 'string' && body.tokens.refresh_token.trim()) ||
+    (typeof body.session?.refresh_token === 'string' && body.session.refresh_token.trim()) ||
+    null;
+
+  let rawSessionId =
+    body.session_id ||
+    body.session?.id ||
+    body.tokens?.session_id ||
+    null;
+
+  let rawUserId =
+    body.user?.id ||
+    body.id ||
+    body.tokens?.user?.id ||
+    null;
+
+  // If token is present, attempt safe unverified claim extraction for session_id and sub
+  if (accessToken && (!rawSessionId || !rawUserId)) {
+    try {
+      const parts = accessToken.split('.');
+      if (parts.length === 3) {
+        const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+        if (!rawSessionId && payload?.session_id) {
+          rawSessionId = payload.session_id;
+        }
+        if (!rawUserId && payload?.sub) {
+          rawUserId = payload.sub;
+        }
+      }
+    } catch {}
+  }
+
+  const hasTokens = Boolean(accessToken || refreshToken || rawSessionId);
+
+  if (hasTokens && inv) {
+    const userEmail = testUser || (typeof body.email === 'string' ? body.email : null) || 'tio-test-user-06i@proof.invalid';
+
+    // Register user for cleanup accounting:
+    // If BYPASS-02 (signup probe), the user was potentially minted/created by the test, so eligible for deletion.
+    // For all other probes (seed user or login probe), register as REFERENCED user so pre-existing user is NEVER deleted during cleanup!
+    if (rawUserId) {
+      const uidStr = String(rawUserId).trim();
+      if (probeId === 'BYPASS-02') {
+        inv.registerCreatedUser({ id: uidStr, email: userEmail, source: `${probeId}_unexpected_signup` });
+      } else {
+        inv.registerReferencedUser({ id: uidStr, email: userEmail, source: `${probeId}_token_observation` });
+      }
+    }
+
+    // Register session cleanup obligation
+    if (rawSessionId) {
+      inv.registerSession(String(rawSessionId).trim(), { accessToken });
+    } else if (accessToken || refreshToken) {
+      // Token minted but session ID could not be parsed -> register untracked session so cleanup fails closed (R5-04, R8-01)
+      inv.registerUntrackedSession();
+    }
+  }
+
+  if (hasTokens && ctx) {
+    if (rawSessionId) ctx.activeSessionId = String(rawSessionId).trim();
+    if (rawUserId) ctx.activeUserId = String(rawUserId).trim();
+  }
+
+  return {
+    hasTokens,
+    sessionId: rawSessionId ? String(rawSessionId).trim() : null,
+    userId: rawUserId ? String(rawUserId).trim() : null,
+    accessToken,
+    refreshToken
+  };
+}
+
+/**
  * Strictly validates affirmative access token issuance for positive token hook tests (HOOK-01 and HOOK-02).
  * Requires a concrete, non-empty string access_token at either:
  * - rawOutcome.access_token
@@ -1326,10 +1421,11 @@ export class TestRunInventory {
     this.referencedUsers = new Map(); // Pre-existing / seeded users authenticated -> NEVER deleted (R3-09)
     this.trackedSessions = new Set(); // Session IDs
     this.sessionTokens = new Map(); // sessionId -> accessToken for supported GoTrue session invalidation (R6-01)
+    this.revokedSessions = new Set(); // Session IDs affirmatively verified as revoked or absent (R8-02)
     this.trackedTableRows = new Map(); // table -> Set(id)
     this.trackedStorageObjects = new Map(); // bucket -> Set(path)
     this.seedCredentialRestorations = []; // Seed users whose password was modified -> must be restored (R5-06)
-    this.untrackedSessionsCount = 0; // Minted sessions whose ID could not be parsed (R5-04)
+    this.untrackedSessionsCount = 0; // Minted sessions whose ID could not be parsed (R5-04, R8-01)
   }
 
   // Backward-compatible getter: returns combined map of tracked users
@@ -1449,6 +1545,17 @@ export class TestRunInventory {
     this.untrackedSessionsCount++;
   }
 
+  markSessionRevoked(sessionId) {
+    if (sessionId && typeof sessionId === 'string' && sessionId.trim().length > 0) {
+      this.revokedSessions.add(sessionId.trim());
+    }
+  }
+
+  isSessionRevoked(sessionId) {
+    if (!sessionId || typeof sessionId !== 'string') return false;
+    return this.revokedSessions.has(sessionId.trim());
+  }
+
   isUserTracked(userId) {
     const id = (userId || '').trim();
     return this.createdUsers.has(id) || this.referencedUsers.has(id);
@@ -1489,6 +1596,7 @@ export class TestRunInventory {
       referencedUsersCount: this.referencedUsers.size,
       trackedUsersCount: this.createdUsers.size + this.referencedUsers.size,
       trackedSessionsCount: this.trackedSessions.size,
+      revokedSessionsCount: this.revokedSessions.size,
       trackedTableRowsCount: Array.from(this.trackedTableRows.values()).reduce((acc, s) => acc + s.size, 0),
       trackedStorageObjectsCount: Array.from(this.trackedStorageObjects.values()).reduce((acc, s) => acc + s.size, 0),
       seedCredentialRestorationsCount: this.seedCredentialRestorations.length,
@@ -1542,12 +1650,12 @@ export class TestRunInventory {
       return report;
     }
 
-    // 0. Untracked minted sessions blocker (R5-04)
+    // 0. Untracked minted sessions blocker (R5-04, R8-01)
     if (this.untrackedSessionsCount > 0) {
       report.residualResources.push({
         type: 'untracked_session',
         count: this.untrackedSessionsCount,
-        error: 'UNTRACKED_MINTED_SESSION: Password grant minted token but session identifier could not be extracted; residual session cannot be tracked'
+        error: 'UNTRACKED_MINTED_SESSION: Authentication response minted token but session identifier could not be extracted; residual session cannot be tracked'
       });
     }
 
@@ -1591,7 +1699,7 @@ export class TestRunInventory {
       }
     }
 
-    // 3. Invalidate tracked sessions using supported GoTrue sign-out / session revocation (R4-05, R5-02, R6-01)
+    // 3. Invalidate tracked sessions using supported GoTrue sign-out / session revocation (R4-05, R5-02, R6-01, R8-02)
     if (this.trackedSessions.size > 0 && typeof adminClient.invalidateSession !== 'function' && typeof adminClient.signOut !== 'function') {
       report.residualResources.push({
         type: 'sessions',
@@ -1600,6 +1708,12 @@ export class TestRunInventory {
       });
     } else {
       for (const sessionId of this.trackedSessions) {
+        // Idempotency check: if session is already confirmed revoked, skip redundant duplicate logout (R8-02)
+        if (this.revokedSessions.has(sessionId)) {
+          report.sessionsRevoked++;
+          continue;
+        }
+
         try {
           const token = this.sessionTokens.get(sessionId) || null;
           let res;
@@ -1619,6 +1733,7 @@ export class TestRunInventory {
           if (res && res.error) {
             report.residualResources.push({ type: 'session', id: sessionId, error: res.error.message || String(res.error) });
           } else {
+            this.revokedSessions.add(sessionId);
             report.sessionsRevoked++;
           }
         } catch (err) {
@@ -2283,18 +2398,19 @@ export function createHostedDispatcher({
           signal
         });
         const body = await parseResponseBody(res);
+        const observed = observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser });
         const errText = (body?.msg || body?.message || body?.error_description || body?.error || '').toLowerCase();
         const providerDisabled =
           body?.error_code === 'email_provider_disabled' ||
           errText.includes('email provider is disabled') ||
           errText.includes('signups not allowed for otp');
         return {
-          passed: res.status !== 200 && providerDisabled === true,
+          passed: res.status !== 200 && providerDisabled === true && !observed.hasTokens,
           status: res.status,
           route_disabled: providerDisabled,
           error_code: body?.error_code || null,
           tokens: extractObservedTokens(body) ? body : null,
-          error: body?.msg || body?.message || body?.error_description || null
+          error: body?.msg || body?.message || body?.error_description || (observed.hasTokens ? 'SECURITY_INVARIANT_VIOLATION: POST /auth/v1/otp unexpectedly issued tokens!' : null)
         };
       }
 
@@ -2306,9 +2422,10 @@ export function createHostedDispatcher({
           signal
         });
         const body = await parseResponseBody(res);
+        const observed = observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser });
         const errText = (body?.msg || body?.message || body?.error_description || body?.error || '').toLowerCase();
-        const createdUserId = body?.id || body?.user?.id;
-        if (createdUserId && inv) {
+        const createdUserId = observed.userId || body?.id || body?.user?.id;
+        if (createdUserId && inv && !inv.isUserCreated(String(createdUserId))) {
           inv.registerCreatedUser({ id: String(createdUserId), email: testUser, source: 'BYPASS-02_unexpected' });
         }
         const signupDisabled =
@@ -2316,13 +2433,13 @@ export function createHostedDispatcher({
           errText.includes('signups not allowed') ||
           errText.includes('signup is disabled');
         return {
-          passed: res.status !== 200 && !createdUserId && signupDisabled === true,
+          passed: res.status !== 200 && !createdUserId && signupDisabled === true && !observed.hasTokens,
           status: res.status,
           signup_disabled: signupDisabled,
           user_created: Boolean(createdUserId),
           error_code: body?.error_code || null,
           tokens: extractObservedTokens(body) ? body : null,
-          error: body?.msg || body?.message || body?.error_description || null
+          error: body?.msg || body?.message || body?.error_description || (observed.hasTokens ? 'SECURITY_INVARIANT_VIOLATION: POST /auth/v1/signup unexpectedly issued tokens!' : null)
         };
       }
 
@@ -2336,20 +2453,23 @@ export function createHostedDispatcher({
           signal
         });
         const body = await parseResponseBody(res);
+        const observed = observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser });
         const errText = (body?.msg || body?.message || body?.error_description || body?.error || '').toLowerCase();
         const hookRejected =
           res.status >= 400 &&
           (body?.error_code === 'hook_error' || errText.includes('42501') || errText.includes('error invoking access token hook'));
         const isUpstreamTokenError = body?.error_code === 'otp_expired' || errText.includes('token has expired') || errText.includes('invalid');
         return {
-          passed: res.status !== 200 && hookRejected === true,
+          passed: res.status !== 200 && hookRejected === true && !observed.hasTokens,
           status: res.status,
           hook_rejected: hookRejected,
           upstream_rejected_before_hook: isUpstreamTokenError,
           tokens: extractObservedTokens(body) ? body : null,
           error: hookRejected
             ? (body?.msg || body?.message || 'Hook rejected token issuance')
-            : 'PROVIDER_PRECONDITION_MISSING: GoTrue rejected fake OTP upstream before invoking Custom Access Token Hook (R3-06)'
+            : (observed.hasTokens
+                ? 'SECURITY_INVARIANT_VIOLATION: POST /auth/v1/verify unexpectedly issued tokens for unverified challenge!'
+                : 'PROVIDER_PRECONDITION_MISSING: GoTrue rejected fake OTP upstream before invoking Custom Access Token Hook (R3-06)')
         };
       }
 
@@ -2375,17 +2495,19 @@ export function createHostedDispatcher({
           signal
         });
         const body = await parseResponseBody(res);
+        const observed = observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser });
         const errText = (body?.msg || body?.message || body?.error_description || body?.error || '').toLowerCase();
         const hookSuppressed =
           res.status !== 200 &&
           (body?.error_code === 'hook_error' || errText.includes('42501') || errText.includes('send_email_hook'));
         return {
-          passed: hookSuppressed === true && !body?.recovery_token,
+          passed: hookSuppressed === true && !body?.recovery_token && !observed.hasTokens,
           status: res.status,
           recovery_suppressed: hookSuppressed,
           email_delivered: null,
           recovery_token: body?.recovery_token || null,
-          error: body?.msg || body?.message || (res.status === 200 ? 'HTTP_200_CANNOT_PROVE_EMAIL_SUPPRESSION: Anti-enumeration 200 does not prove hook suppression' : null)
+          tokens: extractObservedTokens(body) ? body : null,
+          error: body?.msg || body?.message || (observed.hasTokens ? 'SECURITY_INVARIANT_VIOLATION: POST /auth/v1/recover unexpectedly issued tokens!' : (res.status === 200 ? 'HTTP_200_CANNOT_PROVE_EMAIL_SUPPRESSION: Anti-enumeration 200 does not prove hook suppression' : null))
         };
       }
 
@@ -2401,6 +2523,7 @@ export function createHostedDispatcher({
         const refreshToken = body?.refresh_token;
 
         if (res.status !== 200) {
+          observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser });
           return {
             passed: false,
             status: res.status,
@@ -2409,33 +2532,12 @@ export function createHostedDispatcher({
           };
         }
 
-        // Extract session ID and user ID immediately on HTTP 200 before JWT claim validation (R5-04)
-        let rawSessionId = body?.session_id;
-        let rawUserId = body?.user?.id;
-        if (!rawSessionId && isNonEmptyString(accessToken)) {
-          try {
-            const parts = accessToken.split('.');
-            if (parts.length === 3) {
-              const p = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
-              rawSessionId = p?.session_id;
-              rawUserId = rawUserId || p?.sub;
-            }
-          } catch {}
-        }
-
-        // Capture security-sensitive session cleanup obligations immediately (R5-04)
-        if (inv && rawUserId) {
-          inv.registerReferencedUser({ id: String(rawUserId), email: testUser, source: 'HOOK-01_login' });
-        }
-        if (inv && rawSessionId) {
-          inv.registerSession(String(rawSessionId), { accessToken });
-        } else if (inv && !rawSessionId) {
-          inv.registerUntrackedSession();
-        }
+        // Extract session ID and user ID immediately on HTTP 200 before JWT claim validation (R5-04, R8-01)
+        const observed = observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser });
+        const rawSessionId = observed.sessionId;
+        const rawUserId = observed.userId;
 
         if (ctx) {
-          if (rawSessionId) ctx.activeSessionId = String(rawSessionId);
-          if (rawUserId) ctx.activeUserId = String(rawUserId);
           ctx.mintedAccessToken = accessToken;
         }
 
@@ -2450,7 +2552,7 @@ export function createHostedDispatcher({
         // Strictly validate JWT payload claims - NO bypass paths allowed (R3-08)
         const jwtCheck = parseAndValidateJwt(accessToken, { expectedAudience: 'authenticated' });
         if (!jwtCheck.valid) {
-          // Token is unverified and untrusted for authorization, but cleanup obligation was retained (R5-04)
+          // Token is unverified and untrusted for authorization, but cleanup obligation was retained (R5-04, R8-01)
           return {
             passed: false,
             status: res.status,
@@ -2512,6 +2614,7 @@ export function createHostedDispatcher({
         const refreshedAccess = body?.access_token;
 
         if (res.status !== 200) {
+          observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser });
           return {
             passed: false,
             status: res.status,
@@ -2519,6 +2622,8 @@ export function createHostedDispatcher({
             tokens: body
           };
         }
+
+        observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser });
 
         if (!isNonEmptyString(refreshedAccess)) {
           return {
@@ -2763,6 +2868,10 @@ export function createHostedDispatcher({
 
         const isRevoked = resetSucceeded && sessionRevocationVerified && remainingSessions === 0;
 
+        if (isRevoked && inv && ctx?.activeSessionId) {
+          inv.markSessionRevoked(ctx.activeSessionId);
+        }
+
         return {
           passed: isRevoked,
           status: res.status,
@@ -2814,8 +2923,13 @@ export function createHostedDispatcher({
            errCode === 'AuthSessionMissingError' ||
            (errCode !== 'bad_jwt' && (errMsg.includes('session not found') || errMsg.includes('session is revoked') || errMsg.includes('session_not_found'))));
 
+        const isRevocationSuccess = isRevocationError && ctx?.preInvalidationSessionValid === true && ctx?.passwordResetCompleted === true;
+        if (isRevocationSuccess && inv && sessionId) {
+          inv.markSessionRevoked(sessionId);
+        }
+
         return {
-          passed: isRevocationError && ctx?.preInvalidationSessionValid === true && ctx?.passwordResetCompleted === true,
+          passed: isRevocationSuccess,
           status: res.status,
           pre_reset_baseline_verified: ctx?.preInvalidationSessionValid === true,
           reset_completed: ctx?.passwordResetCompleted === true,
@@ -3046,8 +3160,13 @@ export function createHostedDispatcher({
            errMsg.includes('authsessionmissingerror') ||
            errMsg.includes('session not found'));
 
+        const isRevocationSuccess = isRevocationError && ctx?.preInvalidationSessionValid === true && ctx?.passwordResetCompleted === true;
+        if (isRevocationSuccess && inv && sessionId) {
+          inv.markSessionRevoked(sessionId);
+        }
+
         return {
-          passed: isRevocationError && ctx?.preInvalidationSessionValid === true && ctx?.passwordResetCompleted === true,
+          passed: isRevocationSuccess,
           status: res.status,
           pre_reset_baseline_verified: ctx?.preInvalidationSessionValid === true,
           reset_completed: ctx?.passwordResetCompleted === true,
@@ -3335,7 +3454,7 @@ export function createHostedAdminClient({
 
     async signOut(token, scope = 'local') {
       if (!token || typeof token !== 'string' || !token.trim()) {
-        return { error: { message: 'MISSING_TOKEN: signOut requires non-empty user access token' } };
+        return { data: null, error: { message: 'MISSING_TOKEN: signOut requires non-empty user access token' } };
       }
       const res = await fetchFn(`${baseUrl}/auth/v1/logout?scope=${encodeURIComponent(scope)}`, {
         method: 'POST',
@@ -3347,7 +3466,46 @@ export function createHostedAdminClient({
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        return { error: body?.msg || body?.message || `HTTP_${res.status}` };
+        const errCode = (body?.error_code || body?.code || '').toString().toLowerCase();
+        const errMsg = (body?.msg || body?.message || body?.error_description || body?.error || '').toString().toLowerCase();
+
+        // Disqualify false proofs (R8-02)
+        const isFalseProof =
+          errCode.includes('bad_jwt') ||
+          errCode.includes('jwt_expired') ||
+          errCode.includes('token_expired') ||
+          errCode.includes('invalid_token') ||
+          errCode.includes('invalid_jwt') ||
+          errMsg.includes('bad_jwt') ||
+          errMsg.includes('jwt expired') ||
+          errMsg.includes('token is expired') ||
+          errMsg.includes('token expired') ||
+          errMsg.includes('invalid token') ||
+          errMsg.includes('invalid claim');
+
+        // Affirmative session absence: session_not_found or authsessionmissingerror (R8-02)
+        const isSessionAbsence = !isFalseProof && (
+          errCode === 'session_not_found' ||
+          errCode === 'authsessionmissingerror' ||
+          errMsg.includes('session not found') ||
+          errMsg.includes('session_not_found') ||
+          errMsg.includes('auth session missing') ||
+          errMsg.includes('session from session_id claim in jwt does not exist') ||
+          (errMsg.includes('session') && errMsg.includes('does not exist'))
+        );
+
+        if (isSessionAbsence) {
+          return { data: { scope, alreadyRevoked: true }, error: null, session_not_found: true };
+        }
+
+        return {
+          data: null,
+          error: {
+            message: body?.msg || body?.message || `HTTP_${res.status}`,
+            status: res.status,
+            code: body?.error_code || body?.code
+          }
+        };
       }
       return { data: { scope }, error: null };
     },
@@ -3355,13 +3513,18 @@ export function createHostedAdminClient({
     async invalidateSession(sessionId, token) {
       if (!token || typeof token !== 'string' || !token.trim()) {
         return {
+          data: null,
           error: {
             status: 400,
             message: `UNSUPPORTED_SESSION_REVOCATION: GoTrue lacks an admin session-by-id deletion endpoint; access token context is required for targeted local sign-out of session '${sessionId}' (R6-01)`
           }
         };
       }
-      return this.signOut(token.trim(), 'local');
+      const res = await this.signOut(token.trim(), 'local');
+      if (res.session_not_found) {
+        return { data: { sessionId, scope: 'local', alreadyRevoked: true }, error: null, session_not_found: true };
+      }
+      return res;
     },
 
     async updateUserById(userId, attributes) {

@@ -1,15 +1,15 @@
-# Phase 1.2 Task 06I-B1-H1-R7 — Final Session Cleanup & JWT Lifetime Evidence Closure
+# Phase 1.2 Task 06I-B1-H1-R8 — Unexpected Session Tracking & Idempotent Cleanup Closure
 
-> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R7. All outstanding review findings across PR #37 (R7-01 and R7-02) are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
+> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R8. All outstanding review findings across PR #37 (R8-01 and R8-02) are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **LOCAL REMEDIATION COMPLETE (REVISION R7); ALL REVIEW FINDINGS RESOLVED (R7-01 P1 DUPLICATE `SIGNOUT` REMOVED & `createHostedAdminClient` FACTORY EXPORTED; R7-02 P2 300-SECOND JWT LIFETIME CONTRACT ENFORCED IN `SESSION-04` & `SESSION-05`); 79/79 RUNNER TESTS PASS; 147/147 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; GITHUB CI STATUS: 4/4 CHECKS PASS ON REMOTE HEAD (BILLING RESTRICTION RESOLVED BY OWNER); DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
-| Objective | Remediate all outstanding review findings on PR #37 (R7-01 duplicate signOut method override & testable admin adapter, R7-02 300s JWT lifetime contract enforcement) without executing any live hosted mutations. |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R7 slice |
-| Previous agent | Agent / Task 06I-B1-H1-R6 author |
-| Last audited HEAD | `1960195effb1d03455978a68743650e93be68a92` (PR #37 previous commit) |
-| Tracking / approval | Task 06I-B1-H1-R7 remediation authorized by user prompt; LIVE hosted probe execution requires separate explicit owner authorization; mandates $0 cost ceiling and permanent immunity for `Tio-world` (`oykupyiitspujzpwwvuj`) and REAL `bsfwzvgynwriswapxpsp` |
+| Status | **LOCAL REMEDIATION COMPLETE (REVISION R8); ALL REVIEW FINDINGS RESOLVED (R8-01 P2 UNEXPECTED SESSION TRACKING VIA `observeAndTrackSessionTokens` ACROSS NEGATIVE PROBES & FAIL-CLOSED UNTRACKED SESSIONS; R8-02 P2 IDEMPOTENT SESSION CLEANUP & CONFIRMED SESSION ABSENCE HANDLING IN `createHostedAdminClient.signOut`); 81/81 RUNNER TESTS PASS; 149/149 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; GITHUB CI STATUS: 4/4 CHECKS PASS ON PREVIOUS HEAD; DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
+| Objective | Remediate all outstanding review findings on PR #37 (R8-01 unexpected session tracking across negative probes, R8-02 idempotent session cleanup & confirmed session absence) without executing any live hosted mutations. |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R8 slice |
+| Previous agent | Agent / Task 06I-B1-H1-R7 author |
+| Last audited HEAD | `5207f5dbdcfa9e9833a655cb6d19b9f35d1ea466` (PR #37 previous commit) |
+| Tracking / approval | Task 06I-B1-H1-R8 remediation authorized by user prompt; LIVE hosted probe execution requires separate explicit owner authorization; mandates $0 cost ceiling and permanent immunity for `Tio-world` (`oykupyiitspujzpwwvuj`) and REAL `bsfwzvgynwriswapxpsp` |
 | Branch | `test/task06i-b1-h1-hosted-security-preflight` |
 | Base SHA / inspected HEAD | `716fb32061ffb6012d17eae9453c822a281fe6f1` (`main`) |
 | Platform and file scope | Documentation, `.ai/` context, runner CLI hardening & LIVE dispatcher contract in `experiments/task06i/hosted-probe-runner.mjs`, testbed fixture specification in `experiments/task06i/sql/testbed-fixtures.sql`, and offline verification tests in `experiments/task06i/hosted-probe-runner.test.mjs`; zero client Expo UI, production schema, or live Auth mutations |
@@ -373,6 +373,30 @@ In accordance with findings R3-01, R3-02, R3-05, and R3-06, each probe case is s
      - Strictly required `rawOutcome.lifetime_bounded === true`.
   3. Added unit test 75 covering approved 300s lifetime (pass), shorter 120s lifetime (pass), 301s and 86400s oversized lifetimes (fail), missing timestamps (fail), temporal inconsistency `exp <= iat` (fail), non-finite claims (fail), and Storage integration.
 
+### 7.8 Task 06I-B1-H1-R8 Remediation Details
+
+#### R8-01: Track Unexpected Sessions across Negative Probes & Fail-Closed Untracked Sessions (Codex P2, `PRRT_kwDOVtCmZc66sSyk`)
+- **Root Cause:** Negative probes (`BYPASS-01`, `BYPASS-02`, `BYPASS-03`, `BYPASS-05`, `HOOK-03`..`07`) did not register unexpectedly issued tokens or sessions in `TestRunInventory`. If an endpoint unexpectedly returned HTTP 200 with tokens, the probe correctly failed security validation and halted the runner, but `inventory.trackedSessions` remained empty. The runner's `finally` cleanup block therefore bypassed session invalidation on the provider, leaking active unauthorized sessions.
+- **Remediation:**
+  1. Defined and exported a shared, fail-closed observation helper `observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser })`.
+  2. Captured session identity from `body.session_id`, `body.session.id`, `body.tokens.session_id`, or safe unverified JWT claims (`session_id`).
+  3. If an authentication response mints a token but the session identifier cannot be extracted, invoked `inv.registerUntrackedSession()`. Updated `executeCleanup` to fail closed with `UNTRACKED_MINTED_SESSION: Authentication response minted token but session identifier could not be extracted; residual session cannot be tracked`.
+  4. For `BYPASS-02` (signup), registered unexpected user identity via `inv.registerCreatedUser({ id, email, source: 'BYPASS-02_unexpected' })` (eligible for deletion).
+  5. For all other probes (seed user / login), registered user identity via `inv.registerReferencedUser({ id, email, source: ... })` so pre-existing testbed seed users are NEVER deleted during cleanup (preserving R3-09 invariant).
+  6. Preserved strict negative probe security failure semantics (`passed: false`, `tokens: body`, with error containing `SECURITY_INVARIANT_VIOLATION`). Unverified tokens are never stored as active authorized credentials in `runContext.activeAccessToken`.
+  7. Added unit test 76 validating unexpected session capture, seed user preservation, cleanup invalidation dispatch, normal rejection invariance, and untracked minted session fail-closed behavior.
+
+#### R8-02: Make Session Cleanup Idempotent & Handle Confirmed Session Absence (Codex P2, `PRRT_kwDOVtCmZc66sSyn`)
+- **Root Cause:** In `SESSION-02`, when session revocation is proven, the tracked pre-reset token was subsequently reused during post-run cleanup in `adminClient.signOut(token, 'local')`. GoTrue's `/logout` endpoint returns HTTP 403 `session_not_found` for an already-revoked session. `createHostedAdminClient.signOut` previously treated all non-2xx statuses as cleanup errors, causing `executeCleanup` to record residual resources and fail closed with `CLEANUP_FAILED_RESIDUAL_RESOURCES`, falsely overriding a passing test run.
+- **Remediation:**
+  1. In `TestRunInventory`: added `this.revokedSessions = new Set()`, `markSessionRevoked(sessionId)`, and `isSessionRevoked(sessionId)`.
+  2. In `createHostedDispatcher` for `SESSION-02` and `SESSION-03`: when session revocation is proven (`isRevoked === true`), marked the session as revoked in inventory via `inv.markSessionRevoked(ctx.activeSessionId)`.
+  3. In `TestRunInventory.executeCleanup`: added an idempotency check at the beginning of the session loop: if `this.revokedSessions.has(sessionId)`, increment `report.sessionsRevoked++` and skip redundant `/logout` calls.
+  4. In `createHostedAdminClient.signOut(token, scope = 'local')`: parsed GoTrue response bodies. If the provider affirmatively returns `session_not_found` or `authsessionmissingerror` (and NOT false proofs like `bad_jwt`, `jwt_expired`, `invalid_token`), treated it as verified session absence and returned `{ data: { scope, alreadyRevoked: true }, error: null, session_not_found: true }`.
+  5. Generic 401/403 Forbidden, 500 errors, network timeouts, and `bad_jwt` continue to fail closed as cleanup errors.
+  6. Calling `executeCleanup` multiple times on the same inventory is safely idempotent with zero redundant network requests.
+  7. Added unit test 77 validating provider absence responses, `SESSION-02` pre-marking, and multi-call cleanup idempotency.
+
 ---
 
 ## 8. Verification Evidence Matrix
@@ -381,10 +405,10 @@ All verification checks were run locally and passed completely:
 
 ```bash
 node --test experiments/task06i/hosted-probe-runner.test.mjs
-# 79 passed, 0 failed, exit code 0
+# 81 passed, 0 failed, exit code 0
 
 node --test experiments/task06i/*.test.mjs
-# 147 passed, 0 failed, exit code 0
+# 149 passed, 0 failed, exit code 0
 
 node experiments/task06i/sql-contract-parity.mjs
 # Status: POSTGRES_VERIFIED, 18/18 matched parity, exit code 0
@@ -403,12 +427,11 @@ git diff --check origin/main...HEAD
 
 ## 9. GitHub CI Status
 
-- **Status:** **4/4 CHECKS PASS** on remote commit `1960195effb1d03455978a68743650e93be68a92`:
+- **Status:** **4/4 CHECKS PASS** on remote commit `5207f5dbdcfa9e9833a655cb6d19b9f35d1ea466`:
   1. `Attribution guard runner`: **PASS**
   2. `Commit attribution fixture tests`: **PASS**
   3. `Commit attribution guard` (App-owned required check ID `5032971`): **PASS**
   4. `Task 06I Security Contract Tests`: **PASS**
-- The account-level billing/spending limit restriction observed in Revision R5 has been resolved by the repository owner.
 - All required checks execute and succeed on GitHub Actions infrastructure.
 
 ---
@@ -425,7 +448,7 @@ git diff --check origin/main...HEAD
   - Project deletion perform nahi hua hai.
 
 **Readiness State:**
-- **Code readiness:** READY (Revision R7)
+- **Code readiness:** READY (Revision R8)
 - **GitHub CI:** PASS (4/4 on remote HEAD)
 - **Independent review:** PENDING (`im-tio`)
 - **Hosted testing:** NOT_AUTHORIZED
@@ -433,4 +456,4 @@ git diff --check origin/main...HEAD
 
 **Decision:** **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**
 
-> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all outstanding review findings (R7-01 and R7-02) is complete and fully covered by offline regression tests (79/79 runner tests, 147/147 task06i tests pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution. Awaiting independent re-review from `im-tio`.
+> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all outstanding review findings (R8-01 and R8-02) is complete and fully covered by offline regression tests (81/81 runner tests, 149/149 task06i tests pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution. Awaiting independent re-review from `im-tio`.
