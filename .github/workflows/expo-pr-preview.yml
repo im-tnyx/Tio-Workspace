@@ -318,6 +318,16 @@ jobs:
           case "$PREVIEW_OPERATION" in
             publish_update)
               test -s "$RUNNER_TEMP/ota-bundle/metadata.json"
+              routes="$(mktemp)"
+              page="$(mktemp)"
+              trap 'rm -f -- "$routes" "$page"' EXIT
+              for (( offset=0; ; offset+=25 )); do
+                "$eas" channel:list --json --limit 25 --offset "$offset" > "$page"
+                count="$(jq -er '.currentPage | if type == "array" then length else error("invalid channels") end' "$page")"
+                jq -c '.currentPage[]' "$page" >> "$routes"
+                if (( count < 25 )); then break; fi
+              done
+              jq -s '.' "$routes" | node "$GITHUB_WORKSPACE/.github/scripts/verify-eas-preview-config.mjs" --channels
               "$eas" update --branch pr-preview --environment preview --non-interactive \
                 --platform "$PREVIEW_PLATFORM" --skip-bundler --input-dir "$RUNNER_TEMP/ota-bundle" \
                 --message "Tio-TNYX PR #$SELECTED_PR (${PREVIEW_SHA:0:7})"

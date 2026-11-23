@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { verifyOtaBundle } from '../.github/scripts/verify-expo-ota-bundle.mjs';
-import { verifyEasPreview } from '../.github/scripts/verify-eas-preview-config.mjs';
+import { verifyEasPreview, verifyPreviewChannels } from '../.github/scripts/verify-eas-preview-config.mjs';
 import { verifyExpoLivePr } from '../.github/scripts/verify-expo-live-pr.mjs';
 
 const HEAD = 'a'.repeat(40);
@@ -207,6 +207,20 @@ test('EAS config requires this project, preview-only configuration and pinned CL
   const lock = structuredClone(args.lock);
   lock.packages['node_modules/eas-cli'].integrity = '';
   assert.throws(() => verifyEasPreview({ ...args, lock }), /Unverified EAS CLI dependency/);
+});
+
+test('OTA publishes only to a branch exclusively routed from the active preview channel', () => {
+  const mapping = (branchId) => JSON.stringify({ version: 0, data: [{ branchId, branchMappingLogic: 'true' }] });
+  const preview = {
+    name: 'pr-preview', isPaused: false, branchMapping: mapping('preview-id'),
+    updateBranches: [{ name: 'pr-preview', id: 'preview-id' }],
+  };
+  const production = { name: 'production', branchMapping: mapping('production-id') };
+  verifyPreviewChannels([production, preview]);
+  assert.throws(() => verifyPreviewChannels([{ ...preview, isPaused: true }]), /paused/);
+  assert.throws(() => verifyPreviewChannels([{ ...preview, updateBranches: [] }]), /Link/);
+  assert.throws(() => verifyPreviewChannels([{ ...production, branchMapping: mapping('preview-id') }, preview]),
+    /Another EAS channel/);
 });
 
 test('OTA artifact confines metadata to the requested platforms and regular bundle files', () => {

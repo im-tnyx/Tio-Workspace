@@ -40,13 +40,43 @@ export function verifyEasPreview({ app, eas, platform, manifest, lock }) {
   }
 }
 
+export function verifyPreviewChannels(channels) {
+  const expectedName = 'pr-preview';
+  const matches = channels.filter((channel) => channel.name === expectedName);
+  assert.equal(matches.length, 1, 'Expected one EAS preview channel');
+  const [preview] = matches;
+  assert.equal(preview.isPaused, false, 'EAS preview channel is paused');
+  const branches = preview.updateBranches.filter((branch) => branch.name === expectedName);
+  assert.equal(branches.length, 1, 'Link the preview channel to the preview branch before publishing');
+  const [{ id }] = branches;
+  assert(typeof id === 'string' && id.length > 0, 'Missing preview branch ID');
+
+  for (const channel of channels) {
+    const mapping = JSON.parse(channel.branchMapping);
+    assert.equal(mapping.version, 0, 'Unexpected EAS channel mapping version');
+    assert(Array.isArray(mapping.data) && mapping.data.every((entry) => typeof entry.branchId === 'string'),
+      'Invalid EAS channel routing data');
+    if (channel === preview) {
+      assert.deepEqual(mapping.data, [{ branchId: id, branchMappingLogic: 'true' }],
+        'Expected one exclusive route from the preview channel');
+    } else {
+      assert(!mapping.data.some((entry) => entry.branchId === id),
+        'Another EAS channel routes to the preview branch');
+    }
+  }
+}
+
 if (process.argv[1] === import.meta.filename) {
   const read = (name) => JSON.parse(readFileSync(name, 'utf8'));
-  verifyEasPreview({
-    app: read('app.json').expo,
-    eas: read('eas.json'),
-    platform: process.env.PREVIEW_PLATFORM,
-    manifest: read('.github/preview-eas-cli/package.json'),
-    lock: read('.github/preview-eas-cli/package-lock.json'),
-  });
+  if (process.argv[2] === '--channels') {
+    verifyPreviewChannels(read(0));
+  } else {
+    verifyEasPreview({
+      app: read('app.json').expo,
+      eas: read('eas.json'),
+      platform: process.env.PREVIEW_PLATFORM,
+      manifest: read('.github/preview-eas-cli/package.json'),
+      lock: read('.github/preview-eas-cli/package-lock.json'),
+    });
+  }
 }

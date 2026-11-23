@@ -99,7 +99,8 @@ this workflow. Preview policy tests run with the existing shell checks.
    Expo preview project and remote signing for the chosen platform. CI fails
    closed when required signing is missing. Use the
    `preview` profile and verify that channel `pr-preview` is linked to branch
-   `pr-preview` before testing an OTA. The current mock app has no preview
+   `pr-preview` before testing an OTA. The publish step checks this route and
+   rejects a preview branch shared with any other channel. The current mock app has no preview
    environment inputs for JavaScript export. EAS builds only queue from manual
    dispatch and may consume the owner's EAS quota.
 
