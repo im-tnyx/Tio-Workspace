@@ -1256,11 +1256,19 @@ function validateSessionRevocationProof(item, rawOutcome, allowedStatuses, isRev
       (outcome) => {
         const errCode = outcome.error_code || '';
         const errMsg = (outcome.error || '').toLowerCase();
-        // Provider-observed revocation error (R4-04): Accept AuthSessionMissingError
-        return (
+        // Provider-observed revocation error (R4-04, R5-08, R6-03):
+        // Accept affirmative provider codes ('session_not_found', 'AuthSessionMissingError')
+        const isAffirmativeRevocationCode =
+          errCode === 'session_not_found' ||
           errCode === 'AuthSessionMissingError' ||
-          errMsg.includes('authsessionmissingerror') ||
-          (outcome.revocation_verified === true && (outcome.session_revoked === true || outcome.rejection_observed === true) && errCode !== 'session_not_found')
+          errMsg.includes('session_not_found') ||
+          errMsg.includes('session not found') ||
+          errMsg.includes('session from session_id claim in jwt does not exist') ||
+          errMsg.includes('authsessionmissingerror');
+
+        return (
+          isAffirmativeRevocationCode ||
+          (outcome.revocation_verified === true && (outcome.session_revoked === true || outcome.rejection_observed === true))
         );
       }
     );
@@ -1288,6 +1296,7 @@ export class TestRunInventory {
     this.createdUsers = new Map(); // Users affirmatively created in THIS run -> deletion eligible
     this.referencedUsers = new Map(); // Pre-existing / seeded users authenticated -> NEVER deleted (R3-09)
     this.trackedSessions = new Set(); // Session IDs
+    this.sessionTokens = new Map(); // sessionId -> accessToken for supported GoTrue session invalidation (R6-01)
     this.trackedTableRows = new Map(); // table -> Set(id)
     this.trackedStorageObjects = new Map(); // bucket -> Set(path)
     this.seedCredentialRestorations = []; // Seed users whose password was modified -> must be restored (R5-06)
@@ -1340,10 +1349,33 @@ export class TestRunInventory {
     return this.registerCreatedUser(userObj);
   }
 
-  registerSession(sessionId) {
-    if (sessionId && typeof sessionId === 'string' && sessionId.trim().length > 0) {
-      this.trackedSessions.add(sessionId.trim());
+  registerSession(sessionOrId, optionsOrToken = {}) {
+    let sessionId = null;
+    let accessToken = null;
+
+    if (typeof sessionOrId === 'string' && sessionOrId.trim().length > 0) {
+      sessionId = sessionOrId.trim();
+      if (typeof optionsOrToken === 'string' && optionsOrToken.trim().length > 0) {
+        accessToken = optionsOrToken.trim();
+      } else if (optionsOrToken && typeof optionsOrToken === 'object') {
+        accessToken = optionsOrToken.accessToken || optionsOrToken.jwt || optionsOrToken.token || null;
+      }
+    } else if (sessionOrId && typeof sessionOrId === 'object') {
+      sessionId = (sessionOrId.sessionId || sessionOrId.id || '').trim();
+      accessToken = sessionOrId.accessToken || sessionOrId.jwt || sessionOrId.token || null;
     }
+
+    if (sessionId) {
+      this.trackedSessions.add(sessionId);
+      if (accessToken && typeof accessToken === 'string' && accessToken.trim().length > 0) {
+        this.sessionTokens.set(sessionId, accessToken.trim());
+      }
+    }
+  }
+
+  getSessionToken(sessionId) {
+    if (!sessionId || typeof sessionId !== 'string') return null;
+    return this.sessionTokens.get(sessionId.trim()) || null;
   }
 
   registerTableRow(table, id) {
@@ -1530,7 +1562,7 @@ export class TestRunInventory {
       }
     }
 
-    // 3. Invalidate tracked sessions if client provides session invalidation (R4-05, R5-02)
+    // 3. Invalidate tracked sessions using supported GoTrue sign-out / session revocation (R4-05, R5-02, R6-01)
     if (this.trackedSessions.size > 0 && typeof adminClient.invalidateSession !== 'function' && typeof adminClient.signOut !== 'function') {
       report.residualResources.push({
         type: 'sessions',
@@ -1540,11 +1572,20 @@ export class TestRunInventory {
     } else {
       for (const sessionId of this.trackedSessions) {
         try {
+          const token = this.sessionTokens.get(sessionId) || null;
           let res;
           if (typeof adminClient.invalidateSession === 'function') {
-            res = await adminClient.invalidateSession(sessionId);
+            res = await adminClient.invalidateSession(sessionId, token);
           } else if (typeof adminClient.signOut === 'function') {
-            res = await adminClient.signOut(sessionId);
+            if (!token) {
+              res = {
+                error: {
+                  message: `MISSING_TOKEN_CONTEXT: Targeted local session revocation requires valid access token context. Session '${sessionId}' cannot be revoked without token context (R6-01).`
+                }
+              };
+            } else {
+              res = await adminClient.signOut(token, 'local');
+            }
           }
           if (res && res.error) {
             report.residualResources.push({ type: 'session', id: sessionId, error: res.error.message || String(res.error) });
@@ -2358,7 +2399,7 @@ export function createHostedDispatcher({
           inv.registerReferencedUser({ id: String(rawUserId), email: testUser, source: 'HOOK-01_login' });
         }
         if (inv && rawSessionId) {
-          inv.registerSession(String(rawSessionId));
+          inv.registerSession(String(rawSessionId), { accessToken });
         } else if (inv && !rawSessionId) {
           inv.registerUntrackedSession();
         }
@@ -2931,7 +2972,11 @@ export function createHostedDispatcher({
           revocation_verified: isRevocationError,
           session_revoked: isRevocationError,
           error_code: errCode,
-          error: body?.msg || body?.message || (isRevocationError ? null : (isFalseProof ? `FALSE_PROOF_REJECTED: Edge Function returned '${errCode || errMsg}' (invalid/expired token does not prove revocation)` : (res.status === 401 || res.status === 403 || res.status === 500 ? 'GENERIC_UNAUTHORIZED: Edge Function returned generic error without provider-observed session revocation proof (R5-08)' : null)))
+          error: isRevocationError
+            ? null
+            : (isFalseProof
+                ? `FALSE_PROOF_REJECTED: Edge Function returned '${errCode || errMsg}' (invalid/expired token does not prove revocation)`
+                : (body?.msg || body?.message || ((res.status === 401 || res.status === 403 || res.status === 500) ? 'GENERIC_UNAUTHORIZED: Edge Function returned generic error without provider-observed session revocation proof (R5-08)' : null)))
         };
       }
 
@@ -3255,23 +3300,34 @@ if (process.argv[1] && process.argv[1].endsWith('hosted-probe-runner.mjs')) {
         const data = await res.json();
         return { data, error: null };
       },
-      async invalidateSession(sessionId) {
-        const res = await fetch(`https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/admin/users/sessions/${sessionId}`, {
-          method: 'DELETE',
+      async signOut(token, scope = 'local') {
+        if (!token || typeof token !== 'string' || !token.trim()) {
+          return { error: { message: 'MISSING_TOKEN: signOut requires non-empty user access token' } };
+        }
+        const res = await fetch(`https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/logout?scope=${encodeURIComponent(scope)}`, {
+          method: 'POST',
           headers: {
             apikey: serviceRoleKey,
-            Authorization: `Bearer ${serviceRoleKey}`
+            Authorization: `Bearer ${token.trim()}`,
+            'Content-Type': 'application/json'
           }
         });
-        if (res.status === 404) {
-          // Do NOT treat 404 as success (R5-02); missing route or session fails closed
-          return { error: { status: 404, message: 'SESSION_INVALIDATION_FAILED: Endpoint or session not found (HTTP 404)' } };
-        }
         if (!res.ok) {
           const body = await res.json().catch(() => ({}));
           return { error: body?.msg || body?.message || `HTTP_${res.status}` };
         }
-        return { data: { id: sessionId }, error: null };
+        return { data: { scope }, error: null };
+      },
+      async invalidateSession(sessionId, token) {
+        if (!token) {
+          return {
+            error: {
+              status: 400,
+              message: `UNSUPPORTED_SESSION_REVOCATION: GoTrue lacks an admin session-by-id deletion endpoint; access token context is required for targeted local sign-out of session '${sessionId}' (R6-01)`
+            }
+          };
+        }
+        return this.signOut(token, 'local');
       },
       async updateUserById(userId, attributes) {
         const res = await fetch(`https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/admin/users/${userId}`, {

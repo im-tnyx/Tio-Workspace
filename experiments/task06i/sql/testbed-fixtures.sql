@@ -216,24 +216,33 @@ CREATE POLICY task06i_probe_storage_policy ON storage.objects
   USING (bucket_id = 'task06i_probe_bucket' AND owner_id = (auth.uid())::text)
   WITH CHECK (bucket_id = 'task06i_probe_bucket' AND owner_id = (auth.uid())::text);
 
--- STORAGE OBJECT PROVISIONING PROCEDURE (R5-07):
+-- STORAGE OBJECT PROVISIONING PROCEDURE (R5-07, R6-02):
 -- Bucket creation alone is insufficient; SESSION-05 requires an accessible object 'probe.txt'
--- owned by the seeded test user. Provisioning must occur under the seeded user's ownership context:
--- Option A (Storage API with seed user JWT):
---   POST /storage/v1/object/task06i_probe_bucket/probe.txt
---   Headers: Authorization: Bearer <seed_user_jwt>, apikey: <anon_key>, Content-Type: text/plain
---   Body: "task06i-storage-probe-content"
--- Option B (SQL fixture with seeded user ID):
---   INSERT INTO storage.objects (id, bucket_id, name, owner_id, metadata)
---   VALUES (
---     gen_random_uuid(),
---     'task06i_probe_bucket',
---     'probe.txt',
---     '<seed_user_uuid>',
---     '{"mimetype": "text/plain", "size": 29}'::jsonb
---   ) ON CONFLICT (bucket_id, name) DO NOTHING;
--- Note: Missing object yields HTTP 404 (STORAGE_FIXTURE_MISSING), which indicates a testbed
--- configuration gap (PROVIDER_PRECONDITION_MISSING) rather than an authentication failure.
+-- owned by the seeded test user in the private bucket 'task06i_probe_bucket'.
+--
+-- CRITICAL REQUIREMENT (R6-02):
+-- Direct SQL inserts into storage.objects are STRICTLY PROHIBITED as a fixture alternative.
+-- Metadata-only SQL rows do NOT upload actual object bytes to the storage backend; subsequent
+-- authenticated GET requests fail or return 404/500, invalidating the linger baseline.
+--
+-- Mandatory Provisioning Procedure (Storage API with authenticated test-user JWT):
+-- 1. Obtain seed user JWT via password grant (HOOK-01).
+-- 2. Upload actual object bytes:
+--    POST /storage/v1/object/task06i_probe_bucket/probe.txt
+--    Headers:
+--      Authorization: Bearer <seed_user_jwt>
+--      apikey: <anon_key>
+--      Content-Type: text/plain
+--    Body: "task06i-storage-probe-content"
+-- 3. Establish pre-revocation baseline verification:
+--    Verify that authenticated GET /storage/v1/object/authenticated/task06i_probe_bucket/probe.txt
+--    succeeds with HTTP 200 and expected content BEFORE testing post-revocation linger in SESSION-05.
+-- 4. Register object in run-scoped inventory (registerStorageObject('task06i_probe_bucket', 'probe.txt')).
+-- 5. Cleanup deletes the created object via Storage API:
+--    DELETE /storage/v1/object/task06i_probe_bucket/probe.txt
+--    Pre-existing bucket assets are strictly preserved.
+-- Note: Missing object (404), wrong owner (403), or incomplete upload fails closed as
+-- STORAGE_FIXTURE_MISSING / PROVIDER_PRECONDITION_MISSING, preventing false auth passes.
 
 -- -----------------------------------------------------------------------------
 -- 5. SEED USER PROVISIONING SPECIFICATION (Compatible with disable_signup=true)

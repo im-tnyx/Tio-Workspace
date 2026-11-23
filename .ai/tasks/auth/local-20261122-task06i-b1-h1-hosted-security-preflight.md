@@ -1,15 +1,15 @@
-# Phase 1.2 Task 06I-B1-H1-R5 — Evidence Integrity & Repeatable Testbed Closure
+# Phase 1.2 Task 06I-B1-H1-R6 — Session Cleanup, Storage Fixture & Evidence Contract Closure
 
-> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R5. All 8 security review findings across PR #37 (from reviewer `im-tio`, `Codex`, and `Cursor Bugbot`) are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
+> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R6. All 3 outstanding Codex security review findings across PR #37 are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **LOCAL REMEDIATION COMPLETE (REVISION R5); ALL 8 REVIEW FINDINGS RESOLVED (R5-01 TO R5-08); 74/74 RUNNER TESTS PASS; 142/142 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; LAYER B 18-CASE MATRIX AUDITED; ENFORCED SESSION IDENTITY CORRELATION & AFFIRMATIVE REVOCATION CODES (`SESSION_NOT_FOUND`); FAIL-CLOSED SESSION CLEANUP (404 PROHIBITED); STRUCTURED 404 USER ABSENCE (503/OUTAGES REJECTED); IMMEDIATE SESSION RETENTION FOR CLEANUP UPON HTTP 200; MANDATORY FINITE NUMERIC JWT EXPIRATION & TEMPORAL CONSISTENCY (`EXP >= IAT`); SEED CREDENTIAL RESTORATION FOR REPEATABLE RUNS; EXPLICIT STORAGE FIXTURE PROVISIONING & CLEANUP; GENUINE EDGE FUNCTION ERROR PRESERVATION; DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
-| Objective | Remediate all 8 security review findings on PR #37 (R5-01 to R5-08) without executing any live hosted mutations, resolving session revocation proof integrity, session deletion endpoint 404 handling, user absence structured verification, session cleanup capture upon HTTP 200, mandatory JWT expiration & temporal consistency, seed password restoration, Storage object fixture provisioning, and Edge Function error code preservation. |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R5 slice |
-| Previous agent | Agent / Task 06I-B1-H1-R4 author |
-| Last audited HEAD | `e593e3920533b380bf2d1d6ec628ce0954980875` (PR #37 previous commit) |
-| Tracking / approval | Task 06I-B1-H1-R5 remediation authorized by user prompt; LIVE hosted probe execution requires separate explicit owner authorization; mandates $0 cost ceiling and permanent immunity for `Tio-world` (`oykupyiitspujzpwwvuj`) and REAL `bsfwzvgynwriswapxpsp` |
+| Status | **LOCAL REMEDIATION COMPLETE (REVISION R6); ALL 3 OUTSTANDING CODEX REVIEW FINDINGS RESOLVED (R6-01 TO R6-03); 77/77 RUNNER TESTS PASS; 145/145 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; R6-01: SUPPORTED GOTRUE LOCAL SIGN-OUT WIRED WITH ACCESS TOKEN CONTEXT & STANDALONE CLI ADAPTER REPLACED; R6-02: METADATA-ONLY SQL REMOVED & REAL STORAGE API UPLOAD MANDATED; R6-03: VALIDATOR & DISPATCHER REVOCATION-CODE ALIGNMENT (AFFIRMATIVE `SESSION_NOT_FOUND` ACCEPTED); CI STATUS: `CI_BLOCKED_INFRASTRUCTURE` (GITHUB ACCOUNT BILLING / SPENDING LIMIT REFUSAL; 0 CODE/SECURITY DEFECTS); DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
+| Objective | Remediate all 3 outstanding Codex review findings on PR #37 (R6-01 to R6-03) without executing any live hosted mutations, resolving supported session revocation for cleanup, real storage object provisioning, and genuine session_not_found provider error code acceptance in SESSION-06 validation. |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R6 slice |
+| Previous agent | Agent / Task 06I-B1-H1-R5 author |
+| Last audited HEAD | `a7ddf6c7e24d4b04e458056d88c9be7b8d6781d3` (PR #37 previous commit) |
+| Tracking / approval | Task 06I-B1-H1-R6 remediation authorized by user prompt; LIVE hosted probe execution requires separate explicit owner authorization; mandates $0 cost ceiling and permanent immunity for `Tio-world` (`oykupyiitspujzpwwvuj`) and REAL `bsfwzvgynwriswapxpsp` |
 | Branch | `test/task06i-b1-h1-hosted-security-preflight` |
 | Base SHA / inspected HEAD | `716fb32061ffb6012d17eae9453c822a281fe6f1` (`main`) |
 | Platform and file scope | Documentation, `.ai/` context, runner CLI hardening & LIVE dispatcher contract in `experiments/task06i/hosted-probe-runner.mjs`, testbed fixture specification in `experiments/task06i/sql/testbed-fixtures.sql`, and offline verification tests in `experiments/task06i/hosted-probe-runner.test.mjs`; zero client Expo UI, production schema, or live Auth mutations |
@@ -310,16 +310,49 @@ In accordance with findings R3-01, R3-02, R3-05, and R3-06, each probe case is s
 
 ---
 
-## 7. Verification Evidence Matrix
+---
+
+## 7. Revision R6 Remediation Summary (PR #37 Outstanding Codex Findings)
+
+### R6-01 — Supported Session Revocation for Cleanup (`PRRT_kwDOVtCmZc66rvnI`, Codex P2)
+- **Vulnerability:** The standalone LIVE CLI adapter attempted to call an unsupported endpoint: `DELETE /auth/v1/admin/users/sessions/{sessionId}`. GoTrue lacks an admin session-by-id deletion endpoint; attempting this route returns HTTP 404 (or 405), leaving sessions active after aborted/completed runs.
+- **Remediation:**
+  1. Verified currently supported GoTrue session invalidation: GoTrue supports user-scoped sign-out via `POST /auth/v1/logout?scope=local` requiring valid user `access_token` context in `Authorization: Bearer <access_token>`.
+  2. In `TestRunInventory`: added `sessionTokens` map to preserve genuine `accessToken` context alongside `sessionId`. In `registerSession`, accepted both string and object token contexts, and exported `getSessionToken(sessionId)`.
+  3. In `HOOK-01`: passed `{ accessToken }` when registering the minted session in `inv.registerSession(rawSessionId, { accessToken })`.
+  4. In `executeCleanup`: wired supported session invalidation via `adminClient.signOut(token, 'local')`. When token context is missing, fails closed with `MISSING_TOKEN_CONTEXT`.
+  5. In standalone CLI adapter: replaced the unsupported endpoint with supported `signOut(token, scope = 'local')` calling `POST /auth/v1/logout?scope=local` and `invalidateSession(sessionId, token)` requiring token context.
+  6. Covered by unit test 71 in `experiments/task06i/hosted-probe-runner.test.mjs`.
+
+### R6-02 — Real Storage Object Provisioning Contract (`PRRT_kwDOVtCmZc66rvnN`, Codex P2)
+- **Vulnerability:** Section 4 of `sql/testbed-fixtures.sql` previously included an Option B suggesting direct SQL insertion into `storage.objects`. In Supabase Storage, inserting a row in `storage.objects` creates metadata only; actual object bytes are not uploaded to the storage backend, causing subsequent authenticated GET requests in `SESSION-05` to fail or return 404/500.
+- **Remediation:**
+  1. Removed Option B (metadata-only SQL insert) as an acceptable fixture procedure; documented that direct SQL inserts are strictly prohibited.
+  2. Mandated genuine Storage API upload under authenticated seed user JWT context (`POST /storage/v1/object/task06i_probe_bucket/probe.txt`).
+  3. Required establishing pre-revocation baseline verification: `GET /storage/v1/object/authenticated/task06i_probe_bucket/probe.txt` must succeed with HTTP 200 before evaluating post-revocation stateless linger.
+  4. Specified object tracking in run-scoped inventory (`registerStorageObject`) and verified cleanup via Storage API (`DELETE /storage/v1/object/...`) preserving pre-existing bucket assets.
+  5. Covered by unit test 72 in `experiments/task06i/hosted-probe-runner.test.mjs`.
+
+### R6-03 — Accept Genuine SESSION-06 Revocation Evidence (`PRRT_kwDOVtCmZc66rvnS`, Codex P2)
+- **Vulnerability:** In `validateProbeOutcome` for `SESSION-06`, the predicate explicitly excluded `errCode !== 'session_not_found'`. When the Edge Function observed GoTrue's genuine provider code `session_not_found` (with message: `Session from session_id claim in JWT does not exist`), the dispatcher correctly verified revocation, but the validator rejected it with `MISSING_EVIDENCE`.
+- **Remediation:**
+  1. Aligned dispatcher and validator revocation allowlists: explicitly included `session_not_found` alongside `AuthSessionMissingError`.
+  2. Accepted genuine provider-observed `session_not_found` only when all other security evidence is present (pre-reset baseline verified, reset completed, session IDs strictly correlated).
+  3. Rejected generic 401/403 Forbidden without provider error code (`MISSING_EVIDENCE`), false proof (`bad_jwt`, `jwt_expired`, `invalid_token` fail closed as `FALSE_PROOF_REJECTED`), and session correlation mismatches.
+  4. Covered by unit test 73 and updated unit test 28 in `experiments/task06i/hosted-probe-runner.test.mjs`.
+
+---
+
+## 8. Verification Evidence Matrix
 
 All verification checks were run locally and passed completely:
 
 ```bash
 node --test experiments/task06i/hosted-probe-runner.test.mjs
-# 74 passed, 0 failed, exit code 0
+# 77 passed, 0 failed, exit code 0
 
 node --test experiments/task06i/*.test.mjs
-# 142 passed, 0 failed, exit code 0
+# 145 passed, 0 failed, exit code 0
 
 node experiments/task06i/sql-contract-parity.mjs
 # Status: POSTGRES_VERIFIED, 18/18 matched parity, exit code 0
@@ -336,7 +369,20 @@ git diff --check origin/main...HEAD
 
 ---
 
-## 8. Hard STOP Gate & Decision
+## 9. GitHub CI Infrastructure Blocker Diagnostics
+
+Inspection of GitHub Actions workflow runs on commit `a7ddf6c`:
+- **Run IDs:** `45105774888` (Commit attribution guard), `45105776782` (Security experiment checks), `45105776798` (Commit attribution fixture tests).
+- **Failure Annotation:**
+  `The job was not started because recent account payments have failed or your spending limit needs to be increased. Please check the 'Billing & plans' section in your settings.`
+- **Classification:** **`CI_BLOCKED_INFRASTRUCTURE`**
+  - This is an account-level payment/spending limit restriction on GitHub, not a code defect, attribution guard failure, or security regression.
+  - Per `AGENTS.md` operating rules, required checks cannot be bypassed or weakened. The PR remains merge-blocked until required checks genuinely execute and pass under repository policy.
+  - External Action Required: Repository owner must resolve GitHub billing/spending limit in account settings so GitHub Actions runners can execute.
+
+---
+
+## 10. Hard STOP Gate & Decision
 
 - **Hard STOP Gate Honored:**
   - Zero hosted LIVE probes execute hue hain.
@@ -347,6 +393,13 @@ git diff --check origin/main...HEAD
   - Real Auth implementation start nahi hui hai.
   - Project deletion perform nahi hua hai.
 
+**Readiness State:**
+- **Code readiness:** READY
+- **GitHub CI:** `CI_BLOCKED_INFRASTRUCTURE`
+- **Independent review:** PENDING
+- **Hosted testing:** NOT_AUTHORIZED
+- **Production Auth:** STRICT NO-GO
+
 **Decision:** **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**
 
-> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all 8 review findings (R5-01 through R5-08) is complete and fully covered by offline regression tests (74/74 runner tests, 142/142 task06i tests pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution. Awaiting independent re-review from `im-tio`.
+> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all 3 outstanding Codex review findings (R6-01 through R6-03) is complete and fully covered by offline regression tests (77/77 runner tests, 145/145 task06i tests pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution, and GitHub CI is blocked on account-level infrastructure. Awaiting independent re-review from `im-tio`.

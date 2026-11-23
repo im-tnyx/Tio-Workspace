@@ -1298,7 +1298,7 @@ test('28. Require actual session revocation proof and reject false-proof errors 
   assert.equal(resEdgeValid2.passed, true);
   assert.equal(resEdgeValid2.status, 401);
 
-  // 8j. Auth API error code session_not_found fails closed on SESSION-06 (PRRT_kwDOVtCmZc66kR_R)
+  // 8j. Genuine provider-observed session_not_found passes on SESSION-06 when correlation & baseline present (R6-03, PRRT_kwDOVtCmZc66rvnS)
   const resEdgeSessionNotFound = validateProbeOutcome(session06, {
     passed: true,
     status: 403,
@@ -1310,8 +1310,23 @@ test('28. Require actual session revocation proof and reject false-proof errors 
     same_session_correlated: true,
     error_code: 'session_not_found'
   });
-  assert.equal(resEdgeSessionNotFound.passed, false);
-  assert.match(resEdgeSessionNotFound.reason, /MISSING_EVIDENCE.*revocation-specific evidence/);
+  assert.equal(resEdgeSessionNotFound.passed, true);
+  assert.equal(resEdgeSessionNotFound.status, 403);
+
+  // 8k. Generic 403/401 Forbidden without provider-observed revocation code fails closed (R6-03)
+  const resEdgeGenericForbidden = validateProbeOutcome(session06, {
+    passed: true,
+    status: 403,
+    pre_reset_baseline_verified: true,
+    reset_completed: true,
+    session_id: 'sess-edge-1',
+    correlated_session_id: 'sess-edge-1',
+    pre_session_id: 'sess-edge-1',
+    same_session_correlated: true,
+    error: 'Forbidden'
+  });
+  assert.equal(resEdgeGenericForbidden.passed, false);
+  assert.match(resEdgeGenericForbidden.reason, /MISSING_EVIDENCE/);
 });
 
 test('29. Quoted credentials with whitespace, ampersands, and escaped quotes are completely redacted (PRRT_kwDOVtCmZc66jdT4, PRRT_kwDOVtCmZc66joKm, PRRT_kwDOVtCmZc66kR_F, PRRT_kwDOVtCmZc66kR_N)', async () => {
@@ -3565,4 +3580,228 @@ test('70. Task 06I-B1-H1-R5 (R5-08): Edge Function contract rejects false revoca
   const outGenuine = await dispGenuine(session06);
   assert.equal(outGenuine.passed, true);
   assert.equal(outGenuine.revocation_verified, true);
+});
+
+test('71. Task 06I-B1-H1-R6 (R6-01): Supported session revocation for cleanup preserves token context and uses GoTrue sign-out', async () => {
+  const inv = new TestRunInventory('test-run-session-r6-01');
+  const testToken = createMockJwt({ exp: Math.floor(Date.now() / 1000) + 3600 });
+  const testSessionId = 'sess-cleanup-r6-01';
+
+  // 1. registerSession preserves both sessionId and accessToken
+  inv.registerSession(testSessionId, { accessToken: testToken });
+  assert.equal(inv.trackedSessions.has(testSessionId), true);
+  assert.equal(inv.getSessionToken(testSessionId), testToken);
+
+  // 2. executeCleanup passes token context to supported signOut method
+  let invokedToken = null;
+  let invokedScope = null;
+  const mockAdminClient = {
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    signOut: async (token, scope) => {
+      invokedToken = token;
+      invokedScope = scope;
+      return { data: { scope }, error: null };
+    }
+  };
+
+  const report = await inv.executeCleanup({ adminClient: mockAdminClient, failClosed: true });
+  assert.equal(report.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(report.sessionsRevoked, 1);
+  assert.equal(invokedToken, testToken, 'signOut must receive the exact registered user access token');
+  assert.equal(invokedScope, 'local', 'signOut must request local scope to avoid global invalidation of unrelated sessions');
+
+  // 3. When session is registered without token, signOut fails closed
+  const invNoToken = new TestRunInventory('test-run-no-token');
+  invNoToken.registerSession('sess-without-token');
+  const reportNoToken = await invNoToken.executeCleanup({ adminClient: mockAdminClient, failClosed: false });
+  assert.equal(reportNoToken.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(reportNoToken.residualResources.some(r => r.type === 'session' && r.error.includes('MISSING_TOKEN_CONTEXT')));
+
+  // 4. Standalone CLI adapter session invalidation contract
+  let fetchUrl = null;
+  let fetchMethod = null;
+  let fetchAuthHeader = null;
+  const mockFetch = async (url, opts) => {
+    fetchUrl = url;
+    fetchMethod = opts.method;
+    fetchAuthHeader = opts.headers?.Authorization;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({})
+    };
+  };
+
+  // Re-create the CLI adapter signOut logic with mockFetch
+  const testServiceKey = 'test-service-key-r6-01';
+  const cliAdapter = {
+    async signOut(token, scope = 'local') {
+      if (!token || typeof token !== 'string' || !token.trim()) {
+        return { error: { message: 'MISSING_TOKEN: signOut requires non-empty user access token' } };
+      }
+      const res = await mockFetch(`https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/logout?scope=${encodeURIComponent(scope)}`, {
+        method: 'POST',
+        headers: {
+          apikey: testServiceKey,
+          Authorization: `Bearer ${token.trim()}`,
+          'Content-Type': 'application/json'
+        }
+      });
+      if (!res.ok) {
+        return { error: `HTTP_${res.status}` };
+      }
+      return { data: { scope }, error: null };
+    },
+    async invalidateSession(sessionId, token) {
+      if (!token) {
+        return {
+          error: {
+            status: 400,
+            message: `UNSUPPORTED_SESSION_REVOCATION: GoTrue lacks an admin session-by-id deletion endpoint; access token context is required for targeted local sign-out of session '${sessionId}' (R6-01)`
+          }
+        };
+      }
+      return this.signOut(token, 'local');
+    }
+  };
+
+  const cliResult = await cliAdapter.invalidateSession(testSessionId, testToken);
+  assert.equal(cliResult.error, null);
+  assert.match(fetchUrl, /\/auth\/v1\/logout\?scope=local$/);
+  assert.equal(fetchMethod, 'POST');
+  assert.equal(fetchAuthHeader, `Bearer ${testToken}`);
+  assert.ok(!fetchUrl.includes('/admin/users/sessions'), 'Unsupported admin sessions route must NEVER be called');
+
+  // Without token, CLI adapter fails closed
+  const cliNoTokenResult = await cliAdapter.invalidateSession(testSessionId, null);
+  assert.ok(cliNoTokenResult.error !== null);
+  assert.match(cliNoTokenResult.error.message, /UNSUPPORTED_SESSION_REVOCATION/);
+});
+
+test('72. Task 06I-B1-H1-R6 (R6-02): Real Storage object provisioning contract and SESSION-05 baseline verification', async () => {
+  // 1. Static contract verification on sql/testbed-fixtures.sql
+  const sqlContent = fs.readFileSync('experiments/task06i/sql/testbed-fixtures.sql', 'utf8');
+  assert.match(sqlContent, /STRICTLY PROHIBITED as a fixture alternative/, 'Direct SQL insert must be strictly prohibited');
+  assert.match(sqlContent, /POST \/storage\/v1\/object\/task06i_probe_bucket\/probe\.txt/, 'Genuine Storage API upload must be specified');
+  assert.match(sqlContent, /Establish pre-revocation baseline verification/, 'Pre-revocation baseline verification must be required');
+  assert.match(sqlContent, /DELETE \/storage\/v1\/object\/task06i_probe_bucket\/probe\.txt/, 'Cleanup via Storage API must be specified');
+  assert.ok(!sqlContent.includes('INSERT INTO storage.objects (id, bucket_id, name, owner_id, metadata)'), 'Option B direct SQL metadata insert must be removed');
+
+  // 2. SESSION-05 dispatcher correctly distinguishes missing fixture from linger
+  const session05 = { id: 'SESSION-05', category: 'Session & Consumer' };
+  const runCtx = createRunContext();
+  runCtx.activeAccessToken = createMockJwt({ exp: Math.floor(Date.now() / 1000) + 300 });
+
+  // Missing fixture returns HTTP 404 (STORAGE_FIXTURE_MISSING)
+  const disp404 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtx,
+    fetchFn: async () => ({ status: 404, json: async () => ({ message: 'Object not found' }) })
+  });
+  const out404 = await disp404(session05);
+  assert.equal(out404.passed, false);
+  assert.equal(out404.status, 404);
+  assert.match(out404.error, /STORAGE_FIXTURE_MISSING/);
+
+  // Authenticated probe with HTTP 200 before token expiration passes linger window demonstration
+  const disp200 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtx,
+    fetchFn: async () => ({ status: 200, json: async () => ({ probe: 'task06i-storage-probe-content' }) })
+  });
+  const out200 = await disp200(session05);
+  assert.equal(out200.passed, true);
+  assert.equal(out200.status, 200);
+  assert.equal(out200.stateless_linger_documented, true);
+
+  const val200 = validateProbeOutcome(session05, out200);
+  assert.equal(val200.passed, true);
+  assert.equal(val200.status, 200);
+});
+
+test('73. Task 06I-B1-H1-R6 (R6-03): SESSION-06 accepts genuine provider-observed session_not_found evidence and rejects generic errors', async () => {
+  const session06 = { id: 'SESSION-06', category: 'Session & Consumer' };
+  const runCtx = createRunContext();
+  runCtx.activeAccessToken = createMockJwt();
+  runCtx.activeSessionId = 'sess-r6-03';
+  runCtx.preInvalidationSessionValid = true;
+  runCtx.passwordResetCompleted = true;
+
+  // 1. Dispatcher observing genuine session_not_found from Edge Function
+  const dispSessionNotFound = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtx,
+    fetchFn: async () => ({
+      status: 403,
+      json: async () => ({
+        error: 'Session from session_id claim in JWT does not exist',
+        error_code: 'session_not_found'
+      })
+    })
+  });
+  const outSessionNotFound = await dispSessionNotFound(session06);
+  assert.equal(outSessionNotFound.passed, true);
+  assert.equal(outSessionNotFound.revocation_verified, true);
+  assert.equal(outSessionNotFound.error_code, 'session_not_found');
+
+  // Validator accepts genuine session_not_found with full evidence chain
+  const valSessionNotFound = validateProbeOutcome(session06, outSessionNotFound);
+  assert.equal(valSessionNotFound.passed, true, 'SESSION-06 must PASS on genuine provider session_not_found (R6-03)');
+  assert.equal(valSessionNotFound.status, 403);
+
+  // 2. Dispatcher observing genuine AuthSessionMissingError
+  const dispAuthMissing = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtx,
+    fetchFn: async () => ({
+      status: 401,
+      json: async () => ({
+        error: 'AuthSessionMissingError: Session invalidated',
+        error_code: 'AuthSessionMissingError'
+      })
+    })
+  });
+  const outAuthMissing = await dispAuthMissing(session06);
+  assert.equal(outAuthMissing.passed, true);
+  const valAuthMissing = validateProbeOutcome(session06, outAuthMissing);
+  assert.equal(valAuthMissing.passed, true);
+
+  // 3. Generic 403 Forbidden without provider revocation error code must FAIL closed
+  const dispGeneric403 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtx,
+    fetchFn: async () => ({
+      status: 403,
+      json: async () => ({ message: 'Forbidden' })
+    })
+  });
+  const outGeneric403 = await dispGeneric403(session06);
+  assert.equal(outGeneric403.passed, false, 'Dispatcher must fail on generic 403 without revocation error code');
+  const valGeneric403 = validateProbeOutcome(session06, outGeneric403);
+  assert.equal(valGeneric403.passed, false);
+
+  // If generic 403 is falsely claimed as passed: true, validator independently fails closed with MISSING_EVIDENCE
+  const valSpoofed403 = validateProbeOutcome(session06, {
+    ...outGeneric403,
+    passed: true,
+    error: 'Forbidden'
+  });
+  assert.equal(valSpoofed403.passed, false);
+  assert.match(valSpoofed403.reason, /MISSING_EVIDENCE/);
+
+  // 4. False proof (bad_jwt) must FAIL closed
+  const dispBadJwt = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtx,
+    fetchFn: async () => ({
+      status: 401,
+      json: async () => ({ error_code: 'bad_jwt', message: 'Token is malformed' })
+    })
+  });
+  const outBadJwt = await dispBadJwt(session06);
+  assert.equal(outBadJwt.passed, false);
+  const valBadJwt = validateProbeOutcome(session06, outBadJwt);
+  assert.equal(valBadJwt.passed, false);
+  assert.match(valBadJwt.reason, /FALSE_PROOF_REJECTED/);
 });
