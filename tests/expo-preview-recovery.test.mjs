@@ -217,3 +217,39 @@ test('stopped Codespace with a stale record recovers once across manual and push
     }
   }
 });
+
+
+test('ownership write failure exits promptly before launching Metro', { timeout: 10_000 }, (t) => {
+  const root = temp(t);
+  const home = temp(t);
+  const bin = temp(t);
+  const state = join(home, '.cache', 'tnyx-expo-preview');
+  mkdirSync(join(root, 'scripts'));
+  for (const file of scripts) copyFileSync(join(repo, 'scripts', file), join(root, 'scripts', file));
+
+  const starts = join(home, 'starts');
+  const record = join(state, 'metro.json');
+  writeExecutable(join(bin, 'npm'), '#!/usr/bin/env bash\nprintf started > "$FIXTURE_STARTS"\n');
+  const injectFailure = join(home, 'fail-record.mjs');
+  writeFileSync(injectFailure, `
+    import fs from 'node:fs';
+    import { syncBuiltinESMExports } from 'node:module';
+    const write = fs.writeFileSync;
+    fs.writeFileSync = (filename, ...args) => {
+      if (filename === ${JSON.stringify(record)}) throw new Error('Fixture cannot write Metro ownership record');
+      return write(filename, ...args);
+    };
+    syncBuiltinESMExports();
+  `);
+
+  const cli = join(root, 'scripts/start-codespace-expo.mjs');
+  const result = run(process.execPath, ['--import', injectFailure, cli], {
+    cwd: root,
+    timeout: 5_000,
+    env: { ...process.env, HOME: home, PATH: bin + ':' + process.env.PATH, FIXTURE_STARTS: starts },
+  });
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /Fixture cannot write Metro ownership record/);
+  assert(!existsSync(starts), 'Metro must wait until the ownership record is written');
+  assert(!existsSync(record), 'The failure must preserve the empty ownership state');
+});

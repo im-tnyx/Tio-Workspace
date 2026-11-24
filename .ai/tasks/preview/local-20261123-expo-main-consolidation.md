@@ -94,8 +94,9 @@ Linux lock across ownership verification, checkout and Metro startup. Stale
 records recover only when the recorded process and group are absent and the
 Metro port is free. Ambiguous ownership fails closed. Regression fixtures cover
 the 409, deadline, stopped wake with stale record, PID reuse, foreign port,
-record changes, concurrent manual/push sync and healthy reuse. Hosted wake and
-phone verification remain acceptance checks.
+record changes, concurrent manual/push sync and healthy reuse. Metro waits for its ownership record to be written before launching. A
+regression fixture verifies that an ownership write failure exits promptly.
+Hosted wake and phone verification remain acceptance checks.
 
 ## Manual dispatch inputs
 

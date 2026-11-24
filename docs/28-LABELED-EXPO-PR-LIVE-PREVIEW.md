@@ -114,8 +114,9 @@ must be confirmed within ten minutes. On timeout, Live stops before SSH and
 reports `START_TIMEOUT`.
 
 The Codespace starter keeps a private `metro.json` record and a Linux
-`flock` shared by preflight, checkout and startup. It clears a stale record
-only after verifying the recorded PID and process group are absent and the
+`flock` shared by preflight, checkout and startup. The launcher starts Metro only after this record is
+written. A write failure releases the lock and exits without starting a tunnel.
+It clears a stale record only after verifying the recorded PID and process group are absent and the
 Metro port has no listener. A live process needs matching boot and process
 identity plus listener ownership before it can be reused. PID reuse, a
 foreign listener, changed state files or incomplete evidence stop the run.
