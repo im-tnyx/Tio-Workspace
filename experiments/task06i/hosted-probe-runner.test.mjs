@@ -32,7 +32,10 @@ import {
   parseResponseEnvelope,
   observeAuthResponse,
   AUTH_ENDPOINT_CAPABILITIES,
-  getEndpointCapabilities
+  getEndpointCapabilities,
+  USER_OWNERSHIP,
+  isValidCreationProof,
+  createCreationProof
 } from './hosted-probe-runner.mjs';
 
 const defaultMockAdminClient = {
@@ -2076,8 +2079,8 @@ test('35. Task 06I-B1-H1-R1 (R1-03): Run-scoped identity inventory, deterministi
   const inventory = new TestRunInventory('test-run-123');
 
   // 1. Identity registration and tracking
-  const user1 = inventory.registerUser({ id: '11111111-2222-3333-4444-555555555555', email: 'user1@proof.invalid' });
-  const user2 = inventory.registerUser({ id: '66666666-7777-8888-9999-000000000000', email: 'user2@proof.invalid' });
+  const user1 = inventory.registerUser({ id: '11111111-2222-3333-4444-555555555555', email: 'user1@proof.invalid', creationProof: createCreationProof('before_after_check') });
+  const user2 = inventory.registerUser({ id: '66666666-7777-8888-9999-000000000000', email: 'user2@proof.invalid', creationProof: createCreationProof('before_after_check') });
 
   assert.equal(inventory.getTrackedUserIds().length, 2);
   assert.deepEqual(inventory.getTrackedEmails(), ['user1@proof.invalid', 'user2@proof.invalid']);
@@ -2129,7 +2132,7 @@ test('35. Task 06I-B1-H1-R1 (R1-03): Run-scoped identity inventory, deterministi
 
   // 4. Incomplete cleanup fails closed when residual user detected
   const residualInventory = new TestRunInventory('residual-run-456');
-  residualInventory.registerUser({ id: 'residual-uuid-99', email: 'residual@proof.invalid' });
+  residualInventory.registerUser({ id: 'residual-uuid-99', email: 'residual@proof.invalid', creationProof: createCreationProof('before_after_check') });
 
   const lingeringAdminClient = {
     async deleteUser(userId) {
@@ -2310,7 +2313,7 @@ test('39. Task 06I-B1-H1-R2 (R2-03): Run-scoped refresh token propagation & AMR 
 
 test('40. Task 06I-B1-H1-R2 (R2-04 & R2-05): Inventory integration and robust cleanup failure detection', async () => {
   const inv = new TestRunInventory('test-run-r2-inv');
-  inv.registerUser({ id: 'user-r2-1', email: 'test1@proof.invalid' });
+  inv.registerUser({ id: 'user-r2-1', email: 'test1@proof.invalid', creationProof: createCreationProof('before_after_check') });
   inv.registerTableRow('task06i_session_probe', 'row-1');
   inv.registerStorageObject('task06i_probe_bucket', 'file-1.txt');
 
@@ -2579,7 +2582,11 @@ test('49. Task 06I-B1-H1-R3 (R3-06): Bypass verify probes distinguish upstream r
 
 test('50. Task 06I-B1-H1-R3 (R3-07): Cleanup execution lifecycle in try/finally with partial failure detection', async () => {
   const inventory = new TestRunInventory('test-run-cleanup-lifecycle');
-  inventory.registerCreatedUser({ id: 'user-to-clean', email: 'clean-me@proof.invalid' });
+  inventory.registerCreatedUser({
+    id: 'user-to-clean',
+    email: 'clean-me@proof.invalid',
+    creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
+  });
 
   let deletedUserIds = [];
   const mockAdminClient = {
@@ -2659,7 +2666,11 @@ test('52. Task 06I-B1-H1-R3 (R3-09): Pre-existing seed user survives cleanup; on
   // Pre-existing seed user from HOOK-01 login
   inventory.registerReferencedUser({ id: 'seed-user-uuid', email: 'tio-test-user-06i@proof.invalid' });
   // Accidental user created in this run
-  inventory.registerCreatedUser({ id: 'signup-user-uuid', email: 'accidental-signup@proof.invalid' });
+  inventory.registerCreatedUser({
+    id: 'signup-user-uuid',
+    email: 'accidental-signup@proof.invalid',
+    creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
+  });
 
   const deletedUsers = [];
   const mockAdminClient = {
@@ -2827,7 +2838,11 @@ test('56. Task 06I-B1-H1-R4 (R4-02): LIVE runner fails preflight if cleanup capa
 
   // 3. Failed cleanup overrides passing probes and marks overall run HALTED_ON_FAILURE
   const invWithResidual = new TestRunInventory('test-run-residual-override');
-  invWithResidual.registerCreatedUser({ id: 'residual-user-fail', email: 'residual@proof.invalid' });
+  invWithResidual.registerCreatedUser({
+    id: 'residual-user-fail',
+    email: 'residual@proof.invalid',
+    creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
+  });
 
   const failingCleanupAdmin = {
     deleteUser: async () => ({ data: null, error: { message: 'Database lock timeout on delete' } }),
@@ -3071,7 +3086,11 @@ test('59. Task 06I-B1-H1-R4 (R4-05): Session cleanup fails closed when session i
 test('60. Task 06I-B1-H1-R4 (R4-06): User absence verification detects data.id, data.user.id, and treats 503/network error as verification failure', async () => {
   // 1. Detects existing user in standard Supabase GoTrue shape { data: { id: userId }, error: null }
   const inv1 = new TestRunInventory('test-user-verify-shape');
-  inv1.registerCreatedUser({ id: 'user-standard-shape-1', email: 'shape1@proof.invalid' });
+  inv1.registerCreatedUser({
+    id: 'user-standard-shape-1',
+    email: 'shape1@proof.invalid',
+    creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
+  });
 
   const clientShape1 = {
     deleteUser: async () => ({ data: null, error: null }),
@@ -3084,7 +3103,11 @@ test('60. Task 06I-B1-H1-R4 (R4-06): User absence verification detects data.id, 
 
   // 2. Detects existing user in nested shape { data: { user: { id: userId } }, error: null }
   const inv2 = new TestRunInventory('test-user-verify-shape-2');
-  inv2.registerCreatedUser({ id: 'user-nested-shape-2', email: 'shape2@proof.invalid' });
+  inv2.registerCreatedUser({
+    id: 'user-nested-shape-2',
+    email: 'shape2@proof.invalid',
+    creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
+  });
 
   const clientShape2 = {
     deleteUser: async () => ({ data: null, error: null }),
@@ -3097,7 +3120,11 @@ test('60. Task 06I-B1-H1-R4 (R4-06): User absence verification detects data.id, 
 
   // 3. HTTP 503 or network error during absence check fails closed (NOT accepted as absence)
   const inv3 = new TestRunInventory('test-user-verify-503');
-  inv3.registerCreatedUser({ id: 'user-503-fail', email: 'fail503@proof.invalid' });
+  inv3.registerCreatedUser({
+    id: 'user-503-fail',
+    email: 'fail503@proof.invalid',
+    creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
+  });
 
   const client503 = {
     deleteUser: async () => ({ data: null, error: null }),
@@ -3110,7 +3137,11 @@ test('60. Task 06I-B1-H1-R4 (R4-06): User absence verification detects data.id, 
 
   // 4. Explicit 404 user_not_found confirms verified absence
   const inv4 = new TestRunInventory('test-user-verify-404');
-  inv4.registerCreatedUser({ id: 'user-404-absent', email: 'absent@proof.invalid' });
+  inv4.registerCreatedUser({
+    id: 'user-404-absent',
+    email: 'absent@proof.invalid',
+    creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
+  });
 
   const client404 = {
     deleteUser: async () => ({ data: null, error: null }),
@@ -3293,7 +3324,11 @@ test('64. Task 06I-B1-H1-R5 (R5-02): Session cleanup rejects HTTP 404 from sessi
 
 test('65. Task 06I-B1-H1-R5 (R5-03): User absence check requires structured 404; 503 Service Unavailable with "not found" in message fails closed', async () => {
   const inv = new TestRunInventory('test-run-user-absence-503');
-  inv.registerCreatedUser({ id: 'user-absence-503', email: 'absence503@proof.invalid' });
+  inv.registerCreatedUser({
+    id: 'user-absence-503',
+    email: 'absence503@proof.invalid',
+    creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
+  });
 
   // 1. 503 error containing 'not found' in message text must NOT be treated as absence
   const client503 = {
@@ -3936,8 +3971,16 @@ test('74. Task 06I-B1-H1-R7 (R7-01): createHostedAdminClient adapter implements 
   const inv = new TestRunInventory('inv-r7-01');
   const sessToken = createMockJwt();
   inv.registerSession('sess-tracked-01', { accessToken: sessToken });
-  inv.registerCreatedUser({ id: 'u-created-01', email: 'created@proof.invalid' });
-  inv.registerCreatedUser({ id: 'u-created-02', email: 'created2@proof.invalid' });
+  inv.registerCreatedUser({
+    id: 'u-created-01',
+    email: 'created@proof.invalid',
+    creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
+  });
+  inv.registerCreatedUser({
+    id: 'u-created-02',
+    email: 'created2@proof.invalid',
+    creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
+  });
 
   calls.length = 0;
   const cleanupReport = await inv.executeCleanup({ adminClient });
@@ -4182,12 +4225,14 @@ test('76. Task 06I-B1-H1-R8 (R8-01): Unexpected session tracking captures sessio
   assert.equal(invUnit.referencedUsers.has('u-observed-123'), true);
   assert.equal(invUnit.createdUsers.has('u-observed-123'), false);
 
-  // For BYPASS-02 (signup probe), unexpected user registration is deletion eligible (createdUsers)
+  // For BYPASS-02 (signup probe), unexpected user registration without proof has unproven ownership (R16-02)
   observeAndTrackSessionTokens({
     access_token: tokenWithSession,
     user: { id: 'u-signup-456' }
   }, { inv: invUnit, probeId: 'BYPASS-02', testUser: 'signup-user@proof.invalid' });
-  assert.equal(invUnit.createdUsers.has('u-signup-456'), true);
+  assert.equal(invUnit.createdUsers.has('u-signup-456'), false, 'Unexpected user without affirmative creation proof must NOT be marked created');
+  assert.equal(invUnit.unverifiedUsers.has('u-signup-456'), true, 'Unexpected user must be tracked in unverifiedUsers');
+  assert.equal(invUnit.getUserOwnership('u-signup-456'), USER_OWNERSHIP.OWNERSHIP_UNKNOWN);
 
   // Untracked session: token present but session ID unextractable
   const rawTokenWithoutClaims = 'header.e30.signature'; // payload is {}
@@ -6193,11 +6238,18 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
   const res11b = await disp11b({ id: 'BYPASS-02', testUser: 'unexpected2@proof.invalid' });
   assert.equal(res11b.passed, false);
   assert.equal(inv11.trackedSessions.has(sess11b), true, 'Unexpected token from BYPASS-02 must be tracked in inventory');
-  assert.equal(inv11.isUserCreated('user-unexpected-11b'), true, 'Unexpected user created in BYPASS-02 must be tracked');
+  assert.equal(inv11.isUserTracked('user-unexpected-11b'), true, 'Unexpected user created in BYPASS-02 must be tracked');
+  assert.equal(inv11.isUserCreated('user-unexpected-11b'), false, 'Unexpected user without affirmative proof must NOT be in createdUsers');
+  assert.equal(inv11.unverifiedUsers.has('user-unexpected-11b'), true, 'Unexpected user must be in unverifiedUsers');
 
   // 12. Cleanup after aborted authentication -> executeCleanup handles cleanly
   const inv12 = new TestRunInventory('test-r12-case12');
-  inv12.registerCreatedUser({ id: 'user-aborted-12', email: 'aborted@proof.invalid', source: 'aborted_test' });
+  inv12.registerCreatedUser({
+    id: 'user-aborted-12',
+    email: 'aborted@proof.invalid',
+    source: 'aborted_test',
+    creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
+  });
   const mockAdmin12 = {
     deleteUser: async () => ({ data: null, error: null }),
     getUserById: async () => ({ data: null, error: { status: 404 } })
@@ -6287,7 +6339,7 @@ test('85. Task 06I-B1-H1-R13 (R13-01 & R13-02): Auth endpoint capabilities, in-f
   assert.equal(verifyCap.canMintSession, true, 'POST /auth/v1/verify must have canMintSession: true (R13-01)');
   assert.equal(verifyCap.probeId, 'BYPASS-03');
   assert.equal(AUTH_ENDPOINT_CAPABILITIES['POST /auth/v1/otp'].canMintSession, false);
-  assert.equal(AUTH_ENDPOINT_CAPABILITIES['POST /auth/v1/signup'].canMintSession, false);
+  assert.equal(AUTH_ENDPOINT_CAPABILITIES['POST /auth/v1/signup'].canMintSession, true, 'Signup must have canMintSession: true (R16-01)');
   assert.equal(AUTH_ENDPOINT_CAPABILITIES['POST /auth/v1/token?grant_type=password'].canMintSession, true);
   assert.equal(AUTH_ENDPOINT_CAPABILITIES['POST /auth/v1/token?grant_type=refresh_token'].canMintSession, true);
 
@@ -6562,7 +6614,7 @@ test('86. Task 06I-B1-H1-R14 (R14-01 & R14-02): Asynchronous mutation tracking, 
   assert.equal(signupCap.canCreateUser, true, 'Signup must declare canCreateUser: true (R14-02)');
   assert.equal(signupCap.canModifyProviderState, true, 'Signup must declare canModifyProviderState: true');
   assert.equal(signupCap.requiresCleanupReconciliation, true, 'Signup must declare requiresCleanupReconciliation: true (R14-02)');
-  assert.equal(signupCap.canMintSession, false, 'Signup must declare canMintSession: false');
+  assert.equal(signupCap.canMintSession, true, 'Signup must declare canMintSession: true (R16-01)');
 
   const adminUpdateCap = AUTH_ENDPOINT_CAPABILITIES['PUT /auth/v1/admin/users/:id'];
   assert.ok(adminUpdateCap, 'Admin update capability must be defined');
@@ -6726,11 +6778,13 @@ test('86. Task 06I-B1-H1-R14 (R14-01 & R14-02): Asynchronous mutation tracking, 
   const res8 = await disp8({ id: 'BYPASS-02' });
   assert.equal(res8.passed, false, 'Unexpected user creation must fail probe');
   assert.equal(res8.user_created, true);
-  assert.equal(inv8.createdUsers.has('unexpected-user-uid-8'), true);
-  const rep8 = await inv8.executeCleanup({ adminClient: mockAdmin8, failClosed: true });
-  assert.equal(rep8.status, 'CLEANUP_VERIFIED_SUCCESS');
-  assert.equal(deletedId8, 'unexpected-user-uid-8');
-  assert.equal(rep8.usersDeleted, 1);
+  assert.equal(inv8.createdUsers.has('unexpected-user-uid-8'), false, 'Unexpected user without affirmative creation proof must NOT be marked created');
+  assert.equal(inv8.unverifiedUsers.has('unexpected-user-uid-8'), true, 'Unexpected user must be tracked in unverifiedUsers');
+  assert.equal(inv8.getUserOwnership('unexpected-user-uid-8'), USER_OWNERSHIP.OWNERSHIP_UNKNOWN);
+  const rep8 = await inv8.executeCleanup({ adminClient: mockAdmin8, failClosed: false });
+  assert.equal(rep8.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(deletedId8, null, 'Unproven user must NEVER be deleted during cleanup');
+  assert.equal(rep8.usersDeleted, 0);
 
   // 9. R14-02: Anti-deletion security boundary -> referenced/seed users never deleted on email equality
   const inv9 = new TestRunInventory('test-r14-case9');
@@ -6936,14 +6990,19 @@ test('87. Task 06I-B1-H1-R15 (R15-01 & R15-02): OTP user-creation tracking, capa
   const res8 = await disp8({ id: 'BYPASS-01' });
   assert.equal(res8.passed, false, 'Unexpected user creation must fail probe');
   assert.equal(res8.user_created, true);
-  assert.equal(inv8.createdUsers.has('unexpected-otp-uid-8'), true, 'Unexpected user must be registered in createdUsers');
+  assert.equal(inv8.createdUsers.has('unexpected-otp-uid-8'), false, 'Unexpected user must NOT be registered in createdUsers');
+  assert.equal(inv8.unverifiedUsers.has('unexpected-otp-uid-8'), true, 'Unexpected user must be registered in unverifiedUsers');
+  assert.equal(inv8.getUserOwnership('unexpected-otp-uid-8'), USER_OWNERSHIP.OWNERSHIP_UNKNOWN);
+  assert.equal(inv8.isUserCreated('unexpected-otp-uid-8'), false);
+  assert.equal(inv8.isUserTracked('unexpected-otp-uid-8'), true);
   const outcomeValidation8 = validateProbeOutcome(HOSTED_PROBE_SPECIFICATIONS['BYPASS-01'], res8);
   assert.equal(outcomeValidation8.passed, false);
   assert.match(outcomeValidation8.reason, /SECURITY_INVARIANT_VIOLATION.*created user/);
-  const rep8 = await inv8.executeCleanup({ adminClient: mockAdmin8, failClosed: true });
-  assert.equal(rep8.status, 'CLEANUP_VERIFIED_SUCCESS');
-  assert.equal(deletedId8, 'unexpected-otp-uid-8');
-  assert.equal(rep8.usersDeleted, 1);
+  const rep8 = await inv8.executeCleanup({ adminClient: mockAdmin8, failClosed: false });
+  assert.equal(rep8.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(deletedId8, null, 'Unproven user must NEVER be deleted during cleanup');
+  assert.ok(rep8.residualResources.some(r => (r.type === 'unresolved_user_ownership' || r.type === 'user') && (r.reason === 'UNRESOLVED_USER_OWNERSHIP' || r.error?.includes('UNRESOLVED_USER_OWNERSHIP'))));
+  assert.equal(rep8.usersDeleted, 0);
 
   // 9. R15-01: Anti-deletion security boundary -> referenced/seed users never deleted on email equality
   const inv9 = new TestRunInventory('test-r15-case9');
@@ -6979,7 +7038,12 @@ test('87. Task 06I-B1-H1-R15 (R15-01 & R15-02): OTP user-creation tracking, capa
     getUserById: async () => ({ data: { id: 'orphaned-uid-10' }, error: null }),
     signOut: async () => ({ data: null, error: null })
   };
-  inv10.registerCreatedUser({ id: 'orphaned-uid-10', email: 'orphaned10@proof.invalid', source: 'BYPASS-01_unexpected_signup' });
+  inv10.registerCreatedUser({
+    id: 'orphaned-uid-10',
+    email: 'orphaned10@proof.invalid',
+    source: 'BYPASS-01_unexpected_signup',
+    creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
+  });
   const rep10 = await inv10.executeCleanup({ adminClient: mockAdmin10, failClosed: false });
   assert.equal(rep10.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(rep10.residualUsers.some(u => u.id === 'orphaned-uid-10'));
@@ -7007,6 +7071,10 @@ test('87. Task 06I-B1-H1-R15 (R15-01 & R15-02): OTP user-creation tracking, capa
     isUserReferenced() { return false; },
     isUserCreated() { return false; },
     registerCreatedUser() {},
+    registerObservedUser() {},
+    protectSeedIdentity() {},
+    isSeedIdentity() { return false; },
+    getUserOwnership() { return USER_OWNERSHIP.OWNERSHIP_UNKNOWN; },
     registerUntrackedUser() {},
     registerUntrackedSession() {}
   };
@@ -7034,4 +7102,344 @@ test('87. Task 06I-B1-H1-R15 (R15-01 & R15-02): OTP user-creation tracking, capa
 
   // 13. Offline safety invariant: verify 0 live network calls made
   assert.ok(true, 'All R15 adversarial regression scenarios executed offline with zero network requests');
+});
+
+
+test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership closure (PRRT_kwDOVtCmZc66_0zA & PRRT_kwDOVtCmZc66_0zI)', async () => {
+  // --- Section 3: R16-01 Signup Session Tracking Tests ---
+
+  // 1. Signup returns user ID without a session (e.g. email confirmation enabled)
+  const inv1 = new TestRunInventory('test-r16-case1');
+  const disp1 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv1,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({ id: 'signup-user-no-session', email: 'signup-no-session@proof.invalid' })
+    })
+  });
+  const res1 = await disp1({ id: 'BYPASS-02', testUser: 'signup-no-session@proof.invalid' });
+  assert.equal(res1.passed, false, 'Unexpected user creation on disabled route must fail probe');
+  assert.equal(res1.user_created, true);
+  assert.equal(inv1.isUserTracked('signup-user-no-session'), true);
+  assert.equal(inv1.untrackedSessionsCount, 0, 'No session returned means zero untracked sessions');
+
+  // 2. Signup returns user ID plus access and refresh tokens with valid session_id
+  const inv2 = new TestRunInventory('test-r16-case2');
+  const validSessId = 'sess-valid-signup-2';
+  const validSignupToken = createMockJwt({ session_id: validSessId, sub: 'user-signup-2' });
+  const disp2 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv2,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({
+        user: { id: 'user-signup-2', email: 'signup2@proof.invalid' },
+        access_token: validSignupToken,
+        refresh_token: 'rf-signup-2',
+        token_type: 'bearer',
+        expires_in: 3600
+      })
+    })
+  });
+  const res2 = await disp2({ id: 'BYPASS-02', testUser: 'signup2@proof.invalid' });
+  assert.equal(res2.passed, false);
+  assert.equal(inv2.trackedSessions.has(validSessId), true, 'Observed session must be tracked for cleanup revocation');
+
+  // 3. Signup token lacks session_id
+  const inv3 = new TestRunInventory('test-r16-case3');
+  const b64H = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const b64PNoSess = Buffer.from(JSON.stringify({ sub: 'user-signup-3', exp: Math.floor(Date.now() / 1000) + 300 })).toString('base64url');
+  const tokenNoSessId = `${b64H}.${b64PNoSess}.mock_sig`;
+  const disp3 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv3,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({
+        user: { id: 'user-signup-3', email: 'signup3@proof.invalid' },
+        access_token: tokenNoSessId,
+        refresh_token: 'rf-signup-3'
+      })
+    })
+  });
+  const res3 = await disp3({ id: 'BYPASS-02', testUser: 'signup3@proof.invalid' });
+  assert.equal(res3.passed, false);
+  assert.equal(inv3.untrackedSessionsCount, 1, 'Token lacking session_id must increment untrackedSessionsCount');
+
+  // 4. Signup returns malformed JWT
+  const inv4 = new TestRunInventory('test-r16-case4');
+  const disp4 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv4,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({
+        user: { id: 'user-signup-4', email: 'signup4@proof.invalid' },
+        access_token: 'not-a-valid-jwt.garbage',
+        refresh_token: 'rf-signup-4'
+      })
+    })
+  });
+  const res4 = await disp4({ id: 'BYPASS-02', testUser: 'signup4@proof.invalid' });
+  assert.equal(res4.passed, false);
+  assert.equal(inv4.untrackedSessionsCount, 1, 'Malformed JWT must register untracked session');
+
+  // 5. HTTP 200 returns {}
+  const inv5 = new TestRunInventory('test-r16-case5');
+  const disp5 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv5,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({})
+    })
+  });
+  const res5 = await disp5({ id: 'BYPASS-02', testUser: 'signup5@proof.invalid' });
+  assert.equal(res5.passed, false);
+  assert.equal(inv5.untrackedUsersCount, 1, 'Empty HTTP 200 must register untracked user');
+  assert.equal(inv5.untrackedSessionsCount, 1, 'Empty HTTP 200 must register untracked session');
+
+  // 6. HTTP 200 returns unreadable / truncated JSON
+  const inv6 = new TestRunInventory('test-r16-case6');
+  const disp6 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv6,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => { throw new SyntaxError('Unexpected end of JSON input'); }
+    })
+  });
+  const res6 = await disp6({ id: 'BYPASS-02', testUser: 'signup6@proof.invalid' });
+  assert.equal(res6.passed, false);
+  assert.equal(inv6.untrackedUsersCount, 1, 'Unreadable HTTP 200 must register untracked user');
+  assert.equal(inv6.untrackedSessionsCount, 1, 'Unreadable HTTP 200 must register untracked session');
+
+  // 7. Signup response is lost after possible provider commit (network transport error / reset)
+  const inv7 = new TestRunInventory('test-r16-case7');
+  const disp7 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv7,
+    fetchFn: async () => { throw new Error('ECONNRESET: Connection reset by peer'); }
+  });
+  const res7 = await disp7({ id: 'BYPASS-02', testUser: 'signup7@proof.invalid' });
+  assert.equal(res7.passed, false);
+  assert.equal(inv7.untrackedUsersCount, 1, 'Connection reset must retain potential user risk');
+  assert.equal(inv7.untrackedSessionsCount, 1, 'Connection reset must retain potential session risk');
+
+  // 8. Logout fails or returns ambiguous evidence during cleanup
+  const inv8 = new TestRunInventory('test-r16-case8');
+  const sess8Token = createMockJwt({ session_id: 'sess-8', sub: 'u8' });
+  inv8.registerSession('sess-8', { accessToken: sess8Token });
+  const mockAdmin8 = {
+    signOut: async () => ({ error: { message: 'Internal Server Error 500' } }),
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => ({ data: null, error: { status: 404 } })
+  };
+  const rep8 = await inv8.executeCleanup({ adminClient: mockAdmin8, failClosed: false });
+  assert.equal(rep8.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(rep8.residualResources.some(r => r.type === 'session' && (r.error?.includes('500') || r.error?.includes('Internal Server Error'))));
+
+  // 9. User deletion succeeds but untracked session remains -> cleanup fails closed
+  const inv9 = new TestRunInventory('test-r16-case9');
+  inv9.registerCreatedUser({
+    id: 'user-clean-9',
+    email: 'clean9@proof.invalid',
+    creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
+  });
+  inv9.registerUntrackedSession();
+  let user9Deleted = false;
+  const mockAdmin9 = {
+    deleteUser: async () => { user9Deleted = true; return { data: null, error: null }; },
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    signOut: async () => ({ data: null, error: null })
+  };
+  const rep9 = await inv9.executeCleanup({ adminClient: mockAdmin9, failClosed: false });
+  assert.equal(user9Deleted, true, 'Verified created user was deleted');
+  assert.equal(rep9.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES', 'Untracked session prevents CLEANUP_VERIFIED_SUCCESS');
+  assert.ok(rep9.residualResources.some(r => (r.type === 'session' || r.type === 'untracked_session') && (r.reason === 'UNTRACKED_SESSION_REMAINS' || r.error?.includes('UNTRACKED'))));
+
+  // 10. Cleanup cannot report success with untracked issued session
+  const inv10 = new TestRunInventory('test-r16-case10');
+  inv10.registerUntrackedSession();
+  assert.equal(inv10.isClean(), false);
+  const rep10 = await inv10.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  assert.notEqual(rep10.status, 'CLEANUP_VERIFIED_SUCCESS');
+
+  // --- Section 4: R16-02 Proven User Ownership Tests ---
+
+  // 11. BYPASS-01 returns an existing seed user ID
+  const inv11 = new TestRunInventory('test-r16-case11');
+  const seedUid11 = 'seed-user-uuid-11';
+  const seedEmail11 = 'seed-user-11@proof.invalid';
+  inv11.protectSeedIdentity({ id: seedUid11, email: seedEmail11 });
+  let delete11Called = false;
+  const mockAdmin11 = {
+    deleteUser: async () => { delete11Called = true; return { data: null, error: null }; },
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    signOut: async () => ({ data: null, error: null })
+  };
+  const disp11 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv11,
+    testEmail: seedEmail11,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({ user: { id: seedUid11, email: seedEmail11 } })
+    })
+  });
+  const res11 = await disp11({ id: 'BYPASS-01' });
+  assert.equal(res11.passed, false);
+  assert.equal(inv11.getUserOwnership(seedUid11), USER_OWNERSHIP.PRE_EXISTING_REFERENCED);
+  assert.equal(inv11.createdUsers.has(seedUid11), false);
+  await inv11.executeCleanup({ adminClient: mockAdmin11, failClosed: false });
+  assert.equal(delete11Called, false, 'Pre-existing seed user in BYPASS-01 must NEVER be deleted');
+
+  // 12. BYPASS-02 returns an existing seed user ID
+  const inv12 = new TestRunInventory('test-r16-case12');
+  const seedUid12 = 'seed-user-uuid-12';
+  const seedEmail12 = 'seed-user-12@proof.invalid';
+  inv12.protectSeedIdentity({ id: seedUid12, email: seedEmail12 });
+  let delete12Called = false;
+  const mockAdmin12 = {
+    deleteUser: async () => { delete12Called = true; return { data: null, error: null }; },
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    signOut: async () => ({ data: null, error: null })
+  };
+  const disp12 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv12,
+    testEmail: seedEmail12,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({ user: { id: seedUid12, email: seedEmail12 } })
+    })
+  });
+  const res12 = await disp12({ id: 'BYPASS-02', testUser: seedEmail12 });
+  assert.equal(res12.passed, false);
+  assert.equal(inv12.getUserOwnership(seedUid12), USER_OWNERSHIP.PRE_EXISTING_REFERENCED);
+  assert.equal(inv12.createdUsers.has(seedUid12), false);
+  await inv12.executeCleanup({ adminClient: mockAdmin12, failClosed: false });
+  assert.equal(delete12Called, false, 'Pre-existing seed user in BYPASS-02 must NEVER be deleted');
+
+  // 13. Seed user is not previously registered in inventory (protected via seed option in dispatcher)
+  const inv13 = new TestRunInventory('test-r16-case13');
+  let delete13Called = false;
+  const mockAdmin13 = {
+    deleteUser: async () => { delete13Called = true; return { data: null, error: null }; },
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    signOut: async () => ({ data: null, error: null })
+  };
+  const disp13 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv13,
+    testEmail: 'seed-email-13@proof.invalid',
+    seedUserId: 'seed-uid-13',
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({ user: { id: 'seed-uid-13', email: 'seed-email-13@proof.invalid' } })
+    })
+  });
+  const res13 = await disp13({ id: 'BYPASS-01' });
+  assert.equal(res13.passed, false);
+  assert.equal(inv13.getUserOwnership('seed-uid-13'), USER_OWNERSHIP.PRE_EXISTING_REFERENCED);
+  assert.equal(inv13.isUserCreated('seed-uid-13'), false);
+  await inv13.executeCleanup({ adminClient: mockAdmin13, failClosed: false });
+  assert.equal(delete13Called, false, 'Seed user known only via dispatcher option must NEVER be deleted');
+
+  // 14. Different email returns same pre-existing user ID
+  const inv14 = new TestRunInventory('test-r16-case14');
+  inv14.protectSeedIdentity({ id: 'seed-fixed-uid', email: 'original-seed@proof.invalid' });
+  let delete14Called = false;
+  const mockAdmin14 = {
+    deleteUser: async () => { delete14Called = true; return { data: null, error: null }; },
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    signOut: async () => ({ data: null, error: null })
+  };
+  const disp14 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv14,
+    testEmail: 'attacker-chosen@proof.invalid',
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({ user: { id: 'seed-fixed-uid', email: 'attacker-chosen@proof.invalid' } })
+    })
+  });
+  const res14 = await disp14({ id: 'BYPASS-01' });
+  assert.equal(res14.passed, false);
+  assert.equal(inv14.isUserReferenced('seed-fixed-uid'), true);
+  assert.equal(inv14.isUserCreated('seed-fixed-uid'), false);
+  await inv14.executeCleanup({ adminClient: mockAdmin14, failClosed: false });
+  assert.equal(delete14Called, false, 'Pre-existing seed ID returned with different email must NEVER be deleted');
+
+  // 15. Unknown user ID appears in successful signup response -> classified as OWNERSHIP_UNKNOWN
+  const inv15 = new TestRunInventory('test-r16-case15');
+  let delete15Called = false;
+  const mockAdmin15 = {
+    deleteUser: async () => { delete15Called = true; return { data: null, error: null }; },
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    signOut: async () => ({ data: null, error: null })
+  };
+  const disp15 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv15,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({ user: { id: 'unknown-uid-15', email: 'unknown15@proof.invalid' } })
+    })
+  });
+  const res15 = await disp15({ id: 'BYPASS-02', testUser: 'unknown15@proof.invalid' });
+  assert.equal(res15.passed, false);
+  assert.equal(inv15.getUserOwnership('unknown-uid-15'), USER_OWNERSHIP.OWNERSHIP_UNKNOWN);
+  assert.equal(inv15.unverifiedUsers.has('unknown-uid-15'), true);
+  assert.equal(inv15.createdUsers.has('unknown-uid-15'), false);
+  const rep15 = await inv15.executeCleanup({ adminClient: mockAdmin15, failClosed: false });
+  assert.equal(delete15Called, false, 'Unproven user must NEVER trigger deleteUser');
+  assert.equal(rep15.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(rep15.residualResources.some(r => (r.type === 'unresolved_user_ownership' || r.type === 'user') && (r.reason === 'UNRESOLVED_USER_OWNERSHIP' || r.error?.includes('UNRESOLVED_USER_OWNERSHIP'))));
+
+  // 16. Caller-supplied metadata flag alone does NOT certify ownership
+  const inv16 = new TestRunInventory('test-r16-case16');
+  assert.equal(isValidCreationProof({ isCreated: true }), false, 'Flag alone is invalid proof');
+  assert.equal(isValidCreationProof({ type: 'caller_assertion' }), false);
+  assert.equal(isValidCreationProof(null), false);
+  inv16.registerCreatedUser({
+    id: 'user-fake-proof-16',
+    email: 'fakeproof@proof.invalid',
+    creationProof: { isCreated: true } // Invalid proof!
+  });
+  assert.equal(inv16.getUserOwnership('user-fake-proof-16'), USER_OWNERSHIP.CREATION_INDETERMINATE);
+  assert.equal(inv16.createdUsers.has('user-fake-proof-16'), false);
+  assert.equal(inv16.unverifiedUsers.has('user-fake-proof-16'), true);
+  let delete16Called = false;
+  const mockAdmin16 = {
+    deleteUser: async () => { delete16Called = true; return { data: null, error: null }; },
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    signOut: async () => ({ data: null, error: null })
+  };
+  const rep16 = await inv16.executeCleanup({ adminClient: mockAdmin16, failClosed: false });
+  assert.equal(delete16Called, false, 'User with invalid proof must NEVER be deleted');
+  assert.equal(rep16.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+
+  // 17. Trusted creation proof establishes a genuinely new user -> safe deletion & verified success
+  const inv17 = new TestRunInventory('test-r16-case17');
+  const validProof = createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true });
+  assert.equal(isValidCreationProof(validProof), true);
+  inv17.registerCreatedUser({
+    id: 'user-proven-17',
+    email: 'proven17@proof.invalid',
+    creationProof: validProof
+  });
+  assert.equal(inv17.getUserOwnership('user-proven-17'), USER_OWNERSHIP.RUN_CREATED_VERIFIED);
+  assert.equal(inv17.createdUsers.has('user-proven-17'), true);
+  let delete17CalledWith = null;
+  const mockAdmin17 = {
+    deleteUser: async (id) => { delete17CalledWith = id; return { data: null, error: null }; },
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    signOut: async () => ({ data: null, error: null })
+  };
+  const rep17 = await inv17.executeCleanup({ adminClient: mockAdmin17, failClosed: true });
+  assert.equal(delete17CalledWith, 'user-proven-17', 'Affirmatively verified user must be deleted');
+  assert.equal(rep17.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(rep17.usersDeleted, 1);
 });

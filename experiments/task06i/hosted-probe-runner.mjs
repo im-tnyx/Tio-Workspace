@@ -61,15 +61,15 @@ export const AUTH_ENDPOINT_CAPABILITIES = Object.freeze({
     probeId: 'BYPASS-02',
     endpoint: '/auth/v1/signup',
     method: 'POST',
-    canMintSession: false,
+    canMintSession: true, // Signup with Confirm Email disabled returns active session (R16-01)
     canCreateUser: true,
     canCreateUsers: true,
     canModifyProviderState: true,
     requiresCleanupReconciliation: true,
     canTriggerEmail: true,
     requiredEvidence: 'signup_disabled === true, status !== 200, zero created user, zero tokens',
-    cleanupObligation: 'Track created user into createdUsers; register untracked user on transport error, unreadable response, or empty HTTP 200; track unexpected tokens for cleanup',
-    indeterminateBehavior: 'AUTH_RESPONSE_INDETERMINATE on transport error or unreadable/missing user ID, register untracked user, fail cleanup closed'
+    cleanupObligation: 'Track created user into createdUsers if verified run-created; track unexpected session into trackedSessions; register untracked user/session on transport error, unreadable response, empty HTTP 200, or unparsed session ID',
+    indeterminateBehavior: 'AUTH_RESPONSE_INDETERMINATE on transport error, unreadable/missing user ID, or missing session ID; register untracked user and/or session, fail cleanup closed'
   }),
   'POST /auth/v1/verify': Object.freeze({
     probeId: 'BYPASS-03',
@@ -184,6 +184,64 @@ export function getEndpointCapabilities(endpointOrProbeId) {
     return AUTH_ENDPOINT_CAPABILITIES[key];
   }
   return Object.values(AUTH_ENDPOINT_CAPABILITIES).find(c => c.probeId === key || c.endpoint === key) || null;
+}
+
+/**
+ * Explicit user identity ownership classifications (R16-02).
+ * Distinguishes verified run-created resources from pre-existing fixtures or unproven identities.
+ */
+export const USER_OWNERSHIP = Object.freeze({
+  PRE_EXISTING_REFERENCED: 'PRE_EXISTING_REFERENCED',
+  RUN_CREATED_VERIFIED: 'RUN_CREATED_VERIFIED',
+  CREATION_INDETERMINATE: 'CREATION_INDETERMINATE',
+  OWNERSHIP_UNKNOWN: 'OWNERSHIP_UNKNOWN'
+});
+
+/**
+ * Validates affirmative run-created proof structure (R16-02).
+ * Rejects bare caller-supplied metadata flags (Requirement 14).
+ */
+export function isValidCreationProof(proof) {
+  if (!proof || typeof proof !== 'object') return false;
+  // A bare metadata flag alone cannot certify ownership (Requirement 14, R16-02)
+  if (proof.isCreated === true && Object.keys(proof).length === 1) return false;
+  if (proof.callerFlag === true && Object.keys(proof).length === 1) return false;
+  if (proof.created === true && Object.keys(proof).length === 1) return false;
+
+  switch (proof.type) {
+    case 'before_after_check':
+    case 'before_after_correlation':
+      return proof.preCheckAbsent === true && proof.postCheckPresent === true;
+    case 'provider_admin_create':
+      return (
+        typeof proof.providerReturnedId === 'string' &&
+        proof.providerReturnedId.trim().length > 0 &&
+        proof.affirmativeCreationConfirmed === true
+      );
+    case 'baseline_set_difference':
+      return (
+        proof.absentFromBaseline === true &&
+        typeof proof.baselineSnapshotId === 'string' &&
+        proof.baselineSnapshotId.trim().length > 0
+      );
+    default:
+      return false;
+  }
+}
+
+/**
+ * Creates a structured creation proof descriptor for verified run-created identities.
+ */
+export function createCreationProof(type = 'before_after_check', details = {}) {
+  return Object.freeze({
+    type,
+    preCheckAbsent: details.preCheckAbsent ?? true,
+    postCheckPresent: details.postCheckPresent ?? true,
+    providerReturnedId: details.providerReturnedId || null,
+    affirmativeCreationConfirmed: details.affirmativeCreationConfirmed ?? true,
+    timestamp: new Date().toISOString(),
+    ...details
+  });
 }
 
 export const TIO_SUPABASE_REAL_REF = HARDCODED_REAL_REF;
@@ -812,20 +870,33 @@ export function observeAuthResponse({
   }
 
   const hasTokens = Boolean(accessToken || refreshToken || rawSessionId);
-  const userEmail = testUser || (typeof body?.email === 'string' ? body.email : null) || 'tio-test-user-06i@proof.invalid';
+  const returnedEmail =
+    (typeof body?.user?.email === 'string' && body.user.email.trim()) ||
+    (typeof body?.email === 'string' && body.email.trim()) ||
+    (typeof body?.tokens?.user?.email === 'string' && body.tokens.user.email.trim()) ||
+    null;
+  const userEmail = returnedEmail || testUser || 'tio-test-user-06i@proof.invalid';
 
   // 3. HTTP 200 evaluation
   if (status >= 200 && status < 300) {
-    // Register created or referenced user into inventory if user ID observed (R2-04, R12-02, R15-01)
+    // Register created, observed, or referenced user into inventory if user ID observed (R2-04, R12-02, R15-01, R16-02)
     if (inv && rawUserId) {
       const uidStr = String(rawUserId).trim();
       if (canCreateUser || probeId === 'BYPASS-01' || probeId === 'BYPASS-02') {
-        if (!inv.isUserReferenced(uidStr) && !inv.isUserCreated(uidStr)) {
-          inv.registerCreatedUser({ id: uidStr, email: userEmail, source: `${probeId}_unexpected_signup` });
+        // R16-02: Never assume run-created ownership from observed response user ID alone!
+        const isSeed = Boolean(
+          inv.isSeedIdentity(uidStr, null) ||
+          (returnedEmail && inv.isSeedIdentity(null, returnedEmail)) ||
+          inv.isUserReferenced(uidStr)
+        );
+        if (isSeed) {
+          inv.registerReferencedUser({ id: uidStr, email: returnedEmail || userEmail, source: `${probeId}_unexpected_response_matched_seed` });
+        } else if (!inv.isUserTracked(uidStr)) {
+          inv.registerObservedUser({ id: uidStr, email: returnedEmail || userEmail, source: `${probeId}_unexpected_signup` });
         }
       } else {
         if (!inv.isUserReferenced(uidStr)) {
-          inv.registerReferencedUser({ id: uidStr, email: userEmail, source: `${probeId}_token_observation` });
+          inv.registerReferencedUser({ id: uidStr, email: returnedEmail || userEmail, source: `${probeId}_token_observation` });
         }
       }
     }
@@ -856,10 +927,13 @@ export function observeAuthResponse({
       };
     }
 
-    // 3A-2: User creation endpoint returned 200 without extractable user ID (R14-02)
+    // 3A-2: User creation endpoint returned 200 without extractable user ID (R14-02, R16-01)
     if (canCreateUser && !rawUserId) {
       if (inv) {
         inv.registerUntrackedUser();
+        if (canMintSession && !hasTokens) {
+          inv.registerUntrackedSession();
+        }
       }
       return {
         classification: 'AUTH_RESPONSE_INDETERMINATE',
@@ -869,16 +943,16 @@ export function observeAuthResponse({
         userId: null,
         accessToken: null,
         refreshToken: null,
-        indeterminateSession: false,
+        indeterminateSession: Boolean(canMintSession),
         indeterminateUserCreation: true,
         errorCode: 'MISSING_USER_ID',
-        error: `INDETERMINATE_AUTH_RESPONSE: Server returned HTTP ${status} for user creation request but response lacked valid user identifier (R14-02)`,
+        error: `INDETERMINATE_AUTH_RESPONSE: Server returned HTTP ${status} for user creation request but response lacked valid user identifier (R14-02, R16-01)`,
         body
       };
     }
 
-    // 3B: Missing access token on session-minting request
-    if (canMintSession && !accessToken) {
+    // 3B: Missing access token on session-minting request where token was expected, or on non-user-creating route returning 200 without tokens (R12-01, R13-01, R16-01)
+    if (canMintSession && !accessToken && (expectedOperation === 'token_issuance' || !canCreateUser)) {
       if (inv) {
         inv.registerUntrackedSession();
       }
@@ -892,7 +966,7 @@ export function observeAuthResponse({
         refreshToken: null,
         indeterminateSession: true,
         errorCode: 'MISSING_ACCESS_TOKEN',
-        error: `INDETERMINATE_AUTH_RESPONSE: Server returned HTTP ${status} for ${expectedOperation} but response lacked valid access_token (R12-01)`,
+        error: `INDETERMINATE_AUTH_RESPONSE: Server returned HTTP ${status} for ${expectedOperation} but response lacked valid access_token (R12-01, R13-01, R16-01)`,
         body
       };
     }
@@ -1092,14 +1166,16 @@ export function observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser
   if (hasTokens && inv) {
     const userEmail = testUser || (typeof body.email === 'string' ? body.email : null) || 'tio-test-user-06i@proof.invalid';
 
-    // Register user for cleanup accounting (R15-01):
-    // If BYPASS-01 or BYPASS-02, the user was potentially minted/created by the test, so eligible for deletion (unless pre-existing seed user).
-    // For all other probes (seed user or login probe), register as REFERENCED user so pre-existing user is NEVER deleted during cleanup!
+    // Register user for cleanup accounting (R15-01, R16-02):
+    // For BYPASS-01 or BYPASS-02, unproven unexpected response user IDs are recorded as observed/unverified (NEVER deleted).
+    // For seed user or login probes, register as REFERENCED user so pre-existing user is NEVER deleted during cleanup!
     if (rawUserId) {
       const uidStr = String(rawUserId).trim();
       if (probeId === 'BYPASS-01' || probeId === 'BYPASS-02') {
-        if (!inv.isUserReferenced(uidStr) && !inv.isUserCreated(uidStr)) {
-          inv.registerCreatedUser({ id: uidStr, email: userEmail, source: `${probeId}_unexpected_signup` });
+        if (inv.isSeedIdentity(uidStr, userEmail) || inv.isUserReferenced(uidStr)) {
+          inv.registerReferencedUser({ id: uidStr, email: userEmail, source: `${probeId}_unexpected_response_matched_seed` });
+        } else if (!inv.isUserTracked(uidStr)) {
+          inv.registerObservedUser({ id: uidStr, email: userEmail, source: `${probeId}_unexpected_signup` });
         }
       } else {
         if (!inv.isUserReferenced(uidStr)) {
@@ -1951,10 +2027,13 @@ function validateSessionRevocationProof(item, rawOutcome, allowedStatuses, isRev
  * Resolves PRRT_kwDOVtCmZc66lEzi, PRRT_kwDOVtCmZc66lOOS, PRRT_kwDOVtCmZc66lOOU, and PRRT_kwDOVtCmZc66lq3S.
  */
 export class TestRunInventory {
-  constructor(runId = null) {
+  constructor(runId = null, { seedEmail = null, seedUserId = null } = {}) {
     this.runId = runId || `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    this.createdUsers = new Map(); // Users affirmatively created in THIS run -> deletion eligible
+    this.createdUsers = new Map(); // Users verified as created in THIS run with affirmative proof -> deletion eligible
     this.referencedUsers = new Map(); // Pre-existing / seeded users authenticated -> NEVER deleted (R3-09)
+    this.unverifiedUsers = new Map(); // Users observed without affirmative run-created proof -> NEVER deleted (R16-02)
+    this.userOwnership = new Map(); // userId -> USER_OWNERSHIP (R16-02)
+    this.protectedSeedIdentities = new Set(); // Normalized emails or seed user IDs (R16-02)
     this.trackedSessions = new Set(); // Session IDs
     this.sessionTokens = new Map(); // sessionId -> accessToken for supported GoTrue session invalidation (R6-01)
     this.revokedSessions = new Set(); // Session IDs affirmatively verified as revoked or absent (R8-02)
@@ -1968,18 +2047,68 @@ export class TestRunInventory {
     this.finalized = false; // Set to true once executeCleanup completes (R13-02)
     this.postFinalizationMutations = []; // Late mutations attempted after finalization (R13-02)
     this._settlementListeners = [];
+
+    if (seedEmail || seedUserId) {
+      this.protectSeedIdentity({ id: seedUserId, email: seedEmail });
+    }
   }
 
   // Backward-compatible getter: returns combined map of tracked users
   get trackedUsers() {
-    return new Map([...this.referencedUsers, ...this.createdUsers]);
+    return new Map([...this.referencedUsers, ...this.createdUsers, ...this.unverifiedUsers]);
+  }
+
+  protectSeedIdentity({ id, email } = {}) {
+    if (id && typeof id === 'string' && id.trim().length > 0) {
+      const cleanId = id.trim();
+      this.protectedSeedIdentities.add(cleanId);
+      this.userOwnership.set(cleanId, USER_OWNERSHIP.PRE_EXISTING_REFERENCED);
+      if (!this.referencedUsers.has(cleanId)) {
+        this.referencedUsers.set(cleanId, {
+          id: cleanId,
+          email: email && typeof email === 'string' ? email.trim().toLowerCase() : null,
+          source: 'seed_protection',
+          ownership: USER_OWNERSHIP.PRE_EXISTING_REFERENCED,
+          referencedAt: new Date().toISOString()
+        });
+      }
+      this.createdUsers.delete(cleanId);
+      this.unverifiedUsers.delete(cleanId);
+    }
+    if (email && typeof email === 'string' && email.trim().length > 0) {
+      this.protectedSeedIdentities.add(email.trim().toLowerCase());
+    }
+  }
+
+  isSeedIdentity(id, email) {
+    if (id && this.protectedSeedIdentities.has(String(id).trim())) return true;
+    if (email && this.protectedSeedIdentities.has(String(email).trim().toLowerCase())) return true;
+    return false;
+  }
+
+  getUserOwnership(userId) {
+    if (!userId || typeof userId !== 'string') return USER_OWNERSHIP.OWNERSHIP_UNKNOWN;
+    const cleanId = userId.trim();
+    if (this.userOwnership.has(cleanId)) {
+      return this.userOwnership.get(cleanId);
+    }
+    if (this.referencedUsers.has(cleanId) || this.protectedSeedIdentities.has(cleanId)) {
+      return USER_OWNERSHIP.PRE_EXISTING_REFERENCED;
+    }
+    if (this.createdUsers.has(cleanId)) {
+      return USER_OWNERSHIP.RUN_CREATED_VERIFIED;
+    }
+    if (this.unverifiedUsers.has(cleanId)) {
+      return this.unverifiedUsers.get(cleanId)?.ownership || USER_OWNERSHIP.OWNERSHIP_UNKNOWN;
+    }
+    return USER_OWNERSHIP.OWNERSHIP_UNKNOWN;
   }
 
   /**
-   * Registers a user created during this run (e.g. accidental signup from BYPASS-02).
-   * Deletion eligible upon cleanup.
+   * Registers a user created during this run with affirmative proof (R16-02).
+   * Deletion eligible upon cleanup ONLY if RUN_CREATED_VERIFIED.
    */
-  registerCreatedUser({ id, email, source = 'test_signup' } = {}) {
+  registerCreatedUser({ id, email, source = 'test_signup', creationProof = null } = {}) {
     if (this.finalized) {
       this.postFinalizationMutations.push({
         action: 'registerCreatedUser',
@@ -1996,9 +2125,98 @@ export class TestRunInventory {
       throw new Error('registerCreatedUser requires non-empty string email');
     }
     validateTestIdentity(email);
+    const cleanId = id.trim();
     const normEmail = email.trim().toLowerCase();
-    const record = { id: id.trim(), email: normEmail, source, createdAt: new Date().toISOString() };
-    this.createdUsers.set(record.id, record);
+
+    // Anti-deletion guard: Never classify pre-existing seed user as run-created! (R16-02)
+    if (this.isSeedIdentity(cleanId, normEmail) || this.isUserReferenced(cleanId)) {
+      return this.registerReferencedUser({ id: cleanId, email: normEmail, source: `${source}_protected_seed` });
+    }
+
+    // Verify affirmative creation proof (R16-02)
+    // Caller-supplied metadata flag alone does NOT certify ownership (Requirement 14)
+    if (creationProof !== null && creationProof !== undefined) {
+      if (!isValidCreationProof(creationProof)) {
+        return this.registerObservedUser({
+          id: cleanId,
+          email: normEmail,
+          source,
+          ownership: USER_OWNERSHIP.CREATION_INDETERMINATE,
+          creationProof: null
+        });
+      }
+    } else {
+      // creationProof omitted: register as observed user with UNKNOWN ownership
+      return this.registerObservedUser({
+        id: cleanId,
+        email: normEmail,
+        source,
+        ownership: USER_OWNERSHIP.OWNERSHIP_UNKNOWN,
+        creationProof: null
+      });
+    }
+
+    const record = {
+      id: cleanId,
+      email: normEmail,
+      source,
+      ownership: USER_OWNERSHIP.RUN_CREATED_VERIFIED,
+      creationProof,
+      createdAt: new Date().toISOString()
+    };
+    this.createdUsers.set(cleanId, record);
+    this.userOwnership.set(cleanId, USER_OWNERSHIP.RUN_CREATED_VERIFIED);
+    this.unverifiedUsers.delete(cleanId);
+    return record;
+  }
+
+  /**
+   * Registers a user observed in a response without verified run-created ownership (R16-02).
+   * User is preserved and NEVER deleted during cleanup.
+   */
+  registerObservedUser({ id, email, source = 'observed_response', ownership = USER_OWNERSHIP.OWNERSHIP_UNKNOWN, creationProof = null } = {}) {
+    if (this.finalized) {
+      this.postFinalizationMutations.push({
+        action: 'registerObservedUser',
+        id,
+        email,
+        source,
+        attemptedAt: new Date().toISOString()
+      });
+    }
+    if (!id || typeof id !== 'string' || id.trim().length === 0) {
+      throw new Error('registerObservedUser requires non-empty string id');
+    }
+    const cleanId = id.trim();
+    const normEmail = email && typeof email === 'string' ? email.trim().toLowerCase() : null;
+
+    if (this.isSeedIdentity(cleanId, normEmail) || this.isUserReferenced(cleanId)) {
+      return this.registerReferencedUser({
+        id: cleanId,
+        email: normEmail || 'seed@proof.invalid',
+        source: `${source}_protected_seed`
+      });
+    }
+
+    if (creationProof && isValidCreationProof(creationProof)) {
+      return this.registerCreatedUser({ id: cleanId, email: normEmail || 'created@proof.invalid', source, creationProof });
+    }
+
+    const determinedOwnership = ownership === USER_OWNERSHIP.CREATION_INDETERMINATE
+      ? USER_OWNERSHIP.CREATION_INDETERMINATE
+      : USER_OWNERSHIP.OWNERSHIP_UNKNOWN;
+
+    const record = {
+      id: cleanId,
+      email: normEmail,
+      source,
+      ownership: determinedOwnership,
+      creationProof: null,
+      observedAt: new Date().toISOString()
+    };
+    this.unverifiedUsers.set(cleanId, record);
+    this.userOwnership.set(cleanId, determinedOwnership);
+    this.untrackedUsersCount++;
     return record;
   }
 
@@ -2023,9 +2241,21 @@ export class TestRunInventory {
       throw new Error('registerReferencedUser requires non-empty string email');
     }
     validateTestIdentity(email);
+    const cleanId = id.trim();
     const normEmail = email.trim().toLowerCase();
-    const record = { id: id.trim(), email: normEmail, source, referencedAt: new Date().toISOString() };
-    this.referencedUsers.set(record.id, record);
+    const record = {
+      id: cleanId,
+      email: normEmail,
+      source,
+      ownership: USER_OWNERSHIP.PRE_EXISTING_REFERENCED,
+      referencedAt: new Date().toISOString()
+    };
+    this.referencedUsers.set(cleanId, record);
+    this.userOwnership.set(cleanId, USER_OWNERSHIP.PRE_EXISTING_REFERENCED);
+    this.protectedSeedIdentities.add(cleanId);
+    this.protectedSeedIdentities.add(normEmail);
+    this.createdUsers.delete(cleanId);
+    this.unverifiedUsers.delete(cleanId);
     return record;
   }
 
@@ -2223,7 +2453,7 @@ export class TestRunInventory {
 
   isUserTracked(userId) {
     const id = (userId || '').trim();
-    return this.createdUsers.has(id) || this.referencedUsers.has(id);
+    return this.createdUsers.has(id) || this.referencedUsers.has(id) || this.unverifiedUsers.has(id);
   }
 
   isUserCreated(userId) {
@@ -2235,7 +2465,7 @@ export class TestRunInventory {
   }
 
   getTrackedUserIds() {
-    return Array.from(new Set([...this.createdUsers.keys(), ...this.referencedUsers.keys()]));
+    return Array.from(new Set([...this.createdUsers.keys(), ...this.referencedUsers.keys(), ...this.unverifiedUsers.keys()]));
   }
 
   getCreatedUserIds() {
@@ -2249,9 +2479,10 @@ export class TestRunInventory {
   getTrackedEmails() {
     const emails = [
       ...Array.from(this.createdUsers.values()).map(u => u.email),
-      ...Array.from(this.referencedUsers.values()).map(u => u.email)
+      ...Array.from(this.referencedUsers.values()).map(u => u.email),
+      ...Array.from(this.unverifiedUsers.values()).map(u => u.email)
     ];
-    return Array.from(new Set(emails));
+    return Array.from(new Set(emails.filter(Boolean)));
   }
 
   /**
@@ -2433,6 +2664,7 @@ export class TestRunInventory {
 
   isClean() {
     if (this.createdUsers.size > 0) return false;
+    if (this.unverifiedUsers.size > 0) return false;
     if (this.untrackedSessionsCount > 0) return false;
     if (this.untrackedUsersCount > 0) return false;
     if (this.trackedSessions.size !== this.revokedSessions.size) return false;
@@ -2453,7 +2685,8 @@ export class TestRunInventory {
       runId: this.runId,
       createdUsersCount: this.createdUsers.size,
       referencedUsersCount: this.referencedUsers.size,
-      trackedUsersCount: this.createdUsers.size + this.referencedUsers.size,
+      unverifiedUsersCount: this.unverifiedUsers.size,
+      trackedUsersCount: this.createdUsers.size + this.referencedUsers.size + this.unverifiedUsers.size,
       trackedSessionsCount: this.trackedSessions.size,
       revokedSessionsCount: this.revokedSessions.size,
       trackedTableRowsCount: Array.from(this.trackedTableRows.values()).reduce((acc, s) => acc + s.size, 0),
@@ -2474,7 +2707,7 @@ export class TestRunInventory {
    * Restores modified seed user credentials (R5-06).
    * Handles Supabase Admin { data, error } responses.
    * Verifies absence of residual resources and fails closed if residual resources remain.
-   * Resolves PRRT_kwDOVtCmZc66lOOU, PRRT_kwDOVtCmZc66lo-q, PRRT_kwDOVtCmZc66lq3S, PRRT_kwDOVtCmZc66mPVg (R5-02), PRRT_kwDOVtCmZc66mPVn (R5-03), PRRT_kwDOVtCmZc66mP9a (R5-06), and PRRT_kwDOVtCmZc66vvky (R13-02).
+   * Resolves PRRT_kwDOVtCmZc66lOOU, PRRT_kwDOVtCmZc66lo-q, PRRT_kwDOVtCmZc66lq3S, PRRT_kwDOVtCmZc66mPVg (R5-02), PRRT_kwDOVtCmZc66mPVn (R5-03), PRRT_kwDOVtCmZc66mP9a (R5-06), PRRT_kwDOVtCmZc66vvky (R13-02), and PRRT_kwDOVtCmZc66_0zI (R16-02).
    */
   async executeCleanup({ adminClient, failClosed = true, settlementTimeoutMs = 50 } = {}) {
     const report = {
@@ -2501,6 +2734,7 @@ export class TestRunInventory {
 
     const hasCleanupEligibleItems =
       this.createdUsers.size > 0 ||
+      this.unverifiedUsers.size > 0 ||
       this.trackedTableRows.size > 0 ||
       this.trackedStorageObjects.size > 0 ||
       this.trackedSessions.size > 0 ||
@@ -2542,6 +2776,19 @@ export class TestRunInventory {
         count: this.untrackedUsersCount,
         error: 'UNRESOLVED_USER_CREATION_RISK: User creation endpoint (e.g. signup) timed out, encountered transport reset, or returned unreadable response post-dispatch; orphaned user may exist without tracked identifier (R14-02)'
       });
+    }
+
+    // 0C. Unverified user ownership blocker (R16-02)
+    if (this.unverifiedUsers.size > 0) {
+      for (const [uId, uObj] of this.unverifiedUsers.entries()) {
+        report.residualResources.push({
+          type: 'unresolved_user_ownership',
+          userId: uId,
+          email: uObj.email,
+          ownership: uObj.ownership,
+          error: `UNRESOLVED_USER_OWNERSHIP: User '${uId}' was observed with ownership '${uObj.ownership}'; affirmative run-created proof was missing or unverified, user preserved without deletion (R16-02)`
+        });
+      }
     }
 
     // 0C. Unresolved dispatch obligations (R13-02, R14-01, R14-02)
@@ -2676,11 +2923,40 @@ export class TestRunInventory {
       }
     }
 
-    // 4. Delete ONLY created users by exact user ID (referencedUsers are preserved!)
+    // 4. Delete ONLY verified created users by exact user ID (referencedUsers and unverifiedUsers are preserved! R16-02)
     if (this.createdUsers.size > 0 && typeof adminClient.deleteUser !== 'function') {
       report.residualResources.push({ type: 'users', count: this.createdUsers.size, error: 'MISSING_DELETE_USER_METHOD' });
     } else {
       for (const [userId, userObj] of this.createdUsers.entries()) {
+        // Enforce ownership again immediately before destructive Admin API call (Requirement 15, R16-02)
+        const ownership = this.getUserOwnership(userId);
+        if (ownership !== USER_OWNERSHIP.RUN_CREATED_VERIFIED) {
+          report.residualUsers.push({
+            id: userId,
+            email: userObj?.email,
+            error: `SECURITY_BOUNDARY_VIOLATION: Refusing to delete user '${userId}' with non-verified ownership '${ownership}' (R16-02)`
+          });
+          continue;
+        }
+
+        if (this.isUserReferenced(userId) || this.isSeedIdentity(userId, userObj?.email)) {
+          report.residualUsers.push({
+            id: userId,
+            email: userObj?.email,
+            error: `SECURITY_BOUNDARY_VIOLATION: Refusing to delete pre-existing or seed user '${userId}' (R16-02)`
+          });
+          continue;
+        }
+
+        if (!userObj?.creationProof || !isValidCreationProof(userObj.creationProof)) {
+          report.residualUsers.push({
+            id: userId,
+            email: userObj?.email,
+            error: `SECURITY_BOUNDARY_VIOLATION: Refusing to delete user '${userId}' lacking affirmative run-created proof (R16-02)`
+          });
+          continue;
+        }
+
         try {
           const res = await adminClient.deleteUser(userId);
           if (res && res.error) {
@@ -3421,7 +3697,10 @@ export function createHostedDispatcher({
   serviceRoleKey,
   inventory = null,
   runContext = null,
-  fetchFn = globalThis.fetch
+  fetchFn = globalThis.fetch,
+  testEmail = null,
+  seedEmail = null,
+  seedUserId = null
 } = {}) {
   // 1. Strict Target Enforcement: Must be approved TEMP project ref
   const normRef = (projectRef || '').trim().toLowerCase();
@@ -3449,6 +3728,12 @@ export function createHostedDispatcher({
     validateProjectCredentialBinding(serviceRoleKey, normRef);
   }
 
+  const factorySeedEmail = seedEmail || testEmail || runContext?.testEmail || null;
+  const factorySeedUserId = seedUserId || runContext?.seedUserId || null;
+  if (inventory && (factorySeedEmail || factorySeedUserId)) {
+    inventory.protectSeedIdentity({ email: factorySeedEmail, id: factorySeedUserId });
+  }
+
   const baseUrl = `https://${normRef}.supabase.co`;
 
   // Return the async dispatcher matching (item, options) contract
@@ -3458,7 +3743,15 @@ export function createHostedDispatcher({
     const ctx = options.runContext || runContext;
     const inv = options.inventory || inventory;
     const testPassword = options.testPassword || ctx?.testPassword || getRunTestPassword(options);
-    const testUser = item?.testUser || options.testEmail || options.testUser || ctx?.testEmail || 'tio-test-user-06i@proof.invalid';
+    const testUser = item?.testUser || options.testEmail || options.testUser || ctx?.testEmail || factorySeedEmail || 'tio-test-user-06i@proof.invalid';
+
+    if (inv) {
+      const seedEmailToProtect = options.seedEmail || options.testEmail || factorySeedEmail || ctx?.seedEmail || ctx?.testEmail || null;
+      const seedUserIdToProtect = options.seedUserId || factorySeedUserId || ctx?.seedUserId || null;
+      if (seedEmailToProtect || seedUserIdToProtect) {
+        inv.protectSeedIdentity({ email: seedEmailToProtect, id: seedUserIdToProtect });
+      }
+    }
 
     const headers = {
       'apikey': anonKey,
@@ -3525,8 +3818,12 @@ export function createHostedDispatcher({
         const createdUserId = observed.userId || body?.id || body?.user?.id;
         if (inv && createdUserId) {
           const uidStr = String(createdUserId).trim();
-          if (!inv.isUserReferenced(uidStr) && !inv.isUserCreated(uidStr)) {
-            inv.registerCreatedUser({ id: uidStr, email: testUser, source: 'BYPASS-01_unexpected_signup' });
+          const retEmail = (typeof body?.user?.email === 'string' && body.user.email.trim()) || (typeof body?.email === 'string' && body.email.trim()) || null;
+          const isSeed = Boolean(inv.isSeedIdentity(uidStr, null) || (retEmail && inv.isSeedIdentity(null, retEmail)) || inv.isUserReferenced(uidStr));
+          if (isSeed) {
+            inv.registerReferencedUser({ id: uidStr, email: retEmail || testUser, source: 'BYPASS-01_unexpected_response_matched_seed' });
+          } else if (!inv.isUserTracked(uidStr)) {
+            inv.registerObservedUser({ id: uidStr, email: retEmail || testUser, source: 'BYPASS-01_unexpected_signup' });
           }
         }
 
@@ -3550,7 +3847,7 @@ export function createHostedDispatcher({
 
       case 'BYPASS-02': {
         const cap = getEndpointCapabilities('BYPASS-02') || {
-          canMintSession: false,
+          canMintSession: true,
           canCreateUser: true,
           canModifyProviderState: true,
           requiresCleanupReconciliation: true
@@ -3608,8 +3905,12 @@ export function createHostedDispatcher({
         const createdUserId = observed.userId || body?.id || body?.user?.id;
         if (inv && createdUserId) {
           const uidStr = String(createdUserId).trim();
-          if (!inv.isUserReferenced(uidStr) && !inv.isUserCreated(uidStr)) {
-            inv.registerCreatedUser({ id: uidStr, email: testUser, source: 'BYPASS-02_unexpected_signup' });
+          const retEmail = (typeof body?.user?.email === 'string' && body.user.email.trim()) || (typeof body?.email === 'string' && body.email.trim()) || null;
+          const isSeed = Boolean(inv.isSeedIdentity(uidStr, null) || (retEmail && inv.isSeedIdentity(null, retEmail)) || inv.isUserReferenced(uidStr));
+          if (isSeed) {
+            inv.registerReferencedUser({ id: uidStr, email: retEmail || testUser, source: 'BYPASS-02_unexpected_response_matched_seed' });
+          } else if (!inv.isUserTracked(uidStr)) {
+            inv.registerObservedUser({ id: uidStr, email: retEmail || testUser, source: 'BYPASS-02_unexpected_signup' });
           }
         }
         const signupDisabled =
@@ -4792,6 +5093,9 @@ export async function runHostedProbeRunner(options = {}) {
   }
 
   const activeInventory = inventory || new TestRunInventory();
+  if (testEmail || options.seedUserId || options.targetUserId) {
+    activeInventory.protectSeedIdentity({ email: testEmail, id: options.seedUserId || options.targetUserId || null });
+  }
   const activeRunContext = runContext || createRunContext({ ...options, testEmail });
   const adminClient = options.adminClient || null;
   let cleanupReport = null;

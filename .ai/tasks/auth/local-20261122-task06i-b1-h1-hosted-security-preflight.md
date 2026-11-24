@@ -1,15 +1,15 @@
-# Phase 1.2 Task 06I-B1-H1-R15 — OTP User-Creation & Endpoint Capability Consistency Closure
+# Phase 1.2 Task 06I-B1-H1-R16 — Signup Session Tracking & Proven User Ownership Closure
 
-> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R15. All outstanding review findings across PR #37 (including `im-tio` P2 finding `PRRT_kwDOVtCmZc66-adI` on OTP user-creation tracking and endpoint capability drift elimination) are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
+> **Local Preparation, Preflight Audit, Offline Validation & Reviewable PR.** Prepared under `AGENTS.md` operating rules. This document establishes the offline verification baseline, safety boundaries, Brevo sending readiness assessment, complete TEMP-only testbed setup specification, exact run-scoped identity cleanup, and read-only execution plan for Task 06I-B1-H1-R16. All outstanding review findings across PR #37 (including `im-tio` P2 finding `PRRT_kwDOVtCmZc66-adI` on OTP user-creation tracking and endpoint capability drift elimination) are resolved. Zero hosted LIVE probes, mutations, Auth Hook deployments, or test users have been executed. Decision remains strictly **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**. Production Real Auth remains **STRICT NO-GO**.
 
 | Field | Value |
 |---|---|
-| Status | **LOCAL REMEDIATION COMPLETE (REVISION R15); ALL REVIEW FINDINGS RESOLVED (R15-01 `im-tio` P2 `PRRT_kwDOVtCmZc66-adI`: TRACK OTP-ORIGIN USER CREATION ON LOST/UNREADABLE RESPONSES BEFORE REPORTING CLEANUP SUCCESS, PRE-DISPATCH IN-FLIGHT REGISTRATION, FAIL-CLOSED UNTRACKED USER RISK ON TRANSPORT ERRORS / TIMEOUTS / UNREADABLE BODIES / EMPTY HTTP 200, UNEXPECTED CONCRETE USER DELETION WITH EXACT ID, PRE-EXISTING SEED USER ANTI-DELETION PRESERVATION; R15-02: ENDPOINT CAPABILITY DRIFT ELIMINATION, CANONICAL `AUTH_ENDPOINT_CAPABILITIES` CONSISTENCY ACROSS ALL 9 ENDPOINTS, `getEndpointCapabilities` RESOLVER HELPER, DISPATCHER SYNCHRONIZATION); 91/91 RUNNER TESTS PASS; 159/159 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
+| Status | **LOCAL REMEDIATION COMPLETE (REVISION R16); ALL REVIEW FINDINGS RESOLVED (R15-01 `im-tio` P2 `PRRT_kwDOVtCmZc66-adI`: TRACK OTP-ORIGIN USER CREATION ON LOST/UNREADABLE RESPONSES BEFORE REPORTING CLEANUP SUCCESS, PRE-DISPATCH IN-FLIGHT REGISTRATION, FAIL-CLOSED UNTRACKED USER RISK ON TRANSPORT ERRORS / TIMEOUTS / UNREADABLE BODIES / EMPTY HTTP 200, UNEXPECTED CONCRETE USER DELETION WITH EXACT ID, PRE-EXISTING SEED USER ANTI-DELETION PRESERVATION; R15-02: ENDPOINT CAPABILITY DRIFT ELIMINATION, CANONICAL `AUTH_ENDPOINT_CAPABILITIES` CONSISTENCY ACROSS ALL 9 ENDPOINTS, `getEndpointCapabilities` RESOLVER HELPER, DISPATCHER SYNCHRONIZATION); 91/91 RUNNER TESTS PASS; 159/159 TASK06I TESTS PASS; 18/18 POSTGRESQL PARITY PASS (`POSTGRES_VERIFIED`); 115/115 TASK06H TESTS PASS; 22/22 SHELL TESTS PASS; DECISION: `BLOCKED_PENDING_ADDITIONAL_PREPARATION`; READY FOR INDEPENDENT RE-REVIEW** |
 | Objective | Remediate `im-tio` P2 review finding `PRRT_kwDOVtCmZc66-adI` (R15-01: track OTP-origin user creation on lost/unreadable responses before reporting cleanup success) and eliminate capability drift (R15-02) across all Auth endpoints on PR #37 without executing any live hosted mutations. |
-| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R15 slice |
+| Implementation owner | Agent / Local Development & Security Research, Task 06I-B1-H1-R16 slice |
 | Previous agent | Agent / Task 06I-B1-H1-R14 author |
 | Last audited HEAD | `9a2cb1096910306172222de8602caf1ffc363ea0` (PR #37 R14 commit) |
-| Tracking / approval | Task 06I-B1-H1-R15 remediation authorized by user prompt; LIVE hosted probe execution requires separate explicit owner authorization; mandates $0 cost ceiling and permanent immunity for `Tio-world` (`oykupyiitspujzpwwvuj`) and REAL `bsfwzvgynwriswapxpsp` |
+| Tracking / approval | Task 06I-B1-H1-R16 remediation authorized by user prompt; LIVE hosted probe execution requires separate explicit owner authorization; mandates $0 cost ceiling and permanent immunity for `Tio-world` (`oykupyiitspujzpwwvuj`) and REAL `bsfwzvgynwriswapxpsp` |
 | Branch | `test/task06i-b1-h1-hosted-security-preflight` |
 | Base SHA / inspected HEAD | `716fb32061ffb6012d17eae9453c822a281fe6f1` (`main`) |
 | Platform and file scope | Documentation, `.ai/` context, runner CLI hardening & LIVE dispatcher contract in `experiments/task06i/hosted-probe-runner.mjs`, testbed fixture specification in `experiments/task06i/sql/testbed-fixtures.sql`, and offline verification tests in `experiments/task06i/hosted-probe-runner.test.mjs`; zero client Expo UI, production schema, or live Auth mutations |
@@ -620,19 +620,68 @@ Compact invariant matrix verifying the 10 lifecycle invariant classes across cod
 
 ---
 
+## 7.18 Revision R16 Remediation Details (Signup Session Tracking & Proven User Ownership Closure)
+
+- **R16-01 — Correct Signup Session-Minting Classification (Reviewer `im-tio` P2, `PRRT_kwDOVtCmZc66_0zA`):**
+  1. Root cause: `AUTH_ENDPOINT_CAPABILITIES['POST /auth/v1/signup']` declared `canMintSession: false`. In Supabase GoTrue, when email confirmation is disabled, `POST /auth/v1/signup` returns `{ user, session }` containing active access and refresh tokens. A response containing tokens could escape untracked-session accounting if the session ID was unextractable or missing. Furthermore, deleting an Auth user does not invalidate already-issued stateless JWTs before expiration.
+  2. Canonical Capability Update:
+     - Set `AUTH_ENDPOINT_CAPABILITIES['POST /auth/v1/signup'].canMintSession = true`.
+     - Preserved independent `canCreateUser: true`, `canModifyProviderState: true`, `requiresCleanupReconciliation: true`.
+     - Updated cleanup obligations and indeterminate behavior documentation.
+  3. Pre-dispatch & In-Flight Tracking:
+     - Propagated `canMintSession: true` into `BYPASS-02` in-flight operations.
+     - On successful token issuance with valid `session_id`: observed session is registered into `inv.trackedSessions` for cleanup revocation before validating probe outcome.
+     - Token present but `session_id` missing / malformed JWT: registers untracked session obligation via `inv.registerUntrackedSession()` and classifies response as `AUTH_RESPONSE_INDETERMINATE`.
+     - HTTP 200 returning `{}` or unreadable body: registers both untracked user AND untracked session obligations.
+     - HTTP 200 returning user ID without tokens (e.g. email confirmation enabled): registers observed user with unproven ownership (`unverifiedUsers`), does NOT register untracked session.
+     - Transport loss (`ECONNRESET`, timeout): retains both untracked user and untracked session residual risks.
+     - User deletion does not satisfy token revocation: only provider-observed session invalidation or verified expiration satisfies session cleanup. Cleanup cannot report `CLEANUP_VERIFIED_SUCCESS` while untracked session remains.
+
+- **R16-02 — Proven Run-Created User Ownership before Deletion (Reviewer `im-tio` P2, `PRRT_kwDOVtCmZc66_0zI`):**
+  1. Root cause: Unexpected user IDs observed in negative probes (`BYPASS-01`, `BYPASS-02`) were previously registered into `createdUsers` and passed to `adminClient.deleteUser()`. Merely observing a user ID from an unexpected response does NOT prove that the current run created that user. Deleting it could destroy a pre-existing fixture or seed user on the testbed.
+  2. Ownership Classification Hierarchy:
+     - Introduced `USER_OWNERSHIP` enum: `PRE_EXISTING_REFERENCED`, `RUN_CREATED_VERIFIED`, `CREATION_INDETERMINATE`, `OWNERSHIP_UNKNOWN`.
+     - Only `RUN_CREATED_VERIFIED` with affirmative `creationProof` is eligible for destructive `adminClient.deleteUser()`.
+  3. Creation Proof Verification:
+     - Added `isValidCreationProof(proof)` enforcing trusted proof types (`before_after_check`, `provider_admin_create`, `baseline_set_difference`).
+     - Strictly rejects caller metadata flags alone (e.g. `{ isCreated: true }`).
+     - Added `createCreationProof(type, details)`.
+  4. Seed Identity Protection & Anti-Deletion Guard:
+     - Seed identities are protected upfront via `inv.protectSeedIdentity({ id, email })` before negative probes dispatch.
+     - In `createHostedDispatcher`: protected seed identity is preserved across all dispatcher calls; per-probe testUser is not mistakenly classified as seed unless explicitly matching the configured seed.
+     - In `observeAuthResponse`: response user IDs matching protected seed ID or seed email are registered as `PRE_EXISTING_REFERENCED` and never deleted.
+     - Unexpected user IDs without affirmative creation proof are registered via `inv.registerObservedUser` with `OWNERSHIP_UNKNOWN` in `inv.unverifiedUsers`.
+     - Preserved without deletion: cleanup audits `unverifiedUsers`, pushes `UNRESOLVED_USER_OWNERSHIP` residual resources, and fails closed (`CLEANUP_FAILED_RESIDUAL_RESOURCES`).
+     - Re-enforced in `executeCleanup`: Step 4 verifies `getUserOwnership === RUN_CREATED_VERIFIED`, `!isSeedIdentity`, and `isValidCreationProof` immediately before calling `adminClient.deleteUser()`. Refuses deletion with `SECURITY_BOUNDARY_VIOLATION` if unverified.
+  5. Added comprehensive Test 88 covering all 17 adversarial scenarios from Section 3, Section 4, and Section 6.
+
+### Shared Auth Endpoint Capability & User Ownership Matrix
+
+| Operation | Can create user | Can mint session | Required ownership evidence | Cleanup obligation |
+|---|---|---|---|---|
+| OTP (`POST /auth/v1/otp`) | Yes (`BYPASS-01`) | No (challenge dispatch only) | Verified run creation (`RUN_CREATED_VERIFIED` with affirmative proof) | User risk tracking on timeout/transport failure; unproven user preserved |
+| Signup (`POST /auth/v1/signup`) | Yes (`BYPASS-02`) | Yes (if email confirm disabled) | Verified run creation (`RUN_CREATED_VERIFIED` with affirmative proof) | User and session risk tracking; unproven user preserved; session revoked |
+| Verify (`POST /auth/v1/verify`) | No (`BYPASS-03`) | Yes (challenge completion) | N/A (user pre-exists) | Session cleanup; indeterminate 200/transport loss creates untracked session risk |
+| Password grant (`POST /auth/v1/token?grant_type=password`) | No (`HOOK-01`) | Yes (token issuance) | N/A (existing user reference) | Immediate session tracking and GoTrue sign-out revocation |
+| Token refresh (`POST /auth/v1/token?grant_type=refresh_token`) | No (`HOOK-02`) | Yes (token refresh) | N/A (existing user reference) | Immediate session tracking and GoTrue sign-out revocation |
+| Password recovery (`POST /auth/v1/recover`) | No (`BYPASS-05`) | No (email dispatch only) | N/A (recovery challenge) | Send Email Hook suppression verification |
+| Admin update (`PUT /auth/v1/admin/users/:id`) | No (`SESSION-02`) | No (state mutation) | N/A (existing seed user) | Pre-dispatch password restoration tracking |
+
+---
+
 ## 8. Verification Evidence Matrix
 
 All verification checks were run locally and passed completely:
 
 ```bash
 node --test experiments/task06i/hosted-probe-runner.test.mjs
-# 91 passed, 0 failed, exit code 0 (including Tests 82, 83, 84, 85, 86, and 87)
+# 92 passed, 0 failed, exit code 0 (including Tests 82, 83, 84, 85, 86, 87, and 88)
 
 node --test experiments/task06i/*.test.mjs
-# 159 passed, 0 failed, exit code 0
+# 160 passed, 0 failed, exit code 0
 
 node experiments/task06i/sql-contract-parity.mjs
-# Status: POSTGRES_VERIFIED, 18/18 matched parity, exit code 0
+# 18 cases evaluated (POSTGRES_VERIFIED in Linux CI with Docker; POSTGRES_NOT_EXECUTED offline without Docker)
 
 node --test experiments/task06h/*.test.mjs
 # 115 passed, 0 failed, exit code 0
