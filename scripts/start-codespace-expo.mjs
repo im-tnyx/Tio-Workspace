@@ -1,5 +1,6 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { accessSync, closeSync, constants, ftruncateSync, readFileSync } from 'node:fs';
+import { once } from 'node:events';
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -163,24 +164,38 @@ async function startServer() {
   let child;
   try {
     ftruncateSync(logFile, 0);
-    child = spawn('npm', ['run', 'mobile'], {
+    // Keep the same detached PID across exec, but wait for an ownership
+    // record before starting any Metro process or tunnel.
+    child = spawn('bash', ['-c',
+      'IFS= builtin read -r decision && [[ "$decision" == start ]] || exit 1; exec npm run mobile',
+    ], {
       cwd: projectRoot,
       detached: true,
-      env: { ...process.env, EXPO_NO_TELEMETRY: '1' },
-      stdio: ['ignore', logFile, logFile],
+      env: { ...process.env, BASH_ENV: '', EXPO_NO_TELEMETRY: '1' },
+      stdio: ['pipe', logFile, logFile],
     });
   } finally {
     closeSync(logFile);
   }
 
-  await new Promise((resolveSpawn, rejectSpawn) => {
-    child.once('spawn', resolveSpawn);
-    child.once('error', rejectSpawn);
-  });
   let exited = false;
   child.once('exit', () => { exited = true; });
-  recordMetro(recordPath, projectRoot, metroPort, child.pid);
-  child.unref();
+  try {
+    await once(child, 'spawn');
+    recordMetro(recordPath, projectRoot, metroPort, child.pid);
+    await new Promise((resolveStart, rejectStart) => {
+      child.stdin.once('error', rejectStart);
+      child.stdin.end('start\n', (error) => {
+        if (error) rejectStart(error);
+        else resolveStart();
+      });
+    });
+  } finally {
+    // An unapproved launcher sees EOF and exits. Releasing both handles
+    // lets the caller report the original failure promptly.
+    child.stdin?.destroy();
+    child.unref();
+  }
 
   const deadline = performance.now() + startupTimeoutMs;
   while (performance.now() < deadline) {
