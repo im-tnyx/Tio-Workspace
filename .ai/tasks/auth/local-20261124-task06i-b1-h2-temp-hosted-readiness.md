@@ -1,12 +1,13 @@
 # Task 06I-B1-H2 — Disposable TEMP Testbed Readiness & Controlled Execution Plan
 
-**Task ID:** `06I-B1-H2`  
-**Creation Date:** 2026-11-24  
-**Author:** Santosh Jangid (`im-tnyx`)  
-**Reviewer:** `im-tio` (Independent Reviewer)  
-**Branch:** `docs/task06i-b1-h2-temp-hosted-readiness`  
-**Base:** `main` at `2d1fe9eebfd0dc18fe213da1c2aff19df29c69c0`  
-**PR Reference:** Target PR following local readiness specification  
+**Task ID:** `06I-B1-H2` (Revision R1)
+**Creation Date:** 2026-11-24
+**Revision Date:** 2026-11-24 (R1 Closure)
+**Author:** Santosh Jangid (`im-tnyx`)
+**Reviewer:** `im-tio` (Independent Reviewer)
+**Branch:** `docs/task06i-b1-h2-temp-hosted-readiness`
+**Base:** `main` at `2d1fe9eebfd0dc18fe213da1c2aff19df29c69c0`
+**PR Reference:** [PR #43](https://github.com/im-tnyx/Tio-Workspace/pull/43)
 **Cost Ceiling:** $0.00 (Free-Tier Only)  
 **Mode:** Local Documentation & Offline Readiness Specification ONLY  
 **Hosted LIVE Dispatch:** **NOT AUTHORIZED**  
@@ -17,7 +18,7 @@
 
 ## 1. Executive Summary & Boundaries
 
-Task **06I-B1-H2** establishes the formal readiness specification, testbed configuration manifest, SQL/fixture deployment plan, transactional email dependency resolution, 18-case matrix reconciliation, and controlled execution runbook for the disposable TEMP Supabase testbed (`wvdabiwbaavfggcmpizd`).
+Task **06I-B1-H2** establishes the formal readiness specification, testbed configuration manifest, SQL/fixture deployment plan, transactional email dependency resolution, canonical 18-case matrix reconciliation, and controlled execution runbook for the disposable TEMP Supabase testbed (`wvdabiwbaavfggcmpizd`).
 
 Following the successful completion and squash merge of Task 06I-B1-H1 via PR #37 (commit `cd4ce0ac16953af23b5feb30dc48a102ae6d8f48`), all security test runner hardening, universal token tracking, verified session revocation provenance, and seed identity pre-existence proofs are fully integrated into `main`.
 
@@ -66,7 +67,7 @@ The disposable testbed (`wvdabiwbaavfggcmpizd`) requires specific Supabase Auth 
 
 > [!IMPORTANT]
 > **No Management API PATCH requests have been sent during Task 06I-B1-H2.**  
-> The specification below documents the exact target payload, rationale, expected provider behavior, verification procedure, and rollback contract for future authorized execution.
+> The specification below documents the exact target payload, rationale, expected provider behavior, verification procedure, and snapshot-based rollback contract for future authorized execution.
 
 ### Supabase Management API Target Endpoint
 - **Method:** `PATCH`
@@ -75,19 +76,22 @@ The disposable testbed (`wvdabiwbaavfggcmpizd`) requires specific Supabase Auth 
 
 ### Configuration Manifest
 
-| Configuration Field | Target Value | Current / Default Value | Security Requirement | Reason for Change | Expected Provider Behavior | Verification Method | Rollback Procedure | Authorization Gate |
+| Configuration Field | Target Value | Current / Documented Default | Security Requirement | Reason for Change | Expected Provider Behavior | Verification Method | Rollback Procedure | Authorization Gate |
 |---|---|---|---|---|---|---|---|---|
-| `external_email_magic_link_disabled` | `true` | `false` | **BYPASS-01**, **BYPASS-04** | Prevent passwordless login and unverified magic link issuance | `POST /auth/v1/otp` with email returns `422 Unprocessable Entity` (`email_provider_disabled`) | HTTP probe to `POST /auth/v1/otp` yields 422 | PATCH `{"external_email_magic_link_disabled": false}` | Owner written approval |
-| `disable_signup` | `true` | `false` | **BYPASS-02** | Prevent direct public client registration outside controlled admin flow | `POST /auth/v1/signup` returns `422 Unprocessable Entity` (`signup_disabled`) | HTTP probe to `POST /auth/v1/signup` yields 422 | PATCH `{"disable_signup": false}` | Owner written approval |
-| `jwt_exp` | `300` | `3600` | **SESSION-04**, **SESSION-05** | Bounded stateless linger window for PostgREST & Storage upon token revocation | JWT `exp - iat` equals exactly 300 seconds | Decode JWT payload from `POST /auth/v1/token?grant_type=password` and assert `exp - iat === 300` | PATCH `{"jwt_exp": 3600}` | Owner written approval |
-| `hook_custom_access_token_enabled` | `true` | `false` | **HOOK-01** to **HOOK-07** | Intercept token issuance and refresh to enforce strict password-only AMR allowlist | GoTrue executes PL/pgSQL function on sign-in and refresh; non-password AMR aborted with 500/42501 | Password sign-in returns JWT with enriched `amr_authenticated: "true"`; OTP returns 500 | PATCH `{"hook_custom_access_token_enabled": false}` | Owner written approval |
-| `hook_custom_access_token_uri` | `"pg-functions://postgres/private_auth/custom_access_token_hook"` | `null` | **HOOK-01** to **HOOK-07** | Target SQL function for custom claims enrichment | GoTrue invokes specified PostgreSQL function with event payload | Assert hook invocation via test token issuance | PATCH `{"hook_custom_access_token_uri": null}` | Owner written approval |
-| `hook_send_email_enabled` | `true` | `false` | **BYPASS-05** | Intercept outbound native Auth emails and suppress unauthorized recovery/signup | Native email dispatches intercepted; recovery aborted fail-closed | `POST /auth/v1/recover` returns 500 or anti-enumeration without email delivery | PATCH `{"hook_send_email_enabled": false}` | Owner written approval |
-| `hook_send_email_uri` | `"pg-functions://postgres/private_auth/send_email_hook"` | `null` | **BYPASS-05** | Target SQL function for email interception | GoTrue invokes specified PostgreSQL function before dispatching email | Assert email suppression via hook execution logs | PATCH `{"hook_send_email_uri": null}` | Owner written approval |
-| `external_phone_enabled` | `false` | `false` | **BYPASS-01** | Prevent SMS/phone OTP bypass | Phone endpoints disabled | HTTP probe returns 422 | PATCH `{"external_phone_enabled": false}` | Owner written approval |
-| `external_anonymous_users_enabled` | `false` | `false` | **BYPASS-04** | Prevent anonymous session minting | Anonymous auth disabled | `POST /auth/v1/signup` without credentials rejected | PATCH `{"external_anonymous_users_enabled": false}` | Owner written approval |
-| `mailer_autoconfirm` | `false` | `false` | **BYPASS-02** | Require explicit confirmation; prevent unverified email assumption | Email confirmation required unless seeded via Admin API | Admin API explicitly specifies `email_confirm: true` for seed user | PATCH `{"mailer_autoconfirm": false}` | Owner written approval |
-| `rate_limit_email_sent` | `30` | `30` | **Resource Budget** | Prevent outbound email burst on testbed | Provider rejects bursts exceeding 30/hour | Monitored via Brevo and GoTrue rate limit metrics | Revert to default 30 | Owner written approval |
+| `external_email_magic_link_disabled` | `true` | `false` | **BYPASS-01**, **BYPASS-04** | Prevent passwordless login and unverified magic link issuance | `POST /auth/v1/otp` with email returns `422 Unprocessable Entity` (`email_provider_disabled`) | HTTP probe to `POST /auth/v1/otp` yields 422 | Re-apply captured pre-change snapshot value (from `GET /config/auth` snapshot captured prior to modification; do not assume default value) | Owner written approval |
+| `disable_signup` | `true` | `false` | **BYPASS-02** | Prevent direct public client registration outside controlled admin flow | `POST /auth/v1/signup` returns `422 Unprocessable Entity` (`signup_disabled`) | HTTP probe to `POST /auth/v1/signup` yields 422 | Re-apply captured pre-change snapshot value | Owner written approval |
+| `jwt_exp` | `300` | `3600` | **SESSION-04**, **SESSION-05** | Bounded stateless linger window for PostgREST & Storage upon token revocation | JWT `exp - iat` equals exactly 300 seconds | Decode JWT payload from `POST /auth/v1/token?grant_type=password` and assert `exp - iat === 300` | Re-apply captured pre-change snapshot value | Owner written approval |
+| `hook_custom_access_token_enabled` | `true` | `false` | **HOOK-01** to **HOOK-07** | Intercept token issuance and refresh to enforce strict password-only AMR allowlist | GoTrue executes PL/pgSQL function on sign-in and refresh; non-password AMR aborted with 500/42501 | Password sign-in returns JWT with enriched `amr_authenticated: "true"`; OTP returns 500 | Re-apply captured pre-change snapshot value | Owner written approval |
+| `hook_custom_access_token_uri` | `"pg-functions://postgres/private_auth/custom_access_token_hook"` | `null` | **HOOK-01** to **HOOK-07** | Target SQL function for custom claims enrichment | GoTrue invokes specified PostgreSQL function with event payload | Assert hook invocation via test token issuance | Re-apply captured pre-change snapshot value | Owner written approval |
+| `hook_send_email_enabled` | `true` | `false` | **BYPASS-05** | Intercept outbound native Auth emails and suppress unauthorized recovery/signup | Native email dispatches intercepted; recovery aborted fail-closed | `POST /auth/v1/recover` returns 500 or anti-enumeration without email delivery | Re-apply captured pre-change snapshot value | Owner written approval |
+| `hook_send_email_uri` | `"pg-functions://postgres/private_auth/send_email_hook"` | `null` | **BYPASS-05** | Target SQL function for email interception | GoTrue invokes specified PostgreSQL function before dispatching email | Assert email suppression via hook execution logs | Re-apply captured pre-change snapshot value | Owner written approval |
+| `external_phone_enabled` | `false` | `false` | **BYPASS-01** | Prevent SMS/phone OTP bypass | Phone endpoints disabled | HTTP probe returns 422 | Re-apply captured pre-change snapshot value | Owner written approval |
+| `external_anonymous_users_enabled` | `false` | `false` | **BYPASS-04** | Prevent anonymous session minting | Anonymous auth disabled | `POST /auth/v1/signup` without credentials rejected | Re-apply captured pre-change snapshot value | Owner written approval |
+| `mailer_autoconfirm` | `false` | `false` | **BYPASS-02** | Require explicit confirmation; prevent unverified email assumption | Email confirmation required unless seeded via Admin API | Admin API explicitly specifies `email_confirm: true` for seed user | Re-apply captured pre-change snapshot value | Owner written approval |
+| `rate_limit_email_sent` | `30` | `30` | **Resource Budget** | Prevent outbound email burst on testbed | Provider rejects bursts exceeding 30/hour | Monitored via Brevo and GoTrue rate limit metrics | Re-apply captured pre-change snapshot value | Owner written approval |
+
+> [!NOTE]
+> **Rollback Contract:** Rollback must never rely on assumed defaults (e.g. `jwt_exp: 3600` or `false`). It must strictly restore the exact values recorded in the pre-change snapshot captured via `GET /v1/projects/wvdabiwbaavfggcmpizd/config/auth` immediately prior to any PATCH execution.
 
 ---
 
@@ -156,8 +160,12 @@ flowchart TD
 - **Payload:** `{"email": "tio-test-user-06i@proof.invalid", "password": "...", "email_confirm": true, "user_metadata": {"test_run_id": "<runId>"}}`.
 - **Tracking:** Recorded into `TestRunInventory.verifiedSeedUsers` with affirmative pre-existence proof (`isValidPreExistenceProof`).
 
-### Rollback Plan
-- SQL Tear-down script drops `public.task06i_session_probe`, deletes `storage.buckets` `task06i_probe_bucket`, drops `private_auth` schema cascade, deletes seed user via Admin API, and undeploys Edge Function `auth-user-probe`.
+### Safe Resource Rollback Plan
+Unconditional `DROP SCHEMA CASCADE`, full bucket deletion, or blind user deletion is strictly prohibited. The rollback procedure must be targeted, run-scoped, and dependency-verified:
+1. **Probe Table Rows:** Execute `DELETE FROM public.task06i_session_probe WHERE run_id = '<current_run_id>';`. Table schema `public.task06i_session_probe` is preserved across probe runs unless decommissioning the testbed.
+2. **Storage Objects:** Delete only the specific object uploaded for the run: Storage API `DELETE /storage/v1/object/task06i_probe_bucket/probe.txt`. Do not delete the bucket `task06i_probe_bucket` during probe teardown.
+3. **Database Hooks:** If decommissioning, drop individual functions with explicit names (`DROP FUNCTION IF EXISTS private_auth.custom_access_token_hook(jsonb);`, `DROP FUNCTION IF EXISTS private_auth.send_email_hook(jsonb);`). Drop schema `private_auth` only after verifying zero remaining objects exist (`RESTRICT`, never `CASCADE`).
+4. **Seed Identity:** If the seed identity was verified as pre-existing prior to the run, **never delete it**; restore its original seed password via Admin API. If the user was proven run-created, delete only via Admin API `DELETE /auth/v1/admin/users/:userId` after verifying `user_metadata.test_run_id === runId`.
 
 ---
 
@@ -188,6 +196,7 @@ CLI audit and test preflight established:
    - Supabase GoTrue must never be allowed to deliver native recovery or signup emails.
    - The `send_email_hook` intercepts all outbound events and aborts with `SQLSTATE 42501`.
    - Native email delivery remains **100% BLOCKED**.
+   - *Note on Evidence:* Zero emails dispatched in H2 reflects local/offline state, not proof of hosted hook behavior. Hosted email suppression will only be verified during an authorized hosted run.
 2. **Approved Application OTP Delivery (Future Architecture):**
    - Application-controlled signup and recovery OTP delivery must use a dedicated, server-side Edge Function that enforces rate limits, quarantine ledgers, and audit trails.
    - Native GoTrue SMTP configuration cannot and must not be used to bypass the strict application OTP lifecycle.
@@ -204,63 +213,78 @@ CLI audit and test preflight established:
 
 ---
 
-## 6. H2-04 — Hosted Verification Matrix Reconciliation
+## 6. H2-04 — Canonical Hosted Verification Matrix Reconciliation
 
-The 18 preflight security requirements are audited below with honest status classifications:
-- **10 `IMPLEMENTED_OFFLINE_TESTED`** (Fully covered by offline tests and PostgreSQL parity)
-- **5 `PROVIDER_PRECONDITION_MISSING`** (Requires disposable testbed PATCH, SQL fixture, or seed credentials)
-- **3 `BLOCKED_UNSUPPORTED`** (Requires Edge Function deployment or unsupported GoTrue session payload synthesis)
-- **0 `HOSTED_VERIFIED`** (Zero hosted LIVE probes executed)
+The 18 preflight security requirements are audited below strictly reconciled against `HOSTED_PROBE_SPECIFICATIONS` in `experiments/task06i/hosted-probe-runner.mjs`.
 
-### Full 18-Requirement Audit
+Three separate evaluation dimensions must be distinguished:
+1. **Offline Implementation Status:** Whether runner dispatcher logic and assertion evaluation are fully implemented and verified offline in unit test suites.
+2. **Hosted Prerequisite Readiness:** What remote cloud infrastructure, configuration changes, or test fixtures are required on the hosted testbed before a probe can be dispatched.
+3. **Actual Provider-Observed Verification:** Whether real HTTP network requests against Supabase Cloud have been executed and observed (currently 0/18).
 
-| ID | Category | Target Endpoint | Documented Capability | Expected Affirmative Evidence | False-Proof Conditions | Session & User Obligations | Current Feasibility | Execution Gate |
-|---|---|---|---|---|---|---|---|---|
-| **BYPASS-01** | Native Bypass | `POST /auth/v1/otp` | `external_email_magic_link_disabled = true` | HTTP 422 with `email_provider_disabled` | 400 Bad Request or unhandled network error | Negative probe; must NOT issue tokens or create users | `PROVIDER_PRECONDITION_MISSING` (Requires Auth PATCH) | Owner authorization |
-| **BYPASS-02** | Native Bypass | `POST /auth/v1/signup` | `disable_signup = true` | HTTP 422 with `signup_disabled` | 400 Bad Request or network failure | Negative probe; must NOT mint session or create user | `PROVIDER_PRECONDITION_MISSING` (Requires Auth PATCH) | Owner authorization |
-| **BYPASS-03** | Native Bypass | `POST /auth/v1/verify` | Custom Access Token Hook fails closed | HTTP 500 (`hook_error`); 0 tokens issued | Generic 401/403 without hook execution | Negative probe; session must NOT be tracked | `IMPLEMENTED_OFFLINE_TESTED` (Parity verified) | Owner authorization |
-| **BYPASS-04** | Native Bypass | Magiclink, Invite, Anon | Hook rejects non-password methods | HTTP 500 (`hook_error`); 0 tokens issued | 400 Bad Request without hook invocation | Negative probe; no user session minted | `IMPLEMENTED_OFFLINE_TESTED` (Parity verified) | Owner authorization |
-| **BYPASS-05** | Native Bypass | `POST /auth/v1/recover` | Send Email Hook suppresses with 42501 | HTTP 500 (`SQLSTATE 42501`); 0 recovery tokens | 200 OK with email delivered | Intercepts event; zero outbound delivery | `IMPLEMENTED_OFFLINE_TESTED` (Parity verified) | Owner authorization |
-| **HOOK-01** | Token Hook | Password Sign-In | Hook allows `password` AMR | HTTP 200 with JWT containing `amr_authenticated: "true"` | Missing claim or unverified token | Minted session registered in inventory for cleanup | `PROVIDER_PRECONDITION_MISSING` (Requires seed user & hook) | Owner authorization |
-| **HOOK-02** | Token Hook | Token Refresh | Hook preserves `password` AMR on refresh | HTTP 200 with fresh JWT containing `amr_authenticated: "true"` | Dropped AMR or missing refresh token | Fresh session tracked in inventory | `PROVIDER_PRECONDITION_MISSING` (Requires active session) | Owner authorization |
-| **HOOK-03** | Token Hook | OTP-Origin Denial | Hook rejects `otp` in AMR | HTTP 500 (`SQLSTATE 42501`); 0 tokens issued | 200 OK issuing token | Unsupported: GoTrue cannot mint OTP session with disabled routes | `BLOCKED_UNSUPPORTED` (Requires simulated payload) | Offline assertion only |
-| **HOOK-04** | Token Hook | Recovery Denial | Hook rejects `recovery` in AMR | HTTP 500 (`SQLSTATE 42501`); 0 tokens issued | 200 OK issuing token | Unsupported: GoTrue cannot mint recovery session with disabled routes | `BLOCKED_UNSUPPORTED` (Requires simulated payload) | Offline assertion only |
-| **HOOK-05** | Token Hook | Mixed AMR Denial | Traversal rejects mixed password+disallowed | HTTP 500 (`SQLSTATE 42501`); 0 tokens issued | 200 OK accepting mixed AMR | Negative probe; invalidation obligation | `IMPLEMENTED_OFFLINE_TESTED` (Parity verified) | Owner authorization |
-| **HOOK-06** | Token Hook | Malformed AMR | RFC 8176 schema enforcement | HTTP 500 (`SQLSTATE 42501`); 0 tokens issued | Accepted non-array or missing method | Negative probe; fail closed | `IMPLEMENTED_OFFLINE_TESTED` (Parity verified) | Owner authorization |
-| **HOOK-07** | Token Hook | Exception Handling | Unhandled SQL exception fails closed | HTTP 500 (`hook_error`); transaction abort | Accepted token on SQL error | Critical halt on failure; zero session | `IMPLEMENTED_OFFLINE_TESTED` (Parity verified) | Owner authorization |
-| **SESSION-01** | Session/Consumer | Session Minting | GoTrue creates row in `auth.sessions` | `auth.sessions` contains active session for test user | Missing DB record | Tracked session ID in inventory | `PROVIDER_PRECONDITION_MISSING` (Requires DB inspection) | Owner authorization |
-| **SESSION-02** | Session/Consumer | Password Invalidation | Admin password update revokes sessions | Sessions revoked; `auth.sessions` drops to 0 | Active sessions remain in DB | Inventory records revocation confirmed | `PROVIDER_PRECONDITION_MISSING` (Requires Admin API) | Owner authorization |
-| **SESSION-03** | Session/Consumer | Direct User Rejection | `GET /auth/v1/user` rejects revoked JWT | HTTP 403 Forbidden (`session_not_found`) | Generic 401 or token acceptance | Requires verified revocation baseline | `IMPLEMENTED_OFFLINE_TESTED` (Runner validated) | Owner authorization |
-| **SESSION-04** | Session/Consumer | PostgREST Linger | Stateles JWT accepted until `exp` (300s) | HTTP 200 on `task06i_session_probe` until `exp` | Rejected prior to `exp` without hook | Correlated session ID verified; clean row | `PROVIDER_PRECONDITION_MISSING` (Requires table fixture) | Owner authorization |
-| **SESSION-05** | Session/Consumer | Storage Linger | Stateless JWT accepted until `exp` (300s) | HTTP 200 on `task06i_probe_bucket` object | Missing object (404) or bad owner (403) | Correlated session ID verified; delete obj | `PROVIDER_PRECONDITION_MISSING` (Requires Storage object) | Owner authorization |
-| **SESSION-06** | Session/Consumer | Edge Function Rejection | `supabase.auth.getUser()` rejects revoked | HTTP 403 / `AuthSessionMissingError` inside Deno | Generic 401 or synthesized error | Edge Function deployment required | `BLOCKED_UNSUPPORTED` (Requires Edge Function) | Owner authorization |
+### Canonical 18-Requirement Audit
+
+| ID | Category | Layer | Target Endpoint | Documented Capability / Evidence Source | Required Hosted Prerequisites | Offline Implementation Status | Hosted Verification Status |
+|---|---|---|---|---|---|---|---|
+| **BYPASS-01** | Native Bypass | Layer B (Hosted) | `POST /auth/v1/otp` | `GOTRUE_HTTP_422_EMAIL_PROVIDER_DISABLED` | `MANAGEMENT_API_PATCH_EXTERNAL_EMAIL_MAGIC_LINK_DISABLED` | **`IMPLEMENTED_OFFLINE_TESTED`** | `HOSTED_NOT_TESTED` |
+| **BYPASS-02** | Native Bypass | Layer B (Hosted) | `POST /auth/v1/signup` | `GOTRUE_HTTP_422_SIGNUP_DISABLED` | `MANAGEMENT_API_PATCH_DISABLE_SIGNUP` | **`IMPLEMENTED_OFFLINE_TESTED`** | `HOSTED_NOT_TESTED` |
+| **BYPASS-03** | Native Bypass | Layer B (Hosted) | `POST /auth/v1/verify` | `CUSTOM_ACCESS_TOKEN_HOOK_SQLSTATE_42501` | `VALID_DELIVERED_OTP_CHALLENGE`, `HOOK_CUSTOM_ACCESS_TOKEN_ENABLED` | **`PROVIDER_PRECONDITION_MISSING`** | `HOSTED_NOT_TESTED` |
+| **BYPASS-04** | Native Bypass | Layer B (Hosted) | Magic Link / Invite / Anon | `CUSTOM_ACCESS_TOKEN_HOOK_SQLSTATE_42501` | `VALID_MAGIC_LINK_TOKEN`, `HOOK_CUSTOM_ACCESS_TOKEN_ENABLED` | **`PROVIDER_PRECONDITION_MISSING`** | `HOSTED_NOT_TESTED` |
+| **BYPASS-05** | Native Bypass | Layer B (Hosted) | `POST /auth/v1/recover` | `SEND_EMAIL_HOOK_SQLSTATE_42501` | `HOOK_SEND_EMAIL_ENABLED` | **`IMPLEMENTED_OFFLINE_TESTED`** | `HOSTED_NOT_TESTED` |
+| **HOOK-01** | Token Hook | Layer B (Hosted) | `POST /auth/v1/token?grant_type=password` | `DECODED_JWT_AMR_AUTHENTICATED_CLAIM` | `SEEDED_PASSWORD_USER`, `HOOK_CUSTOM_ACCESS_TOKEN_ENABLED` | **`IMPLEMENTED_OFFLINE_TESTED`** | `HOSTED_NOT_TESTED` |
+| **HOOK-02** | Token Hook | Layer B (Hosted) | `POST /auth/v1/token?grant_type=refresh_token` | `DECODED_REFRESHED_JWT_AMR_PRESERVATION` | `ACTIVE_REFRESH_TOKEN_FROM_HOOK_01`, `HOOK_CUSTOM_ACCESS_TOKEN_ENABLED` | **`IMPLEMENTED_OFFLINE_TESTED`** | `HOSTED_NOT_TESTED` |
+| **HOOK-03** | Token Hook | Layer B (Hosted) | OTP-Origin Token Denial | `CUSTOM_ACCESS_TOKEN_HOOK_SQLSTATE_42501` | `VALID_DELIVERED_OTP_CHALLENGE`, `HOOK_CUSTOM_ACCESS_TOKEN_ENABLED` | **`PROVIDER_PRECONDITION_MISSING`** | `HOSTED_NOT_TESTED` |
+| **HOOK-04** | Token Hook | Layer B (Hosted) | Recovery-Origin Token Denial | `CUSTOM_ACCESS_TOKEN_HOOK_SQLSTATE_42501` | `VALID_DELIVERED_RECOVERY_TOKEN`, `HOOK_CUSTOM_ACCESS_TOKEN_ENABLED` | **`PROVIDER_PRECONDITION_MISSING`** | `HOSTED_NOT_TESTED` |
+| **HOOK-05** | Token Hook | Layer A (Offline SQL) | Mixed AMR Rejection | `PLPGSQL_FUNCTION_EXECUTION_42501` | `SQL_FUNCTION_PARITY_TEST` (Cannot mutate server AMR via HTTP client body) | **`BLOCKED_UNSUPPORTED`** | `HOSTED_NOT_TESTED` |
+| **HOOK-06** | Token Hook | Layer A (Offline SQL) | Malformed/Missing AMR | `PLPGSQL_FUNCTION_EXECUTION_42501` | `SQL_FUNCTION_PARITY_TEST` (Cannot mutate server AMR via HTTP client body) | **`BLOCKED_UNSUPPORTED`** | `HOSTED_NOT_TESTED` |
+| **HOOK-07** | Token Hook | Layer A (Offline SQL) | Exception Handling | `PLPGSQL_TRANSACTION_ABORT_500` | `SQL_FUNCTION_PARITY_TEST` (Cannot inject SQL runtime exception over HTTP) | **`BLOCKED_UNSUPPORTED`** | `HOSTED_NOT_TESTED` |
+| **SESSION-01** | Session/Consumer | Layer B (Hosted) | `GET /auth/v1/user` | `REAL_SESSION_ID_CORRELATION` | `ACTIVE_SESSION_FROM_HOOK_01`, `TIO_TEMP_SERVICE_ROLE_KEY` | **`IMPLEMENTED_OFFLINE_TESTED`** | `HOSTED_NOT_TESTED` |
+| **SESSION-02** | Session/Consumer | Layer B (Hosted) | `PUT /auth/v1/admin/users/:userId` | `ADMIN_API_PASSWORD_UPDATE_AND_SESSION_REVOCATION` | `ACTIVE_USER_ID_FROM_HOOK_01`, `TIO_TEMP_SERVICE_ROLE_KEY` | **`IMPLEMENTED_OFFLINE_TESTED`** | `HOSTED_NOT_TESTED` |
+| **SESSION-03** | Session/Consumer | Layer B (Hosted) | `GET /auth/v1/user (post-reset)` | `GOTRUE_HTTP_403_SESSION_NOT_FOUND` | `PRE_RESET_TOKEN`, `ADMIN_PASSWORD_RESET_COMPLETED` | **`IMPLEMENTED_OFFLINE_TESTED`** | `HOSTED_NOT_TESTED` |
+| **SESSION-04** | Session/Consumer | Layer B (Hosted) | `GET /rest/v1/task06i_session_probe` | `POSTGREST_STATELESS_HTTP_200_BEFORE_EXP` | `PRE_RESET_TOKEN_BEFORE_EXPIRY`, `TABLE_FIXTURE_TASK06I_SESSION_PROBE` | **`IMPLEMENTED_OFFLINE_TESTED`** | `HOSTED_NOT_TESTED` |
+| **SESSION-05** | Session/Consumer | Layer B (Hosted) | `GET /storage/v1/object/.../probe.txt` | `STORAGE_STATELESS_HTTP_200_BEFORE_EXP` | `PRE_RESET_TOKEN_BEFORE_EXPIRY`, `STORAGE_OBJECT_FIXTURE_PROVISIONED` | **`IMPLEMENTED_OFFLINE_TESTED`** | `HOSTED_NOT_TESTED` |
+| **SESSION-06** | Session/Consumer | Layer B (Hosted) | `POST /functions/v1/auth-user-probe` | `EDGE_FUNCTION_AUTH_SESSION_MISSING_ERROR` | `EDGE_FUNCTION_AUTH_USER_PROBE_DEPLOYED`, `PRE_RESET_TOKEN` | **`PROVIDER_PRECONDITION_MISSING`** | `HOSTED_NOT_TESTED` |
+
+### Matrix Summary Counts
+- **Total Security Requirements:** 18
+- **`IMPLEMENTED_OFFLINE_TESTED`:** **10** (`BYPASS-01`, `BYPASS-02`, `BYPASS-05`, `HOOK-01`, `HOOK-02`, `SESSION-01`, `SESSION-02`, `SESSION-03`, `SESSION-04`, `SESSION-05`)
+- **`PROVIDER_PRECONDITION_MISSING`:** **5** (`BYPASS-03`, `BYPASS-04`, `HOOK-03`, `HOOK-04`, `SESSION-06`)
+- **`BLOCKED_UNSUPPORTED`:** **3** (`HOOK-05`, `HOOK-06`, `HOOK-07`)
+- **`HOSTED_VERIFIED`:** **0** (All 18 are `HOSTED_NOT_TESTED`)
+
+### Execution Scope & Runner Capability Audit (R1-01)
+1. **Specific Proposed Executable Probe IDs:**
+   The only probes whose dispatcher logic is fully implemented and could be executed once testbed preconditions are satisfied are the 10 `IMPLEMENTED_OFFLINE_TESTED` cases:
+   `BYPASS-01`, `BYPASS-02`, `BYPASS-05`, `HOOK-01`, `HOOK-02`, `SESSION-01`, `SESSION-02`, `SESSION-03`, `SESSION-04`, `SESSION-05`.
+2. **Runner Subset Execution Capability:** **NOT IMPLEMENTED** (`BLOCKED_PENDING_SUBSET_RUNNER`).
+   - In `experiments/task06i/hosted-probe-runner.mjs`, `planProbeExecution` unconditionally maps over all 18 items in `PREFLIGHT_REQUIREMENTS`, and `runHostedProbeRunner` unconditionally iterates through all items in `plan.plannedCases`.
+   - The runner currently has **no mechanism** to filter or execute a subset of probes.
+   - If executed in LIVE mode today, the runner would attempt to dispatch all 18 cases and abort on the first missing prerequisite (e.g. `BYPASS-03`).
+   - **Requirement:** A dedicated code change to support probe filtering (e.g. `options.selectedProbeIds`) must be implemented, locally tested, and reviewed before any subset live execution can ever be authorized.
 
 ---
 
-## 7. H2-05 — Controlled Execution & Recovery Runbook
+## 7. H2-05 — Controlled Execution & Crash-Recovery Runbook
 
-A future authorized test run on the disposable TEMP testbed must strictly follow this 14-step sequential protocol.
-
-### 14-Step Controlled Execution Sequence
-1. **Target Verification:** Assert `projectRef === 'wvdabiwbaavfggcmpizd'` and assert project is in organization `llmbrmxhyirtoqndazpg`. Deny-by-default on any mismatch.
-2. **Pre-Change Snapshot:** Invoke `GET /v1/projects/wvdabiwbaavfggcmpizd/config/auth` via Management API and record raw configuration snapshot to test inventory.
-3. **Written Authorization Gate:** Verify presence of active, unexpired, written owner authorization token for the specific run ID.
-4. **Deploy Database Fixtures:** Execute Phase 1–5 SQL from `experiments/task06i/sql/testbed-fixtures.sql` via Supabase CLI (`supabase db push` or direct SQL execute).
-5. **Deploy Security Hooks:** Verify schema `private_auth`, `custom_access_token_hook`, and `send_email_hook` are compiled without errors.
-6. **Apply Management API PATCH:** Apply the approved Auth configuration manifest (disabling public signup, disabling magic links, setting JWT exp to 300s, enabling hooks).
-7. **Verify Hook Registration:** Verify Management API GET confirms `hook_custom_access_token_enabled: true` and `hook_send_email_enabled: true`.
-8. **Provision Seed User:** Call `POST /auth/v1/admin/users` to create dedicated test seed identity. Register user in `TestRunInventory.verifiedSeedUsers` with affirmative pre-existence proof.
-9. **Provision Storage Fixture Object:** Using seed user JWT, upload actual bytes to `task06i_probe_bucket/probe.txt` and establish HTTP 200 GET baseline.
-10. **Execute Feasible Probes Sequentially:** Execute authorized test cases with mandatory throttling (minimum 100ms between calls).
-11. **Immediate Halt on Critical Failure:** If `HOOK-01`, `HOOK-07`, or `SESSION-03` fail, halt immediately and abort remaining probes.
-12. **Execute Deterministic Inventory Cleanup:**
+### Controlled Execution Sequence (Strict Chronological Order)
+1. **Owner Authorization & Project Verification:** Confirm written owner authorization token for the specific run ID. Assert `projectRef === 'wvdabiwbaavfggcmpizd'` and assert project is in organization `llmbrmxhyirtoqndazpg`. Deny-by-default on any mismatch.
+2. **Recovery Capability Verification:** Confirm durable journaling and recovery mechanisms are active and verified (`BLOCKED_PENDING_DURABLE_RECOVERY`).
+3. **Pre-Change Configuration Snapshot:** Execute `GET /v1/projects/wvdabiwbaavfggcmpizd/config/auth` via Management API. Record raw pre-change JSON snapshot into persistent store.
+4. **Deploy Database Fixtures:** Apply Phase 1–5 SQL (`private_auth` schema, hook functions, least-privilege role grants, probe table, probe bucket) from `experiments/task06i/sql/testbed-fixtures.sql`. Verify zero errors.
+5. **Apply Management API PATCH:** Apply the approved Auth configuration manifest (disabling public signup, disabling magic links, setting JWT exp to 300s, enabling hooks).
+6. **Verify Hook Registration:** Verify Management API GET confirms `hook_custom_access_token_enabled: true` and `hook_send_email_enabled: true`.
+7. **Provision Seed Identity:** Call Admin API `POST /auth/v1/admin/users` to create dedicated test seed identity. Record seed user ID in inventory with verified pre-existence proof.
+8. **Provision Storage Fixture Object:** Using seed user JWT, upload actual bytes to `task06i_probe_bucket/probe.txt` via Storage API and establish HTTP 200 GET baseline.
+9. **Execute Authorized Probes:** Execute only authorized probes sequentially with mandatory 100ms throttling (requires subset runner capability).
+10. **Immediate Halt on Critical Failure:** If `HOOK-01`, `HOOK-07`, or `SESSION-03` fail, halt immediately and abort remaining probes.
+11. **Execute Deterministic Cleanup:**
     - Delete created Storage probe object (`DELETE /storage/v1/object/...`).
-    - Revoke all tracked sessions via Admin API (`signOut`).
+    - Revoke all tracked sessions via GoTrue `signOut`.
     - Restore original seed user password via Admin API.
-    - Delete test-created probe table rows.
+    - Delete test-created probe table rows (`WHERE run_id = '<runId>'`).
     - Assert `untrackedSessionObligations === 0` and `unverifiedUsers === 0`.
-13. **Restore Testbed Configuration:** Revert Auth configuration to pre-test snapshot via Management API PATCH.
-14. **Emit Final Audit Report:** Sanitize all tokens and secrets; generate structured test report with verified evidence.
+12. **Restore Testbed Configuration:** Revert Auth configuration to the exact pre-test snapshot JSON captured in Step 3 via Management API PATCH.
+13. **Emit Final Audit Report:** Sanitize all tokens and secrets; generate structured test report with verified evidence.
 
 ### Explicit Hard STOP Conditions
 The runner will immediately abort execution and trigger cleanup if any of the following occur:
@@ -274,15 +298,43 @@ The runner will immediately abort execution and trigger cleanup if any of the fo
 - Session cleanup (`signOut`) fails or returns unhandled error.
 - Any network request times out or returns unexpected 5xx gateway errors.
 
-### Recovery from Interrupted Runs
-If a test run crashes, is terminated, or encounters an indeterminate network failure:
-1. Re-instantiate `TestRunInventory` from persisted run journal.
-2. Invalidate all tracked sessions using GoTrue Admin `signOut`.
-3. Query `auth.users` for the seed email; restore original seed password.
-4. Clean up probe table rows matching `run_id`.
-5. Remove test Storage object `probe.txt`.
-6. Query Management API to verify Auth config has not drifted.
-7. Record run status as `INTERRUPTED_RECOVERY_COMPLETED`.
+---
+
+### Crash-Recovery & Durable Journal Specification (R1-02)
+
+#### Current Implementation Limitation
+- **Automatic Crash Recovery:** **NOT IMPLEMENTED** (`BLOCKED_PENDING_DURABLE_RECOVERY`).
+- In `experiments/task06i/hosted-probe-runner.mjs`, `TestRunInventory` retains tracked sessions, access tokens, in-flight operations, and seed credentials purely in volatile JavaScript memory (`Set` and `Map`).
+- If the Node.js process crashes, terminates, or loses power, all in-memory references are destroyed.
+- Because GoTrue client session invalidation (`signOut`) requires the bearer access token (per R6-01 contract), a crashed process loses the tokens required to invalidate active sessions via the client SDK.
+
+#### Durable Recovery Design Architecture (Future Implementation Prerequisite)
+To make recovery deterministic across process restarts, a durable journal specification is required:
+1. **Run Journal Binding:** A local write-ahead log file keyed by `runId` and bound strictly to `wvdabiwbaavfggcmpizd`.
+2. **Pre-Change Snapshot Storage:** Exact pre-change configuration JSON from `GET /config/auth` saved before any PATCH dispatch.
+3. **Verified Seed Identity Journaling:** Seed user ID, email, and pre-test state written to journal before probe execution.
+4. **Write-Ahead Resource Ownership:** Before or immediately upon receiving user IDs, session IDs, or storage object paths, they must be committed to the journal.
+5. **Mutation Obligation Tracking:** Register password mutation obligation to journal *before* calling `PUT /admin/users/:id`.
+6. **Durable State Machine:** Operations transition across explicit states: `PENDING` → `IN_FLIGHT` → `SETTLED` → `REVOCATION_REQUIRED` → `RESTORE_REQUIRED` → `CLEANED`.
+7. **Rehydration Engine:** On process startup, a recovery coordinator inspects for unfinalized journals, binds to the testbed, and drives rollback.
+8. **Safe Replay & Idempotency:** Cleanup operations must handle already-deleted resources gracefully without throwing errors.
+9. **Verified Cleanup Evidence:** Journal is only marked `CLEANED` after affirmative verification queries confirm resource absence.
+
+#### Secret-Handling Safeguards
+- **Prohibition of Plaintext Credentials:** Plaintext passwords, service role keys, or JWT access tokens must **never** be written to unencrypted files on disk.
+- **Encrypted Local Custody:** If access tokens or seed passwords must survive process crashes, they must be encrypted using operating system credential protection (e.g. Windows DPAPI, macOS Keychain, Linux SecretService, or AES-256-GCM with an ephemeral OS-protected key).
+- **Strictly Prohibited Locations:** Secrets must never appear in Git-tracked files, unencrypted JSON, PR comments, CI artifacts, terminal logs, or shared cloud storage.
+
+#### Concrete Manual Recovery Alternative
+If a test run crashes before durable journaling is implemented, an operator must execute this concrete manual recovery procedure:
+1. **Identify Run-Created Users:** Call Admin API `GET /auth/v1/admin/users` using `service_role_key`. Filter for `user_metadata.test_run_id === '<runId>'`.
+2. **Delete Run-Created Users:** Call Admin API `DELETE /auth/v1/admin/users/:userId` for each confirmed run-created user.
+3. **Restore Seed User Password & Revoke Sessions:** Call Admin API `PUT /auth/v1/admin/users/:seedUserId` with the original seed password (retrieved from secure operator custody). GoTrue natively invalidates all active sessions in `auth.sessions` upon administrative password update!
+4. **Delete Storage Objects:** Call Storage API `DELETE /storage/v1/object/task06i_probe_bucket/probe.txt` using `service_role_key`.
+5. **Delete Probe Table Rows:** Execute SQL `DELETE FROM public.task06i_session_probe WHERE run_id = '<runId>';`.
+6. **Revert Auth Configuration:** Re-apply the raw JSON pre-change snapshot captured in Step 3 via Management API `PATCH /v1/projects/wvdabiwbaavfggcmpizd/config/auth`.
+7. **Verify Absence:** Assert `GET /admin/users` returns 0 run-created users, Storage `probe.txt` returns 404, probe table has 0 rows for `run_id`, and Auth config matches pre-change snapshot.
+8. **Verdict:** If any manual recovery step cannot be verified affirmatively, record status: **`INTERRUPTED_RECOVERY_BLOCKED`**. Never report `INTERRUPTED_RECOVERY_COMPLETED` without affirmative evidence.
 
 ---
 
@@ -293,7 +345,7 @@ The entire test suite was executed locally on branch `docs/task06i-b1-h2-temp-ho
 ```powershell
 # 1. Task 06I Hosted Probe Runner and Security Suites
 node --test experiments/task06i/*.test.mjs
-# Result: 161 passed, 0 failed, 0 skipped (duration: ~18.8s)
+# Result: 161 passed, 0 failed, 0 skipped (duration: ~12.9s)
 
 # 2. PostgreSQL Contract Parity Check
 node experiments/task06i/sql-contract-parity.mjs
@@ -301,7 +353,7 @@ node experiments/task06i/sql-contract-parity.mjs
 
 # 3. Task 06H Isolated Auth Integration Suites
 node --test experiments/task06h/*.test.mjs
-# Result: 115 passed, 0 failed, 0 skipped (duration: ~120ms)
+# Result: 115 passed, 0 failed, 0 skipped (duration: ~116ms)
 
 # 4. Repository Verification Suite
 npm run verify
@@ -324,7 +376,7 @@ The approved H1 security test runner (`experiments/task06i/hosted-probe-runner.m
 | **Supabase Cloud PATCH** | **NOT EXECUTED** | Zero Management API calls dispatched during H2 |
 | **Hosted SQL Deployment** | **NOT EXECUTED** | Zero SQL migrations or fixtures applied to remote database |
 | **Hosted User Provisioning** | **NOT EXECUTED** | Zero test users created in Supabase Auth |
-| **Transactional Email Dispatch** | **NOT EXECUTED** | Zero test emails sent; native email suppression verified |
+| **Transactional Email Dispatch** | **NOT EXECUTED** | Zero test emails sent; native email suppression verified offline |
 | **Production Real Auth** | **STRICT NO-GO** | Pinned GoTrue security failures remain; production Auth gates locked |
 | **Cost Ceiling ($0)** | **HONORED** | Zero paid services, zero domain purchases, Free-tier testbed preserved |
 | **Project Boundary Protection** | **HONORED** | REAL (`bsfwzvgynwriswapxpsp`) and Tio-world (`oykupyiitspujzpwwvuj`) permanently immune |
@@ -339,15 +391,19 @@ Before any future Phase 1.2 hosted test execution can occur, the repository owne
 - [ ] **Approval 2:** Authorization to deploy `experiments/task06i/sql/testbed-fixtures.sql` to TEMP testbed database.
 - [ ] **Approval 3:** Confirmation of Brevo transactional email strategy (Maintain Option C: native suppression fail-closed, defer external delivery).
 - [ ] **Approval 4:** Authorization to provision a single temporary test seed identity (`tio-test-user-06i@proof.invalid`) on TEMP testbed.
-- [ ] **Approval 5:** Authorization to execute the 10 feasible test cases in sequential LIVE mode against TEMP testbed.
-- [ ] **Approval 6:** Formal acceptance that `HOOK-03`, `HOOK-04`, and `SESSION-06` remain `BLOCKED_UNSUPPORTED` pending Edge Function and synthetic payload infrastructure.
+- [ ] **Approval 5:** Approval of the exact 10 feasible probe IDs proposed for execution (`BYPASS-01`, `BYPASS-02`, `BYPASS-05`, `HOOK-01`, `HOOK-02`, `SESSION-01`, `SESSION-02`, `SESSION-03`, `SESSION-04`, `SESSION-05`).
+- [ ] **Approval 6:** Formal acknowledgment that runner subset execution capability is currently **NOT IMPLEMENTED** (`BLOCKED_PENDING_SUBSET_RUNNER`) and must be implemented before partial live dispatch.
+- [ ] **Approval 7:** Formal acknowledgment that automatic durable crash recovery is currently **NOT IMPLEMENTED** (`BLOCKED_PENDING_DURABLE_RECOVERY`) and requires either durable journal implementation or operator manual recovery authorization.
+- [ ] **Approval 8:** Formal acceptance that `BYPASS-03`, `BYPASS-04`, `HOOK-03`, `HOOK-04`, `SESSION-06` remain `PROVIDER_PRECONDITION_MISSING`, and `HOOK-05`, `HOOK-06`, `HOOK-07` remain `BLOCKED_UNSUPPORTED` at Layer B.
 
 ---
 
 ## 11. Final Decision & Status
 
 - **H1 Status:** **COMPLETE & MERGED** (PR #37, commit `cd4ce0ac16953af23b5feb30dc48a102ae6d8f48`)
-- **H2 Planning Status:** **READY FOR INDEPENDENT REVIEW**
+- **H2 Planning Status:** **READY FOR INDEPENDENT REVIEW** (Revision R1)
+- **Runner Subset Execution:** **NOT IMPLEMENTED** (`BLOCKED_PENDING_SUBSET_RUNNER`)
+- **Durable Crash Recovery:** **NOT IMPLEMENTED** (`BLOCKED_PENDING_DURABLE_RECOVERY`)
 - **Hosted Verification:** **0/18**
 - **Hosted LIVE Dispatch:** **NOT AUTHORIZED**
 - **Production Real Auth:** **STRICT NO-GO**
