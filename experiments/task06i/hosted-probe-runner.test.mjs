@@ -35,7 +35,9 @@ import {
   getEndpointCapabilities,
   USER_OWNERSHIP,
   isValidCreationProof,
-  createCreationProof
+  createCreationProof,
+  isValidPreExistenceProof,
+  createPreExistenceProof
 } from './hosted-probe-runner.mjs';
 
 const defaultMockAdminClient = {
@@ -406,7 +408,20 @@ test('12. Throttling interval is enforced between consecutive requests and legit
       };
     }
     if (item.id === 'SESSION-04' || item.id === 'SESSION-05') {
-      return { passed: true, status: 200, token_unexpired: true, jwt_lifetime_seconds: 300, lifetime_bounded: true, stateless_linger_documented: true, note: 'stateless linger window verified and documented' };
+      return {
+        passed: true,
+        status: 200,
+        token_unexpired: true,
+        jwt_lifetime_seconds: 300,
+        lifetime_bounded: true,
+        revocation_verified: true,
+        revoked_session_id: 'session-uuid-5678',
+        correlated_session_id: 'session-uuid-5678',
+        session_correlated: true,
+        pre_invalidation_verified: true,
+        stateless_linger_documented: true,
+        note: 'stateless linger window verified and documented'
+      };
     }
     if (item.id === 'SESSION-06') {
       return {
@@ -714,7 +729,20 @@ test('22. Session cases fail closed without explicit evidence of session state (
   assert.equal(validateProbeOutcome(session04, { passed: true, status: 200 }).passed, false);
   assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, stateless_linger_documented: true }).passed, false);
   assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, token_unexpired: true, stateless_linger_documented: true, note: '' }).passed, false);
-  assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, token_unexpired: true, jwt_lifetime_seconds: 300, lifetime_bounded: true, stateless_linger_documented: true, note: 'linger window verified' }).passed, true);
+  assert.equal(validateProbeOutcome(session04, {
+    passed: true,
+    status: 200,
+    token_unexpired: true,
+    jwt_lifetime_seconds: 300,
+    lifetime_bounded: true,
+    revocation_verified: true,
+    revoked_session_id: 'sess-test',
+    correlated_session_id: 'sess-test',
+    session_correlated: true,
+    pre_invalidation_verified: true,
+    stateless_linger_documented: true,
+    note: 'linger window verified'
+  }).passed, true);
 });
 
 test('23. Top-level abortReason is sanitized against leaked secrets (PRRT_kwDOVtCmZc66jG6Y)', async () => {
@@ -883,7 +911,20 @@ test('26. validateProbeOutcome rejects status 0, missing status, and false-posit
   assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, stateless_linger_documented: true }).passed, false);
   assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, token_unexpired: true, stateless_linger_documented: true, note: '' }).passed, false);
   assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, token_unexpired: true, stateless_linger_documented: true, evidence: {} }).passed, false);
-  assert.equal(validateProbeOutcome(session04, { passed: true, status: 200, token_unexpired: true, jwt_lifetime_seconds: 300, lifetime_bounded: true, stateless_linger_documented: true, note: 'linger window verified' }).passed, true);
+  assert.equal(validateProbeOutcome(session04, {
+    passed: true,
+    status: 200,
+    token_unexpired: true,
+    jwt_lifetime_seconds: 300,
+    lifetime_bounded: true,
+    revocation_verified: true,
+    revoked_session_id: 'sess-test',
+    correlated_session_id: 'sess-test',
+    session_correlated: true,
+    pre_invalidation_verified: true,
+    stateless_linger_documented: true,
+    note: 'linger window verified'
+  }).passed, true);
 
   // BYPASS-05 recovery suppression without affirmative evidence
   const bypass05 = { id: 'BYPASS-05', category: 'Native Bypass' };
@@ -2485,17 +2526,31 @@ test('46. Task 06I-B1-H1-R3 (R3-03): JWT linger evidence rejects contradictory o
   assert.match(res404.reason, /HTTP_STATUS_MISMATCH: SESSION-05 expected HTTP 200/);
 
   // Expired token (token_unexpired !== true) fails closed
-  const resExpired = validateProbeOutcome(session04, { passed: true, status: 200, token_unexpired: false, stateless_linger_documented: true, note: 'expired' });
+  const resExpired = validateProbeOutcome(session04, {
+    passed: true,
+    status: 200,
+    token_unexpired: false,
+    revocation_verified: true,
+    revoked_session_id: 'sess-test',
+    correlated_session_id: 'sess-test',
+    session_correlated: true,
+    stateless_linger_documented: true,
+    note: 'expired'
+  });
   assert.equal(resExpired.passed, false);
   assert.match(resExpired.reason, /MISSING_EVIDENCE.*unexpired/);
 
-  // Pass ONLY with HTTP 200 + unexpired token + documentation + 300s lifetime bound (R7-02)
+  // Pass ONLY with HTTP 200 + unexpired token + documentation + 300s lifetime bound (R7-02, R17-02)
   const resPass = validateProbeOutcome(session04, {
     passed: true,
     status: 200,
     token_unexpired: true,
     jwt_lifetime_seconds: 300,
     lifetime_bounded: true,
+    revocation_verified: true,
+    revoked_session_id: 'sess-test',
+    correlated_session_id: 'sess-test',
+    session_correlated: true,
     stateless_linger_documented: true,
     note: 'HTTP 200 signature-verified access within bounded 300s exp'
   });
@@ -3547,6 +3602,10 @@ test('69. Task 06I-B1-H1-R5 (R5-07): Storage fixture readiness: SESSION-05 disti
   const session05 = { id: 'SESSION-05', category: 'Session & Consumer' };
   const runCtx = createRunContext();
   runCtx.activeAccessToken = createMockJwt({ exp: Math.floor(Date.now() / 1000) + 300 });
+  runCtx.preInvalidationSessionValid = true;
+  runCtx.passwordResetCompleted = true;
+  runCtx.sessionRevocationConfirmed = true;
+  runCtx.revokedSessionId = 'session-uuid-5678';
 
   // 1. Missing storage object (HTTP 404) returns STORAGE_FIXTURE_MISSING (not an auth failure)
   const disp404 = createHostedDispatcher({
@@ -3739,6 +3798,10 @@ test('72. Task 06I-B1-H1-R6 (R6-02): Real Storage object provisioning contract a
   const session05 = { id: 'SESSION-05', category: 'Session & Consumer' };
   const runCtx = createRunContext();
   runCtx.activeAccessToken = createMockJwt({ exp: Math.floor(Date.now() / 1000) + 300 });
+  runCtx.preInvalidationSessionValid = true;
+  runCtx.passwordResetCompleted = true;
+  runCtx.sessionRevocationConfirmed = true;
+  runCtx.revokedSessionId = 'session-uuid-5678';
 
   // Missing fixture returns HTTP 404 (STORAGE_FIXTURE_MISSING)
   const disp404 = createHostedDispatcher({
@@ -4004,6 +4067,10 @@ test('75. Task 06I-B1-H1-R7 (R7-02): 300-second JWT lifetime contract enforcemen
     token_unexpired: true,
     jwt_lifetime_seconds: 300,
     lifetime_bounded: true,
+    revocation_verified: true,
+    revoked_session_id: 'session-uuid-5678',
+    correlated_session_id: 'session-uuid-5678',
+    session_correlated: true,
     stateless_linger_documented: true,
     note: 'verified 300s linger'
   });
@@ -4016,6 +4083,10 @@ test('75. Task 06I-B1-H1-R7 (R7-02): 300-second JWT lifetime contract enforcemen
     token_unexpired: true,
     jwt_lifetime_seconds: 120,
     lifetime_bounded: true,
+    revocation_verified: true,
+    revoked_session_id: 'session-uuid-5678',
+    correlated_session_id: 'session-uuid-5678',
+    session_correlated: true,
     stateless_linger_documented: true,
     note: 'verified 120s linger'
   });
@@ -4028,6 +4099,10 @@ test('75. Task 06I-B1-H1-R7 (R7-02): 300-second JWT lifetime contract enforcemen
     token_unexpired: true,
     jwt_lifetime_seconds: 301,
     lifetime_bounded: false,
+    revocation_verified: true,
+    revoked_session_id: 'session-uuid-5678',
+    correlated_session_id: 'session-uuid-5678',
+    session_correlated: true,
     stateless_linger_documented: true,
     note: '301s token'
   });
@@ -4041,6 +4116,10 @@ test('75. Task 06I-B1-H1-R7 (R7-02): 300-second JWT lifetime contract enforcemen
     token_unexpired: true,
     jwt_lifetime_seconds: 86400,
     lifetime_bounded: false,
+    revocation_verified: true,
+    revoked_session_id: 'session-uuid-5678',
+    correlated_session_id: 'session-uuid-5678',
+    session_correlated: true,
     stateless_linger_documented: true,
     note: '24h token'
   });
@@ -4053,6 +4132,10 @@ test('75. Task 06I-B1-H1-R7 (R7-02): 300-second JWT lifetime contract enforcemen
     status: 200,
     token_unexpired: true,
     lifetime_bounded: true,
+    revocation_verified: true,
+    revoked_session_id: 'session-uuid-5678',
+    correlated_session_id: 'session-uuid-5678',
+    session_correlated: true,
     stateless_linger_documented: true,
     note: 'missing lifetime'
   });
@@ -4066,6 +4149,10 @@ test('75. Task 06I-B1-H1-R7 (R7-02): 300-second JWT lifetime contract enforcemen
     token_unexpired: true,
     jwt_lifetime_seconds: NaN,
     lifetime_bounded: true,
+    revocation_verified: true,
+    revoked_session_id: 'session-uuid-5678',
+    correlated_session_id: 'session-uuid-5678',
+    session_correlated: true,
     stateless_linger_documented: true,
     note: 'nan lifetime'
   });
@@ -4079,6 +4166,10 @@ test('75. Task 06I-B1-H1-R7 (R7-02): 300-second JWT lifetime contract enforcemen
     token_unexpired: true,
     jwt_lifetime_seconds: 0,
     lifetime_bounded: true,
+    revocation_verified: true,
+    revoked_session_id: 'session-uuid-5678',
+    correlated_session_id: 'session-uuid-5678',
+    session_correlated: true,
     stateless_linger_documented: true,
     note: 'zero lifetime'
   });
@@ -4092,6 +4183,10 @@ test('75. Task 06I-B1-H1-R7 (R7-02): 300-second JWT lifetime contract enforcemen
     token_unexpired: true,
     jwt_lifetime_seconds: 300,
     lifetime_bounded: false,
+    revocation_verified: true,
+    revoked_session_id: 'session-uuid-5678',
+    correlated_session_id: 'session-uuid-5678',
+    session_correlated: true,
     stateless_linger_documented: true,
     note: 'unbounded flag'
   });
@@ -4105,6 +4200,10 @@ test('75. Task 06I-B1-H1-R7 (R7-02): 300-second JWT lifetime contract enforcemen
     token_unexpired: false,
     jwt_lifetime_seconds: 300,
     lifetime_bounded: true,
+    revocation_verified: true,
+    revoked_session_id: 'session-uuid-5678',
+    correlated_session_id: 'session-uuid-5678',
+    session_correlated: true,
     stateless_linger_documented: true,
     note: 'expired token'
   });
@@ -4116,6 +4215,10 @@ test('75. Task 06I-B1-H1-R7 (R7-02): 300-second JWT lifetime contract enforcemen
   const valid300Token = createMockJwt({ iat: now, exp: now + 300 });
   const runCtxValid = createRunContext();
   runCtxValid.activeAccessToken = valid300Token;
+  runCtxValid.preInvalidationSessionValid = true;
+  runCtxValid.passwordResetCompleted = true;
+  runCtxValid.sessionRevocationConfirmed = true;
+  runCtxValid.revokedSessionId = 'session-uuid-5678';
   const dispValid = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtxValid,
@@ -4132,6 +4235,10 @@ test('75. Task 06I-B1-H1-R7 (R7-02): 300-second JWT lifetime contract enforcemen
   const oversizedToken = createMockJwt({ iat: now, exp: now + 86400 });
   const runCtxOversized = createRunContext();
   runCtxOversized.activeAccessToken = oversizedToken;
+  runCtxOversized.preInvalidationSessionValid = true;
+  runCtxOversized.passwordResetCompleted = true;
+  runCtxOversized.sessionRevocationConfirmed = true;
+  runCtxOversized.revokedSessionId = 'session-uuid-5678';
   const dispOversized = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtxOversized,
@@ -4159,6 +4266,10 @@ test('75. Task 06I-B1-H1-R7 (R7-02): 300-second JWT lifetime contract enforcemen
 
   const runCtxNoIat = createRunContext();
   runCtxNoIat.activeAccessToken = tokenNoIat;
+  runCtxNoIat.preInvalidationSessionValid = true;
+  runCtxNoIat.passwordResetCompleted = true;
+  runCtxNoIat.sessionRevocationConfirmed = true;
+  runCtxNoIat.revokedSessionId = 's-1';
   const dispNoIat = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtxNoIat,
@@ -4172,6 +4283,10 @@ test('75. Task 06I-B1-H1-R7 (R7-02): 300-second JWT lifetime contract enforcemen
   const tokenInconsistent = createMockJwt({ iat: now + 300, exp: now + 100 });
   const runCtxInconsistent = createRunContext();
   runCtxInconsistent.activeAccessToken = tokenInconsistent;
+  runCtxInconsistent.preInvalidationSessionValid = true;
+  runCtxInconsistent.passwordResetCompleted = true;
+  runCtxInconsistent.sessionRevocationConfirmed = true;
+  runCtxInconsistent.revokedSessionId = 'session-uuid-5678';
   const dispInconsistent = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtxInconsistent,
@@ -4184,6 +4299,10 @@ test('75. Task 06I-B1-H1-R7 (R7-02): 300-second JWT lifetime contract enforcemen
   // Storage SESSION-05 similarly validates 300s lifetime bound
   const runCtxStorage = createRunContext();
   runCtxStorage.activeAccessToken = valid300Token;
+  runCtxStorage.preInvalidationSessionValid = true;
+  runCtxStorage.passwordResetCompleted = true;
+  runCtxStorage.sessionRevocationConfirmed = true;
+  runCtxStorage.revokedSessionId = 'session-uuid-5678';
   const dispStorage = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtxStorage,
@@ -7442,4 +7561,319 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
   assert.equal(delete17CalledWith, 'user-proven-17', 'Affirmatively verified user must be deleted');
   assert.equal(rep17.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(rep17.usersDeleted, 1);
+});
+
+test('89. Task 06I-B1-H1-R17: Seed identity proof, unexpected token tracking, and verified revocation evidence closure (PRRT_kwDOVtCmZc67OhSH, PRRT_kwDOVtCmZc67OhSN, PRRT_kwDOVtCmZc67O5WW)', async () => {
+  // === Part 1 (R17-01): Universal token tracking regardless of endpoint capabilities ===
+
+  // 1A. BYPASS-01 (/auth/v1/otp) returning HTTP 200 with tokens but no extractable session ID
+  const inv1A = new TestRunInventory('test-r17-1a');
+  const res1A = observeAuthResponse({
+    status: 200,
+    parseStatus: 'parsed',
+    body: {
+      access_token: 'opaque-or-unparseable-access-token-without-session-id',
+      token_type: 'bearer',
+      expires_in: 3600
+    },
+    inv: inv1A,
+    probeId: 'BYPASS-01',
+    canMintSession: false, // Nominally non-minting!
+    canCreateUser: false,
+    expectedOperation: 'rejection'
+  });
+  assert.equal(res1A.classification, 'AUTH_RESPONSE_INDETERMINATE');
+  assert.equal(res1A.indeterminateSession, true);
+  assert.equal(res1A.hasTokens, true);
+  assert.equal(res1A.errorCode, 'UNTRACKED_SESSION');
+  assert.equal(inv1A.untrackedSessionsCount, 1, 'Untracked session obligation MUST be registered regardless of canMintSession: false');
+
+  // Cleanup must fail closed due to untracked session obligation
+  const mockAdmin1A = {
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    signOut: async () => ({ data: null, error: null })
+  };
+  const rep1A = await inv1A.executeCleanup({ adminClient: mockAdmin1A, failClosed: false });
+  assert.equal(rep1A.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(rep1A.residualResources.some(r => r.type === 'untracked_session'));
+
+  // 1B. BYPASS-05 (/auth/v1/recover) returning HTTP 200 with tokens but no extractable session ID
+  const inv1B = new TestRunInventory('test-r17-1b');
+  const res1B = observeAuthResponse({
+    status: 200,
+    parseStatus: 'parsed',
+    body: {
+      access_token: 'unparseable-recover-token',
+      refresh_token: 'unparseable-refresh-token'
+    },
+    inv: inv1B,
+    probeId: 'BYPASS-05',
+    canMintSession: false,
+    canCreateUser: false,
+    expectedOperation: 'rejection'
+  });
+  assert.equal(res1B.classification, 'AUTH_RESPONSE_INDETERMINATE');
+  assert.equal(inv1B.untrackedSessionsCount, 1, 'BYPASS-05 untracked session obligation registered');
+
+  // 1C. Refresh token without access token and without session ID
+  const inv1C = new TestRunInventory('test-r17-1c');
+  const res1C = observeAuthResponse({
+    status: 200,
+    parseStatus: 'parsed',
+    body: {
+      refresh_token: 'lonely-refresh-token-without-session-id'
+    },
+    inv: inv1C,
+    probeId: 'BYPASS-01',
+    canMintSession: false,
+    canCreateUser: false,
+    expectedOperation: 'rejection'
+  });
+  assert.equal(res1C.classification, 'AUTH_RESPONSE_INDETERMINATE');
+  assert.equal(inv1C.untrackedSessionsCount, 1, 'Refresh token alone without session ID records untracked session obligation');
+
+  // 1D. Nominally non-minting endpoint returning access token WITH extractable session ID
+  const inv1D = new TestRunInventory('test-r17-1d');
+  const validJwt1D = createMockJwt({ session_id: 'extracted-sess-1d' });
+  const res1D = observeAuthResponse({
+    status: 200,
+    parseStatus: 'parsed',
+    body: {
+      access_token: validJwt1D,
+      user: { id: 'u-1d' }
+    },
+    inv: inv1D,
+    probeId: 'BYPASS-01',
+    canMintSession: false,
+    canCreateUser: false,
+    expectedOperation: 'rejection'
+  });
+  assert.equal(res1D.classification, 'AUTH_RESPONSE_UNEXPECTED_TOKEN');
+  assert.equal(res1D.sessionId, 'extracted-sess-1d');
+  assert.equal(inv1D.trackedSessions.has('extracted-sess-1d'), true, 'Extractable session MUST be registered in inventory');
+  let signOutCalledWith = null;
+  const mockAdmin1D = {
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    signOut: async (id) => { signOutCalledWith = id; return { data: null, error: null }; }
+  };
+  const rep1D = await inv1D.executeCleanup({ adminClient: mockAdmin1D, failClosed: false });
+  assert.equal(signOutCalledWith, validJwt1D, 'Cleanup must attempt signOut with access token for the unexpected session');
+
+  // 1E. observeAndTrackSessionTokens records untracked session for token without session ID
+  const inv1E = new TestRunInventory('test-r17-1e');
+  observeAndTrackSessionTokens(
+    { access_token: 'token-without-session-id' },
+    { inv: inv1E, probeId: 'BYPASS-01' }
+  );
+  assert.equal(inv1E.untrackedSessionsCount, 1, 'observeAndTrackSessionTokens handles token without session ID');
+
+  // === Part 2 (R17-02): Verified revocation required before SESSION-04/05 linger claims ===
+
+  const session04 = { id: 'SESSION-04', category: 'Session & Consumer' };
+  const session05 = { id: 'SESSION-05', category: 'Session & Consumer' };
+  const now = Math.floor(Date.now() / 1000);
+  const testBearerJwt = createMockJwt({ session_id: 'revoked-sess-89', exp: now + 300 });
+
+  // 2A. Dispatcher SESSION-04 with fresh unverified context (preInvalidationSessionValid: false)
+  const runCtx2A = createRunContext();
+  runCtx2A.activeAccessToken = testBearerJwt;
+  runCtx2A.preInvalidationSessionValid = false;
+  runCtx2A.passwordResetCompleted = false;
+  runCtx2A.sessionRevocationConfirmed = false;
+  const disp2A = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtx2A,
+    fetchFn: async () => ({ status: 200, json: async () => ([]) })
+  });
+  const out2A = await disp2A(session04);
+  assert.equal(out2A.passed, false);
+  assert.match(out2A.error, /PREREQUISITE_MISSING: SESSION-04 requires authenticated pre-invalidation session baseline/);
+
+  // 2B. Dispatcher SESSION-04 with preInvalidationSessionValid: true but unconfirmed revocation
+  const runCtx2B = createRunContext();
+  runCtx2B.activeAccessToken = testBearerJwt;
+  runCtx2B.preInvalidationSessionValid = true;
+  runCtx2B.passwordResetCompleted = true;
+  runCtx2B.sessionRevocationConfirmed = false; // Revocation NOT confirmed!
+  const disp2B = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtx2B,
+    fetchFn: async () => ({ status: 200, json: async () => ([]) })
+  });
+  const out2B = await disp2B(session04);
+  assert.equal(out2B.passed, false);
+  assert.match(out2B.error, /PREREQUISITE_MISSING: SESSION-04 requires verified session revocation evidence/);
+
+  // 2C. Dispatcher SESSION-04 with session ID mismatch between token and revoked session
+  const runCtx2C = createRunContext();
+  runCtx2C.activeAccessToken = testBearerJwt; // has session_id: 'revoked-sess-89'
+  runCtx2C.preInvalidationSessionValid = true;
+  runCtx2C.passwordResetCompleted = true;
+  runCtx2C.sessionRevocationConfirmed = true;
+  runCtx2C.revokedSessionId = 'different-revoked-session-id'; // Mismatch!
+  const disp2C = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtx2C,
+    fetchFn: async () => ({ status: 200, json: async () => ([]) })
+  });
+  const out2C = await disp2C(session04);
+  assert.equal(out2C.passed, false);
+  assert.match(out2C.error, /SESSION_CORRELATION_FAILURE/);
+
+  // 2D. Dispatcher SESSION-05 (Storage) on unrevoked context fails closed
+  const runCtx2D = createRunContext();
+  runCtx2D.activeAccessToken = testBearerJwt;
+  runCtx2D.preInvalidationSessionValid = false;
+  const disp2D = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtx2D,
+    fetchFn: async () => ({ status: 200, json: async () => ({}) })
+  });
+  const out2D = await disp2D(session05);
+  assert.equal(out2D.passed, false);
+  assert.match(out2D.error, /PREREQUISITE_MISSING: SESSION-05 requires authenticated pre-invalidation session baseline/);
+
+  // 2E. Validator validateProbeOutcome rejects missing revocation_verified flag
+  const val2E = validateProbeOutcome(session04, {
+    passed: true,
+    status: 200,
+    token_unexpired: true,
+    jwt_lifetime_seconds: 300,
+    lifetime_bounded: true,
+    revocation_verified: false, // Missing revocation!
+    stateless_linger_documented: true,
+    note: 'fresh token fake linger'
+  });
+  assert.equal(val2E.passed, false);
+  assert.match(val2E.reason, /MISSING_EVIDENCE.*revocation/i);
+
+  // 2F. Validator validateProbeOutcome rejects session ID mismatch
+  const val2F = validateProbeOutcome(session04, {
+    passed: true,
+    status: 200,
+    token_unexpired: true,
+    jwt_lifetime_seconds: 300,
+    lifetime_bounded: true,
+    revocation_verified: true,
+    revoked_session_id: 'session-A',
+    correlated_session_id: 'session-B', // Mismatch!
+    session_correlated: true,
+    stateless_linger_documented: true,
+    note: 'mismatched session'
+  });
+  assert.equal(val2F.passed, false);
+  assert.match(val2F.reason, /SESSION_CORRELATION_FAILURE/);
+
+  // 2G. Fully correlated valid revocation + bounded lifetime passes dispatcher and validator
+  const runCtx2G = createRunContext();
+  runCtx2G.activeAccessToken = testBearerJwt;
+  runCtx2G.preInvalidationSessionValid = true;
+  runCtx2G.passwordResetCompleted = true;
+  runCtx2G.sessionRevocationConfirmed = true;
+  runCtx2G.revokedSessionId = 'revoked-sess-89';
+  const disp2G = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtx2G,
+    fetchFn: async () => ({ status: 200, json: async () => ([]) })
+  });
+  const out2G = await disp2G(session04);
+  assert.equal(out2G.passed, true);
+  assert.equal(out2G.revocation_verified, true);
+  assert.equal(out2G.session_correlated, true);
+  const val2G = validateProbeOutcome(session04, out2G);
+  assert.equal(val2G.passed, true);
+
+  // === Part 3 (R17-03): Seed Identity Proof & No Automatic Test Email Protection ===
+
+  // 3A. Bare email without user ID cannot prove pre-existence in protectSeedIdentity
+  const inv3A = new TestRunInventory('test-r17-3a');
+  const resProtect3A = inv3A.protectSeedIdentity({ email: 'planned-test-email@proof.invalid' });
+  assert.equal(resProtect3A, false);
+  assert.equal(inv3A.isSeedIdentity(null, 'planned-test-email@proof.invalid'), false);
+  assert.equal(inv3A.protectedSeedIdentities.has('planned-test-email@proof.invalid'), false);
+
+  // 3B. Pre-existence proof validation
+  assert.equal(isValidPreExistenceProof(null), false);
+  assert.equal(isValidPreExistenceProof({ isSeed: true }), false, 'Bare caller flag is invalid proof');
+  const validSeedProof = createPreExistenceProof('preflight_discovery', {
+    verifiedSeedUserId: 'seed-pre-existing-uuid-1',
+    preflightVerified: true
+  });
+  assert.equal(isValidPreExistenceProof(validSeedProof), true);
+
+  // 3C. protectSeedIdentity with affirmative ID and proof
+  const inv3C = new TestRunInventory('test-r17-3c');
+  const resProtect3C = inv3C.protectSeedIdentity({
+    id: 'seed-pre-existing-uuid-1',
+    email: 'seed@proof.invalid',
+    proof: validSeedProof
+  });
+  assert.equal(resProtect3C, true);
+  assert.equal(inv3C.isSeedIdentity('seed-pre-existing-uuid-1', 'seed@proof.invalid'), true);
+  assert.equal(inv3C.isSeedIdentity('different-new-id', 'seed@proof.invalid'), false, 'Different ID with same email is NOT seed');
+
+  // 3D. Regression reproduction for im-tio finding (PRRT_kwDOVtCmZc67O5WW):
+  // Initially absent test email, unexpectedly successful OTP with that test email.
+  // Must NOT classify as seed, must record in unverifiedUsers, must NOT delete, must fail cleanup closed!
+  const plannedTestEmail = 'target-user@proof.invalid';
+  const inv3D = new TestRunInventory('test-r17-3d');
+  let delete3DCalled = false;
+  const mockAdmin3D = {
+    deleteUser: async () => { delete3DCalled = true; return { data: null, error: null }; },
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    signOut: async () => ({ data: null, error: null })
+  };
+
+  const disp3D = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv3D,
+    testEmail: plannedTestEmail,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({ user: { id: 'unexpected-new-user-id-89', email: plannedTestEmail } })
+    })
+  });
+
+  const res3D = await disp3D({ id: 'BYPASS-01', testUser: plannedTestEmail });
+  assert.equal(res3D.passed, false, 'Negative probe must fail when user is created');
+
+  // Verify inventory classification:
+  assert.equal(inv3D.isUserReferenced('unexpected-new-user-id-89'), false, 'Must NOT be classified as referenced/seed user!');
+  assert.equal(inv3D.isUserCreated('unexpected-new-user-id-89'), false, 'Must NOT be classified as RUN_CREATED_VERIFIED without proof!');
+  assert.equal(inv3D.unverifiedUsers.has('unexpected-new-user-id-89'), true, 'Must be registered in unverifiedUsers');
+  assert.equal(inv3D.getUserOwnership('unexpected-new-user-id-89'), USER_OWNERSHIP.OWNERSHIP_UNKNOWN);
+
+  // Execute cleanup:
+  const rep3D = await inv3D.executeCleanup({ adminClient: mockAdmin3D, failClosed: false });
+  assert.equal(delete3DCalled, false, 'Unproven user must NEVER be deleted');
+  assert.equal(rep3D.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES', 'Cleanup MUST fail closed with residual resources');
+  assert.notEqual(rep3D.status, 'CLEANUP_VERIFIED_SUCCESS', 'Cleanup must NEVER return success when unexpected user survives');
+
+  // 3E. Same regression on BYPASS-02 (native signup)
+  const inv3E = new TestRunInventory('test-r17-3e');
+  let delete3ECalled = false;
+  const mockAdmin3E = {
+    deleteUser: async () => { delete3ECalled = true; return { data: null, error: null }; },
+    getUserById: async () => ({ data: null, error: { status: 404 } }),
+    signOut: async () => ({ data: null, error: null })
+  };
+
+  const disp3E = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: inv3E,
+    testEmail: plannedTestEmail,
+    fetchFn: async () => ({
+      status: 200,
+      json: async () => ({ user: { id: 'unexpected-signup-user-id-89', email: plannedTestEmail } })
+    })
+  });
+
+  const res3E = await disp3E({ id: 'BYPASS-02', testUser: plannedTestEmail });
+  assert.equal(res3E.passed, false);
+  assert.equal(inv3E.unverifiedUsers.has('unexpected-signup-user-id-89'), true);
+  const rep3E = await inv3E.executeCleanup({ adminClient: mockAdmin3E, failClosed: false });
+  assert.equal(delete3ECalled, false);
+  assert.equal(rep3E.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
 });

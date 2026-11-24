@@ -669,16 +669,58 @@ Compact invariant matrix verifying the 10 lifecycle invariant classes across cod
 
 ---
 
+## 7.19 Revision R17 Remediation Details (Seed Identity Proof, Unexpected Token Tracking & Verified Revocation Evidence Closure)
+
+- **R17-01 — Universal Token Tracking Regardless of Endpoint Capabilities (Reviewer `chatgpt-codex-connector` P2, `PRRT_kwDOVtCmZc67OhSH`):**
+  1. Root cause: In `observeAuthResponse`, Section 3C was gated by `if (canMintSession && accessToken && !rawSessionId)`. When nominally non-minting endpoints (e.g. `BYPASS-01` `/auth/v1/otp`, `BYPASS-05` `/auth/v1/recover`) unexpectedly returned tokens on HTTP 200 without extractable session ID, `canMintSession: false` caused Section 3C to be skipped. In Section 3D, missing session ID resulted in neither a tracked session nor an untracked session obligation being registered. Consequently, the probe failed on the unexpected token, but `executeCleanup` recorded zero sessions and reported false `CLEANUP_VERIFIED_SUCCESS`.
+  2. In `observeAuthResponse`:
+     - Updated Section 3C: `if (hasTokens && !rawSessionId)`. Endpoint capability assumptions must NEVER suppress actual observed token evidence. If ANY token (access or refresh) is present but session ID cannot be determined, an untracked session obligation is immediately registered (`inv.registerUntrackedSession()`) and classified as `AUTH_RESPONSE_INDETERMINATE` with `indeterminateSession: true` and `errorCode: 'UNTRACKED_SESSION'`, regardless of `canMintSession`.
+     - In Section 3D: since unextractable tokens are caught by Section 3C, any token reaching Section 3D is guaranteed to have extractable `rawSessionId`, which is registered into `inv.registerSession`.
+  3. In `observeAndTrackSessionTokens`:
+     - Ensures that any token present without extractable session ID records untracked session obligation (`else { inv.registerUntrackedSession(); }`), ensuring cleanup fails closed.
+
+- **R17-02 — Require Verified Revocation Before Reporting Stateless Linger (Reviewer `chatgpt-codex-connector` P2, `PRRT_kwDOVtCmZc67OhSN`):**
+  1. Root cause: In `createHostedDispatcher`, `SESSION-04` (PostgREST) and `SESSION-05` (Storage) only checked token expiration, 300s lifetime bound, and HTTP 200. When dispatched standalone on a fresh context (`preInvalidationSessionValid: false`, `passwordResetCompleted: false`), fresh unrevoked tokens produced `passed: true` and claimed stateless linger evidence, violating the prerequisite defined in `preflight-evaluator.mjs` ("Revoked bearer token against public table / storage object").
+  2. In `createTestExecutionContext`:
+     - Added `sessionRevocationConfirmed`, `revokedSessionId`, `revokedAccessToken` properties (and reset in `clear()`).
+  3. In `case 'SESSION-02':`:
+     - When session revocation is verified (`isRevoked`), sets `ctx.sessionRevocationConfirmed = true`, `ctx.revokedSessionId = ctx.activeSessionId`, `ctx.revokedAccessToken = ctx.activeAccessToken`.
+  4. In `case 'SESSION-04':` and `case 'SESSION-05':`:
+     - Enforces prerequisite: `ctx?.preInvalidationSessionValid === true` (else returns `PREREQUISITE_MISSING: SESSION-04 requires authenticated pre-invalidation session baseline (HOOK-01)`).
+     - Enforces prerequisite: `ctx?.passwordResetCompleted === true && ctx?.sessionRevocationConfirmed === true` (else returns `PREREQUISITE_MISSING: SESSION-04 requires verified session revocation evidence (SESSION-02)`).
+     - Extracts `tokenSessionId` from JWT claims and correlates: `tokenSessionId && ctx?.revokedSessionId && tokenSessionId === ctx.revokedSessionId` (else fails closed with `SESSION_CORRELATION_FAILURE`).
+     - Carries affirmative outcome fields: `revocation_verified: true`, `revoked_session_id`, `correlated_session_id`, `session_correlated: true`, `pre_invalidation_verified: true`.
+  5. In `validateProbeOutcome()`:
+     - For `SESSION-04` and `SESSION-05`, requires `rawOutcome.revocation_verified === true` (else fails with `MISSING_EVIDENCE`).
+     - Requires `rawOutcome.session_correlated === true` and matching `correlated_session_id === revoked_session_id` (else fails with `SESSION_CORRELATION_FAILURE`).
+
+- **R17-03 — Affirmative Seed Identity Proof & Orphaned-User / False-Cleanup Closure (Reviewer `im-tio` P2, `PRRT_kwDOVtCmZc67O5WW`):**
+  1. Root cause: On every runner invocation, `testEmail` was automatically registered into `protectedSeedIdentities` by bare string email. If negative probes `BYPASS-01` (`/auth/v1/otp`) or `BYPASS-02` (`/signup`) unexpectedly created a user with that email and returned `{ user: { id: 'new-id', email: testEmail } }`, `observeAuthResponse` matched `isSeedIdentity(null, returnedEmail)` and misclassified the new ID as `PRE_EXISTING_REFERENCED` in `referencedUsers` rather than `unverifiedUsers`. The probe failed, but `executeCleanup` saw only referenced users, skipped residual user accounting, and returned false `CLEANUP_VERIFIED_SUCCESS` while the orphaned user survived on the provider.
+  2. Pre-existence Proof Verification:
+     - Added `isValidPreExistenceProof(proof)` enforcing trusted pre-existence proof types (`preflight_discovery`, `provider_lookup`, `seed_credential_verification`).
+     - Strictly rejects bare caller flags (e.g. `{ isSeed: true }`).
+     - Added `createPreExistenceProof(type, details)`.
+  3. Strict Seed Identity Protection Contract:
+     - In `TestRunInventory`: `protectSeedIdentity({ id, email, proof })` requires non-empty string `id`. A bare string `email` without verified user ID CANNOT confer protected seed status.
+     - `isSeedIdentity(id, email)`: Requires non-empty string `id` that exists in `protectedSeedIdentities`. A bare email alone without matching ID never returns true.
+     - In `createHostedDispatcher` and `runHostedProbeRunner`: removed automatic protection of unverified `testEmail` into seed protection; seed protection is registered ONLY when an affirmative `seedUserId` is provided.
+  4. Response Classification & Fail-Closed Cleanup:
+     - In `observeAuthResponse` and dispatchers: unexpected response user IDs are checked against `inv.isSeedIdentity(uidStr, returnedEmail)`. If `uidStr` does not match the verified seed user ID, it is classified as `USER_OWNERSHIP.OWNERSHIP_UNKNOWN` in `inv.unverifiedUsers`.
+     - In `executeCleanup`: unproven users are PRESERVED without deletion (protecting potential testbed identity), and cleanup FAILS CLOSED with `CLEANUP_FAILED_RESIDUAL_RESOURCES` (`unverifiedUsers.size > 0`). Never returns false `CLEANUP_VERIFIED_SUCCESS`.
+  5. Added comprehensive regression Test 89 covering all scenarios across R17-01, R17-02, and R17-03.
+
+---
+
 ## 8. Verification Evidence Matrix
 
 All verification checks were run locally and passed completely:
 
 ```bash
 node --test experiments/task06i/hosted-probe-runner.test.mjs
-# 92 passed, 0 failed, exit code 0 (including Tests 82, 83, 84, 85, 86, 87, and 88)
+# 93 passed, 0 failed, exit code 0 (including Tests 82, 83, 84, 85, 86, 87, 88, and 89)
 
 node --test experiments/task06i/*.test.mjs
-# 160 passed, 0 failed, exit code 0
+# 161 passed, 0 failed, exit code 0
 
 node experiments/task06i/sql-contract-parity.mjs
 # 18 cases evaluated (POSTGRES_VERIFIED in Linux CI with Docker; POSTGRES_NOT_EXECUTED offline without Docker)
@@ -697,11 +739,12 @@ git diff --check origin/main...HEAD
 
 ## 9. GitHub CI Status
 
-- **Status:** **4/4 CHECKS PASS** on remote commit `9a2cb1096910306172222de8602caf1ffc363ea0`:
+- **Status:** **5/5 CHECKS PASS** on remote commit `237964d7c1fdf9d3c2dbf3391c7d59cae498744c`:
   1. `Attribution guard runner`: **PASS**
   2. `Commit attribution fixture tests`: **PASS**
   3. `Commit attribution guard` (App-owned required check ID `5032971`): **PASS**
-  4. `Task 06I Security Contract Tests`: **PASS**
+  4. `PostgreSQL parity`: **PASS**
+  5. `Task 06I Security Contract Tests`: **PASS**
 - All required checks execute and succeed on GitHub Actions infrastructure.
 
 ---
@@ -718,12 +761,12 @@ git diff --check origin/main...HEAD
   - Project deletion perform nahi hua hai.
 
 **Readiness State:**
-- **Code readiness:** READY (Revision R15)
-- **GitHub CI:** PASS (4/4 on remote HEAD `9a2cb10`)
-- **Independent review:** PENDING (`im-tio`)
+- **Code readiness:** READY (Revision R17)
+- **GitHub CI:** PASS (5/5 on remote HEAD `237964d`)
+- **Independent review:** PENDING (`chatgpt-codex-connector`, `im-tio`)
 - **Hosted testing:** NOT_AUTHORIZED
 - **Production Auth:** STRICT NO-GO
 
 **Decision:** **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**
 
-> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all outstanding review findings (including `im-tio` P2 finding `PRRT_kwDOVtCmZc66-adI` on OTP user-creation tracking and endpoint capability drift elimination) is complete and fully covered by offline regression tests (91/91 runner tests, 159/159 task06i tests pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution. Awaiting independent re-review from `im-tio`.
+> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all outstanding review findings (`PRRT_kwDOVtCmZc67OhSH`, `PRRT_kwDOVtCmZc67OhSN`, `PRRT_kwDOVtCmZc67O5WW`) is complete and fully covered by offline regression tests (93/93 runner tests, 161/161 task06i tests pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution. Awaiting independent re-review.

@@ -244,6 +244,56 @@ export function createCreationProof(type = 'before_after_check', details = {}) {
   });
 }
 
+/**
+ * Validates affirmative pre-existence proof structure for protected seed identities (R17-03).
+ * A bare email string or caller assertion alone cannot confer pre-existing seed status.
+ */
+export function isValidPreExistenceProof(proof) {
+  if (!proof || typeof proof !== 'object') return false;
+  if (proof.isSeed === true && Object.keys(proof).length === 1) return false;
+  if (proof.callerFlag === true && Object.keys(proof).length === 1) return false;
+
+  switch (proof.type) {
+    case 'preflight_discovery':
+      return (
+        typeof proof.verifiedSeedUserId === 'string' &&
+        proof.verifiedSeedUserId.trim().length > 0 &&
+        proof.preflightVerified === true
+      );
+    case 'provider_lookup':
+      return (
+        typeof proof.lookupUserId === 'string' &&
+        proof.lookupUserId.trim().length > 0 &&
+        proof.userExistsBeforeRun === true
+      );
+    case 'seed_credential_verification':
+      return (
+        typeof proof.verifiedUserId === 'string' &&
+        proof.verifiedUserId.trim().length > 0 &&
+        proof.credentialsVerifiedBeforeRun === true
+      );
+    default:
+      return false;
+  }
+}
+
+/**
+ * Creates a structured pre-existence proof descriptor for verified seed identities (R17-03).
+ */
+export function createPreExistenceProof(type = 'preflight_discovery', details = {}) {
+  return Object.freeze({
+    type,
+    verifiedSeedUserId: details.verifiedSeedUserId || details.userId || null,
+    lookupUserId: details.lookupUserId || details.userId || null,
+    verifiedUserId: details.verifiedUserId || details.userId || null,
+    preflightVerified: details.preflightVerified ?? true,
+    userExistsBeforeRun: details.userExistsBeforeRun ?? true,
+    credentialsVerifiedBeforeRun: details.credentialsVerifiedBeforeRun ?? true,
+    timestamp: new Date().toISOString(),
+    ...details
+  });
+}
+
 export const TIO_SUPABASE_REAL_REF = HARDCODED_REAL_REF;
 export const TIO_SUPABASE_TEMP_REF = process.env.TIO_SUPABASE_TEMP_REF || HARDCODED_TEMP_REF;
 
@@ -883,12 +933,9 @@ export function observeAuthResponse({
     if (inv && rawUserId) {
       const uidStr = String(rawUserId).trim();
       if (canCreateUser || probeId === 'BYPASS-01' || probeId === 'BYPASS-02') {
-        // R16-02: Never assume run-created ownership from observed response user ID alone!
-        const isSeed = Boolean(
-          inv.isSeedIdentity(uidStr, null) ||
-          (returnedEmail && inv.isSeedIdentity(null, returnedEmail)) ||
-          inv.isUserReferenced(uidStr)
-        );
+        // R16-02, R17-03: Never assume seed status or run-created ownership from observed response!
+        // A bare matching email alone cannot confer protected seed status without verified seed ID (PRRT_kwDOVtCmZc67O5WW).
+        const isSeed = Boolean(inv.isSeedIdentity(uidStr, returnedEmail) || inv.isUserReferenced(uidStr));
         if (isSeed) {
           inv.registerReferencedUser({ id: uidStr, email: returnedEmail || userEmail, source: `${probeId}_unexpected_response_matched_seed` });
         } else if (!inv.isUserTracked(uidStr)) {
@@ -971,13 +1018,14 @@ export function observeAuthResponse({
       };
     }
 
-    // 3C: Token present but session ID unextractable
-    if (canMintSession && accessToken && !rawSessionId) {
+    // 3C: Token present but session ID unextractable (R12-01, R17-01)
+    // Endpoint capability expectations must NEVER suppress observed token evidence! (PRRT_kwDOVtCmZc67OhSH)
+    if (hasTokens && !rawSessionId) {
       if (inv) {
         inv.registerUntrackedSession();
       }
       if (ctx) {
-        ctx.mintedAccessToken = accessToken;
+        if (accessToken) ctx.mintedAccessToken = accessToken;
         if (rawUserId) ctx.activeUserId = String(rawUserId).trim();
       }
       return {
@@ -990,7 +1038,7 @@ export function observeAuthResponse({
         refreshToken,
         indeterminateSession: true,
         errorCode: 'UNTRACKED_SESSION',
-        error: 'INDETERMINATE_AUTH_RESPONSE: Server returned access_token but session identifier could not be determined from payload or claims (R12-01)',
+        error: `INDETERMINATE_AUTH_RESPONSE: Server returned token(s) on ${probeId} but session identifier could not be determined from payload or claims (R12-01, R17-01)`,
         body
       };
     }
@@ -1184,11 +1232,11 @@ export function observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser
       }
     }
 
-    // Register session cleanup obligation
+    // Register session cleanup obligation (R17-01)
     if (rawSessionId) {
       inv.registerSession(String(rawSessionId).trim(), { accessToken });
-    } else if (accessToken || refreshToken) {
-      // Token minted but session ID could not be parsed -> register untracked session so cleanup fails closed (R5-04, R8-01)
+    } else {
+      // Any token present without extractable session ID must register untracked session obligation (R5-04, R8-01, R17-01)
       inv.registerUntrackedSession();
     }
   }
@@ -1928,7 +1976,7 @@ function validateSessionRevocationProof(item, rawOutcome, allowedStatuses, isRev
   }
 
   if (item.id === 'SESSION-04' || item.id === 'SESSION-05') {
-    // Stateless linger window documentation check (PRRT_kwDOVtCmZc66jNbH, R3-03, R7-02)
+    // Stateless linger window documentation check (PRRT_kwDOVtCmZc66jNbH, R3-03, R7-02, R17-02)
     if (status !== 200) {
       return {
         passed: false,
@@ -1936,6 +1984,27 @@ function validateSessionRevocationProof(item, rawOutcome, allowedStatuses, isRev
         reason: `HTTP_STATUS_MISMATCH: ${item.id} expected HTTP 200 demonstrating stateless signature-based access, got ${status} (401 rejection or 404 missing fixture does not prove linger, R3-03)`
       };
     }
+
+    // Verified session revocation prerequisite check (PRRT_kwDOVtCmZc67OhSN, R17-02)
+    if (rawOutcome.revocation_verified !== true) {
+      return {
+        passed: false,
+        status,
+        reason: `MISSING_EVIDENCE: ${item.id} requires verified session revocation evidence before demonstrating stateless linger (R17-02)`
+      };
+    }
+
+    // Session correlation check (PRRT_kwDOVtCmZc67OhSN, R17-02)
+    const revokedSessId = rawOutcome.revoked_session_id || rawOutcome.session_id || null;
+    const correlatedSessId = rawOutcome.correlated_session_id || null;
+    if (rawOutcome.session_correlated !== true || !revokedSessId || !correlatedSessId || revokedSessId !== correlatedSessId) {
+      return {
+        passed: false,
+        status,
+        reason: `SESSION_CORRELATION_FAILURE: ${item.id} token session_id ('${correlatedSessId || 'none'}') must correlate with verified revoked session ID ('${revokedSessId || 'none'}') (R17-02)`
+      };
+    }
+
     if (rawOutcome.token_unexpired !== true) {
       return {
         passed: false,
@@ -2033,7 +2102,8 @@ export class TestRunInventory {
     this.referencedUsers = new Map(); // Pre-existing / seeded users authenticated -> NEVER deleted (R3-09)
     this.unverifiedUsers = new Map(); // Users observed without affirmative run-created proof -> NEVER deleted (R16-02)
     this.userOwnership = new Map(); // userId -> USER_OWNERSHIP (R16-02)
-    this.protectedSeedIdentities = new Set(); // Normalized emails or seed user IDs (R16-02)
+    this.protectedSeedIdentities = new Set(); // verified pre-existing seed user IDs ONLY (R16-02, R17-03)
+    this.verifiedSeedUsers = new Map(); // seedUserId -> { id, email, proof, registeredAt } (R17-03)
     this.trackedSessions = new Set(); // Session IDs
     this.sessionTokens = new Map(); // sessionId -> accessToken for supported GoTrue session invalidation (R6-01)
     this.revokedSessions = new Set(); // Session IDs affirmatively verified as revoked or absent (R8-02)
@@ -2048,7 +2118,7 @@ export class TestRunInventory {
     this.postFinalizationMutations = []; // Late mutations attempted after finalization (R13-02)
     this._settlementListeners = [];
 
-    if (seedEmail || seedUserId) {
+    if (seedUserId) {
       this.protectSeedIdentity({ id: seedUserId, email: seedEmail });
     }
   }
@@ -2058,31 +2128,40 @@ export class TestRunInventory {
     return new Map([...this.referencedUsers, ...this.createdUsers, ...this.unverifiedUsers]);
   }
 
-  protectSeedIdentity({ id, email } = {}) {
-    if (id && typeof id === 'string' && id.trim().length > 0) {
-      const cleanId = id.trim();
-      this.protectedSeedIdentities.add(cleanId);
-      this.userOwnership.set(cleanId, USER_OWNERSHIP.PRE_EXISTING_REFERENCED);
-      if (!this.referencedUsers.has(cleanId)) {
-        this.referencedUsers.set(cleanId, {
-          id: cleanId,
-          email: email && typeof email === 'string' ? email.trim().toLowerCase() : null,
-          source: 'seed_protection',
-          ownership: USER_OWNERSHIP.PRE_EXISTING_REFERENCED,
-          referencedAt: new Date().toISOString()
-        });
-      }
-      this.createdUsers.delete(cleanId);
-      this.unverifiedUsers.delete(cleanId);
+  protectSeedIdentity({ id, email, proof = null } = {}) {
+    if (!id || typeof id !== 'string' || id.trim().length === 0) {
+      // R17-03: A bare email string alone without an affirmative user ID cannot prove account pre-existence!
+      return false;
     }
-    if (email && typeof email === 'string' && email.trim().length > 0) {
-      this.protectedSeedIdentities.add(email.trim().toLowerCase());
+    const cleanId = id.trim();
+    const cleanEmail = email && typeof email === 'string' && email.trim().length > 0 ? email.trim().toLowerCase() : null;
+    this.protectedSeedIdentities.add(cleanId);
+    this.verifiedSeedUsers.set(cleanId, {
+      id: cleanId,
+      email: cleanEmail,
+      proof: proof || null,
+      registeredAt: new Date().toISOString()
+    });
+    this.userOwnership.set(cleanId, USER_OWNERSHIP.PRE_EXISTING_REFERENCED);
+    if (!this.referencedUsers.has(cleanId)) {
+      this.referencedUsers.set(cleanId, {
+        id: cleanId,
+        email: cleanEmail,
+        source: 'seed_protection',
+        ownership: USER_OWNERSHIP.PRE_EXISTING_REFERENCED,
+        referencedAt: new Date().toISOString()
+      });
     }
+    this.createdUsers.delete(cleanId);
+    this.unverifiedUsers.delete(cleanId);
+    return true;
   }
 
-  isSeedIdentity(id, email) {
-    if (id && this.protectedSeedIdentities.has(String(id).trim())) return true;
-    if (email && this.protectedSeedIdentities.has(String(email).trim().toLowerCase())) return true;
+  isSeedIdentity(id, email = null) {
+    if (id && typeof id === 'string' && id.trim().length > 0) {
+      return this.protectedSeedIdentities.has(id.trim());
+    }
+    // R17-03: Bare email alone without an ID NEVER confers seed identity! (PRRT_kwDOVtCmZc67O5WW)
     return false;
   }
 
@@ -3260,6 +3339,9 @@ export function createRunContext(options = {}) {
     activeSessionId: null,
     preInvalidationSessionValid: false,
     passwordResetCompleted: false,
+    sessionRevocationConfirmed: false,
+    revokedSessionId: null,
+    revokedAccessToken: null,
     originalSeedPassword: null,
     activeSeedPassword: null,
     clear() {
@@ -3269,6 +3351,11 @@ export function createRunContext(options = {}) {
       this.testEmail = null;
       this.activeSessionId = null;
       this.activeUserId = null;
+      this.preInvalidationSessionValid = false;
+      this.passwordResetCompleted = false;
+      this.sessionRevocationConfirmed = false;
+      this.revokedSessionId = null;
+      this.revokedAccessToken = null;
       this.originalSeedPassword = null;
       this.activeSeedPassword = null;
     }
@@ -3728,9 +3815,9 @@ export function createHostedDispatcher({
     validateProjectCredentialBinding(serviceRoleKey, normRef);
   }
 
-  const factorySeedEmail = seedEmail || testEmail || runContext?.testEmail || null;
+  const factorySeedEmail = seedEmail || null;
   const factorySeedUserId = seedUserId || runContext?.seedUserId || null;
-  if (inventory && (factorySeedEmail || factorySeedUserId)) {
+  if (inventory && factorySeedUserId) {
     inventory.protectSeedIdentity({ email: factorySeedEmail, id: factorySeedUserId });
   }
 
@@ -3746,9 +3833,9 @@ export function createHostedDispatcher({
     const testUser = item?.testUser || options.testEmail || options.testUser || ctx?.testEmail || factorySeedEmail || 'tio-test-user-06i@proof.invalid';
 
     if (inv) {
-      const seedEmailToProtect = options.seedEmail || options.testEmail || factorySeedEmail || ctx?.seedEmail || ctx?.testEmail || null;
+      const seedEmailToProtect = options.seedEmail || factorySeedEmail || ctx?.seedEmail || null;
       const seedUserIdToProtect = options.seedUserId || factorySeedUserId || ctx?.seedUserId || null;
-      if (seedEmailToProtect || seedUserIdToProtect) {
+      if (seedUserIdToProtect) {
         inv.protectSeedIdentity({ email: seedEmailToProtect, id: seedUserIdToProtect });
       }
     }
@@ -3819,7 +3906,7 @@ export function createHostedDispatcher({
         if (inv && createdUserId) {
           const uidStr = String(createdUserId).trim();
           const retEmail = (typeof body?.user?.email === 'string' && body.user.email.trim()) || (typeof body?.email === 'string' && body.email.trim()) || null;
-          const isSeed = Boolean(inv.isSeedIdentity(uidStr, null) || (retEmail && inv.isSeedIdentity(null, retEmail)) || inv.isUserReferenced(uidStr));
+          const isSeed = Boolean(inv.isSeedIdentity(uidStr, retEmail) || inv.isUserReferenced(uidStr));
           if (isSeed) {
             inv.registerReferencedUser({ id: uidStr, email: retEmail || testUser, source: 'BYPASS-01_unexpected_response_matched_seed' });
           } else if (!inv.isUserTracked(uidStr)) {
@@ -3906,7 +3993,7 @@ export function createHostedDispatcher({
         if (inv && createdUserId) {
           const uidStr = String(createdUserId).trim();
           const retEmail = (typeof body?.user?.email === 'string' && body.user.email.trim()) || (typeof body?.email === 'string' && body.email.trim()) || null;
-          const isSeed = Boolean(inv.isSeedIdentity(uidStr, null) || (retEmail && inv.isSeedIdentity(null, retEmail)) || inv.isUserReferenced(uidStr));
+          const isSeed = Boolean(inv.isSeedIdentity(uidStr, retEmail) || inv.isUserReferenced(uidStr));
           if (isSeed) {
             inv.registerReferencedUser({ id: uidStr, email: retEmail || testUser, source: 'BYPASS-02_unexpected_response_matched_seed' });
           } else if (!inv.isUserTracked(uidStr)) {
@@ -4712,8 +4799,15 @@ export function createHostedDispatcher({
 
         const isRevoked = resetSucceeded && sessionRevocationVerified && remainingSessions === 0;
 
-        if (isRevoked && inv && ctx?.activeSessionId) {
-          inv.markSessionRevoked(ctx.activeSessionId);
+        if (isRevoked) {
+          if (inv && ctx?.activeSessionId) {
+            inv.markSessionRevoked(ctx.activeSessionId);
+          }
+          if (ctx) {
+            ctx.sessionRevocationConfirmed = true;
+            ctx.revokedSessionId = ctx.activeSessionId;
+            ctx.revokedAccessToken = ctx.activeAccessToken;
+          }
         }
 
         return {
@@ -4798,9 +4892,27 @@ export function createHostedDispatcher({
             error: 'PREREQUISITE_MISSING: SESSION-04 requires pre-reset access token'
           };
         }
+
+        // R17-02: Require authenticated pre-invalidation baseline and verified session revocation proof before linger claims
+        if (ctx?.preInvalidationSessionValid !== true) {
+          return {
+            passed: false,
+            status: 0,
+            error: 'PREREQUISITE_MISSING: SESSION-04 requires authenticated pre-invalidation session baseline (HOOK-01)'
+          };
+        }
+        if (ctx?.passwordResetCompleted !== true || ctx?.sessionRevocationConfirmed !== true) {
+          return {
+            passed: false,
+            status: 0,
+            error: 'PREREQUISITE_MISSING: SESSION-04 requires verified session revocation evidence (SESSION-02)'
+          };
+        }
+
         const token = ctx.activeAccessToken;
         let tokenExpiry = null;
         let tokenIat = null;
+        let tokenSessionId = null;
         let jwtLifetimeSeconds = null;
         let lifetimeBounded = false;
         try {
@@ -4813,12 +4925,25 @@ export function createHostedDispatcher({
             if (typeof p?.iat === 'number' && Number.isFinite(p.iat)) {
               tokenIat = p.iat;
             }
+            if (typeof p?.session_id === 'string' && p.session_id.trim()) {
+              tokenSessionId = p.session_id.trim();
+            }
             if (tokenExpiry !== null && tokenIat !== null && tokenExpiry > tokenIat) {
               jwtLifetimeSeconds = tokenExpiry - tokenIat;
               lifetimeBounded = jwtLifetimeSeconds > 0 && jwtLifetimeSeconds <= 300;
             }
           }
         } catch {}
+
+        // Token must correlate with verified revoked session ID (R17-02)
+        const sessionCorrelated = Boolean(tokenSessionId && ctx?.revokedSessionId && tokenSessionId === ctx.revokedSessionId);
+        if (!sessionCorrelated) {
+          return {
+            passed: false,
+            status: 0,
+            error: `SESSION_CORRELATION_FAILURE: SESSION-04 token session_id ('${tokenSessionId || 'none'}') does not correlate with verified revoked session ID ('${ctx?.revokedSessionId || 'none'}')`
+          };
+        }
 
         const nowUnix = Math.floor(Date.now() / 1000);
         const tokenUnexpired = typeof tokenExpiry === 'number' && nowUnix < tokenExpiry;
@@ -4830,8 +4955,8 @@ export function createHostedDispatcher({
         });
         const body = await parseResponseBody(res);
 
-        // Stateless linger is observed ONLY when token is unexpired AND lifetime is strictly bounded (<= 300s) AND PostgREST accepts it with HTTP 200 (R3-03, R7-02)
-        const lingerObserved = res.status === 200 && tokenUnexpired && lifetimeBounded;
+        // Stateless linger is observed ONLY when token is unexpired AND lifetime is strictly bounded (<= 300s) AND PostgREST accepts it with HTTP 200 AND session is correlated (R3-03, R7-02, R17-02)
+        const lingerObserved = res.status === 200 && tokenUnexpired && lifetimeBounded && sessionCorrelated;
 
         let error = null;
         if (res.status === 401) {
@@ -4855,8 +4980,13 @@ export function createHostedDispatcher({
           jwt_iat: tokenIat,
           jwt_lifetime_seconds: jwtLifetimeSeconds,
           lifetime_bounded: lifetimeBounded,
+          revocation_verified: ctx?.sessionRevocationConfirmed === true,
+          revoked_session_id: ctx?.revokedSessionId || null,
+          correlated_session_id: tokenSessionId,
+          session_correlated: sessionCorrelated,
+          pre_invalidation_verified: ctx?.preInvalidationSessionValid === true,
           evidence: lingerObserved
-            ? `PostgREST Data API stateless JWT linger confirmed (HTTP 200 before exp ${tokenExpiry}); verified short jwt_exp lifetime (${jwtLifetimeSeconds}s <= 300s)`
+            ? `PostgREST Data API stateless JWT linger confirmed (HTTP 200 before exp ${tokenExpiry}); verified short jwt_exp lifetime (${jwtLifetimeSeconds}s <= 300s); correlated revoked session ${ctx?.revokedSessionId}`
             : `PostgREST did not demonstrate valid bounded stateless linger (status ${res.status}, unexpired: ${tokenUnexpired}, lifetime: ${jwtLifetimeSeconds}s)`,
           postgrest_linger_observed: lingerObserved,
           bounded_by_jwt_exp: lifetimeBounded,
@@ -4874,9 +5004,27 @@ export function createHostedDispatcher({
             error: 'PREREQUISITE_MISSING: SESSION-05 requires pre-reset access token'
           };
         }
+
+        // R17-02: Require authenticated pre-invalidation baseline and verified session revocation proof before linger claims
+        if (ctx?.preInvalidationSessionValid !== true) {
+          return {
+            passed: false,
+            status: 0,
+            error: 'PREREQUISITE_MISSING: SESSION-05 requires authenticated pre-invalidation session baseline (HOOK-01)'
+          };
+        }
+        if (ctx?.passwordResetCompleted !== true || ctx?.sessionRevocationConfirmed !== true) {
+          return {
+            passed: false,
+            status: 0,
+            error: 'PREREQUISITE_MISSING: SESSION-05 requires verified session revocation evidence (SESSION-02)'
+          };
+        }
+
         const token = ctx.activeAccessToken;
         let tokenExpiry = null;
         let tokenIat = null;
+        let tokenSessionId = null;
         let jwtLifetimeSeconds = null;
         let lifetimeBounded = false;
         try {
@@ -4889,12 +5037,25 @@ export function createHostedDispatcher({
             if (typeof p?.iat === 'number' && Number.isFinite(p.iat)) {
               tokenIat = p.iat;
             }
+            if (typeof p?.session_id === 'string' && p.session_id.trim()) {
+              tokenSessionId = p.session_id.trim();
+            }
             if (tokenExpiry !== null && tokenIat !== null && tokenExpiry > tokenIat) {
               jwtLifetimeSeconds = tokenExpiry - tokenIat;
               lifetimeBounded = jwtLifetimeSeconds > 0 && jwtLifetimeSeconds <= 300;
             }
           }
         } catch {}
+
+        // Token must correlate with verified revoked session ID (R17-02)
+        const sessionCorrelated = Boolean(tokenSessionId && ctx?.revokedSessionId && tokenSessionId === ctx.revokedSessionId);
+        if (!sessionCorrelated) {
+          return {
+            passed: false,
+            status: 0,
+            error: `SESSION_CORRELATION_FAILURE: SESSION-05 token session_id ('${tokenSessionId || 'none'}') does not correlate with verified revoked session ID ('${ctx?.revokedSessionId || 'none'}')`
+          };
+        }
 
         const nowUnix = Math.floor(Date.now() / 1000);
         const tokenUnexpired = typeof tokenExpiry === 'number' && nowUnix < tokenExpiry;
@@ -4906,8 +5067,8 @@ export function createHostedDispatcher({
         });
         const body = await parseResponseBody(res);
 
-        // Stateless linger is observed ONLY when token is unexpired AND lifetime is strictly bounded (<= 300s) AND Storage accepts it with HTTP 200 (R3-03, R7-02)
-        const lingerObserved = res.status === 200 && tokenUnexpired && lifetimeBounded;
+        // Stateless linger is observed ONLY when token is unexpired AND lifetime is strictly bounded (<= 300s) AND Storage accepts it with HTTP 200 AND session is correlated (R3-03, R7-02, R17-02)
+        const lingerObserved = res.status === 200 && tokenUnexpired && lifetimeBounded && sessionCorrelated;
 
         let error = null;
         if (res.status === 404) {
@@ -4933,8 +5094,13 @@ export function createHostedDispatcher({
           jwt_iat: tokenIat,
           jwt_lifetime_seconds: jwtLifetimeSeconds,
           lifetime_bounded: lifetimeBounded,
+          revocation_verified: ctx?.sessionRevocationConfirmed === true,
+          revoked_session_id: ctx?.revokedSessionId || null,
+          correlated_session_id: tokenSessionId,
+          session_correlated: sessionCorrelated,
+          pre_invalidation_verified: ctx?.preInvalidationSessionValid === true,
           evidence: lingerObserved
-            ? `Storage API stateless JWT linger confirmed (HTTP 200 before exp ${tokenExpiry}); verified short jwt_exp lifetime (${jwtLifetimeSeconds}s <= 300s)`
+            ? `Storage API stateless JWT linger confirmed (HTTP 200 before exp ${tokenExpiry}); verified short jwt_exp lifetime (${jwtLifetimeSeconds}s <= 300s); correlated revoked session ${ctx?.revokedSessionId}`
             : `Storage API did not demonstrate valid bounded stateless linger (status ${res.status}, unexpired: ${tokenUnexpired}, lifetime: ${jwtLifetimeSeconds}s)`,
           storage_linger_observed: lingerObserved,
           bounded_by_jwt_exp: lifetimeBounded,
@@ -5093,8 +5259,9 @@ export async function runHostedProbeRunner(options = {}) {
   }
 
   const activeInventory = inventory || new TestRunInventory();
-  if (testEmail || options.seedUserId || options.targetUserId) {
-    activeInventory.protectSeedIdentity({ email: testEmail, id: options.seedUserId || options.targetUserId || null });
+  const verifiedSeedId = options.seedUserId || options.targetUserId || null;
+  if (verifiedSeedId) {
+    activeInventory.protectSeedIdentity({ email: options.seedEmail || testEmail || null, id: verifiedSeedId });
   }
   const activeRunContext = runContext || createRunContext({ ...options, testEmail });
   const adminClient = options.adminClient || null;
