@@ -1,12 +1,13 @@
 # Task 06I-B1-H2 — Disposable TEMP Testbed Readiness & Controlled Execution Plan
 
-**Task ID:** `06I-B1-H2` (Revision R1)
+**Task ID:** `06I-B1-H2` (Revision R2)
 **Creation Date:** 2026-11-24
-**Revision Date:** 2026-11-24 (R1 Closure)
+**Revision Date:** 2026-11-24 (R2 Closure)
 **Author:** Santosh Jangid (`im-tnyx`)
 **Reviewer:** `im-tio` (Independent Reviewer)
 **Branch:** `docs/task06i-b1-h2-temp-hosted-readiness`
 **Base:** `main` at `2d1fe9eebfd0dc18fe213da1c2aff19df29c69c0`
+**Reviewed HEAD:** `d64fd0489ba12ff34b58da35eee0b0415b896e35`
 **PR Reference:** [PR #43](https://github.com/im-tnyx/Tio-Workspace/pull/43)
 **Cost Ceiling:** $0.00 (Free-Tier Only)  
 **Mode:** Local Documentation & Offline Readiness Specification ONLY  
@@ -278,9 +279,10 @@ Three separate evaluation dimensions must be distinguished:
 9. **Execute Authorized Probes:** Execute only authorized probes sequentially with mandatory 100ms throttling (requires subset runner capability).
 10. **Immediate Halt on Critical Failure:** If `HOOK-01`, `HOOK-07`, or `SESSION-03` fail, halt immediately and abort remaining probes.
 11. **Execute Deterministic Cleanup:**
+    - **Path A (Run-Created Seed):** Revoke active sessions, call Admin API `DELETE /auth/v1/admin/users/:seedUserId`, and verify 404 absence. (Never attempt password restoration on a deleted user).
+    - **Path B (Pre-Existing Seed):** Preserve user identity (never delete), restore original seed password via Admin API, verify credentials via temporary verification session, revoke verification session, and confirm session cleanup.
     - Delete created Storage probe object (`DELETE /storage/v1/object/...`).
-    - Revoke all tracked sessions via GoTrue `signOut`.
-    - Restore original seed user password via Admin API.
+    - Revoke all tracked probe sessions via GoTrue `signOut`.
     - Delete test-created probe table rows (`WHERE run_id = '<runId>'`).
     - Assert `untrackedSessionObligations === 0` and `unverifiedUsers === 0`.
 12. **Restore Testbed Configuration:** Revert Auth configuration to the exact pre-test snapshot JSON captured in Step 3 via Management API PATCH.
@@ -325,16 +327,81 @@ To make recovery deterministic across process restarts, a durable journal specif
 - **Encrypted Local Custody:** If access tokens or seed passwords must survive process crashes, they must be encrypted using operating system credential protection (e.g. Windows DPAPI, macOS Keychain, Linux SecretService, or AES-256-GCM with an ephemeral OS-protected key).
 - **Strictly Prohibited Locations:** Secrets must never appear in Git-tracked files, unencrypted JSON, PR comments, CI artifacts, terminal logs, or shared cloud storage.
 
-#### Concrete Manual Recovery Alternative
-If a test run crashes before durable journaling is implemented, an operator must execute this concrete manual recovery procedure:
-1. **Identify Run-Created Users:** Call Admin API `GET /auth/v1/admin/users` using `service_role_key`. Filter for `user_metadata.test_run_id === '<runId>'`.
-2. **Delete Run-Created Users:** Call Admin API `DELETE /auth/v1/admin/users/:userId` for each confirmed run-created user.
-3. **Restore Seed User Password & Revoke Sessions:** Call Admin API `PUT /auth/v1/admin/users/:seedUserId` with the original seed password (retrieved from secure operator custody). GoTrue natively invalidates all active sessions in `auth.sessions` upon administrative password update!
-4. **Delete Storage Objects:** Call Storage API `DELETE /storage/v1/object/task06i_probe_bucket/probe.txt` using `service_role_key`.
-5. **Delete Probe Table Rows:** Execute SQL `DELETE FROM public.task06i_session_probe WHERE run_id = '<runId>';`.
-6. **Revert Auth Configuration:** Re-apply the raw JSON pre-change snapshot captured in Step 3 via Management API `PATCH /v1/projects/wvdabiwbaavfggcmpizd/config/auth`.
-7. **Verify Absence:** Assert `GET /admin/users` returns 0 run-created users, Storage `probe.txt` returns 404, probe table has 0 rows for `run_id`, and Auth config matches pre-change snapshot.
-8. **Verdict:** If any manual recovery step cannot be verified affirmatively, record status: **`INTERRUPTED_RECOVERY_BLOCKED`**. Never report `INTERRUPTED_RECOVERY_COMPLETED` without affirmative evidence.
+#### Concrete Manual Recovery Protocol (R2-01 Remediation)
+
+If a test run crashes or is interrupted before automated durable journaling is implemented, an operator must execute this strict ownership-aware manual recovery procedure.
+
+##### Inviolable Safety Invariants & Boundary Guards
+1. **Metadata Is Not Proof of Ownership:** `user_metadata.test_run_id` is an untrusted, user-editable client attribute and serves purely as a correlation hint. It is **never** authoritative proof of run creation or ownership.
+2. **Strict Prohibition of Blind Bulk Operations:** Never call `DELETE` on users based solely on email matching, returned UID, or metadata query filters without affirmative proof of run creation.
+3. **Mutual Exclusivity of Deletion and Restoration:** A user identity cannot be both deleted and password-restored. Seed deletion and password restoration are strictly mutually exclusive execution paths.
+4. **Session Revocation vs Stateless JWT Invalidation:** Updating a password in GoTrue revokes stateful rows in `auth.sessions`, causing stateful `/auth/v1/user` checks to fail with HTTP 403 `session_not_found`. However, stateless consumers (PostgREST, Storage) continue to accept unexpired bearer JWTs statelessly until their `exp` timestamp elapses (up to 300 seconds). Deletion or password reset does **not** instantly invalidate distributed bearer tokens.
+5. **Pending Mutation Blocker:** If any asynchronous provider mutation (e.g. password update) remains unresolved or in-flight at crash time, manual recovery cannot claim success and must block until provider status is resolved.
+
+##### Branching Manual Recovery Paths
+
+An operator must classify the seed identity into one of three mutually exclusive branches before taking any action:
+
+###### Path A: Verified Run-Created Identity (`RUN_CREATED_VERIFIED`)
+*Applicability:* Affirmative write-ahead log evidence or initial provisioning response confirms that this specific user ID was created exclusively by and for this test run.
+1. **Reconcile In-Flight Mutations:** Await settlement or query provider status for any pending mutation obligations.
+2. **Revoke Tracked Sessions:** If active session access tokens are held in operator memory/custody, issue GoTrue `signOut`.
+3. **Delete Run-Created User:** Call Admin API `DELETE /auth/v1/admin/users/:userId` strictly using the exact verified user ID.
+4. **Verify Absence:** Query Admin API `GET /auth/v1/admin/users/:userId`, assert HTTP 404 (user does not exist).
+5. **Strict Prohibitions:**
+   - **DO NOT** attempt password restoration on a deleted user (would result in HTTP 404 error).
+   - **DO NOT** treat user deletion as instantaneous invalidation of already-minted stateless JWTs (must observe 300s lingering interval).
+
+###### Path B: Verified Pre-Existing Identity (`PRE_EXISTING_REFERENCED`)
+*Applicability:* Affirmative pre-flight inventory proof confirms the seed user existed prior to probe dispatch (e.g. pre-test credential check).
+1. **Strict Prohibition of Deletion:** **NEVER** call `DELETE /auth/v1/admin/users/:seedUserId`. Preserving pre-existing user identity and history is mandatory.
+2. **Reconcile In-Flight Mutations:** Confirm any pending password mutations have completed or failed.
+3. **Restore Seed Password:** Call Admin API `PUT /auth/v1/admin/users/:seedUserId` with the original password retrieved from encrypted operator custody.
+4. **Verify Restored Credentials:** Mint a single ephemeral verification session via `POST /auth/v1/token?grant_type=password` using the restored password.
+5. **Affirmative Revocation of Verification Session:** Immediately revoke the verification session via `POST /auth/v1/logout` (or GoTrue client `signOut`), and assert HTTP 403 `session_not_found` on subsequent `GET /auth/v1/user`.
+6. **Assert Session Count:** Confirm all verification session obligations are cleared.
+
+###### Path C: Indeterminate Identity Ownership (`OWNERSHIP_UNKNOWN` / `CREATION_INDETERMINATE`)
+*Applicability:* User ID was observed during probe execution, but neither affirmative run-creation proof nor affirmative pre-existence proof exists in inventory or durable records.
+1. **Strict Prohibitions:**
+   - **DO NOT** delete the user.
+   - **DO NOT** mutate or reset credentials.
+   - **DO NOT** alter user metadata.
+2. **Revoke Known Sessions:** Revoke any known active sessions via `signOut` if access tokens are held in custody.
+3. **Quarantine Identity:** Record the user ID, email, and observed metadata into a quarantine log for manual operator investigation.
+4. **Record Unresolved Obligation:** Increment `unverifiedUsers` count.
+5. **Fail Recovery Closed:** Mark recovery verdict as **`INTERRUPTED_RECOVERY_BLOCKED`**.
+
+##### Auxiliary Resource Cleanup
+1. **Delete Storage Objects:** Call Storage API `DELETE /storage/v1/object/task06i_probe_bucket/probe.txt` using `service_role_key`. Verify HTTP 404 on subsequent GET.
+2. **Delete Probe Table Rows:** Execute SQL `DELETE FROM public.task06i_session_probe WHERE run_id = '<runId>';`. Assert 0 rows remain for `run_id`.
+3. **Revert Auth Configuration:**
+   - Retrieve pre-change snapshot JSON from secret-safe operator custody.
+   - Re-apply ONLY approved writable fields via Management API `PATCH /v1/projects/wvdabiwbaavfggcmpizd/config/auth`.
+   - Affirmative verification: Fetch `GET /config/auth` post-patch, assert zero semantic diff against pre-change snapshot. If snapshot is missing or diff is non-empty, mark `CONFIG_RESTORE_FAILED`.
+4. **Final Recovery Verification:** Assert all auxiliary resources are deleted, configuration diff is empty, `untrackedSessionObligations === 0`, and `unverifiedUsers === 0`.
+5. **Verdict:** If any step fails or cannot be verified affirmatively, record status: **`INTERRUPTED_RECOVERY_BLOCKED`**. Never report `INTERRUPTED_RECOVERY_COMPLETED` without affirmative evidence.
+
+---
+
+### Recovery Decision Matrix (12 Distinct Scenarios)
+
+The following decision matrix governs all automated and manual recovery operations across all possible failure, crash, and interruption states:
+
+| # | Scenario & Failure Condition | Required Evidence | Permitted Action | Prohibited Action | Verification Requirement | Residual-Risk Classification |
+|---|---|---|---|---|---|---|
+| **1** | **Verified Run-Created Seed**<br>Process crashes after creating dedicated seed identity. | Exact user ID in run write-ahead journal or initial provisioning response record matching `runId`. | **Path A:** Revoke known sessions; call `DELETE /admin/users/:userId` with exact verified ID. | Never attempt password restoration after deletion; never delete by email or metadata filter alone. | Admin `GET /admin/users/:userId` returns HTTP 404. | **LOW** (Temporary test user completely eradicated). |
+| **2** | **Verified Pre-Existing Seed**<br>Process crashes after mutating pre-existing seed user's password. | Pre-flight inventory verification record or pre-test credential check confirming prior existence. | **Path B:** Preserve user; call `PUT /admin/users/:seedUserId` with original password from secure custody; test login; revoke verification session. | Never delete pre-existing user; never modify metadata; never leave password in mutated test state. | Test login succeeds with original password; verification session revoked with HTTP 403. | **LOW** (Original user identity and credentials fully restored). |
+| **3** | **Unknown Seed Ownership**<br>Process crashes with user ID in scope but creation provenance is missing or ambiguous. | Conflicting, corrupted, or missing inventory records for observed user ID. | **Path C:** Revoke known sessions if tokens held; quarantine user ID in audit log for operator review. | Never delete user; never mutate credentials; never reset password; never alter metadata. | Record `unverifiedUsers > 0`; set recovery status `INTERRUPTED_RECOVERY_BLOCKED`. | **HIGH** (Possible pre-existing or foreign identity; preserved untouched to prevent data loss). |
+| **4** | **Unexpectedly Created User**<br>Probe execution (e.g. signup/OTP probe) inadvertently created an Auth user. | Provider response in probe execution log showing user creation with specific user ID. | Delete by exact user ID **only** if affirmative run-minting evidence exists; otherwise quarantine via Path C. | Never delete based on email match alone; never delete based on user-editable metadata alone. | Admin `GET` returns 404 if deleted; or recorded as quarantined obligation. | **MEDIUM** (Orphaned probe artifact requiring affirmative provenance before deletion). |
+| **5** | **Lost Session Token**<br>Process crashed while active session existed; JWT access token lost from volatile memory. | Active session ID or user ID known from run journal, but bearer JWT token destroyed. | If pre-existing user, trigger administrative password reset to purge `auth.sessions`; if run-created user, delete user. | Never call GoTrue client `signOut` with synthetic, expired, or invalid tokens. | Query `auth.sessions` confirms zero active session rows for target user; observe 300s stateless token expiry window. | **MEDIUM** (Stateless bearer JWT lingers up to 300s before expiring at consumers). |
+| **6** | **Unresolved Password Mutation**<br>`PUT /admin/users/:id` was in-flight when process crashed or timed out. | Mutation obligation logged in write-ahead log without provider settlement confirmation. | Query provider admin API to determine current credential state; re-dispatch password restore if pre-existing seed. | Never mark recovery complete while mutation status is indeterminate; never assume mutation failed. | Affirmative login verification with expected password confirms exact credential state. | **HIGH** (Credential state uncertain; could lock out legitimate operator/user). |
+| **7** | **Failed Password Restoration**<br>`PUT /admin/users/:seedUserId` returns HTTP 4xx/5xx or network error during recovery. | Error response from Supabase Admin API during password restore attempt. | Retry with exponential backoff (up to 3 attempts); if still failing, escalate immediately to manual operator intervention with root credentials. | Never swallow restore errors; never report recovery success; never delete pre-existing user as workaround. | Password restoration confirmed via successful test login or manual operator confirmation. | **CRITICAL** (Account left in altered or inaccessible state). |
+| **8** | **Failed Session Revocation**<br>GoTrue `signOut` or admin session deletion returns error. | HTTP error response or network failure during session revocation call. | Escalate to administrative user password update (which triggers native session purge in GoTrue) or user deletion (if run-created). | Never ignore revocation failure; never decrement untracked session obligations. | Affirmative query to `auth.sessions` confirms session row absence. | **HIGH** (Unrevoked active session remains in database). |
+| **9** | **Expired JWT Without Revocation Evidence**<br>Token timestamp shows `exp` elapsed, but no affirmative `signOut` or `auth.sessions` deletion record exists. | Decoded JWT `exp < now`, but zero provider revocation record in run journal. | Inspect `auth.sessions` via Admin API/SQL; if session record still exists, revoke it explicitly; verify refresh token is also revoked. | Never treat expired JWT as equivalent to affirmative server-side session termination (refresh tokens remain valid!). | Affirmative confirmation that both access and refresh token sessions are deleted in provider store. | **MEDIUM** (Refresh token may remain valid indefinitely even if access token expired). |
+| **10** | **Missing Pre-Change Configuration Snapshot**<br>Pre-change Auth configuration JSON was not captured or was lost due to unjournaled crash. | No valid pre-flight config JSON found in persistent recovery storage. | Halt automated rollback; inspect known testbed baseline specification (`sql/testbed-fixtures.sql` & H2 config manifest); require explicit operator approval of restored values. | Never guess configuration values; never apply unverified default templates blindly. | Operator review and sign-off on diff against known baseline configuration. | **HIGH** (Testbed configuration may drift from expected baseline). |
+| **11** | **Interrupted Cleanup Operation**<br>Process crashes midway through cleanup (e.g. after storage delete, but before session revoke). | Journal shows `CLEANUP_IN_PROGRESS` with partially fulfilled resource obligations. | Re-run recovery coordinator with idempotent operations (handle 404s gracefully for already-deleted resources). | Never abort cleanup permanently; never skip remaining resources due to prior step errors. | All cleanup verification queries confirm resource absence; obligations count reaches 0. | **MEDIUM** (Residual test artifacts remain until second recovery pass succeeds). |
+| **12** | **Unknown Storage Object or Table Row Ownership**<br>Storage bucket or probe table contains objects/rows with unconfirmed or missing `run_id`. | Unlabeled objects in probe bucket or rows without matching run metadata. | Quarantine unknown objects/rows; delete strictly WHERE `run_id = '<currentRunId>'` or exact known probe object path `task06i_probe_bucket/probe.txt`. | Never execute blind bucket wipe; never execute `DELETE FROM table;` without WHERE clause. | Targeted probe rows/objects deleted; unowned artifacts logged and reported to operator. | **MEDIUM** (Potential testbed debris or shared fixture collision; protected against collateral deletion). |
 
 ---
 
@@ -393,7 +460,7 @@ Before any future Phase 1.2 hosted test execution can occur, the repository owne
 - [ ] **Approval 4:** Authorization to provision a single temporary test seed identity (`tio-test-user-06i@proof.invalid`) on TEMP testbed.
 - [ ] **Approval 5:** Approval of the exact 10 feasible probe IDs proposed for execution (`BYPASS-01`, `BYPASS-02`, `BYPASS-05`, `HOOK-01`, `HOOK-02`, `SESSION-01`, `SESSION-02`, `SESSION-03`, `SESSION-04`, `SESSION-05`).
 - [ ] **Approval 6:** Formal acknowledgment that runner subset execution capability is currently **NOT IMPLEMENTED** (`BLOCKED_PENDING_SUBSET_RUNNER`) and must be implemented before partial live dispatch.
-- [ ] **Approval 7:** Formal acknowledgment that automatic durable crash recovery is currently **NOT IMPLEMENTED** (`BLOCKED_PENDING_DURABLE_RECOVERY`) and requires either durable journal implementation or operator manual recovery authorization.
+- [ ] **Approval 7:** Formal acknowledgment that automatic durable crash recovery is currently **NOT IMPLEMENTED** (`BLOCKED_PENDING_DURABLE_RECOVERY`) and that operator manual recovery must strictly follow the ownership-aware protocol (mutually exclusive Path A / Path B / Path C, 12-scenario decision matrix) and cannot proceed on user-editable metadata alone.
 - [ ] **Approval 8:** Formal acceptance that `BYPASS-03`, `BYPASS-04`, `HOOK-03`, `HOOK-04`, `SESSION-06` remain `PROVIDER_PRECONDITION_MISSING`, and `HOOK-05`, `HOOK-06`, `HOOK-07` remain `BLOCKED_UNSUPPORTED` at Layer B.
 
 ---
@@ -401,7 +468,7 @@ Before any future Phase 1.2 hosted test execution can occur, the repository owne
 ## 11. Final Decision & Status
 
 - **H1 Status:** **COMPLETE & MERGED** (PR #37, commit `cd4ce0ac16953af23b5feb30dc48a102ae6d8f48`)
-- **H2 Planning Status:** **READY FOR INDEPENDENT REVIEW** (Revision R1)
+- **H2 Planning Status:** **READY FOR INDEPENDENT REVIEW** (Revision R2)
 - **Runner Subset Execution:** **NOT IMPLEMENTED** (`BLOCKED_PENDING_SUBSET_RUNNER`)
 - **Durable Crash Recovery:** **NOT IMPLEMENTED** (`BLOCKED_PENDING_DURABLE_RECOVERY`)
 - **Hosted Verification:** **0/18**
