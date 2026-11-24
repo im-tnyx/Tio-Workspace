@@ -1,17 +1,19 @@
 # Task 06I-B1-H3 — Controlled Subset Dispatch & Run-Scoped Storage Implementation
 
-**Task ID:** `06I-B1-H3`  
-**Creation Date:** 2026-11-24  
-**Author:** Santosh Jangid (`im-tnyx`)  
-**Reviewer:** `im-tio` (Independent Reviewer)  
-**Branch:** `feat/task06i-b1-h3-subset-runner-storage`  
-**Base:** `main` at `4569479e8fe2caa6659fe1cc6c7a484596a01bbc` (PR #43 merge commit)  
-**PR Reference:** Target for new PR  
-**Cost Ceiling:** $0.00 (Free-Tier Only)  
-**Mode:** Local Implementation, Mocked Transport Tests & Offline Verification ONLY  
-**Hosted LIVE Dispatch:** **NOT AUTHORIZED**  
-**Production Real Auth:** **STRICT NO-GO**  
-**Readiness Status:** `SUBSET_RUNNER_IMPLEMENTED`, `RUN_SCOPED_STORAGE_IMPLEMENTED`, `CLEANUP_ORDERING_ENFORCED`, `LIVE_DISPATCH_BLOCKED_PENDING_DURABLE_RECOVERY`
+**Task ID:** `06I-B1-H3` (Revision `R1`)<br>
+**Creation Date:** 2026-11-24<br>
+**Revision Date:** 2026-11-25<br>
+**Author:** Santosh Jangid (`im-tnyx`)<br>
+**Reviewer:** `im-tio` (Independent Reviewer)<br>
+**Branch:** `feat/task06i-b1-h3-subset-runner-storage`<br>
+**Base:** `main` at `4569479e8fe2caa6659fe1cc6c7a484596a01bbc` (PR #43 merge commit)<br>
+**PR Reference:** https://github.com/im-tnyx/Tio-Workspace/pull/44<br>
+**Reviewed HEAD:** `bc1f1dd3402faf6559517412fe3215cc3c7da4ad`<br>
+**Cost Ceiling:** $0.00 (Free-Tier Only)<br>
+**Mode:** Local Implementation, Mocked Transport Tests & Offline Verification ONLY<br>
+**Hosted LIVE Dispatch:** **NOT AUTHORIZED**<br>
+**Production Real Auth:** **STRICT NO-GO**<br>
+**Readiness Status:** `SUBSET_RUNNER_IMPLEMENTED`, `RUN_SCOPED_STORAGE_IMPLEMENTED`, `CLEANUP_ORDERING_ENFORCED`, `R1_FAIL_CLOSED_DISPATCH_ENFORCED`, `R1_STORAGE_OWNERSHIP_VERIFIED`, `LIVE_DISPATCH_BLOCKED_PENDING_DURABLE_RECOVERY`
 
 ---
 
@@ -37,7 +39,7 @@ Following the completion and squash merge of Task 06I-B1-H2 via PR #43 (commit `
 |---|---|---|
 | **PR #43 Status** | **MERGED** | Squash merge at `4569479e8fe2caa6659fe1cc6c7a484596a01bbc` |
 | **Current Branch** | `feat/task06i-b1-h3-subset-runner-storage` | Branched directly from `main` HEAD |
-| **Task 06I Unit Tests** | **167/167 PASS** | `node --test experiments/task06i/*.test.mjs` (including Tests 90–95) |
+| **Task 06I Unit Tests** | **168/168 PASS** | `node --test experiments/task06i/*.test.mjs` (including Tests 90–96) |
 | **PostgreSQL Contract Parity** | **POSTGRES_VERIFIED** (18/18) | `node experiments/task06i/sql-contract-parity.mjs` on PostgreSQL 17.11 |
 | **Task 06H Local Suite** | **115/115 PASS** | `node --test experiments/task06h/*.test.mjs` |
 | **Repository Verification** | **PASS** | `npm run verify` (tokens guard, tsc, eslint max-warnings=0, 22 shell tests) |
@@ -115,6 +117,70 @@ Following the completion and squash merge of Task 06I-B1-H2 via PR #43 (commit `
 
 ---
 
+## 3.6 Revision R1: PR #44 Review Remediation & Closures
+
+Following comprehensive independent reviews on PR #44 by `@im-tio` (Codex) and GitHub Bugbot, 11 review comments across 8 critical areas were identified, addressed, and closed with rigorous offline unit tests (Test 96 with 26 sub-assertions):
+
+### R1-01: Mandatory Durable Recovery Gate & Fail-Closed Dispatcher
+- **Review Threads:** `PRRT_kwDOVtCmZc67gqOo` (Codex P1), `PRRT_kwDOVtCmZc67grT_` (Bugbot High)
+- **Remediation:**
+  1. Enforced durable recovery gate unconditionally at standalone CLI entry point (`main()`): if `--live` flag is supplied without recovery, the process terminates immediately with code 1 (`BLOCKED_PENDING_DURABLE_RECOVERY`).
+  2. In `createHostedDispatcher` and `provisionStorageProbeFixture`, default network dispatch without explicit mock transport (`!fetchFn || fetchFn === globalThis.fetch`) throws `BLOCKED_PENDING_DURABLE_RECOVERY`.
+  3. Wrapped `fetchFn` in `createHostedDispatcher` to intercept any invocation of `globalThis.fetch`.
+  4. Tagged returned dispatcher with `_isHostedNetworkDispatcher = true`.
+  5. In `runHostedProbeRunner`, if `options.liveHostedDispatch === true || options.enforceDurableRecoveryGate === true || !mockDispatcher || mockDispatcher._isHostedNetworkDispatcher === true`, throws `BLOCKED_PENDING_DURABLE_RECOVERY` fail-closed.
+
+### R1-02: Storage Provisioner Project Isolation & Credential Binding
+- **Review Threads:** `PRRT_kwDOVtCmZc67gqOu` (Codex P1), `PRRT_kwDOVtCmZc67grUL` (Bugbot High)
+- **Remediation:**
+  1. Validated target project ref strictly against authorized TEMP project (`wvdabiwbaavfggcmpizd`) inside `provisionStorageProbeFixture` before constructing any network requests; rejects REAL (`bsfwzvgynwriswapxpsp`) and Tio-world (`oykupyiitspujzpwwvuj`) with `CRITICAL_SECURITY_VIOLATION`.
+  2. Enforced credential project binding via `validateProjectCredentialBinding(userAccessToken, normRef)`.
+  3. Validated seed user UUID via `validateUuid(seedUserId)` and decoded user JWT to assert `claims.sub === validSeedUserId`.
+
+### R1-03: Separate Storage Creation Obligation from Deletion Eligibility
+- **Review Threads:** `PRRT_kwDOVtCmZc67gqOz` (Codex P1), `PRRT_kwDOVtCmZc67grUX` (Bugbot Med)
+- **Remediation:**
+  1. Introduced granular `STORAGE_LIFECYCLE_STATE` enum (10 states): `ABSENCE_VERIFIED`, `CREATION_PENDING`, `CREATION_IN_FLIGHT`, `CREATION_INDETERMINATE`, `CONFLICT_EXISTING_PRESERVED`, `CREATION_FAILED`, `RUN_CREATED_VERIFIED`, `CLEANUP_PENDING`, `DELETION_VERIFIED`, `RESIDUAL_BLOCKED`.
+  2. Pre-upload collision check proceeds ONLY on affirmative HTTP 404; HTTP 200 throws `STORAGE_COLLISION_DETECTED`; non-404 throws `STORAGE_COLLISION_CHECK_FAILED`.
+  3. Pre-upload registration writes fixture with `CREATION_PENDING` and `deletionEligible: false`.
+  4. Only successful upload verification confirming exact downloaded bytes and owner identity transitions fixture to `RUN_CREATED_VERIFIED` with `deletionEligible: true`.
+  5. HTTP 409 conflict marks `CONFLICT_EXISTING_PRESERVED` without deletion eligibility; pre-existing object is never deleted.
+
+### R1-04: Verify Actual Stored Bytes & Owner Identity
+- **Review Thread:** `PRRT_kwDOVtCmZc67gqO4` (Codex P2)
+- **Remediation:**
+  1. Post-upload verification GET reads actual downloaded bytes (`await verifyRes.text()`) and asserts exact equality with `probeContent` (`STORAGE_PAYLOAD_INTEGRITY_MISMATCH`).
+  2. Inspects provider owner metadata headers (`x-owner-id` / `owner_id`) and correlates with authenticated seed user UUID (`STORAGE_OWNER_VERIFICATION_FAILED`).
+
+### R1-05: Canonical Probe Dependencies
+- **Review Thread:** `PRRT_kwDOVtCmZc67gqO8` (Codex P2)
+- **Remediation:**
+  1. Updated `CANONICAL_PROBE_DEPENDENCIES`: `SESSION-01` establishes `preInvalidationSessionValid: true`.
+  2. `SESSION-02` (password mutation) strictly requires `HOOK-01` and `SESSION-01`.
+  3. `SESSION-03..06` strictly require `HOOK-01`, `SESSION-01`, and `SESSION-02`.
+  4. Incomplete selections are rejected fail-closed before any network call or password mutation.
+
+### R1-06: Storage Absence Verification Before Auth User Deletion
+- **Review Thread:** `PRRT_kwDOVtCmZc67grUj` (Bugbot Med)
+- **Remediation:**
+  1. Added `getStorageObject(bucket, path)` to `createHostedAdminClient`.
+  2. Implemented `verifyStorageObjectAbsence(adminClient, bucket, path)` checking for authoritative HTTP 404.
+  3. In `TestRunInventory.executeCleanup()`, after issuing object deletion, verifies absence via independent GET. Non-404 marks `storageCleanupFailed = true` and halts Auth user deletion with `STORAGE_CLEANUP_FAILURE_CASCADE_PREVENTED`.
+
+### R1-07: Remove SESSION-05 Shared-Path Fallback
+- **Review Thread:** `PRRT_kwDOVtCmZc67grUw` (Bugbot Med)
+- **Remediation:**
+  1. Removed fallback `'probe.txt'`; strictly requires valid run-scoped path `task06i_probe_bucket/<runId>/probe.txt`.
+  2. Validates runId, canonical bucket and path, verified fixture in inventory, and expected owner ID before dispatching `SESSION-05`.
+
+### R1-08: Mandatory Inventory in Storage Provisioner
+- **Review Thread:** `PRRT_kwDOVtCmZc67grU_` (Bugbot Med)
+- **Remediation:**
+  1. `provisionStorageProbeFixture` enforces non-null active `TestRunInventory` instance matching `runId` and target project.
+  2. Throws `STORAGE_INVENTORY_REQUIRED` if inventory is missing, mismatched, or already finalized.
+
+---
+
 ## 4. Traceability Against H2-R3 Acceptance Matrix
 
 | Criterion | Description | Task 06I-B1-H3 Status | Verification Test |
@@ -137,9 +203,10 @@ Following the completion and squash merge of Task 06I-B1-H2 via PR #43 (commit `
 ## 5. Verification Test Suite Results
 
 ```powershell
-# 1. Task 06I Security Test Suite (99 runner tests + 68 parity/evaluator tests = 167 total)
+# 1. Task 06I Security Test Suite (100 runner tests + 68 parity/evaluator tests = 168 total)
 node --test experiments/task06i/*.test.mjs
-# Result: 167 passed, 0 failed, 0 skipped (duration: ~18.6s)
+# Result: 168 passed, 0 failed, 0 skipped (duration: ~19.2s)
+# Includes Test 96 with 26 sub-assertions verifying all 8 R1 remediation areas
 
 # 2. PostgreSQL Contract Parity Check
 node experiments/task06i/sql-contract-parity.mjs
@@ -178,8 +245,8 @@ git diff --check
 
 ## 7. Next Actions
 
-1. Commit all H3 implementation, test, and documentation files to `feat/task06i-b1-h3-subset-runner-storage`.
+1. Commit all H3-R1 implementation, test, and documentation files to `feat/task06i-b1-h3-subset-runner-storage`.
 2. Push branch to `origin feat/task06i-b1-h3-subset-runner-storage`.
-3. Open reviewable Pull Request targeting `main`.
-4. Request review from independent reviewer `@im-tio`.
+3. Post comprehensive resolution replies to all 11 review threads on PR #44 referencing the exact commit SHA, and resolve the threads via GraphQL.
+4. Request re-review from independent reviewer `@im-tio` on PR #44.
 5. Maintain strictly local execution mode; wait for owner instructions and review resolution before any subsequent steps.

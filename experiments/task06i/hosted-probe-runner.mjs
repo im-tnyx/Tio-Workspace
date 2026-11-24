@@ -66,7 +66,28 @@ export const UNSUPPORTED_LAYER_B_PROBE_IDS = Object.freeze([
 ]);
 
 /**
- * Canonical probe dependency graph enforcing prerequisite completeness (H3-01).
+ * Storage Fixture Lifecycle States (R1-03).
+ * Separates creation obligation tracking from deletion eligibility.
+ * Only affirmative RUN_CREATED_VERIFIED authorizes deletion.
+ */
+export const STORAGE_LIFECYCLE_STATE = Object.freeze({
+  ABSENCE_VERIFIED: 'ABSENCE_VERIFIED',
+  CREATION_PENDING: 'CREATION_PENDING',
+  CREATION_IN_FLIGHT: 'CREATION_IN_FLIGHT',
+  CREATION_INDETERMINATE: 'CREATION_INDETERMINATE',
+  CONFLICT_EXISTING_PRESERVED: 'CONFLICT_EXISTING_PRESERVED',
+  CREATION_FAILED: 'CREATION_FAILED',
+  RUN_CREATED_VERIFIED: 'RUN_CREATED_VERIFIED',
+  CLEANUP_PENDING: 'CLEANUP_PENDING',
+  DELETION_VERIFIED: 'DELETION_VERIFIED',
+  RESIDUAL_BLOCKED: 'RESIDUAL_BLOCKED'
+});
+
+/**
+ * Canonical probe dependency graph enforcing prerequisite completeness (H3-01, H3-R1).
+ * SESSION-01 establishes the pre-invalidation baseline (preInvalidationSessionValid).
+ * SESSION-02 mutates the password and confirms revocation (sessionRevocationConfirmed).
+ * SESSION-03, SESSION-04, SESSION-05, SESSION-06 require both SESSION-01 and SESSION-02.
  */
 export const CANONICAL_PROBE_DEPENDENCIES = Object.freeze({
   'BYPASS-01': Object.freeze([]),
@@ -82,11 +103,11 @@ export const CANONICAL_PROBE_DEPENDENCIES = Object.freeze({
   'HOOK-06': Object.freeze([]),
   'HOOK-07': Object.freeze([]),
   'SESSION-01': Object.freeze(['HOOK-01']),
-  'SESSION-02': Object.freeze(['HOOK-01']),
-  'SESSION-03': Object.freeze(['HOOK-01', 'SESSION-02']),
-  'SESSION-04': Object.freeze(['HOOK-01', 'SESSION-02']),
-  'SESSION-05': Object.freeze(['HOOK-01', 'SESSION-02']),
-  'SESSION-06': Object.freeze(['HOOK-01', 'SESSION-02'])
+  'SESSION-02': Object.freeze(['HOOK-01', 'SESSION-01']),
+  'SESSION-03': Object.freeze(['HOOK-01', 'SESSION-01', 'SESSION-02']),
+  'SESSION-04': Object.freeze(['HOOK-01', 'SESSION-01', 'SESSION-02']),
+  'SESSION-05': Object.freeze(['HOOK-01', 'SESSION-01', 'SESSION-02']),
+  'SESSION-06': Object.freeze(['HOOK-01', 'SESSION-01', 'SESSION-02'])
 });
 
 /**
@@ -107,6 +128,21 @@ export function validateRunId(runId) {
     );
   }
   return runId;
+}
+
+/**
+ * Validates UUID v4/standard format, rejecting non-UUID identity references.
+ */
+export function validateUuid(id) {
+  if (typeof id !== 'string' || !id.trim()) {
+    throw new Error('INVALID_UUID: UUID must be a non-empty string');
+  }
+  const cleanId = id.trim();
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(cleanId)) {
+    throw new Error(`INVALID_UUID: '${cleanId}' is not a valid UUID format`);
+  }
+  return cleanId;
 }
 
 /**
@@ -2292,6 +2328,31 @@ function validateSessionRevocationProof(item, rawOutcome, allowedStatuses, isRev
 }
 
 /**
+ * Verifies the authoritative absence of a storage object post-deletion (R1-06).
+ * Must return true ONLY when provider affirmatively confirms HTTP 404.
+ * Any other status (200, 401, 403, 500, timeout, error) fails closed returning false.
+ */
+export async function verifyStorageObjectAbsence(adminClient, bucket, path) {
+  if (!adminClient || !bucket || !path) return false;
+  if (typeof adminClient.getStorageObject === 'function') {
+    try {
+      const res = await adminClient.getStorageObject(bucket, path);
+      return res && res.status === 404;
+    } catch {
+      return false;
+    }
+  }
+  if (typeof adminClient.verifyStorageObjectAbsence === 'function') {
+    try {
+      return await adminClient.verifyStorageObjectAbsence(bucket, path);
+    } catch {
+      return false;
+    }
+  }
+  return false;
+}
+
+/**
  * Run-scoped identity and fixture inventory for deterministic cleanup and verification.
  * Distinguishes createdThisRun resources (eligible for deletion) from pre-existing fixture references (NEVER deleted).
  * Tracks exact UUIDs, emails, sessions, database rows, and storage objects.
@@ -2621,9 +2682,23 @@ export class TestRunInventory {
   }
 
   /**
-   * Registers a run-scoped Storage probe fixture with explicit ownership and metadata (H3-02).
+   * Registers a run-scoped Storage probe fixture with explicit lifecycle tracking (H3-02, H3-R1).
+   * Creation obligation is tracked separately from deletion eligibility.
+   * Deletion eligibility is granted ONLY upon affirmative RUN_CREATED_VERIFIED.
    */
-  registerStorageFixture({ bucket = STORAGE_PROBE_BUCKET, path, ownerId = null, bytes = 0, status = 'PROVISIONED', proof = null } = {}) {
+  registerStorageFixture({
+    bucket = STORAGE_PROBE_BUCKET,
+    path,
+    ownerId = null,
+    bytes = 0,
+    status = 'PROVISIONED',
+    proof = null,
+    lifecycleState = null,
+    deletionEligible = false
+  } = {}) {
+    if (this.finalized) {
+      throw new Error('INVENTORY_FINALIZED: Cannot register storage creation obligation against finalized inventory');
+    }
     if (!path || typeof path !== 'string' || !path.trim()) {
       throw new Error('registerStorageFixture requires non-empty path');
     }
@@ -2631,8 +2706,12 @@ export class TestRunInventory {
     const cleanPath = path.trim();
     const fixtureKey = `${cleanBucket}/${cleanPath}`;
 
-    // Register in exact path tracking
-    this.registerStorageObject(cleanBucket, cleanPath);
+    const state = lifecycleState || STORAGE_LIFECYCLE_STATE.CREATION_PENDING;
+    const canDelete = deletionEligible === true && state === STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED;
+
+    if (canDelete) {
+      this.registerStorageObject(cleanBucket, cleanPath);
+    }
 
     const fixtureRecord = {
       bucket: cleanBucket,
@@ -2642,6 +2721,8 @@ export class TestRunInventory {
       ownerId: ownerId ? String(ownerId).trim() : null,
       bytes: typeof bytes === 'number' ? bytes : 0,
       status, // 'PROVISIONED', 'IN_FLIGHT', 'VERIFIED', 'DELETED', 'DELETION_FAILED'
+      lifecycleState: state,
+      deletionEligible: canDelete,
       proof: proof || null,
       registeredAt: new Date().toISOString()
     };
@@ -2650,11 +2731,70 @@ export class TestRunInventory {
   }
 
   /**
-   * Retrieves a registered Storage probe fixture by bucket and path (H3-02).
+   * Updates an existing Storage fixture's lifecycle state and metadata (H3-R1).
+   * Transitions to RUN_CREATED_VERIFIED grant deletion eligibility.
+   * Pre-existing conflicts, failures, or indeterminate states strictly revoke deletion eligibility.
    */
-  getStorageFixture(bucket, path) {
-    if (!bucket || !path) return null;
-    const fixtureKey = `${String(bucket).trim()}/${String(path).trim()}`;
+  updateStorageFixture(fixtureKeyOrBucket, pathOrUpdates = {}, maybeUpdates = {}) {
+    if (this.finalized) {
+      throw new Error('INVENTORY_FINALIZED: Cannot update storage fixture against finalized inventory');
+    }
+    let key = null;
+    let updates = {};
+    if (typeof pathOrUpdates === 'string') {
+      key = `${String(fixtureKeyOrBucket).trim()}/${String(pathOrUpdates).trim()}`;
+      updates = maybeUpdates || {};
+    } else {
+      key = String(fixtureKeyOrBucket).trim();
+      updates = pathOrUpdates || {};
+    }
+
+    const fixture = this.storageFixtures.get(key);
+    if (!fixture) {
+      throw new Error(`STORAGE_FIXTURE_NOT_FOUND: Fixture '${key}' not registered in inventory`);
+    }
+
+    if (updates.lifecycleState) {
+      fixture.lifecycleState = updates.lifecycleState;
+    }
+    if (updates.status) {
+      fixture.status = updates.status;
+    }
+    if (typeof updates.bytes === 'number') {
+      fixture.bytes = updates.bytes;
+    }
+    if (updates.verifiedOwnerId !== undefined) {
+      fixture.verifiedOwnerId = updates.verifiedOwnerId;
+    }
+    if (updates.proof !== undefined) {
+      fixture.proof = updates.proof;
+    }
+
+    // Deletion eligibility is authorized ONLY upon affirmative RUN_CREATED_VERIFIED
+    if (fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED) {
+      fixture.deletionEligible = updates.deletionEligible !== false;
+      this.registerStorageObject(fixture.bucket, fixture.path);
+    } else {
+      fixture.deletionEligible = false;
+      if (this.trackedStorageObjects.has(fixture.bucket)) {
+        this.trackedStorageObjects.get(fixture.bucket).delete(fixture.path);
+      }
+    }
+
+    return fixture;
+  }
+
+  /**
+   * Retrieves a registered Storage probe fixture by bucket and path or composite key (H3-02, H3-R1).
+   */
+  getStorageFixture(bucketOrKey, path = null) {
+    if (!bucketOrKey) return null;
+    let fixtureKey = null;
+    if (!path && typeof bucketOrKey === 'string' && bucketOrKey.includes('/')) {
+      fixtureKey = bucketOrKey.trim();
+    } else {
+      fixtureKey = `${String(bucketOrKey).trim()}/${String(path).trim()}`;
+    }
     return this.storageFixtures.get(fixtureKey) || null;
   }
 
@@ -3186,38 +3326,128 @@ export class TestRunInventory {
       }
     }
 
-    // 2. Delete tracked storage objects by exact path (H3-02, H3-03)
+    // 2. Storage object deletion: ONLY for verified run-created fixtures with affirmative deletion eligibility (R1-03, R1-06)
     let storageCleanupFailed = false;
-    for (const [bucket, paths] of this.trackedStorageObjects.entries()) {
-      if (paths.size > 0 && typeof adminClient.deleteStorageObject !== 'function') {
-        report.residualResources.push({ type: 'storage_objects', bucket, count: paths.size, error: 'MISSING_DELETE_STORAGE_OBJECT_METHOD' });
+
+    for (const [fixtureKey, fixture] of this.storageFixtures.entries()) {
+      // 1. Conflict existing preserved or creation failed: NEVER delete pre-existing objects (R1-03)
+      if (
+        fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.CONFLICT_EXISTING_PRESERVED ||
+        fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.CREATION_FAILED
+      ) {
+        continue;
+      }
+
+      // 2. Indeterminate, pending, in-flight: quarantine, block cleanup success, but DO NOT blind-delete (R1-03)
+      if (
+        fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.CREATION_INDETERMINATE ||
+        fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.CREATION_PENDING ||
+        fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.CREATION_IN_FLIGHT ||
+        !fixture.deletionEligible ||
+        fixture.lifecycleState !== STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED
+      ) {
+        report.residualResources.push({
+          type: 'storage_object',
+          bucket: fixture.bucket,
+          path: fixture.path,
+          error: `UNRESOLVED_STORAGE_CREATION_RISK: Fixture '${fixtureKey}' in state '${fixture.lifecycleState}' lacks affirmative run-created proof; quarantined to prevent deleting pre-existing object`
+        });
         storageCleanupFailed = true;
-      } else {
-        for (const path of paths) {
-          try {
-            const res = await adminClient.deleteStorageObject(bucket, path);
-            if (res && res.error) {
-              report.residualResources.push({ type: 'storage_object', bucket, path, error: res.error.message || String(res.error) });
-              storageCleanupFailed = true;
-              const fixtureKey = `${bucket}/${path}`;
-              if (this.storageFixtures.has(fixtureKey)) {
-                this.storageFixtures.get(fixtureKey).status = 'DELETION_FAILED';
+        fixture.lifecycleState = STORAGE_LIFECYCLE_STATE.RESIDUAL_BLOCKED;
+        continue;
+      }
+
+      // 3. Affirmative run-created fixture: authorized for deletion
+      if (typeof adminClient.deleteStorageObject !== 'function') {
+        report.residualResources.push({
+          type: 'storage_object',
+          bucket: fixture.bucket,
+          path: fixture.path,
+          error: 'MISSING_DELETE_STORAGE_OBJECT_METHOD'
+        });
+        storageCleanupFailed = true;
+        fixture.lifecycleState = STORAGE_LIFECYCLE_STATE.RESIDUAL_BLOCKED;
+        continue;
+      }
+
+      try {
+        const delRes = await adminClient.deleteStorageObject(fixture.bucket, fixture.path);
+        if (delRes && delRes.error) {
+          report.residualResources.push({
+            type: 'storage_object',
+            bucket: fixture.bucket,
+            path: fixture.path,
+            error: delRes.error.message || String(delRes.error)
+          });
+          storageCleanupFailed = true;
+          fixture.lifecycleState = STORAGE_LIFECYCLE_STATE.RESIDUAL_BLOCKED;
+          fixture.status = 'DELETION_FAILED';
+          continue;
+        }
+
+        // 4. Independent post-deletion absence verification (R1-06)
+        // A successful delete response does not prove absence; verify object is actually gone (GET returns 404)
+        const isAbsent = await verifyStorageObjectAbsence(adminClient, fixture.bucket, fixture.path);
+        if (!isAbsent) {
+          report.residualResources.push({
+            type: 'storage_object',
+            bucket: fixture.bucket,
+            path: fixture.path,
+            error: `STORAGE_OBJECT_NOT_ABSENT: Storage object '${fixture.bucket}/${fixture.path}' still present or returned non-404 during post-delete verification`
+          });
+          storageCleanupFailed = true;
+          fixture.lifecycleState = STORAGE_LIFECYCLE_STATE.RESIDUAL_BLOCKED;
+          fixture.status = 'DELETION_FAILED';
+        } else {
+          report.storageObjectsDeleted++;
+          fixture.lifecycleState = STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED;
+          fixture.status = 'DELETED';
+        }
+      } catch (err) {
+        report.residualResources.push({
+          type: 'storage_object',
+          bucket: fixture.bucket,
+          path: fixture.path,
+          error: err.message
+        });
+        storageCleanupFailed = true;
+        fixture.lifecycleState = STORAGE_LIFECYCLE_STATE.RESIDUAL_BLOCKED;
+        fixture.status = 'DELETION_FAILED';
+      }
+    }
+
+    // Also reconcile any tracked storage objects that weren't in storageFixtures
+    for (const [bucket, paths] of this.trackedStorageObjects.entries()) {
+      for (const path of paths) {
+        const fixtureKey = `${bucket}/${path}`;
+        if (this.storageFixtures.has(fixtureKey)) continue;
+        if (typeof adminClient.deleteStorageObject !== 'function') {
+          report.residualResources.push({ type: 'storage_objects', bucket, count: paths.size, error: 'MISSING_DELETE_STORAGE_OBJECT_METHOD' });
+          storageCleanupFailed = true;
+          break;
+        }
+        try {
+          const res = await adminClient.deleteStorageObject(bucket, path);
+          if (res && res.error) {
+            report.residualResources.push({ type: 'storage_object', bucket, path, error: res.error.message || String(res.error) });
+            storageCleanupFailed = true;
+          } else {
+            const hasVerification = typeof adminClient.getStorageObject === 'function' || typeof adminClient.verifyStorageObjectAbsence === 'function';
+            if (hasVerification) {
+              const isAbsent = await verifyStorageObjectAbsence(adminClient, bucket, path);
+              if (!isAbsent) {
+                report.residualResources.push({ type: 'storage_object', bucket, path, error: 'STORAGE_OBJECT_NOT_ABSENT' });
+                storageCleanupFailed = true;
+              } else {
+                report.storageObjectsDeleted++;
               }
             } else {
               report.storageObjectsDeleted++;
-              const fixtureKey = `${bucket}/${path}`;
-              if (this.storageFixtures.has(fixtureKey)) {
-                this.storageFixtures.get(fixtureKey).status = 'DELETED';
-              }
-            }
-          } catch (err) {
-            report.residualResources.push({ type: 'storage_object', bucket, path, error: err.message });
-            storageCleanupFailed = true;
-            const fixtureKey = `${bucket}/${path}`;
-            if (this.storageFixtures.has(fixtureKey)) {
-              this.storageFixtures.get(fixtureKey).status = 'DELETION_FAILED';
             }
           }
+        } catch (err) {
+          report.residualResources.push({ type: 'storage_object', bucket, path, error: err.message });
+          storageCleanupFailed = true;
         }
       }
     }
@@ -3614,92 +3844,247 @@ export async function provisionStorageProbeFixture({
   inventory = null,
   probeContent = 'task06i probe test fixture\n'
 } = {}) {
-  const validRunId = validateRunId(runId);
-  const bucket = STORAGE_PROBE_BUCKET;
-  const path = getStorageProbeObjectPath(validRunId);
-  const fullKey = getStorageProbeObjectKey(validRunId);
-  const baseUrl = `https://${projectRef}.supabase.co`;
+  // 1. Target project validation (R1-02)
+  const normRef = (projectRef || '').trim().toLowerCase();
+  if (!normRef || normRef !== HARDCODED_TEMP_REF || isForbiddenProject(normRef)) {
+    throw new Error(
+      `CRITICAL_SECURITY_VIOLATION: provisionStorageProbeFixture strictly rejected target '${normRef}'. Only approved TEMP project '${HARDCODED_TEMP_REF}' is authorized.`
+    );
+  }
 
+  // 2. Validate userAccessToken binding and seed user context (R1-02)
   if (!userAccessToken || typeof userAccessToken !== 'string' || !userAccessToken.trim()) {
     throw new Error('STORAGE_PROVISIONING_FAILED: userAccessToken is required to upload under authenticated seed user context');
   }
+  validateProjectCredentialBinding(userAccessToken, normRef);
 
-  // 1. Pre-upload collision check
-  const checkRes = await fetchFn(`${baseUrl}/storage/v1/object/authenticated/${fullKey}`, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${userAccessToken}`
+  let jwtClaims;
+  try {
+    const parts = userAccessToken.trim().split('.');
+    if (parts.length !== 3) throw new Error('JWT must have 3 parts');
+    jwtClaims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+  } catch (err) {
+    throw new Error(`MALFORMED_CREDENTIAL_JWT: Failed to decode userAccessToken payload: ${err.message}`);
+  }
+
+  if (!seedUserId || typeof seedUserId !== 'string' || !seedUserId.trim()) {
+    throw new Error('STORAGE_PROVISIONING_FAILED: seedUserId is required to identify fixture owner');
+  }
+  const validSeedUserId = validateUuid(seedUserId);
+  if (!jwtClaims || jwtClaims.sub !== validSeedUserId) {
+    throw new Error(`CREDENTIAL_BINDING_ERROR: userAccessToken sub claim ('${jwtClaims?.sub || 'none'}') does not match seedUserId ('${validSeedUserId}')`);
+  }
+
+  // 3. Validate run ID (R1-02)
+  const validRunId = validateRunId(runId);
+
+  // 4. Mandatory inventory tracking (R1-08)
+  if (!inventory || typeof inventory.registerStorageFixture !== 'function') {
+    throw new Error('STORAGE_PROVISIONING_FAILED: inventory is required for write-ahead tracking (R1-08)');
+  }
+  if (inventory.finalized) {
+    throw new Error('INVENTORY_FINALIZED: Cannot provision storage fixture against finalized inventory');
+  }
+  if (inventory.runId !== validRunId) {
+    throw new Error(`INVENTORY_RUN_ID_MISMATCH: Inventory runId '${inventory.runId}' does not match '${validRunId}'`);
+  }
+
+  // 5. Fail-Closed Transport / Durable Recovery Gate (R1-01)
+  if (!fetchFn || fetchFn === globalThis.fetch) {
+    throw new Error('BLOCKED_PENDING_DURABLE_RECOVERY: LIVE hosted execution against Supabase Cloud is blocked pending durable crash recovery and journaled inventory implementation');
+  }
+
+  const safeFetch = (url, opts) => {
+    if (!fetchFn || fetchFn === globalThis.fetch) {
+      throw new Error('BLOCKED_PENDING_DURABLE_RECOVERY: LIVE hosted execution against Supabase Cloud is blocked pending durable crash recovery and journaled inventory implementation');
     }
-  });
+    return fetchFn(url, opts);
+  };
+
+  const bucket = STORAGE_PROBE_BUCKET;
+  const path = getStorageProbeObjectPath(validRunId);
+  const fullKey = getStorageProbeObjectKey(validRunId);
+  const baseUrl = `https://${normRef}.supabase.co`;
+
+  // 6. Pre-upload collision check (GET/HEAD) - Proceed ONLY on affirmative HTTP 404 (R1-03)
+  let checkRes;
+  try {
+    checkRes = await safeFetch(`${baseUrl}/storage/v1/object/authenticated/${fullKey}`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${userAccessToken}`
+      }
+    });
+  } catch (err) {
+    throw new Error(`STORAGE_COLLISION_CHECK_FAILED: Pre-upload collision check failed: ${err.message}`);
+  }
 
   if (checkRes.status === 200) {
     throw new Error(
       `STORAGE_COLLISION_DETECTED: Object '${fullKey}' already exists in bucket '${bucket}'; overwrite or collision prohibited (H3-02)`
     );
   }
-
-  // 2. Write-ahead creation obligation in inventory
-  if (inventory) {
-    inventory.registerStorageFixture({
-      bucket,
-      path,
-      ownerId: seedUserId,
-      status: 'IN_FLIGHT',
-      bytes: Buffer.byteLength(probeContent)
-    });
+  if (checkRes.status !== 404) {
+    throw new Error(
+      `STORAGE_COLLISION_CHECK_FAILED: Pre-upload collision check failed with HTTP ${checkRes.status}; fail-closed (R1-03)`
+    );
   }
 
-  // 3. Upload bytes with no overwrite/upsert
-  const uploadRes = await fetchFn(`${baseUrl}/storage/v1/object/${fullKey}`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${userAccessToken}`,
-      'Content-Type': 'text/plain',
-      'x-upsert': 'false'
-    },
-    body: probeContent
+  // 7. Write-ahead creation obligation in inventory with deletionEligible: false (R1-03)
+  inventory.registerStorageFixture({
+    bucket,
+    path,
+    ownerId: validSeedUserId,
+    status: 'CREATION_PENDING',
+    lifecycleState: STORAGE_LIFECYCLE_STATE.CREATION_PENDING,
+    deletionEligible: false,
+    bytes: Buffer.byteLength(probeContent)
   });
 
+  // 8. Upload bytes with no overwrite/upsert (x-upsert: false)
+  inventory.updateStorageFixture(fullKey, {
+    lifecycleState: STORAGE_LIFECYCLE_STATE.CREATION_IN_FLIGHT,
+    status: 'IN_FLIGHT'
+  });
+
+  let uploadRes;
+  let uploadError = null;
+  try {
+    uploadRes = await safeFetch(`${baseUrl}/storage/v1/object/${fullKey}`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${userAccessToken}`,
+        'Content-Type': 'text/plain',
+        'x-upsert': 'false'
+      },
+      body: probeContent
+    });
+  } catch (err) {
+    uploadError = err;
+  }
+
+  if (uploadError) {
+    inventory.updateStorageFixture(fullKey, {
+      lifecycleState: STORAGE_LIFECYCLE_STATE.CREATION_INDETERMINATE,
+      status: 'CREATION_INDETERMINATE',
+      deletionEligible: false
+    });
+    throw new Error(`STORAGE_UPLOAD_INDETERMINATE: Network error during upload: ${uploadError.message}`);
+  }
+
+  if (uploadRes.status === 409) {
+    inventory.updateStorageFixture(fullKey, {
+      lifecycleState: STORAGE_LIFECYCLE_STATE.CONFLICT_EXISTING_PRESERVED,
+      status: 'CONFLICT_PRESERVED',
+      deletionEligible: false
+    });
+    throw new Error(`STORAGE_UPLOAD_CONFLICT: HTTP 409 conflict detected during upload; existing object preserved without deletion eligibility`);
+  }
+
   if (!uploadRes.ok) {
+    inventory.updateStorageFixture(fullKey, {
+      lifecycleState: STORAGE_LIFECYCLE_STATE.CREATION_FAILED,
+      status: 'CREATION_FAILED',
+      deletionEligible: false
+    });
     const errBody = await uploadRes.json().catch(() => ({}));
     throw new Error(`STORAGE_UPLOAD_FAILED: HTTP ${uploadRes.status} - ${errBody?.message || errBody?.msg || 'Upload failed'}`);
   }
 
-  // 4. Verification of accessibility (GET 200)
-  const verifyRes = await fetchFn(`${baseUrl}/storage/v1/object/authenticated/${fullKey}`, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${userAccessToken}`
-    }
-  });
+  // 9. Verification of accessibility (GET 200), payload integrity, and owner metadata (R1-04)
+  let verifyRes;
+  try {
+    verifyRes = await safeFetch(`${baseUrl}/storage/v1/object/authenticated/${fullKey}`, {
+      method: 'GET',
+      headers: {
+        Authorization: `Bearer ${userAccessToken}`
+      }
+    });
+  } catch (err) {
+    inventory.updateStorageFixture(fullKey, {
+      lifecycleState: STORAGE_LIFECYCLE_STATE.CREATION_INDETERMINATE,
+      status: 'CREATION_INDETERMINATE',
+      deletionEligible: false
+    });
+    throw new Error(`STORAGE_VERIFICATION_FAILED: Verification network request failed: ${err.message}`);
+  }
 
   if (verifyRes.status !== 200) {
+    inventory.updateStorageFixture(fullKey, {
+      lifecycleState: STORAGE_LIFECYCLE_STATE.CREATION_FAILED,
+      status: 'VERIFICATION_FAILED',
+      deletionEligible: false
+    });
     throw new Error(`STORAGE_VERIFICATION_FAILED: Uploaded fixture '${fullKey}' is not accessible (HTTP ${verifyRes.status})`);
   }
 
-  const verifiedBytes = Buffer.byteLength(probeContent);
-
-  // 5. Durable ownership record updated in inventory
-  let fixtureRecord = null;
-  if (inventory) {
-    fixtureRecord = inventory.registerStorageFixture({
-      bucket,
-      path,
-      ownerId: seedUserId,
-      status: 'VERIFIED',
-      bytes: verifiedBytes,
-      proof: { verifiedGetStatus: 200, uploadedBytes: verifiedBytes, timestamp: new Date().toISOString() }
-    });
+  // Read downloaded text and compare with probeContent
+  let downloadedText = '';
+  if (typeof verifyRes.text === 'function') {
+    downloadedText = await verifyRes.text();
+  } else if (typeof verifyRes.json === 'function') {
+    const j = await verifyRes.json();
+    downloadedText = typeof j === 'string' ? j : JSON.stringify(j);
+  } else if (typeof verifyRes.body === 'string') {
+    downloadedText = verifyRes.body;
+  } else {
+    throw new Error('STORAGE_VERIFICATION_FAILED: Verification response body could not be read as text (R1-04)');
   }
+
+  if (downloadedText !== probeContent) {
+    inventory.updateStorageFixture(fullKey, {
+      lifecycleState: STORAGE_LIFECYCLE_STATE.CREATION_FAILED,
+      status: 'INTEGRITY_MISMATCH',
+      deletionEligible: false
+    });
+    throw new Error(`STORAGE_PAYLOAD_INTEGRITY_MISMATCH: Downloaded storage object content does not match probeContent exactly (R1-04)`);
+  }
+
+  // Inspect provider owner metadata (x-owner-id / owner_id) and correlate with authenticated seed user (R1-04)
+  const getHeader = (name) => {
+    if (!verifyRes.headers) return null;
+    if (typeof verifyRes.headers.get === 'function') {
+      return verifyRes.headers.get(name);
+    }
+    return verifyRes.headers[name] || verifyRes.headers[name.toLowerCase()] || null;
+  };
+  const ownerHeader = getHeader('x-owner-id') || getHeader('owner_id') || getHeader('x-supabase-owner');
+  if (!ownerHeader || ownerHeader !== validSeedUserId) {
+    inventory.updateStorageFixture(fullKey, {
+      lifecycleState: STORAGE_LIFECYCLE_STATE.CREATION_FAILED,
+      status: 'OWNER_MISMATCH',
+      deletionEligible: false
+    });
+    throw new Error(
+      `STORAGE_OWNER_VERIFICATION_FAILED: Storage object owner '${ownerHeader || 'missing'}' does not match authenticated seed user '${validSeedUserId}' (R1-04)`
+    );
+  }
+
+  // 10. Affirmative RUN_CREATED_VERIFIED assigns deletion eligibility (R1-03)
+  const verifiedBytes = Buffer.byteLength(probeContent);
+  const fixtureRecord = inventory.updateStorageFixture(fullKey, {
+    lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED,
+    deletionEligible: true,
+    status: 'VERIFIED',
+    bytes: verifiedBytes,
+    proof: {
+      verifiedGetStatus: 200,
+      uploadedBytes: verifiedBytes,
+      ownerId: validSeedUserId,
+      timestamp: new Date().toISOString()
+    }
+  });
 
   return {
     bucket,
     path,
     key: fullKey,
     runId: validRunId,
-    ownerId: seedUserId || null,
+    ownerId: validSeedUserId,
     bytes: verifiedBytes,
     status: 'VERIFIED',
+    lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED,
+    deletionEligible: true,
     fixtureRecord
   };
 }
@@ -3721,10 +4106,10 @@ export function getRunTestPassword(options = {}) {
  */
 export function createRunContext(options = {}) {
   const testEmail = options.testEmail || options.testUser || null;
-  const runId = options.runId ? validateRunId(options.runId) : null;
+  const runId = options.runId ? validateRunId(options.runId) : `run-${Date.now()}-${crypto.randomUUID()}`;
   return {
     runId,
-    storageFixturePath: options.storageFixturePath || (runId ? getStorageProbeObjectPath(runId) : null),
+    storageFixturePath: options.storageFixturePath || getStorageProbeObjectPath(runId),
     testPassword: getRunTestPassword(options),
     testEmail: testEmail ? String(testEmail).trim().toLowerCase() : null,
     activeAccessToken: null,
@@ -4219,8 +4604,25 @@ export function createHostedDispatcher({
 
   const baseUrl = `https://${normRef}.supabase.co`;
 
+  // 5. Fail-Closed Transport / Durable Recovery Gate (R1-01)
+  if (!fetchFn || fetchFn === globalThis.fetch) {
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: LIVE hosted execution against Supabase Cloud is blocked pending durable crash recovery and journaled inventory implementation'
+    );
+  }
+
+  const transportFetch = fetchFn;
+  fetchFn = (url, opts) => {
+    if (!transportFetch || transportFetch === globalThis.fetch) {
+      throw new Error(
+        'BLOCKED_PENDING_DURABLE_RECOVERY: LIVE hosted execution against Supabase Cloud is blocked pending durable crash recovery and journaled inventory implementation'
+      );
+    }
+    return transportFetch(url, opts);
+  };
+
   // Return the async dispatcher matching (item, options) contract
-  return async function hostedDispatcher(item, options = {}) {
+  const dispatcher = async function hostedDispatcher(item, options = {}) {
     const signal = options.signal;
     const probeId = item.id;
     const ctx = options.runContext || runContext;
@@ -5456,8 +5858,46 @@ export function createHostedDispatcher({
         const nowUnix = Math.floor(Date.now() / 1000);
         const tokenUnexpired = typeof tokenExpiry === 'number' && nowUnix < tokenExpiry;
 
-        const runId = ctx?.runId || inv?.runId || options.runId || null;
-        const objectPath = ctx?.storageFixturePath || (runId ? getStorageProbeObjectPath(runId) : 'probe.txt');
+        const rawRunId = ctx?.runId || inv?.runId || options.runId || null;
+        if (!rawRunId) {
+          return {
+            passed: false,
+            status: 0,
+            error: 'PREREQUISITE_MISSING: SESSION-05 requires valid runId (R1-07)'
+          };
+        }
+        let validRunId;
+        try {
+          validRunId = validateRunId(rawRunId);
+        } catch (err) {
+          return {
+            passed: false,
+            status: 0,
+            error: `INVALID_RUN_ID: ${err.message}`
+          };
+        }
+        const objectPath = getStorageProbeObjectPath(validRunId);
+        const fullKey = `${STORAGE_PROBE_BUCKET}/${objectPath}`;
+
+        if (inv) {
+          const fixture = inv.getStorageFixture ? inv.getStorageFixture(STORAGE_PROBE_BUCKET, objectPath) : null;
+          if (!fixture) {
+            return {
+              passed: false,
+              status: 0,
+              error: `STORAGE_FIXTURE_RECORD_MISSING: No verified storage fixture found in inventory for '${fullKey}' before dispatch (R1-07)`
+            };
+          }
+          const expectedOwner = ctx?.activeUserId || factorySeedUserId || options.seedUserId || null;
+          if (expectedOwner && fixture.ownerId && fixture.ownerId !== expectedOwner) {
+            return {
+              passed: false,
+              status: 0,
+              error: `STORAGE_FIXTURE_OWNER_MISMATCH: Fixture owner '${fixture.ownerId}' does not match expected seed user '${expectedOwner}' (R1-07)`
+            };
+          }
+        }
+
         const storageUrl = `${baseUrl}/storage/v1/object/authenticated/${STORAGE_PROBE_BUCKET}/${objectPath}`;
 
         const res = await fetchFn(storageUrl, {
@@ -5605,6 +6045,8 @@ export function createHostedDispatcher({
       }
     }
   };
+  dispatcher._isHostedNetworkDispatcher = true;
+  return dispatcher;
 }
 
 /**
@@ -5693,14 +6135,20 @@ export async function runHostedProbeRunner(options = {}) {
     }
   }
 
-  // Real LIVE hosted cloud dispatch is permanently gated pending durable crash recovery (H3-05)
-  if (isLive && (options.liveHostedDispatch === true || options.enforceDurableRecoveryGate === true)) {
+  // Real LIVE hosted cloud dispatch is permanently gated pending durable crash recovery (H3-05, R1-01)
+  if (
+    isLive &&
+    (options.liveHostedDispatch === true ||
+      options.enforceDurableRecoveryGate === true ||
+      !mockDispatcher ||
+      mockDispatcher._isHostedNetworkDispatcher === true)
+  ) {
     throw new Error(
       'BLOCKED_PENDING_DURABLE_RECOVERY: LIVE hosted execution against Supabase Cloud is blocked pending durable crash recovery and journaled inventory implementation'
     );
   }
 
-  if (isLive && options.requireSelection === true && !options.selectedProbeIds) {
+  if (isLive && options.requireSelection === true && (!options.selectedProbeIds || !Array.isArray(options.selectedProbeIds) || options.selectedProbeIds.length === 0)) {
     throw new Error(
       'SELECTION_REQUIRED: LIVE mode strictly requires an explicit, validated selectedProbeIds array'
     );
@@ -6229,6 +6677,21 @@ export function createHostedAdminClient({
       return { data: { table, id }, error: null };
     },
 
+    async getStorageObject(bucket, path) {
+      if (!bucket || !path) {
+        return { status: 0, ok: false, error: 'MISSING_PARAMS: getStorageObject requires bucket and path' };
+      }
+      const encodedPath = String(path).split('/').map(encodeURIComponent).join('/');
+      const res = await fetchFn(`${baseUrl}/storage/v1/object/authenticated/${encodeURIComponent(bucket)}/${encodedPath}`, {
+        method: 'GET',
+        headers: {
+          apikey: serviceRoleKey,
+          Authorization: `Bearer ${serviceRoleKey}`
+        }
+      });
+      return { status: res.status, ok: res.ok };
+    },
+
     async deleteStorageObject(bucket, path) {
       if (!bucket || !path) {
         return { data: null, error: { message: 'MISSING_PARAMS: deleteStorageObject requires bucket and path' } };
@@ -6255,8 +6718,8 @@ if (process.argv[1] && process.argv[1].endsWith('hosted-probe-runner.mjs')) {
   const argv = process.argv.slice(2);
   const hasLiveFlag = argv.includes('--live');
 
-  if (hasLiveFlag && process.env.TASK06I_HOSTED_PROBE_AUTHORIZED !== 'true') {
-    console.error('AUTHORIZATION_REQUIRED: LIVE hosted probe execution requires explicit environment variable TASK06I_HOSTED_PROBE_AUTHORIZED="true".');
+  if (hasLiveFlag) {
+    console.error('BLOCKED_PENDING_DURABLE_RECOVERY: LIVE hosted execution against Supabase Cloud is blocked pending durable crash recovery and journaled inventory implementation');
     process.exit(1);
   }
 

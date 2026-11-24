@@ -47,7 +47,9 @@ import {
   getStorageProbeObjectPath,
   getStorageProbeObjectKey,
   validateSelectedProbeIds,
-  provisionStorageProbeFixture
+  provisionStorageProbeFixture,
+  STORAGE_LIFECYCLE_STATE,
+  validateUuid
 } from './hosted-probe-runner.mjs';
 
 const defaultMockAdminClient = {
@@ -2582,7 +2584,11 @@ test('47. Task 06I-B1-H1-R3 (R3-04): Password reset strictly requires Admin priv
   assert.match(resFallback.reason, /SECURITY_INVARIANT_VIOLATION: SESSION-02 used logout fallback/);
 
   // Dispatcher requires serviceRoleKey for admin password reset
-  const dispWithoutAdmin = createHostedDispatcher({ anonKey: validTestAnonKey, serviceRoleKey: null });
+  const dispWithoutAdmin = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    serviceRoleKey: null,
+    fetchFn: async () => ({ status: 200 })
+  });
   const outNoAdmin = await dispWithoutAdmin(session02);
   assert.equal(outNoAdmin.passed, false);
   assert.match(outNoAdmin.error, /TIO_TEMP_SERVICE_ROLE_KEY/);
@@ -7913,12 +7919,12 @@ test('90. Task 06I-B1-H3 (H3-01): Controlled Subset Runner — Valid 10-probe su
   ];
   assert.deepEqual(plan10.plannedCases.map(c => c.id), expectedOrder);
 
-  // 2. Canonical order preservation with scrambled input
-  const scrambled = ['SESSION-05', 'HOOK-01', 'SESSION-02'];
+  // 2. Canonical order preservation with scrambled input (R1-05: requires SESSION-01 for SESSION-02 and SESSION-05)
+  const scrambled = ['SESSION-05', 'HOOK-01', 'SESSION-02', 'SESSION-01'];
   const planScrambled = planProbeExecution(HARDCODED_TEMP_REF, {
     selectedProbeIds: scrambled
   });
-  assert.deepEqual(planScrambled.plannedCases.map(c => c.id), ['HOOK-01', 'SESSION-02', 'SESSION-05']);
+  assert.deepEqual(planScrambled.plannedCases.map(c => c.id), ['HOOK-01', 'SESSION-01', 'SESSION-02', 'SESSION-05']);
 
   // 3. Small valid dependency-complete subset
   const planSmall = planProbeExecution(HARDCODED_TEMP_REF, {
@@ -8039,23 +8045,28 @@ test('91. Task 06I-B1-H3 (H3-01): Controlled Subset Runner — Strict validation
   );
   assert.throws(
     () => validateSelectedProbeIds(['SESSION-02']),
-    /DEPENDENCY_INCOMPLETE: probe 'SESSION-02' requires prerequisite probe\(s\) 'HOOK-01' to also be selected/
+    /DEPENDENCY_INCOMPLETE: probe 'SESSION-02' requires prerequisite probe\(s\) 'HOOK-01', 'SESSION-01' to also be selected/
   );
   assert.throws(
     () => validateSelectedProbeIds(['SESSION-03']),
-    /DEPENDENCY_INCOMPLETE: probe 'SESSION-03' requires prerequisite probe\(s\) 'HOOK-01', 'SESSION-02' to also be selected/
+    /DEPENDENCY_INCOMPLETE: probe 'SESSION-03' requires prerequisite probe\(s\) 'HOOK-01', 'SESSION-01', 'SESSION-02' to also be selected/
   );
   assert.throws(
     () => validateSelectedProbeIds(['SESSION-04']),
-    /DEPENDENCY_INCOMPLETE: probe 'SESSION-04' requires prerequisite probe\(s\) 'HOOK-01', 'SESSION-02' to also be selected/
+    /DEPENDENCY_INCOMPLETE: probe 'SESSION-04' requires prerequisite probe\(s\) 'HOOK-01', 'SESSION-01', 'SESSION-02' to also be selected/
   );
   assert.throws(
     () => validateSelectedProbeIds(['SESSION-05']),
-    /DEPENDENCY_INCOMPLETE: probe 'SESSION-05' requires prerequisite probe\(s\) 'HOOK-01', 'SESSION-02' to also be selected/
+    /DEPENDENCY_INCOMPLETE: probe 'SESSION-05' requires prerequisite probe\(s\) 'HOOK-01', 'SESSION-01', 'SESSION-02' to also be selected/
   );
   assert.throws(
     () => validateSelectedProbeIds(['HOOK-01', 'SESSION-03']),
-    /DEPENDENCY_INCOMPLETE: probe 'SESSION-03' requires prerequisite probe\(s\) 'SESSION-02' to also be selected/
+    /DEPENDENCY_INCOMPLETE: probe 'SESSION-03' requires prerequisite probe\(s\) 'SESSION-01', 'SESSION-02' to also be selected/
+  );
+  // R1-05: HOOK-01 + SESSION-02 + SESSION-04 without SESSION-01 is strictly rejected
+  assert.throws(
+    () => validateSelectedProbeIds(['HOOK-01', 'SESSION-02', 'SESSION-04']),
+    /DEPENDENCY_INCOMPLETE: probe 'SESSION-02' requires prerequisite probe\(s\) 'SESSION-01' to also be selected/
   );
 });
 
@@ -8113,7 +8124,7 @@ test('92. Task 06I-B1-H3 (H3-02): Run-Scoped Storage Fixture Contract — runId 
 
 test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — collision detection, upload verification, and ownership tracking', async () => {
   const runId = 'test-run-storage-provision-93';
-  const seedUserId = 'seed-user-uuid-93';
+  const seedUserId = '11111111-1111-4111-a111-111111111193';
   const testToken = createMockJwt({ sub: seedUserId });
   const inv = new TestRunInventory(runId);
 
@@ -8123,7 +8134,9 @@ test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — col
       await provisionStorageProbeFixture({
         runId,
         seedUserId,
-        userAccessToken: null
+        userAccessToken: null,
+        inventory: inv,
+        fetchFn: async () => ({ status: 200 })
       });
     },
     /STORAGE_PROVISIONING_FAILED: userAccessToken is required/
@@ -8172,7 +8185,7 @@ test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — col
     /STORAGE_UPLOAD_FAILED: HTTP 500/
   );
 
-  // 4. Successful provisioning: pre-check 404 (no collision), upload 200, verify 200
+  // 4. Successful provisioning: pre-check 404 (no collision), upload 200, verify 200 with text & owner metadata
   const invSuccess = new TestRunInventory(runId);
   const result = await provisionStorageProbeFixture({
     runId,
@@ -8183,12 +8196,17 @@ test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — col
     fetchFn: async (url, opts) => {
       if (opts.method === 'GET') {
         // First GET is collision check: return 404 (clean)
-        // Second GET is verification check: return 200 (verified accessible)
+        // Second GET is verification check: return 200 (verified accessible) with payload text and owner header
         if (opts.headers?.Authorization === `Bearer ${testToken}`) {
           if (!invSuccess.storageFixtures.has(`task06i_probe_bucket/${runId}/probe.txt`)) {
             return { status: 404, ok: false };
           }
-          return { status: 200, ok: true };
+          return {
+            status: 200,
+            ok: true,
+            text: async () => 'task06i probe test fixture\n',
+            headers: new Headers({ 'x-owner-id': seedUserId })
+          };
         }
       }
       if (opts.method === 'POST') {
@@ -8219,7 +8237,7 @@ test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — col
 test('94. Task 06I-B1-H3 (H3-03): Cleanup Ordering — Storage fixture deletion strictly precedes Auth user deletion & failure cascade prevention', async () => {
   const runId = 'test-run-cleanup-ordering-94';
   const inv = new TestRunInventory(runId);
-  const testUserId = 'created-user-uuid-94';
+  const testUserId = '11111111-2222-4333-a444-555555555594';
   const testUserEmail = 'created-user-94@proof.invalid';
 
   // Register verified created user
@@ -8229,13 +8247,15 @@ test('94. Task 06I-B1-H3 (H3-03): Cleanup Ordering — Storage fixture deletion 
     creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
   });
 
-  // Register run-scoped storage fixture
+  // Register run-scoped storage fixture with verified state and deletion eligibility
   inv.registerStorageFixture({
     bucket: STORAGE_PROBE_BUCKET,
     path: getStorageProbeObjectPath(runId),
     ownerId: testUserId,
     bytes: 25,
-    status: 'VERIFIED'
+    status: 'VERIFIED',
+    lifecycleState: 'RUN_CREATED_VERIFIED',
+    deletionEligible: true
   });
 
   // 1. Successful cleanup: Storage deletion MUST precede User deletion
@@ -8245,6 +8265,7 @@ test('94. Task 06I-B1-H3 (H3-03): Cleanup Ordering — Storage fixture deletion 
       executionOrder.push(`DELETE_STORAGE:${bucket}/${path}`);
       return { data: { bucket, path }, error: null };
     },
+    getStorageObject: async (bucket, path) => ({ status: 404, ok: false }),
     deleteUser: async (id) => {
       executionOrder.push(`DELETE_USER:${id}`);
       return { data: { user: { id } }, error: null };
@@ -8265,7 +8286,7 @@ test('94. Task 06I-B1-H3 (H3-03): Cleanup Ordering — Storage fixture deletion 
 
   // 2. Storage deletion failure BLOCKS Auth user deletion (failure cascade prevention)
   const invFail = new TestRunInventory(runId);
-  const failUserId = 'created-user-fail-94';
+  const failUserId = '22222222-3333-4444-a555-666666666694';
   invFail.registerCreatedUser({
     id: failUserId,
     email: 'fail-user@proof.invalid',
@@ -8275,7 +8296,9 @@ test('94. Task 06I-B1-H3 (H3-03): Cleanup Ordering — Storage fixture deletion 
     bucket: STORAGE_PROBE_BUCKET,
     path: getStorageProbeObjectPath(runId),
     ownerId: failUserId,
-    status: 'VERIFIED'
+    status: 'VERIFIED',
+    lifecycleState: 'RUN_CREATED_VERIFIED',
+    deletionEligible: true
   });
 
   let userDeleteAttempted = false;
@@ -8283,6 +8306,7 @@ test('94. Task 06I-B1-H3 (H3-03): Cleanup Ordering — Storage fixture deletion 
     deleteStorageObject: async (bucket, path) => {
       return { data: null, error: { message: 'Storage service unavailable (HTTP 503)' } };
     },
+    getStorageObject: async () => ({ status: 200, ok: true }),
     deleteUser: async () => {
       userDeleteAttempted = true;
       return { data: null, error: null };
@@ -8304,19 +8328,22 @@ test('94. Task 06I-B1-H3 (H3-03): Cleanup Ordering — Storage fixture deletion 
 
   // 3. Option A Reusable Seed User is NEVER deleted even when Storage cleanup succeeds
   const invSeed = new TestRunInventory(runId);
-  const seedUid = 'seed-reusable-user-94';
+  const seedUid = '33333333-4444-4555-a666-777777777794';
   const seedEmail = 'seed-reusable@proof.invalid';
   invSeed.protectSeedIdentity({ id: seedUid, email: seedEmail });
   invSeed.registerStorageFixture({
     bucket: STORAGE_PROBE_BUCKET,
     path: getStorageProbeObjectPath(runId),
     ownerId: seedUid,
-    status: 'VERIFIED'
+    status: 'VERIFIED',
+    lifecycleState: 'RUN_CREATED_VERIFIED',
+    deletionEligible: true
   });
 
   let seedDeleted = false;
   const mockAdminSeed = {
     deleteStorageObject: async () => ({ data: null, error: null }),
+    getStorageObject: async () => ({ status: 404, ok: false }),
     deleteUser: async (id) => {
       if (id === seedUid) seedDeleted = true;
       return { data: null, error: null };
@@ -8411,5 +8438,510 @@ test('95. Task 06I-B1-H3 (H3-03 & H3-05): SESSION-05 Run-Scoped Dispatch & Durab
   assert.throws(
     () => planProbeExecution(HARDCODED_TIO_WORLD_REF, { selectedProbeIds: SUPPORTED_SUBSET_PROBE_IDS }),
     /CRITICAL_SECURITY_VIOLATION.*Tio-world/
+  );
+});
+
+test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage Ownership Closure', async () => {
+  const runId = 'test-run-h3-r1-96';
+  const seedUserId = '11111111-1111-4111-a111-111111111196';
+  const otherUserId = '22222222-2222-4222-b222-222222222296';
+  const testToken = createMockJwt({ sub: seedUserId });
+
+  // ==========================================
+  // R1-01: Mandatory Durable Recovery Gate & Fail-Closed Dispatch
+  // (PRRT_kwDOVtCmZc67gqOo & PRRT_kwDOVtCmZc67grT_)
+  // ==========================================
+  // 1. Direct createHostedDispatcher without fetchFn throws BLOCKED_PENDING_DURABLE_RECOVERY
+  assert.throws(
+    () => createHostedDispatcher({ anonKey: validTestAnonKey }),
+    /BLOCKED_PENDING_DURABLE_RECOVERY/
+  );
+  // 2. Direct createHostedDispatcher with globalThis.fetch throws BLOCKED_PENDING_DURABLE_RECOVERY
+  assert.throws(
+    () => createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: globalThis.fetch }),
+    /BLOCKED_PENDING_DURABLE_RECOVERY/
+  );
+  // 3. Direct provisionStorageProbeFixture without fetchFn throws BLOCKED_PENDING_DURABLE_RECOVERY
+  const invR1 = new TestRunInventory(runId);
+  await assert.rejects(
+    async () => {
+      await provisionStorageProbeFixture({
+        runId,
+        seedUserId,
+        userAccessToken: testToken,
+        inventory: invR1
+      });
+    },
+    /BLOCKED_PENDING_DURABLE_RECOVERY/
+  );
+  // 4. provisionStorageProbeFixture with globalThis.fetch throws BLOCKED_PENDING_DURABLE_RECOVERY
+  await assert.rejects(
+    async () => {
+      await provisionStorageProbeFixture({
+        runId,
+        seedUserId,
+        userAccessToken: testToken,
+        inventory: invR1,
+        fetchFn: globalThis.fetch
+      });
+    },
+    /BLOCKED_PENDING_DURABLE_RECOVERY/
+  );
+  // 5. runHostedProbeRunner with real network dispatcher throws BLOCKED_PENDING_DURABLE_RECOVERY
+  const hostedDispatcher = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    fetchFn: async () => ({ status: 200 })
+  });
+  assert.equal(hostedDispatcher._isHostedNetworkDispatcher, true);
+  await assert.rejects(
+    async () => {
+      await runHostedProbeRunner({
+        projectRef: HARDCODED_TEMP_REF,
+        argv: ['--live'],
+        env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+        mockDispatcher: hostedDispatcher,
+        adminClient: defaultMockAdminClient
+      });
+    },
+    /BLOCKED_PENDING_DURABLE_RECOVERY/
+  );
+  // 6. Passing enforceDurableRecoveryGate: false cannot bypass real dispatcher detection
+  await assert.rejects(
+    async () => {
+      await runHostedProbeRunner({
+        projectRef: HARDCODED_TEMP_REF,
+        argv: ['--live'],
+        env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+        mockDispatcher: hostedDispatcher,
+        adminClient: defaultMockAdminClient,
+        enforceDurableRecoveryGate: false
+      });
+    },
+    /BLOCKED_PENDING_DURABLE_RECOVERY/
+  );
+  // 7. LIVE mode with requireSelection: true throws SELECTION_REQUIRED when selectedProbeIds is missing
+  await assert.rejects(
+    async () => {
+      await runHostedProbeRunner({
+        projectRef: HARDCODED_TEMP_REF,
+        argv: ['--live'],
+        env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+        mockDispatcher: async () => ({ passed: true }),
+        adminClient: defaultMockAdminClient,
+        requireSelection: true,
+        selectedProbeIds: null
+      });
+    },
+    /SELECTION_REQUIRED/
+  );
+
+  // ==========================================
+  // R1-02: Storage Provisioner Project Isolation & Credential Binding
+  // (PRRT_kwDOVtCmZc67gqOu & PRRT_kwDOVtCmZc67grUL)
+  // ==========================================
+  let transportCalls = 0;
+  const mockTransportSpy = async () => {
+    transportCalls++;
+    return { status: 404, ok: false };
+  };
+  // 8. Reject REAL project target immediately with 0 transport calls
+  await assert.rejects(
+    async () => {
+      await provisionStorageProbeFixture({
+        projectRef: HARDCODED_REAL_REF,
+        runId,
+        seedUserId,
+        userAccessToken: testToken,
+        inventory: invR1,
+        fetchFn: mockTransportSpy
+      });
+    },
+    /CRITICAL_SECURITY_VIOLATION.*strictly rejected target 'bsfwzvgynwriswapxpsp'/
+  );
+  assert.equal(transportCalls, 0);
+
+  // 9. Reject Tio-world project target immediately with 0 transport calls
+  await assert.rejects(
+    async () => {
+      await provisionStorageProbeFixture({
+        projectRef: HARDCODED_TIO_WORLD_REF,
+        runId,
+        seedUserId,
+        userAccessToken: testToken,
+        inventory: invR1,
+        fetchFn: mockTransportSpy
+      });
+    },
+    /CRITICAL_SECURITY_VIOLATION.*strictly rejected target 'oykupyiitspujzpwwvuj'/
+  );
+  assert.equal(transportCalls, 0);
+
+  // 10. Reject token bound to different project with 0 transport calls
+  const tokenOtherProject = createMockJwt({ sub: seedUserId, iss: `https://${HARDCODED_REAL_REF}.supabase.co/auth/v1` });
+  await assert.rejects(
+    async () => {
+      await provisionStorageProbeFixture({
+        projectRef: HARDCODED_TEMP_REF,
+        runId,
+        seedUserId,
+        userAccessToken: tokenOtherProject,
+        inventory: invR1,
+        fetchFn: mockTransportSpy
+      });
+    },
+    /CRITICAL_SECURITY_VIOLATION.*forbidden project 'bsfwzvgynwriswapxpsp'/
+  );
+  assert.equal(transportCalls, 0);
+
+  // 11. Reject token sub mismatch with seedUserId with 0 transport calls
+  const tokenMismatchedSub = createMockJwt({ sub: otherUserId });
+  await assert.rejects(
+    async () => {
+      await provisionStorageProbeFixture({
+        projectRef: HARDCODED_TEMP_REF,
+        runId,
+        seedUserId,
+        userAccessToken: tokenMismatchedSub,
+        inventory: invR1,
+        fetchFn: mockTransportSpy
+      });
+    },
+    /CREDENTIAL_BINDING_ERROR: userAccessToken sub claim.*does not match seedUserId/
+  );
+  assert.equal(transportCalls, 0);
+
+  // 12. Reject invalid non-UUID seedUserId with 0 transport calls
+  await assert.rejects(
+    async () => {
+      await provisionStorageProbeFixture({
+        projectRef: HARDCODED_TEMP_REF,
+        runId,
+        seedUserId: 'not-a-valid-uuid',
+        userAccessToken: testToken,
+        inventory: invR1,
+        fetchFn: mockTransportSpy
+      });
+    },
+    /INVALID_UUID/
+  );
+  assert.equal(transportCalls, 0);
+
+  // ==========================================
+  // R1-03: Separate Storage Creation Obligation from Deletion Eligibility
+  // (PRRT_kwDOVtCmZc67gqOz & PRRT_kwDOVtCmZc67grUX)
+  // ==========================================
+  // 13. Pre-upload collision check returning 403 or 500 fails closed without proceeding to upload
+  let uploadPostAttempted = false;
+  await assert.rejects(
+    async () => {
+      await provisionStorageProbeFixture({
+        runId,
+        seedUserId,
+        userAccessToken: testToken,
+        inventory: new TestRunInventory(runId),
+        fetchFn: async (url, opts) => {
+          if (opts.method === 'GET') return { status: 403, ok: false };
+          if (opts.method === 'POST') {
+            uploadPostAttempted = true;
+            return { status: 200, ok: true };
+          }
+          return { status: 500 };
+        }
+      });
+    },
+    /STORAGE_COLLISION_CHECK_FAILED: Pre-upload collision check failed with HTTP 403/
+  );
+  assert.equal(uploadPostAttempted, false, 'Upload POST must never be attempted when collision check returns non-404');
+
+  // 14. Affirmative 404 followed by 409 Conflict preserves existing object without deletion eligibility
+  const invConflict = new TestRunInventory(runId);
+  await assert.rejects(
+    async () => {
+      await provisionStorageProbeFixture({
+        runId,
+        seedUserId,
+        userAccessToken: testToken,
+        inventory: invConflict,
+        fetchFn: async (url, opts) => {
+          if (opts.method === 'GET') return { status: 404, ok: false };
+          if (opts.method === 'POST') return { status: 409, ok: false, json: async () => ({ message: 'The resource already exists' }) };
+          return { status: 500 };
+        }
+      });
+    },
+    /STORAGE_UPLOAD_CONFLICT/
+  );
+  const conflictFixture = invConflict.getStorageFixture(STORAGE_PROBE_BUCKET, getStorageProbeObjectPath(runId));
+  assert.ok(conflictFixture);
+  assert.equal(conflictFixture.lifecycleState, STORAGE_LIFECYCLE_STATE.CONFLICT_EXISTING_PRESERVED);
+  assert.equal(conflictFixture.deletionEligible, false);
+
+  // Cleanup NEVER deletes CONFLICT_EXISTING_PRESERVED object
+  let conflictDeleted = false;
+  const mockAdminClientConflict = {
+    deleteStorageObject: async () => {
+      conflictDeleted = true;
+      return { data: null, error: null };
+    },
+    getStorageObject: async () => ({ status: 404, ok: false }),
+    deleteUser: async () => ({ data: null, error: null }),
+    getUserById: async () => ({ notFound: true }),
+    signOut: async () => ({ data: null, error: null })
+  };
+  const cleanupReportConflict = await invConflict.executeCleanup({ adminClient: mockAdminClientConflict, failClosed: true });
+  assert.equal(conflictDeleted, false, 'Pre-existing conflict fixture must NEVER be deleted during cleanup');
+  assert.equal(cleanupReportConflict.storageObjectsDeleted, 0);
+
+  // 15. Indeterminate upload timeout is quarantined
+  const invIndet = new TestRunInventory(runId);
+  await assert.rejects(
+    async () => {
+      await provisionStorageProbeFixture({
+        runId,
+        seedUserId,
+        userAccessToken: testToken,
+        inventory: invIndet,
+        fetchFn: async (url, opts) => {
+          if (opts.method === 'GET') return { status: 404, ok: false };
+          if (opts.method === 'POST') throw new Error('ECONNRESET: socket hang up');
+          return { status: 500 };
+        }
+      });
+    },
+    /STORAGE_UPLOAD_INDETERMINATE/
+  );
+  const indetFixture = invIndet.getStorageFixture(STORAGE_PROBE_BUCKET, getStorageProbeObjectPath(runId));
+  assert.equal(indetFixture.lifecycleState, STORAGE_LIFECYCLE_STATE.CREATION_INDETERMINATE);
+  assert.equal(indetFixture.deletionEligible, false);
+
+  // ==========================================
+  // R1-04: Payload Integrity & Authoritative Owner Verification
+  // (PRRT_kwDOVtCmZc67gqO4)
+  // ==========================================
+  // 16. Verification GET with corrupted/wrong bytes throws STORAGE_PAYLOAD_INTEGRITY_MISMATCH
+  let getCount16 = 0;
+  await assert.rejects(
+    async () => {
+      await provisionStorageProbeFixture({
+        runId,
+        seedUserId,
+        userAccessToken: testToken,
+        inventory: new TestRunInventory(runId),
+        probeContent: 'expected-bytes\n',
+        fetchFn: async (url, opts) => {
+          if (opts.method === 'GET') {
+            getCount16++;
+            if (getCount16 === 1) return { status: 404, ok: false };
+            return {
+              status: 200,
+              ok: true,
+              text: async () => 'corrupted-different-bytes\n',
+              headers: new Headers({ 'x-owner-id': seedUserId })
+            };
+          }
+          if (opts.method === 'POST') return { status: 200, ok: true, json: async () => ({}) };
+          return { status: 500 };
+        }
+      });
+    },
+    /STORAGE_PAYLOAD_INTEGRITY_MISMATCH/
+  );
+
+  // 17. Verification GET missing owner metadata header throws STORAGE_OWNER_VERIFICATION_FAILED
+  let getCount17 = 0;
+  await assert.rejects(
+    async () => {
+      await provisionStorageProbeFixture({
+        runId,
+        seedUserId,
+        userAccessToken: testToken,
+        inventory: new TestRunInventory(runId),
+        probeContent: 'valid-bytes\n',
+        fetchFn: async (url, opts) => {
+          if (opts.method === 'GET') {
+            getCount17++;
+            if (getCount17 === 1) return { status: 404, ok: false };
+            return {
+              status: 200,
+              ok: true,
+              text: async () => 'valid-bytes\n',
+              headers: new Headers({}) // Missing x-owner-id
+            };
+          }
+          if (opts.method === 'POST') return { status: 200, ok: true, json: async () => ({}) };
+          return { status: 500 };
+        }
+      });
+    },
+    /STORAGE_OWNER_VERIFICATION_FAILED.*missing/
+  );
+
+  // 18. Verification GET with mismatched owner ID throws STORAGE_OWNER_VERIFICATION_FAILED
+  let getCount18 = 0;
+  await assert.rejects(
+    async () => {
+      await provisionStorageProbeFixture({
+        runId,
+        seedUserId,
+        userAccessToken: testToken,
+        inventory: new TestRunInventory(runId),
+        probeContent: 'valid-bytes\n',
+        fetchFn: async (url, opts) => {
+          if (opts.method === 'GET') {
+            getCount18++;
+            if (getCount18 === 1) return { status: 404, ok: false };
+            return {
+              status: 200,
+              ok: true,
+              text: async () => 'valid-bytes\n',
+              headers: new Headers({ 'x-owner-id': otherUserId }) // Mismatched owner
+            };
+          }
+          if (opts.method === 'POST') return { status: 200, ok: true, json: async () => ({}) };
+          return { status: 500 };
+        }
+      });
+    },
+    /STORAGE_OWNER_VERIFICATION_FAILED.*does not match authenticated seed user/
+  );
+
+  // ==========================================
+  // R1-05: Canonical Probe Dependencies
+  // (PRRT_kwDOVtCmZc67gqO8)
+  // ==========================================
+  // 19. SESSION-02 requires HOOK-01 and SESSION-01
+  assert.throws(
+    () => validateSelectedProbeIds(['HOOK-01', 'SESSION-02']),
+    /DEPENDENCY_INCOMPLETE: probe 'SESSION-02' requires prerequisite probe\(s\) 'SESSION-01' to also be selected/
+  );
+  // 20. SESSION-04 requires HOOK-01, SESSION-01, and SESSION-02
+  assert.throws(
+    () => validateSelectedProbeIds(['HOOK-01', 'SESSION-02', 'SESSION-04']),
+    /DEPENDENCY_INCOMPLETE: probe 'SESSION-02' requires prerequisite probe\(s\) 'SESSION-01' to also be selected/
+  );
+
+  // ==========================================
+  // R1-06: Storage Absence Verification Post-Deletion
+  // (PRRT_kwDOVtCmZc67grUj)
+  // ==========================================
+  // 21. Object still present (HTTP 200 on absence GET) marks deletion failed and halts user deletion
+  const invAbsenceFail = new TestRunInventory(runId);
+  invAbsenceFail.registerCreatedUser({
+    id: seedUserId,
+    email: 'user-absence-fail@proof.invalid',
+    creationProof: createCreationProof('before_after_check')
+  });
+  invAbsenceFail.registerStorageFixture({
+    bucket: STORAGE_PROBE_BUCKET,
+    path: getStorageProbeObjectPath(runId),
+    ownerId: seedUserId,
+    status: 'VERIFIED',
+    lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED,
+    deletionEligible: true
+  });
+  let userDeleteAttemptedAbsence = false;
+  const mockAdminClientPresent = {
+    deleteStorageObject: async () => ({ data: null, error: null }),
+    getStorageObject: async () => ({ status: 200, ok: true }), // Object still present!
+    deleteUser: async () => {
+      userDeleteAttemptedAbsence = true;
+      return { data: null, error: null };
+    },
+    getUserById: async () => ({ notFound: true }),
+    signOut: async () => ({ data: null, error: null })
+  };
+  const repAbsenceFail = await invAbsenceFail.executeCleanup({ adminClient: mockAdminClientPresent, failClosed: false });
+  assert.equal(userDeleteAttemptedAbsence, false, 'User deletion must be aborted when storage object is still present');
+  assert.equal(repAbsenceFail.storageObjectsDeleted, 0);
+  assert.equal(repAbsenceFail.usersDeleted, 0);
+  assert.ok(repAbsenceFail.residualResources.some(r => r.error?.includes('STORAGE_OBJECT_NOT_ABSENT')));
+  assert.ok(repAbsenceFail.residualUsers.some(u => u.error?.includes('STORAGE_CLEANUP_FAILURE_CASCADE_PREVENTED')));
+
+  // ==========================================
+  // R1-07: Remove SESSION-05 Shared-Path Fallback
+  // (PRRT_kwDOVtCmZc67grUw)
+  // ==========================================
+  // 22. SESSION-05 requires valid runId
+  const runCtxNoRunId = createRunContext({ runId: 'valid-temp-id' });
+  runCtxNoRunId.runId = null;
+  runCtxNoRunId.activeAccessToken = testToken;
+  runCtxNoRunId.preInvalidationSessionValid = true;
+  runCtxNoRunId.passwordResetCompleted = true;
+  runCtxNoRunId.sessionRevocationConfirmed = true;
+  runCtxNoRunId.revokedSessionId = 'session-uuid-5678';
+  const dispNoRunId = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtxNoRunId,
+    fetchFn: async () => ({ status: 200 })
+  });
+  const outNoRunId = await dispNoRunId({ id: 'SESSION-05', category: 'Session & Consumer' });
+  assert.equal(outNoRunId.passed, false);
+  assert.match(outNoRunId.error, /PREREQUISITE_MISSING: SESSION-05 requires valid runId/);
+
+  // 23. SESSION-05 requires fixture in inventory when inventory provided
+  const invEmpty = new TestRunInventory(runId);
+  const runCtxWithRunId = createRunContext({ runId });
+  runCtxWithRunId.activeAccessToken = testToken;
+  runCtxWithRunId.preInvalidationSessionValid = true;
+  runCtxWithRunId.passwordResetCompleted = true;
+  runCtxWithRunId.sessionRevocationConfirmed = true;
+  runCtxWithRunId.revokedSessionId = 'session-uuid-5678';
+  const dispMissingFixture = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: invEmpty,
+    runContext: runCtxWithRunId,
+    fetchFn: async () => ({ status: 200 })
+  });
+  const outMissingFixture = await dispMissingFixture({ id: 'SESSION-05', category: 'Session & Consumer' });
+  assert.equal(outMissingFixture.passed, false);
+  assert.match(outMissingFixture.error, /STORAGE_FIXTURE_RECORD_MISSING/);
+
+  // ==========================================
+  // R1-08: Mandatory Inventory in Storage Provisioner
+  // (PRRT_kwDOVtCmZc67grU_)
+  // ==========================================
+  // 24. provisionStorageProbeFixture without inventory throws STORAGE_PROVISIONING_FAILED
+  await assert.rejects(
+    async () => {
+      await provisionStorageProbeFixture({
+        runId,
+        seedUserId,
+        userAccessToken: testToken,
+        inventory: null,
+        fetchFn: async () => ({ status: 404 })
+      });
+    },
+    /STORAGE_PROVISIONING_FAILED: inventory is required for write-ahead tracking \(R1-08\)/
+  );
+
+  // 25. provisionStorageProbeFixture with finalized inventory throws INVENTORY_FINALIZED
+  const invFinalized = new TestRunInventory(runId);
+  invFinalized.finalize();
+  await assert.rejects(
+    async () => {
+      await provisionStorageProbeFixture({
+        runId,
+        seedUserId,
+        userAccessToken: testToken,
+        inventory: invFinalized,
+        fetchFn: async () => ({ status: 404 })
+      });
+    },
+    /INVENTORY_FINALIZED/
+  );
+
+  // 26. provisionStorageProbeFixture with mismatched runId throws INVENTORY_RUN_ID_MISMATCH
+  const invMismatched = new TestRunInventory('different-run-id-123');
+  await assert.rejects(
+    async () => {
+      await provisionStorageProbeFixture({
+        runId,
+        seedUserId,
+        userAccessToken: testToken,
+        inventory: invMismatched,
+        fetchFn: async () => ({ status: 404 })
+      });
+    },
+    /INVENTORY_RUN_ID_MISMATCH/
   );
 });

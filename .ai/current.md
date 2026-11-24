@@ -4,8 +4,8 @@
 
 | Field | Value |
 |---|---|
-| Status | **Phase 1.2 Task 06I-B1-H3 (Controlled Subset Dispatch & Run-Scoped Storage Implementation) active on branch `feat/task06i-b1-h3-subset-runner-storage`. Implemented controlled subset runner (`options.selectedProbeIds`, dependency completeness, canonical matrix ordering, execution evidence breakdown) eliminating `BLOCKED_PENDING_SUBSET_RUNNER`. Implemented entropy-backed run-scoped Storage fixture contract (`task06i_probe_bucket/<runId>/probe.txt`, strict `validateRunId`, 10-point provisioning contract) eliminating `BLOCKED_PENDING_RUN_SCOPED_STORAGE`. Enforced Storage-before-user cleanup ordering and cascade failure prevention (`STORAGE_CLEANUP_FAILURE_CASCADE_PREVENTED`). Preserved Option A reusable seed identity policy and durable crash recovery gate (`BLOCKED_PENDING_DURABLE_RECOVERY`). Task 06I test suite: 167/167 PASS; live PostgreSQL 17.11 parity: 18/18 (`POSTGRES_VERIFIED`); Task 06H test suite: 115/115 PASS; shell contract suite: 22/22 PASS; `npm run verify`: PASS; `git diff --check`: clean. PR #43 merged at `4569479e8fe2caa6659fe1cc6c7a484596a01bbc`. Hosted LIVE dispatch: NOT AUTHORIZED. Production Real Auth: STRICT NO-GO.** |
-| Active Task | [Task 06I-B1-H3](tasks/auth/local-20261124-task06i-b1-h3-subset-runner-storage.md) (Controlled Subset Dispatch & Run-Scoped Storage Implementation) on branch `feat/task06i-b1-h3-subset-runner-storage`. PR #43 merged at `4569479e8fe2caa6659fe1cc6c7a484596a01bbc`. PR #37 merged at `cd4ce0ac16953af23b5feb30dc48a102ae6d8f48`. PR #36 merged at `716fb32061ffb6012d17eae9453c822a281fe6f1`. PR #35 merged at `7150cec4c2e1e9aaa8e75d2cbcb3a23a6dca532e`. PR #34 merged at `b7d4fda97979e734a85461e83bf119dbc1a9689c`. |
+| Status | **Phase 1.2 Task 06I-B1-H3-R1 (Fail-Closed Dispatch, Project Isolation & Storage Ownership Closure) active on branch `feat/task06i-b1-h3-subset-runner-storage` (PR #44). Remediated all 11 review comments across 8 critical areas (R1-01 through R1-08) from `@im-tio` (Codex) and GitHub Bugbot. Enforced fail-closed durable recovery gate (`BLOCKED_PENDING_DURABLE_RECOVERY`), isolated storage provisioner project targeting (rejecting REAL and Tio-world), separated storage creation obligation from deletion eligibility via 10-state lifecycle, verified stored bytes and owner identity, enforced canonical probe dependencies (SESSION-02 requires HOOK-01 and SESSION-01), verified storage absence before user deletion, removed SESSION-05 shared path fallback, and mandated active inventory in storage provisioner. Task 06I test suite: 168/168 PASS (including Test 96 with 26 sub-assertions); live PostgreSQL 17.11 parity: 18/18 (`POSTGRES_VERIFIED`); Task 06H test suite: 115/115 PASS; shell contract suite: 22/22 PASS; `npm run verify`: PASS; `git diff --check`: clean. PR #44 open. Hosted LIVE dispatch: NOT AUTHORIZED. Production Real Auth: STRICT NO-GO.** |
+| Active Task | [Task 06I-B1-H3](tasks/auth/local-20261124-task06i-b1-h3-subset-runner-storage.md) (Revision R1 — Fail-Closed Dispatch, Project Isolation & Storage Ownership Closure) on branch `feat/task06i-b1-h3-subset-runner-storage`. PR #44 open. PR #43 merged at `4569479e8fe2caa6659fe1cc6c7a484596a01bbc`. PR #37 merged at `cd4ce0ac16953af23b5feb30dc48a102ae6d8f48`. PR #36 merged at `716fb32061ffb6012d17eae9453c822a281fe6f1`. PR #35 merged at `7150cec4c2e1e9aaa8e75d2cbcb3a23a6dca532e`. PR #34 merged at `b7d4fda97979e734a85461e83bf119dbc1a9689c`. |
 | Active Scope / Owner | Task 06I-B1-H3 implementation of controlled subset dispatch engine (`options.selectedProbeIds`) and run-scoped Storage fixtures (`task06i_probe_bucket/<runId>/probe.txt`). Validated 10 feasible probes with strict dependency completeness, canonical ordering, and comprehensive execution breakdown. Implemented 10-point Storage provisioning contract (`provisionStorageProbeFixture`), collision detection, and Storage-before-user cleanup ordering in `TestRunInventory.executeCleanup()`. Preserved Option A reusable seed identity policy and durable crash recovery gate (`BLOCKED_PENDING_DURABLE_RECOVERY`). Decision remains strictly `BLOCKED_PENDING_DURABLE_RECOVERY` for live dispatch. LIVE hosted probe execution requires separate explicit owner authorization. Owner created disposable TEMP project `wvdabiwbaavfggcmpizd` ($0 Free slot, `ap-south-1`). Zero hosted mutations, Management API PATCHes, migrations, or user creations executed. LIVE probe testing remains disabled. Owner retains Auth policy, hosted settings, privacy, security, spending and merge decisions. Hosted Supabase project `bsfwzvgynwriswapxpsp` strictly READ-ONLY and permanently forbidden from test targeting. TEMP project lifecycle & deletion policy preserved per owner direction. Brevo transactional email delivery blocked pending authenticated domain setup. |
 | Branch | `feat/task06i-b1-h3-subset-runner-storage`. |
 | Verified merged `main` | Verified `main` HEAD is `4569479e8fe2caa6659fe1cc6c7a484596a01bbc` (PR #43 squash merge commit). Prior `main` baseline was `2d1fe9eebfd0dc18fe213da1c2aff19df29c69c0` (PR #42). |
@@ -53,27 +53,26 @@ Task 06I-B1-H1 was completed and squash-merged into `main` via PR #37 at `cd4ce0
 
 Phase 1.2 Task 06I-B1-H2 was completed and squash-merged into `main` via PR #43 at `4569479e8fe2caa6659fe1cc6c7a484596a01bbc` (independent reviewer `im-tio` approved exact HEAD `687989e52e053f20588fde51ea54d39963a95c6d`; 9/9 review threads resolved; 4/4 PR checks and 4/4 post-merge push checks succeeded).
 
-Phase 1.2 Task 06I-B1-H3 (Controlled Subset Dispatch & Run-Scoped Storage Implementation) is now active on branch `feat/task06i-b1-h3-subset-runner-storage`:
-1. **H3-01 — Controlled Subset Dispatch Engine:**
-   - Implemented `options.selectedProbeIds` support in `planProbeExecution` and `runHostedProbeRunner`.
-   - Strictly validates 10 supported probes (`BYPASS-01`, `BYPASS-02`, `BYPASS-05`, `HOOK-01`, `HOOK-02`, `SESSION-01`, `SESSION-02`, `SESSION-03`, `SESSION-04`, `SESSION-05`), rejecting duplicates, unknown IDs, unsupported Layer B probes (`HOOK-05..07`), and missing-prerequisite probes (`BYPASS-03..04`, `HOOK-03..04`, `SESSION-06`).
-   - Enforces dependency completeness and preserves canonical dependency ordering.
-   - Comprehensive evidence reporting distinguishing `selected`, `attempted`, `completed`, `failed`, `not_selected`, `prerequisite_blocked`, and `unsupported`.
-   - Eliminates `BLOCKED_PENDING_SUBSET_RUNNER`.
-2. **H3-02 — Run-Scoped Storage Fixture Contract:**
-   - Replaced fixed path with unique run-scoped key contract `task06i_probe_bucket/<runId>/probe.txt`.
-   - Validates entropy-backed `runId` (rejecting path traversal `..`, slashes `/` and `\`, and any whitespace).
-   - Implemented 10-point provisioning contract (`provisionStorageProbeFixture`) with pre-upload collision check, no-upsert upload, byte verification, and write-ahead inventory registration.
-   - Eliminates `BLOCKED_PENDING_RUN_SCOPED_STORAGE`.
-3. **H3-03 — Storage-First Cleanup Ordering & Cascade Prevention:**
-   - Updated `SESSION-05` to target `task06i_probe_bucket/<runId>/probe.txt`.
-   - Enforces that run-owned Storage fixture deletion strictly precedes Auth user deletion in cleanup.
-   - If Storage cleanup fails, Auth user deletion is blocked with `STORAGE_CLEANUP_FAILURE_CASCADE_PREVENTED`.
-4. **H3-04 & H3-05 — Preserved Gates:**
-   - Option A reusable pre-existing seed identity preserved across cleanup.
-   - `BLOCKED_PENDING_DURABLE_RECOVERY` strictly enforced against LIVE cloud dispatch.
-5. **Local Verification Evidence:**
-   - 167/167 Task 06I tests pass (including Tests 90–95), 18/18 live PostgreSQL 17.11 parity pass (`POSTGRES_VERIFIED`), 115/115 Task 06H tests pass, 22/22 shell contract tests pass, `npm run verify` pass, `git diff --check` clean.
+Phase 1.2 Task 06I-B1-H3-R1 (Fail-Closed Dispatch, Project Isolation & Storage Ownership Closure) is active on branch `feat/task06i-b1-h3-subset-runner-storage` (PR #44):
+1. **H3-R1-01 — Mandatory Durable Recovery Gate & Fail-Closed Dispatcher:**
+   - Unconditionally blocks `--live` dispatch at CLI entry point without recovery capability.
+   - Enforces `BLOCKED_PENDING_DURABLE_RECOVERY` fail-closed when default fetch/network dispatcher is used without mock transport.
+2. **H3-R1-02 — Storage Provisioner Project Isolation & Credential Binding:**
+   - Validates target project ref against TEMP project (`wvdabiwbaavfggcmpizd`); strictly rejects REAL and Tio-world.
+   - Enforces credential project binding and decodes JWT to verify seed user UUID matches `claims.sub`.
+3. **H3-R1-03 — Separate Storage Creation Obligation from Deletion Eligibility:**
+   - Introduced 10-state `STORAGE_LIFECYCLE_STATE` enum; pre-upload collision check proceeds only on affirmative 404.
+   - Tracks fixtures initially with `CREATION_PENDING` and `deletionEligible: false`. Confirmed upload + byte verification transitions to `RUN_CREATED_VERIFIED` with `deletionEligible: true`.
+4. **H3-R1-04 — Stored Bytes & Ownership Verification:**
+   - Reads actual downloaded bytes, asserts exact match with probe payload, and validates provider owner metadata.
+5. **H3-R1-05 — Canonical Probe Dependencies:**
+   - `SESSION-02` strictly requires `HOOK-01` and `SESSION-01`. `SESSION-03..06` strictly require `HOOK-01`, `SESSION-01`, and `SESSION-02`.
+6. **H3-R1-06 — Storage Absence Check Before Auth User Deletion:**
+   - Verifies HTTP 404 absence check post-deletion; non-404 halts user deletion with `STORAGE_CLEANUP_FAILURE_CASCADE_PREVENTED`.
+7. **H3-R1-07 & 08 — Remove Shared-Path Fallback & Enforce Active Inventory:**
+   - Removed `'probe.txt'` fallback; enforces non-null active `TestRunInventory`.
+8. **Local Verification Evidence:**
+   - 168/168 Task 06I tests pass (including Tests 90–96), 18/18 live PostgreSQL 17.11 parity pass (`POSTGRES_VERIFIED`), 115/115 Task 06H tests pass, 22/22 shell contract tests pass, `npm run verify` pass, `git diff --check` clean.
 
 ### Hard STOP Gate & Invariants Honored
 - Hosted LIVE probe execution: **NOT AUTHORIZED** (Zero network calls).
@@ -83,7 +82,7 @@ Phase 1.2 Task 06I-B1-H3 (Controlled Subset Dispatch & Run-Scoped Storage Implem
 - Disposable TEMP project (`wvdabiwbaavfggcmpizd`): Preserved untouched during H3. Zero cloud mutations.
 - Decision: **`BLOCKED_PENDING_DURABLE_RECOVERY`** for live dispatch.
 
-The next permissible action is committing the Task 06I-B1-H3 implementation and documentation, pushing to `origin feat/task06i-b1-h3-subset-runner-storage`, and opening a Pull Request targeting `main`. Production Auth remains strictly **NO-GO**.
+The next permissible action is committing the Task 06I-B1-H3-R1 remediation and documentation, pushing to `origin feat/task06i-b1-h3-subset-runner-storage`, resolving all 11 review threads on PR #44, and requesting re-review from `@im-tio`. Production Auth remains strictly **NO-GO**.
 
 ### Empirical Security Gates & Current Architecture Baseline
 
