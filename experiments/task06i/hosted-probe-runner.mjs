@@ -17,12 +17,159 @@
 // 9. Zero fake LIVE success: missing dispatcher in LIVE mode immediately fails closed.
 // 10. Zero automated project deletion and zero fallback to Tio-world.
 
-import { PREFLIGHT_REQUIREMENTS } from './preflight-evaluator.mjs';
+import crypto from 'node:crypto';
+import { PREFLIGHT_REQUIREMENTS, EXPECTED_REQUIREMENT_IDS } from './preflight-evaluator.mjs';
 
 export const HARDCODED_REAL_REF = 'bsfwzvgynwriswapxpsp';
 export const HARDCODED_TIO_WORLD_REF = 'oykupyiitspujzpwwvuj';
 export const HARDCODED_TEMP_REF = 'wvdabiwbaavfggcmpizd';
 export const DEFAULT_PROBE_TIMEOUT_MS = 5000;
+export const STORAGE_PROBE_BUCKET = 'task06i_probe_bucket';
+
+/**
+ * Feasible 10-probe subset supported for controlled offline-tested execution (H3-01).
+ * Comprises native bypass, password token hooks, and consumer linger/invalidation probes.
+ */
+export const SUPPORTED_SUBSET_PROBE_IDS = Object.freeze([
+  'BYPASS-01',
+  'BYPASS-02',
+  'BYPASS-05',
+  'HOOK-01',
+  'HOOK-02',
+  'SESSION-01',
+  'SESSION-02',
+  'SESSION-03',
+  'SESSION-04',
+  'SESSION-05'
+]);
+
+/**
+ * 5 probes blocked pending hosted provider preconditions (H3-01).
+ * Require external configuration, delivered OTP/magic-link tokens, or Edge Function deployment.
+ */
+export const PREREQUISITE_BLOCKED_PROBE_IDS = Object.freeze([
+  'BYPASS-03',
+  'BYPASS-04',
+  'HOOK-03',
+  'HOOK-04',
+  'SESSION-06'
+]);
+
+/**
+ * 3 Layer A probes unsupported for hosted HTTP dispatch (H3-01).
+ * Cover claims.amr mutation and transaction-abort hooks; verified authoritatively offline via PostgreSQL parity.
+ */
+export const UNSUPPORTED_LAYER_B_PROBE_IDS = Object.freeze([
+  'HOOK-05',
+  'HOOK-06',
+  'HOOK-07'
+]);
+
+/**
+ * Canonical probe dependency graph enforcing prerequisite completeness (H3-01).
+ */
+export const CANONICAL_PROBE_DEPENDENCIES = Object.freeze({
+  'BYPASS-01': Object.freeze([]),
+  'BYPASS-02': Object.freeze([]),
+  'BYPASS-03': Object.freeze([]),
+  'BYPASS-04': Object.freeze([]),
+  'BYPASS-05': Object.freeze([]),
+  'HOOK-01': Object.freeze([]),
+  'HOOK-02': Object.freeze(['HOOK-01']),
+  'HOOK-03': Object.freeze([]),
+  'HOOK-04': Object.freeze([]),
+  'HOOK-05': Object.freeze([]),
+  'HOOK-06': Object.freeze([]),
+  'HOOK-07': Object.freeze([]),
+  'SESSION-01': Object.freeze(['HOOK-01']),
+  'SESSION-02': Object.freeze(['HOOK-01']),
+  'SESSION-03': Object.freeze(['HOOK-01', 'SESSION-02']),
+  'SESSION-04': Object.freeze(['HOOK-01', 'SESSION-02']),
+  'SESSION-05': Object.freeze(['HOOK-01', 'SESSION-02']),
+  'SESSION-06': Object.freeze(['HOOK-01', 'SESSION-02'])
+});
+
+/**
+ * Validates runId format, enforcing entropy, uniqueness, and rejecting traversal/slashes/whitespace (H3-02).
+ */
+export function validateRunId(runId) {
+  if (typeof runId !== 'string' || !runId.trim()) {
+    throw new Error('INVALID_RUN_ID: runId must be a non-empty string');
+  }
+  if (runId.includes('..') || runId.includes('/') || runId.includes('\\') || /\s/.test(runId)) {
+    throw new Error(
+      `INVALID_RUN_ID: runId '${runId}' contains invalid characters (path traversal, slashes, or whitespace prohibited)`
+    );
+  }
+  if (!/^[a-zA-Z0-9_-]+$/.test(runId)) {
+    throw new Error(
+      `INVALID_RUN_ID: runId '${runId}' must only contain alphanumeric characters, hyphens, and underscores`
+    );
+  }
+  return runId;
+}
+
+/**
+ * Returns the run-scoped relative object path within task06i_probe_bucket (H3-02).
+ */
+export function getStorageProbeObjectPath(runId) {
+  const valid = validateRunId(runId);
+  return `${valid}/probe.txt`;
+}
+
+/**
+ * Returns the fully qualified run-scoped Storage object key (H3-02).
+ */
+export function getStorageProbeObjectKey(runId) {
+  const valid = validateRunId(runId);
+  return `${STORAGE_PROBE_BUCKET}/${valid}/probe.txt`;
+}
+
+/**
+ * Validates selected probe subset for unknown IDs, duplicates, dependency completeness,
+ * and live-mode support (H3-01).
+ */
+export function validateSelectedProbeIds(selectedProbeIds, options = {}) {
+  if (!Array.isArray(selectedProbeIds)) {
+    throw new Error('INVALID_PROBE_SELECTION: selectedProbeIds must be an array');
+  }
+  if (selectedProbeIds.length === 0) {
+    throw new Error('INVALID_PROBE_SELECTION: selectedProbeIds must be a non-empty array');
+  }
+
+  const seen = new Set();
+  for (const id of selectedProbeIds) {
+    if (typeof id !== 'string' || !id.trim()) {
+      throw new Error('INVALID_PROBE_SELECTION: each probe ID must be a non-empty string');
+    }
+    const cleanId = id.trim();
+    if (seen.has(cleanId)) {
+      throw new Error(`INVALID_PROBE_SELECTION: duplicate probe ID '${cleanId}' detected`);
+    }
+    seen.add(cleanId);
+    if (!EXPECTED_REQUIREMENT_IDS.has(cleanId)) {
+      throw new Error(`INVALID_PROBE_SELECTION: unknown probe ID '${cleanId}'`);
+    }
+    if (UNSUPPORTED_LAYER_B_PROBE_IDS.includes(cleanId)) {
+      throw new Error(`UNSUPPORTED_PROBE: probe '${cleanId}' is not supported for hosted HTTP execution (Layer A only)`);
+    }
+    if (PREREQUISITE_BLOCKED_PROBE_IDS.includes(cleanId)) {
+      throw new Error(`UNRESOLVED_PREREQUISITE: probe '${cleanId}' cannot be executed due to missing provider prerequisites`);
+    }
+  }
+
+  for (const cleanId of seen) {
+    const deps = CANONICAL_PROBE_DEPENDENCIES[cleanId] || [];
+    const missing = deps.filter(d => !seen.has(d));
+    if (missing.length > 0) {
+      throw new Error(
+        `DEPENDENCY_INCOMPLETE: probe '${cleanId}' requires prerequisite probe(s) '${missing.join("', '")}' to also be selected`
+      );
+    }
+  }
+
+  return Array.from(seen);
+}
 
 /**
  * Brevo sender and domain readiness baseline audited for Phase 1.2.
@@ -684,31 +831,87 @@ export function determineRunnerMode(argv = [], env = process.env) {
 }
 
 /**
- * Plans probe execution for the 18 preflight requirements.
+ * Resolves probe readiness status safely without temporal dead zone risk (H3-01).
+ */
+function getProbeReadinessStatus(id) {
+  if (typeof HOSTED_PROBE_SPECIFICATIONS !== 'undefined' && HOSTED_PROBE_SPECIFICATIONS[id]) {
+    return HOSTED_PROBE_SPECIFICATIONS[id].readinessStatus;
+  }
+  if (SUPPORTED_SUBSET_PROBE_IDS.includes(id)) return 'IMPLEMENTED_OFFLINE_TESTED';
+  if (PREREQUISITE_BLOCKED_PROBE_IDS.includes(id)) return 'PROVIDER_PRECONDITION_MISSING';
+  if (UNSUPPORTED_LAYER_B_PROBE_IDS.includes(id)) return 'BLOCKED_UNSUPPORTED';
+  return 'UNKNOWN';
+}
+
+/**
+ * Plans probe execution across the canonical 18 preflight requirements, supporting
+ * controlled subset execution, dependency completeness validation, and run-scoped target formatting (H3-01).
  */
 export function planProbeExecution(projectRef, options = {}) {
+  const isLive = options.isLive === true;
   const tempRef = options.tempRef || HARDCODED_TEMP_REF;
-  const validatedRef = validateTargetProject(projectRef, tempRef, false, {
-    allowIsolatedTestRef: options.allowIsolatedTestRef
+  const validatedRef = validateTargetProject(projectRef, tempRef, isLive, {
+    allowIsolatedTestRef: options.allowIsolatedTestRef && !isLive
   });
   const testUser = options.testEmail || 'tio-test-user-06i@proof.invalid';
   validateTestIdentity(testUser);
 
-  const plannedCases = PREFLIGHT_REQUIREMENTS.map(req => ({
-    id: req.id,
-    category: req.category,
-    target: req.target,
-    expectedResponse: req.expectedResponse,
-    plannedAction: `Execute probe against ${req.target} on TEMP project ${validatedRef}`,
-    testUser
-  }));
+  const runId = options.runId ? validateRunId(options.runId) : null;
+
+  let selectedSet = null;
+  if (options.selectedProbeIds !== undefined && options.selectedProbeIds !== null) {
+    const validatedIds = validateSelectedProbeIds(options.selectedProbeIds, { isLive });
+    selectedSet = new Set(validatedIds);
+  }
+
+  // Preserve canonical matrix ordering from PREFLIGHT_REQUIREMENTS
+  const plannedCases = [];
+  const notSelectedCases = [];
+
+  for (const req of PREFLIGHT_REQUIREMENTS) {
+    const isSelected = selectedSet ? selectedSet.has(req.id) : true;
+    const target = req.id === 'SESSION-05' && runId
+      ? `GET /storage/v1/object/authenticated/${getStorageProbeObjectKey(runId)}`
+      : req.target;
+
+    const caseItem = {
+      id: req.id,
+      category: req.category,
+      target,
+      expectedResponse: req.expectedResponse,
+      plannedAction: `Execute probe against ${target} on TEMP project ${validatedRef}`,
+      testUser,
+      status: isSelected ? 'PLANNED' : 'NOT_SELECTED',
+      readinessStatus: getProbeReadinessStatus(req.id),
+      layer: UNSUPPORTED_LAYER_B_PROBE_IDS.includes(req.id) ? 'Layer A (Offline SQL Parity)' : 'Layer B (Hosted Endpoint)'
+    };
+
+    if (isSelected) {
+      plannedCases.push(caseItem);
+    } else {
+      notSelectedCases.push(caseItem);
+    }
+  }
 
   return {
     projectRef: validatedRef,
     mode: 'PLANNED',
     testUser,
+    runId,
     totalProbes: plannedCases.length,
-    plannedCases
+    totalCanonicalProbes: PREFLIGHT_REQUIREMENTS.length,
+    isSubset: selectedSet !== null && selectedSet.size < PREFLIGHT_REQUIREMENTS.length,
+    selectedProbeIds: plannedCases.map(c => c.id),
+    unselectedProbeIds: notSelectedCases.map(c => c.id),
+    plannedCases,
+    notSelectedCases,
+    matrixSummary: {
+      selectedCount: plannedCases.length,
+      notSelectedCount: notSelectedCases.length,
+      supportedSubsetCount: SUPPORTED_SUBSET_PROBE_IDS.length,
+      prerequisiteBlockedCount: PREREQUISITE_BLOCKED_PROBE_IDS.length,
+      unsupportedCount: UNSUPPORTED_LAYER_B_PROBE_IDS.length
+    }
   };
 }
 
@@ -2097,7 +2300,11 @@ function validateSessionRevocationProof(item, rawOutcome, allowedStatuses, isRev
  */
 export class TestRunInventory {
   constructor(runId = null, { seedEmail = null, seedUserId = null } = {}) {
-    this.runId = runId || `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    if (runId !== null && runId !== undefined) {
+      this.runId = validateRunId(runId);
+    } else {
+      this.runId = `run-${Date.now()}-${crypto.randomUUID()}`;
+    }
     this.createdUsers = new Map(); // Users verified as created in THIS run with affirmative proof -> deletion eligible
     this.referencedUsers = new Map(); // Pre-existing / seeded users authenticated -> NEVER deleted (R3-09)
     this.unverifiedUsers = new Map(); // Users observed without affirmative run-created proof -> NEVER deleted (R16-02)
@@ -2109,6 +2316,7 @@ export class TestRunInventory {
     this.revokedSessions = new Set(); // Session IDs affirmatively verified as revoked or absent (R8-02)
     this.trackedTableRows = new Map(); // table -> Set(id)
     this.trackedStorageObjects = new Map(); // bucket -> Set(path)
+    this.storageFixtures = new Map(); // key -> fixture record (H3-02)
     this.seedCredentialRestorations = []; // Seed users whose password was modified -> must be restored (R5-06)
     this.untrackedSessionsCount = 0; // Minted sessions whose ID could not be parsed (R5-04, R8-01)
     this.untrackedUsersCount = 0; // Users created whose concrete ID was lost or unobserved (R14-02)
@@ -2410,6 +2618,44 @@ export class TestRunInventory {
       this.trackedStorageObjects.set(b, new Set());
     }
     this.trackedStorageObjects.get(b).add(p);
+  }
+
+  /**
+   * Registers a run-scoped Storage probe fixture with explicit ownership and metadata (H3-02).
+   */
+  registerStorageFixture({ bucket = STORAGE_PROBE_BUCKET, path, ownerId = null, bytes = 0, status = 'PROVISIONED', proof = null } = {}) {
+    if (!path || typeof path !== 'string' || !path.trim()) {
+      throw new Error('registerStorageFixture requires non-empty path');
+    }
+    const cleanBucket = (bucket || STORAGE_PROBE_BUCKET).trim();
+    const cleanPath = path.trim();
+    const fixtureKey = `${cleanBucket}/${cleanPath}`;
+
+    // Register in exact path tracking
+    this.registerStorageObject(cleanBucket, cleanPath);
+
+    const fixtureRecord = {
+      bucket: cleanBucket,
+      path: cleanPath,
+      key: fixtureKey,
+      runId: this.runId,
+      ownerId: ownerId ? String(ownerId).trim() : null,
+      bytes: typeof bytes === 'number' ? bytes : 0,
+      status, // 'PROVISIONED', 'IN_FLIGHT', 'VERIFIED', 'DELETED', 'DELETION_FAILED'
+      proof: proof || null,
+      registeredAt: new Date().toISOString()
+    };
+    this.storageFixtures.set(fixtureKey, fixtureRecord);
+    return fixtureRecord;
+  }
+
+  /**
+   * Retrieves a registered Storage probe fixture by bucket and path (H3-02).
+   */
+  getStorageFixture(bucket, path) {
+    if (!bucket || !path) return null;
+    const fixtureKey = `${String(bucket).trim()}/${String(path).trim()}`;
+    return this.storageFixtures.get(fixtureKey) || null;
   }
 
   getUserEmail(userId) {
@@ -2770,6 +3016,7 @@ export class TestRunInventory {
       revokedSessionsCount: this.revokedSessions.size,
       trackedTableRowsCount: Array.from(this.trackedTableRows.values()).reduce((acc, s) => acc + s.size, 0),
       trackedStorageObjectsCount: Array.from(this.trackedStorageObjects.values()).reduce((acc, s) => acc + s.size, 0),
+      storageFixturesCount: this.storageFixtures.size,
       seedCredentialRestorationsCount: this.seedCredentialRestorations.length,
       untrackedSessionsCount: this.untrackedSessionsCount,
       untrackedUsersCount: this.untrackedUsersCount,
@@ -2939,21 +3186,37 @@ export class TestRunInventory {
       }
     }
 
-    // 2. Delete tracked storage objects by exact path
+    // 2. Delete tracked storage objects by exact path (H3-02, H3-03)
+    let storageCleanupFailed = false;
     for (const [bucket, paths] of this.trackedStorageObjects.entries()) {
       if (paths.size > 0 && typeof adminClient.deleteStorageObject !== 'function') {
         report.residualResources.push({ type: 'storage_objects', bucket, count: paths.size, error: 'MISSING_DELETE_STORAGE_OBJECT_METHOD' });
+        storageCleanupFailed = true;
       } else {
         for (const path of paths) {
           try {
             const res = await adminClient.deleteStorageObject(bucket, path);
             if (res && res.error) {
               report.residualResources.push({ type: 'storage_object', bucket, path, error: res.error.message || String(res.error) });
+              storageCleanupFailed = true;
+              const fixtureKey = `${bucket}/${path}`;
+              if (this.storageFixtures.has(fixtureKey)) {
+                this.storageFixtures.get(fixtureKey).status = 'DELETION_FAILED';
+              }
             } else {
               report.storageObjectsDeleted++;
+              const fixtureKey = `${bucket}/${path}`;
+              if (this.storageFixtures.has(fixtureKey)) {
+                this.storageFixtures.get(fixtureKey).status = 'DELETED';
+              }
             }
           } catch (err) {
             report.residualResources.push({ type: 'storage_object', bucket, path, error: err.message });
+            storageCleanupFailed = true;
+            const fixtureKey = `${bucket}/${path}`;
+            if (this.storageFixtures.has(fixtureKey)) {
+              this.storageFixtures.get(fixtureKey).status = 'DELETION_FAILED';
+            }
           }
         }
       }
@@ -3003,7 +3266,20 @@ export class TestRunInventory {
     }
 
     // 4. Delete ONLY verified created users by exact user ID (referencedUsers and unverifiedUsers are preserved! R16-02)
-    if (this.createdUsers.size > 0 && typeof adminClient.deleteUser !== 'function') {
+    // Storage-before-user cleanup ordering: if storage cleanup failed or residual storage objects remain, BLOCK user deletion! (H3-03)
+    const hasResidualStorage = storageCleanupFailed || report.residualResources.some(
+      r => r.type === 'storage_object' || r.type === 'storage_objects'
+    );
+
+    if (hasResidualStorage) {
+      for (const [userId, userObj] of this.createdUsers.entries()) {
+        report.residualUsers.push({
+          id: userId,
+          email: userObj?.email,
+          error: `STORAGE_CLEANUP_FAILURE_CASCADE_PREVENTED: Refusing to delete user '${userId}' because Storage fixture cleanup failed or left residual objects (H3-03)`
+        });
+      }
+    } else if (this.createdUsers.size > 0 && typeof adminClient.deleteUser !== 'function') {
       report.residualResources.push({ type: 'users', count: this.createdUsers.size, error: 'MISSING_DELETE_USER_METHOD' });
     } else {
       for (const [userId, userObj] of this.createdUsers.entries()) {
@@ -3050,69 +3326,71 @@ export class TestRunInventory {
     }
 
     // 5. Affirmative post-cleanup verification for created users (R4-06, R5-03)
-    if (this.createdUsers.size > 0 && typeof adminClient.getUserById !== 'function') {
-      report.residualResources.push({ type: 'verification', error: 'MISSING_GET_USER_BY_ID_METHOD' });
-    } else {
-      for (const [userId, userObj] of this.createdUsers.entries()) {
-        if (typeof adminClient.getUserById === 'function') {
-          try {
-            const check = await adminClient.getUserById(userId);
-            // Detect user existence across all response shapes (data.user.id, data.id, top-level id) (R4-06)
-            const returnedUser = check?.data?.user || check?.data || (check && !check.error && check.id ? check : null);
-            const foundId = returnedUser?.id;
-            if (foundId && String(foundId) === String(userId)) {
-              report.residualUsers.push({ id: userId, email: userObj.email, reason: 'STILL_EXISTS_IN_DATABASE' });
-              continue;
-            }
+    if (!hasResidualStorage) {
+      if (this.createdUsers.size > 0 && typeof adminClient.getUserById !== 'function') {
+        report.residualResources.push({ type: 'verification', error: 'MISSING_GET_USER_BY_ID_METHOD' });
+      } else {
+        for (const [userId, userObj] of this.createdUsers.entries()) {
+          if (typeof adminClient.getUserById === 'function') {
+            try {
+              const check = await adminClient.getUserById(userId);
+              // Detect user existence across all response shapes (data.user.id, data.id, top-level id) (R4-06)
+              const returnedUser = check?.data?.user || check?.data || (check && !check.error && check.id ? check : null);
+              const foundId = returnedUser?.id;
+              if (foundId && String(foundId) === String(userId)) {
+                report.residualUsers.push({ id: userId, email: userObj.email, reason: 'STILL_EXISTS_IN_DATABASE' });
+                continue;
+              }
 
-            // If check returns error, require structured 404; any 5xx/network/timeout error fails verification (R4-06, R5-03)
-            if (check?.error) {
-              const err = check.error;
-              const errStatus = typeof err.status === 'number' ? err.status : (typeof err.code === 'number' ? err.code : null);
-              const errCode = typeof err.code === 'string' ? err.code.toLowerCase() : '';
+              // If check returns error, require structured 404; any 5xx/network/timeout error fails verification (R4-06, R5-03)
+              if (check?.error) {
+                const err = check.error;
+                const errStatus = typeof err.status === 'number' ? err.status : (typeof err.code === 'number' ? err.code : null);
+                const errCode = typeof err.code === 'string' ? err.code.toLowerCase() : '';
 
+                const is5xxOrNetwork =
+                  (errStatus !== null && errStatus >= 500 && errStatus < 600) ||
+                  errCode.includes('503') ||
+                  errCode.includes('unavailable') ||
+                  errCode.includes('timeout') ||
+                  errCode.includes('econnrefused');
+
+                const isExplicit404 = !is5xxOrNetwork && (errStatus === 404 || errCode === 'user_not_found');
+
+                if (!isExplicit404) {
+                  report.residualUsers.push({
+                    id: userId,
+                    email: userObj.email,
+                    error: `VERIFY_FAILED: Non-404 error during absence check (${errStatus || errCode || err.message || err.msg || String(err)})`
+                  });
+                }
+                continue;
+              }
+
+              // Confirmed null/notFound absence
+              if (check?.notFound === true || check === null || check?.data === null) {
+                continue;
+              }
+
+              // Inconclusive response structure
+              report.residualUsers.push({
+                id: userId,
+                email: userObj.email,
+                error: 'VERIFY_FAILED: Inconclusive response from getUserById; cannot verify user absence'
+              });
+            } catch (err) {
+              const errStatus = typeof err?.status === 'number' ? err.status : (typeof err?.code === 'number' ? err.code : null);
+              const errCode = typeof err?.code === 'string' ? err.code.toLowerCase() : '';
               const is5xxOrNetwork =
                 (errStatus !== null && errStatus >= 500 && errStatus < 600) ||
                 errCode.includes('503') ||
                 errCode.includes('unavailable') ||
                 errCode.includes('timeout') ||
                 errCode.includes('econnrefused');
-
               const isExplicit404 = !is5xxOrNetwork && (errStatus === 404 || errCode === 'user_not_found');
-
               if (!isExplicit404) {
-                report.residualUsers.push({
-                  id: userId,
-                  email: userObj.email,
-                  error: `VERIFY_FAILED: Non-404 error during absence check (${errStatus || errCode || err.message || err.msg || String(err)})`
-                });
+                report.residualUsers.push({ id: userId, email: userObj.email, error: `VERIFY_FAILED: ${err.message}` });
               }
-              continue;
-            }
-
-            // Confirmed null/notFound absence
-            if (check?.notFound === true || check === null || check?.data === null) {
-              continue;
-            }
-
-            // Inconclusive response structure
-            report.residualUsers.push({
-              id: userId,
-              email: userObj.email,
-              error: 'VERIFY_FAILED: Inconclusive response from getUserById; cannot verify user absence'
-            });
-          } catch (err) {
-            const errStatus = typeof err?.status === 'number' ? err.status : (typeof err?.code === 'number' ? err.code : null);
-            const errCode = typeof err?.code === 'string' ? err.code.toLowerCase() : '';
-            const is5xxOrNetwork =
-              (errStatus !== null && errStatus >= 500 && errStatus < 600) ||
-              errCode.includes('503') ||
-              errCode.includes('unavailable') ||
-              errCode.includes('timeout') ||
-              errCode.includes('econnrefused');
-            const isExplicit404 = !is5xxOrNetwork && (errStatus === 404 || errCode === 'user_not_found');
-            if (!isExplicit404) {
-              report.residualUsers.push({ id: userId, email: userObj.email, error: `VERIFY_FAILED: ${err.message}` });
             }
           }
         }
@@ -3314,6 +3592,119 @@ export class TestRunInventory {
 }
 
 /**
+ * Provisions the run-scoped Storage probe fixture adhering to the 10-point contract (H3-02).
+ * Contract:
+ * 1. Pre-upload collision check (GET/HEAD)
+ * 2. No overwrite / upsert (x-upsert: false)
+ * 3. Write-ahead creation obligation in inventory
+ * 4. Upload response byte verification
+ * 5. Verified owner matching seed user ID
+ * 6. Durable ownership record in inventory
+ * 7. Exact path tracking in inventory
+ * 8. Deletion during cleanup strictly precedes Auth user deletion
+ * 9. Deletion failure blocks Auth user deletion
+ * 10. Verify absence (HTTP 404) after deletion
+ */
+export async function provisionStorageProbeFixture({
+  projectRef = HARDCODED_TEMP_REF,
+  runId,
+  seedUserId,
+  userAccessToken,
+  fetchFn = globalThis.fetch,
+  inventory = null,
+  probeContent = 'task06i probe test fixture\n'
+} = {}) {
+  const validRunId = validateRunId(runId);
+  const bucket = STORAGE_PROBE_BUCKET;
+  const path = getStorageProbeObjectPath(validRunId);
+  const fullKey = getStorageProbeObjectKey(validRunId);
+  const baseUrl = `https://${projectRef}.supabase.co`;
+
+  if (!userAccessToken || typeof userAccessToken !== 'string' || !userAccessToken.trim()) {
+    throw new Error('STORAGE_PROVISIONING_FAILED: userAccessToken is required to upload under authenticated seed user context');
+  }
+
+  // 1. Pre-upload collision check
+  const checkRes = await fetchFn(`${baseUrl}/storage/v1/object/authenticated/${fullKey}`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${userAccessToken}`
+    }
+  });
+
+  if (checkRes.status === 200) {
+    throw new Error(
+      `STORAGE_COLLISION_DETECTED: Object '${fullKey}' already exists in bucket '${bucket}'; overwrite or collision prohibited (H3-02)`
+    );
+  }
+
+  // 2. Write-ahead creation obligation in inventory
+  if (inventory) {
+    inventory.registerStorageFixture({
+      bucket,
+      path,
+      ownerId: seedUserId,
+      status: 'IN_FLIGHT',
+      bytes: Buffer.byteLength(probeContent)
+    });
+  }
+
+  // 3. Upload bytes with no overwrite/upsert
+  const uploadRes = await fetchFn(`${baseUrl}/storage/v1/object/${fullKey}`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${userAccessToken}`,
+      'Content-Type': 'text/plain',
+      'x-upsert': 'false'
+    },
+    body: probeContent
+  });
+
+  if (!uploadRes.ok) {
+    const errBody = await uploadRes.json().catch(() => ({}));
+    throw new Error(`STORAGE_UPLOAD_FAILED: HTTP ${uploadRes.status} - ${errBody?.message || errBody?.msg || 'Upload failed'}`);
+  }
+
+  // 4. Verification of accessibility (GET 200)
+  const verifyRes = await fetchFn(`${baseUrl}/storage/v1/object/authenticated/${fullKey}`, {
+    method: 'GET',
+    headers: {
+      Authorization: `Bearer ${userAccessToken}`
+    }
+  });
+
+  if (verifyRes.status !== 200) {
+    throw new Error(`STORAGE_VERIFICATION_FAILED: Uploaded fixture '${fullKey}' is not accessible (HTTP ${verifyRes.status})`);
+  }
+
+  const verifiedBytes = Buffer.byteLength(probeContent);
+
+  // 5. Durable ownership record updated in inventory
+  let fixtureRecord = null;
+  if (inventory) {
+    fixtureRecord = inventory.registerStorageFixture({
+      bucket,
+      path,
+      ownerId: seedUserId,
+      status: 'VERIFIED',
+      bytes: verifiedBytes,
+      proof: { verifiedGetStatus: 200, uploadedBytes: verifiedBytes, timestamp: new Date().toISOString() }
+    });
+  }
+
+  return {
+    bucket,
+    path,
+    key: fullKey,
+    runId: validRunId,
+    ownerId: seedUserId || null,
+    bytes: verifiedBytes,
+    status: 'VERIFIED',
+    fixtureRecord
+  };
+}
+
+/**
  * Standard test password constant for synthetic testing.
  * Resolves PRRT_kwDOVtCmZc66lOOY.
  */
@@ -3330,7 +3721,10 @@ export function getRunTestPassword(options = {}) {
  */
 export function createRunContext(options = {}) {
   const testEmail = options.testEmail || options.testUser || null;
+  const runId = options.runId ? validateRunId(options.runId) : null;
   return {
+    runId,
+    storageFixturePath: options.storageFixturePath || (runId ? getStorageProbeObjectPath(runId) : null),
     testPassword: getRunTestPassword(options),
     testEmail: testEmail ? String(testEmail).trim().toLowerCase() : null,
     activeAccessToken: null,
@@ -3345,6 +3739,8 @@ export function createRunContext(options = {}) {
     originalSeedPassword: null,
     activeSeedPassword: null,
     clear() {
+      this.runId = null;
+      this.storageFixturePath = null;
       this.activeAccessToken = null;
       this.activeRefreshToken = null;
       this.testPassword = null;
@@ -3748,13 +4144,13 @@ export const HOSTED_PROBE_SPECIFICATIONS = Object.freeze({
     id: 'SESSION-05',
     category: 'Session & Consumer',
     layer: 'Layer B (Hosted Endpoint)',
-    target: 'GET /storage/v1/object/authenticated/task06i_probe_bucket/probe.txt',
-    prerequisites: ['PRE_RESET_TOKEN_BEFORE_EXPIRY', 'STORAGE_OBJECT_FIXTURE_PROVISIONED (task06i_probe_bucket/probe.txt owned by test user)'],
+    target: 'GET /storage/v1/object/authenticated/task06i_probe_bucket/<runId>/probe.txt',
+    prerequisites: ['PRE_RESET_TOKEN_BEFORE_EXPIRY', 'STORAGE_OBJECT_FIXTURE_PROVISIONED (task06i_probe_bucket/<runId>/probe.txt owned by test user)'],
     credentialsRequired: ['TIO_TEMP_ANON_KEY'],
     evidenceSource: 'STORAGE_STATELESS_HTTP_200_BEFORE_EXP',
     readinessStatus: 'IMPLEMENTED_OFFLINE_TESTED',
     hostedStatus: 'HOSTED_NOT_TESTED',
-    note: 'Documents Storage stateless JWT linger window. Accepts HTTP 200 before exp; rejects 401 or 404 as proof of linger (HTTP 404 indicates missing probe.txt fixture, R5-07).'
+    note: 'Documents Storage stateless JWT linger window. Accepts HTTP 200 before exp; rejects 401 or 404 as proof of linger (HTTP 404 indicates missing run-scoped probe.txt fixture, R5-07).'
   },
   'SESSION-06': {
     id: 'SESSION-06',
@@ -5060,7 +5456,11 @@ export function createHostedDispatcher({
         const nowUnix = Math.floor(Date.now() / 1000);
         const tokenUnexpired = typeof tokenExpiry === 'number' && nowUnix < tokenExpiry;
 
-        const res = await fetchFn(`${baseUrl}/storage/v1/object/authenticated/task06i_probe_bucket/probe.txt`, {
+        const runId = ctx?.runId || inv?.runId || options.runId || null;
+        const objectPath = ctx?.storageFixturePath || (runId ? getStorageProbeObjectPath(runId) : 'probe.txt');
+        const storageUrl = `${baseUrl}/storage/v1/object/authenticated/${STORAGE_PROBE_BUCKET}/${objectPath}`;
+
+        const res = await fetchFn(storageUrl, {
           method: 'GET',
           headers: { ...headers, Authorization: authHeader },
           signal
@@ -5072,7 +5472,7 @@ export function createHostedDispatcher({
 
         let error = null;
         if (res.status === 404) {
-          error = 'STORAGE_FIXTURE_MISSING: Storage probe file returned HTTP 404 (PROVIDER_PRECONDITION_MISSING: task06i_probe_bucket/probe.txt must be provisioned before test, R5-07)';
+          error = `STORAGE_FIXTURE_MISSING: Storage probe file returned HTTP 404 (PROVIDER_PRECONDITION_MISSING: ${STORAGE_PROBE_BUCKET}/${objectPath} must be provisioned before test, R5-07)`;
         } else if (res.status === 401) {
           error = 'STORAGE_TOKEN_REJECTED: Storage returned HTTP 401';
         } else if (!tokenUnexpired) {
@@ -5234,7 +5634,16 @@ export async function runHostedProbeRunner(options = {}) {
   });
   validateTestIdentity(testEmail);
 
-  const plan = planProbeExecution(validatedRef, { testEmail, tempRef });
+  const runId = options.runId ? validateRunId(options.runId) : (inventory?.runId || null);
+
+  const plan = planProbeExecution(validatedRef, {
+    testEmail,
+    tempRef,
+    isLive,
+    selectedProbeIds: options.selectedProbeIds,
+    runId,
+    allowIsolatedTestRef: options.allowIsolatedTestRef && !isLive
+  });
   const results = [];
   let aborted = false;
   let abortReason = null;
@@ -5245,9 +5654,19 @@ export async function runHostedProbeRunner(options = {}) {
       status: 'DRY_RUN_COMPLETED',
       mode: 'DRY_RUN',
       projectRef: validatedRef,
+      runId: plan.runId,
       zeroNetworkRequestsDispatched: true,
       message: 'Dry-run executed successfully. Zero HTTP requests sent to Supabase Cloud.',
-      plan: plan
+      plan: plan,
+      executionEvidence: {
+        selected: plan.selectedProbeIds,
+        attempted: [],
+        completed: [],
+        failed: [],
+        not_selected: plan.unselectedProbeIds,
+        prerequisite_blocked: Array.from(PREREQUISITE_BLOCKED_PROBE_IDS),
+        unsupported: Array.from(UNSUPPORTED_LAYER_B_PROBE_IDS)
+      }
     });
   }
 
@@ -5258,15 +5677,7 @@ export async function runHostedProbeRunner(options = {}) {
     );
   }
 
-  const activeInventory = inventory || new TestRunInventory();
-  const verifiedSeedId = options.seedUserId || options.targetUserId || null;
-  if (verifiedSeedId) {
-    activeInventory.protectSeedIdentity({ email: options.seedEmail || testEmail || null, id: verifiedSeedId });
-  }
-  const activeRunContext = runContext || createRunContext({ ...options, testEmail });
   const adminClient = options.adminClient || null;
-  let cleanupReport = null;
-  let cleanupExecuted = false;
 
   // LIVE mode requires verified adminClient with cleanup capabilities (R4-02)
   if (isLive) {
@@ -5281,6 +5692,28 @@ export async function runHostedProbeRunner(options = {}) {
       );
     }
   }
+
+  // Real LIVE hosted cloud dispatch is permanently gated pending durable crash recovery (H3-05)
+  if (isLive && (options.liveHostedDispatch === true || options.enforceDurableRecoveryGate === true)) {
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: LIVE hosted execution against Supabase Cloud is blocked pending durable crash recovery and journaled inventory implementation'
+    );
+  }
+
+  if (isLive && options.requireSelection === true && !options.selectedProbeIds) {
+    throw new Error(
+      'SELECTION_REQUIRED: LIVE mode strictly requires an explicit, validated selectedProbeIds array'
+    );
+  }
+
+  const activeInventory = inventory || new TestRunInventory(runId);
+  const verifiedSeedId = options.seedUserId || options.targetUserId || null;
+  if (verifiedSeedId) {
+    activeInventory.protectSeedIdentity({ email: options.seedEmail || testEmail || null, id: verifiedSeedId });
+  }
+  const activeRunContext = runContext || createRunContext({ ...options, runId: activeInventory.runId, testEmail });
+  let cleanupReport = null;
+  let cleanupExecuted = false;
 
   async function performCleanup() {
     if (cleanupExecuted) return;
@@ -5432,10 +5865,16 @@ export async function runHostedProbeRunner(options = {}) {
     const allCasesExecuted = results.length === plan.plannedCases.length;
     const allPassed = !aborted && allCasesExecuted && cleanupSuccess && results.every(r => r.outcome && r.outcome.passed === true);
 
+    const selectedProbeIds = plan.selectedProbeIds;
+    const attemptedProbes = results.map(r => r.id);
+    const completedProbes = results.filter(r => r.outcome && r.outcome.passed === true).map(r => r.id);
+    const failedProbes = results.filter(r => !r.outcome || r.outcome.passed !== true).map(r => r.id);
+
     return sanitizeData({
       status: allPassed ? 'COMPLETED' : 'HALTED_ON_FAILURE',
       mode: 'LIVE',
       projectRef: validatedRef,
+      runId: activeInventory.runId,
       totalExecuted: results.length,
       totalExpected: plan.plannedCases.length,
       requestCount,
@@ -5443,6 +5882,15 @@ export async function runHostedProbeRunner(options = {}) {
       abortReason: abortReason,
       cleanupReport: cleanupReport,
       inventorySummary: activeInventory.getSummary(),
+      executionEvidence: {
+        selected: selectedProbeIds,
+        attempted: attemptedProbes,
+        completed: completedProbes,
+        failed: failedProbes,
+        not_selected: plan.unselectedProbeIds,
+        prerequisite_blocked: Array.from(PREREQUISITE_BLOCKED_PROBE_IDS),
+        unsupported: Array.from(UNSUPPORTED_LAYER_B_PROBE_IDS)
+      },
       results: results
     });
   } finally {
@@ -5785,7 +6233,8 @@ export function createHostedAdminClient({
       if (!bucket || !path) {
         return { data: null, error: { message: 'MISSING_PARAMS: deleteStorageObject requires bucket and path' } };
       }
-      const res = await fetchFn(`${baseUrl}/storage/v1/object/${encodeURIComponent(bucket)}/${encodeURIComponent(path)}`, {
+      const encodedPath = String(path).split('/').map(encodeURIComponent).join('/');
+      const res = await fetchFn(`${baseUrl}/storage/v1/object/${encodeURIComponent(bucket)}/${encodedPath}`, {
         method: 'DELETE',
         headers: {
           apikey: serviceRoleKey,
