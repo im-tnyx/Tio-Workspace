@@ -737,15 +737,19 @@ git diff --check origin/main...HEAD
 
 ---
 
-## 9. GitHub CI Status
+## 9. GitHub CI Status & PR Merge
 
-- **Status:** **5/5 CHECKS PASS** on remote commit `237964d7c1fdf9d3c2dbf3391c7d59cae498744c`:
+- **Status:** **5/5 CHECKS PASS** on remote commit `131589d57b02598ae0e3f07e2e83ad53c70a37da` (R17):
   1. `Attribution guard runner`: **PASS**
   2. `Commit attribution fixture tests`: **PASS**
   3. `Commit attribution guard` (App-owned required check ID `5032971`): **PASS**
   4. `PostgreSQL parity`: **PASS**
   5. `Task 06I Security Contract Tests`: **PASS**
-- All required checks execute and succeed on GitHub Actions infrastructure.
+- **Independent Review:** **APPROVED** by `im-tio` on exact approved HEAD `131589d57b02598ae0e3f07e2e83ad53c70a37da` (2026-11-24T07:51:10Z).
+- **Review Threads:** All 62 historical review threads verified resolved (0 open threads).
+- **Merge Execution:** PR #37 authorized by repository owner and squash-merged into `main` at `cd4ce0ac16953af23b5feb30dc48a102ae6d8f48`.
+- **Post-Merge CI:** All push workflows on `main` succeeded (Post-merge attribution audit, Fixture tests, PostgreSQL parity, Security experiment checks).
+- **Branch Cleanup:** Local branch `test/task06i-b1-h1-hosted-security-preflight` and remote tracking branch deleted safely.
 
 ---
 
@@ -761,12 +765,13 @@ git diff --check origin/main...HEAD
   - Project deletion perform nahi hua hai.
 
 **Readiness State:**
-- **Code readiness:** READY (Revision R17)
-- **GitHub CI:** PASS (5/5 on remote HEAD `237964d`)
-- **Independent review:** PENDING (`chatgpt-codex-connector`, `im-tio`)
-- **Hosted testing:** NOT_AUTHORIZED
+- **Code readiness:** COMPLETED & MERGED (Revision R17 via PR #37)
+- **GitHub CI:** PASS (5/5 on approved HEAD `131589d`, 4/4 post-merge on `main` `cd4ce0a`)
+- **Independent review:** APPROVED (`im-tio`)
+- **PR Status:** MERGED (`cd4ce0ac16953af23b5feb30dc48a102ae6d8f48`)
+- **Hosted testing:** NOT_AUTHORIZED (0/18 hosted probes executed)
 - **Production Auth:** STRICT NO-GO
 
-**Decision:** **`BLOCKED_PENDING_ADDITIONAL_PREPARATION`**
+**Decision:** **`COMPLETED_OFFLINE_PREPARATION`** (Transitioned to Task 06I-B1-H2)
 
-> **Important:** Production Real Auth remains **STRICT NO-GO**. Local remediation for all outstanding review findings (`PRRT_kwDOVtCmZc67OhSH`, `PRRT_kwDOVtCmZc67OhSN`, `PRRT_kwDOVtCmZc67O5WW`) is complete and fully covered by offline regression tests (93/93 runner tests, 161/161 task06i tests pass). Decision remains strictly `BLOCKED_PENDING_ADDITIONAL_PREPARATION` because hosted preconditions (Management API PATCH, SQL hook installation, Edge Function deployment) require explicit owner authorization before any live execution. Awaiting independent re-review.
+> **Important:** Production Real Auth remains **STRICT NO-GO**. Task 06I-B1-H1 offline security preparation, probe runner hardening, and preflight audit are completed and merged into `main`. Hosted verification remains 0/18 and LIVE execution is strictly not authorized without separate, explicit owner authorization.
