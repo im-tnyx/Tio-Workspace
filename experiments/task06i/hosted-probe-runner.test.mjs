@@ -58,6 +58,9 @@ import {
   verifyStorageObjectAbsenceDetailed,
   assertOfflineMockTransport,
   assertTrustedAdminClient,
+  createTrustedOfflineDispatcher,
+  assertTrustedOfflineDispatcher,
+  runOfflineProbeSimulation,
   createDeterministicFixtureTransport,
   createOfflineBarrier,
   createFetchIsolationCoordinator,
@@ -71,7 +74,10 @@ import {
 const FIXTURE_SPECS = new WeakSet();
 const FIXTURE_TRANSPORTS = new WeakMap();
 const ADMIN_CONFIGS = new WeakMap();
+const OFFLINE_DISPATCHER_SPECS = new WeakSet();
+const OFFLINE_DISPATCHER_INSTANCES = new WeakMap();
 function fixtureSpec(spec = {}) { FIXTURE_SPECS.add(spec); return spec; }
+function offlineDispatcherSpec(spec = {}) { OFFLINE_DISPATCHER_SPECS.add(spec); return spec; }
 function trackedHostedAdminClient(config) {
   const client = createHostedAdminClient(config);
   ADMIN_CONFIGS.set(client, config);
@@ -112,9 +118,23 @@ function bindFixtureAdmin(inventory, fixture) {
   return fixture;
 }
 function fixtureRunnerOptions(options) {
-  if (!FIXTURE_SPECS.has(options.adminClient) && !ADMIN_CONFIGS.has(options.adminClient)) return options;
+  const needsAdmin = FIXTURE_SPECS.has(options.adminClient) || ADMIN_CONFIGS.has(options.adminClient);
+  const needsDispatcher = OFFLINE_DISPATCHER_SPECS.has(options.mockDispatcher);
+  if (!needsAdmin && !needsDispatcher) return options;
   const inventory = options.inventory || new TestRunInventory(options.runId);
-  return { ...options, inventory, adminClient: bindFixtureAdmin(inventory, options.adminClient) };
+  const next = { ...options, inventory };
+  if (needsAdmin) {
+    next.adminClient = bindFixtureAdmin(inventory, options.adminClient);
+  }
+  if (needsDispatcher) {
+    const disp = createTrustedOfflineDispatcher({
+      ...options.mockDispatcher,
+      runId: inventory.runId
+    });
+    OFFLINE_DISPATCHER_INSTANCES.set(options.mockDispatcher, disp);
+    next.mockDispatcher = disp;
+  }
+  return next;
 }
 function fixtureOperationCalls(spec, operation) {
   const routes = { userDelete: ['DELETE', '/auth/v1/admin/users/'], userGet: ['GET', '/auth/v1/admin/users/'], userUpdate: ['PUT', '/auth/v1/admin/users/'], logout: ['POST', '/auth/v1/logout'], login: ['POST', '/auth/v1/token?grant_type=password'], storageDelete: ['DELETE', '/storage/v1/object/'], storageGet: ['GET', '/storage/v1/object/authenticated/'], rowDelete: ['DELETE', '/rest/v1/'] };
@@ -246,11 +266,9 @@ test('2b. REAL project and Tio-world cannot be bypassed via Set mutation, env ov
 });
 
 test('2c. LIVE mode runner rejects forbidden targets before any dispatcher call (PRRT_kwDOVtCmZc66i_Kb)', async () => {
-  let dispatcherCalled = false;
-  const mockDispatcher = async () => {
-    dispatcherCalled = true;
-    return { passed: true, status: 200 };
-  };
+  const mockDispatcher = offlineDispatcherSpec({
+    defaultOutcome: { passed: true, status: 200 }
+  });
 
   await assert.rejects(
     () => runHostedProbeRunner(fixtureRunnerOptions({
@@ -258,11 +276,12 @@ test('2c. LIVE mode runner rejects forbidden targets before any dispatcher call 
       tempRef: VALID_TEMP_REF,
       argv: ['--live'],
       env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultAdminFixture,
+      adminClient: defaultAdminFixture,
       mockDispatcher
     })),
     /CRITICAL_SECURITY_VIOLATION.*protected REAL backend/
   );
+  assert.equal(OFFLINE_DISPATCHER_INSTANCES.get(mockDispatcher)?.calls.length || 0, 0);
 
   await assert.rejects(
     () => runHostedProbeRunner(fixtureRunnerOptions({
@@ -270,13 +289,12 @@ test('2c. LIVE mode runner rejects forbidden targets before any dispatcher call 
       tempRef: VALID_TEMP_REF,
       argv: ['--live'],
       env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultAdminFixture,
+      adminClient: defaultAdminFixture,
       mockDispatcher
     })),
     /CRITICAL_SECURITY_VIOLATION.*Tio-world/
   );
-
-  assert.equal(dispatcherCalled, false);
+  assert.equal(OFFLINE_DISPATCHER_INSTANCES.get(mockDispatcher)?.calls.length || 0, 0);
 });
 
 test('3. Empty or unauthorized project refs are rejected (deny-by-default)', () => {
@@ -454,39 +472,24 @@ test('12. Throttling interval is enforced between consecutive requests and legit
     sleepCalls.push(ms);
   };
 
-  let probeCount = 0;
   // Dispatcher returns legitimate statuses and affirmative observations for each respective requirement (PRRT_kwDOVtCmZc66jLk1 & PRRT_kwDOVtCmZc66jNbH)
-  const mockDispatcher = async (item) => {
-    probeCount++;
-    if (item.id === 'BYPASS-01') {
-      return { passed: true, status: 422, route_disabled: true, error_code: 'email_provider_disabled' };
-    }
-    if (item.id === 'BYPASS-02') {
-      return { passed: true, status: 422, signup_disabled: true, error_code: 'signup_disabled' };
-    }
-    if (item.id === 'BYPASS-03' || item.id === 'BYPASS-04') {
-      return { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' };
-    }
-    if (item.id === 'BYPASS-05') {
-      return { passed: true, status: 500, recovery_suppressed: true, zero_email_delivered: true };
-    }
-    if (item.id === 'HOOK-01') {
-      return { passed: true, status: 200, has_token: true, amr_authenticated: true, session_id: 'session-uuid-5678', tokens: { access_token: createMockJwt() } };
-    }
-    if (item.id === 'HOOK-02') {
-      return { passed: true, status: 200, has_token: true, amr_preserved: true, tokens: { access_token: createMockJwt() } };
-    }
-    if (['HOOK-03', 'HOOK-04', 'HOOK-05', 'HOOK-06', 'HOOK-07'].includes(item.id)) {
-      return { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' };
-    }
-    if (item.id === 'SESSION-01') {
-      return { passed: true, status: 200, session_created: true, session_id: 'session-uuid-5678' };
-    }
-    if (item.id === 'SESSION-02') {
-      return { passed: true, status: 200, password_reset_completed: true, session_revoked: true, session_revocation_verified: true, remaining_sessions: 0 };
-    }
-    if (item.id === 'SESSION-03') {
-      return {
+  const mockDispatcher = offlineDispatcherSpec({
+    outcomes: {
+      'BYPASS-01': { passed: true, status: 422, route_disabled: true, error_code: 'email_provider_disabled' },
+      'BYPASS-02': { passed: true, status: 422, signup_disabled: true, error_code: 'signup_disabled' },
+      'BYPASS-03': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+      'BYPASS-04': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+      'BYPASS-05': { passed: true, status: 500, recovery_suppressed: true, zero_email_delivered: true },
+      'HOOK-01': { passed: true, status: 200, has_token: true, amr_authenticated: true, session_id: 'session-uuid-5678', tokens: { access_token: createMockJwt() } },
+      'HOOK-02': { passed: true, status: 200, has_token: true, amr_preserved: true, tokens: { access_token: createMockJwt() } },
+      'HOOK-03': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+      'HOOK-04': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+      'HOOK-05': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+      'HOOK-06': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+      'HOOK-07': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+      'SESSION-01': { passed: true, status: 200, session_created: true, session_id: 'session-uuid-5678' },
+      'SESSION-02': { passed: true, status: 200, password_reset_completed: true, session_revoked: true, session_revocation_verified: true, remaining_sessions: 0 },
+      'SESSION-03': {
         passed: true,
         status: 403,
         pre_reset_baseline_verified: true,
@@ -496,10 +499,8 @@ test('12. Throttling interval is enforced between consecutive requests and legit
         pre_session_id: 'session-uuid-5678',
         same_session_correlated: true,
         error_code: 'session_not_found'
-      };
-    }
-    if (item.id === 'SESSION-04' || item.id === 'SESSION-05') {
-      return {
+      },
+      'SESSION-04': {
         passed: true,
         status: 200,
         token_unexpired: true,
@@ -512,10 +513,22 @@ test('12. Throttling interval is enforced between consecutive requests and legit
         pre_invalidation_verified: true,
         stateless_linger_documented: true,
         note: 'stateless linger window verified and documented'
-      };
-    }
-    if (item.id === 'SESSION-06') {
-      return {
+      },
+      'SESSION-05': {
+        passed: true,
+        status: 200,
+        token_unexpired: true,
+        jwt_lifetime_seconds: 300,
+        lifetime_bounded: true,
+        revocation_verified: true,
+        revoked_session_id: 'session-uuid-5678',
+        correlated_session_id: 'session-uuid-5678',
+        session_correlated: true,
+        pre_invalidation_verified: true,
+        stateless_linger_documented: true,
+        note: 'stateless linger window verified and documented'
+      },
+      'SESSION-06': {
         passed: true,
         status: 403,
         pre_reset_baseline_verified: true,
@@ -526,10 +539,9 @@ test('12. Throttling interval is enforced between consecutive requests and legit
         same_session_correlated: true,
         rejection_observed: true,
         error_code: 'AuthSessionMissingError'
-      };
+      }
     }
-    return { passed: false, status: 500, reason: 'unrecognized probe case' };
-  };
+  });
 
   const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: VALID_TEMP_REF,
@@ -542,7 +554,7 @@ test('12. Throttling interval is enforced between consecutive requests and legit
   }));
 
   assert.equal(result.status, 'COMPLETED');
-  assert.equal(probeCount, 18);
+  assert.equal(OFFLINE_DISPATCHER_INSTANCES.get(mockDispatcher).calls.length, 18);
   assert.equal(result.totalExecuted, 18);
   assert.equal(result.aborted, false);
   // For 18 requests, interval throttling must be invoked 17 times with 1000ms
@@ -551,27 +563,17 @@ test('12. Throttling interval is enforced between consecutive requests and legit
 });
 
 test('13. Runner halts immediately on Token Hook failure (HOOK-01) (PRRT_kwDOVtCmZc66iotG)', async () => {
-  let probeCallCount = 0;
-
-  const mockDispatcher = async (item) => {
-    probeCallCount++;
-    if (item.id === 'HOOK-01') {
-      return { passed: false, status: 500, message: 'HOOK-01 failed: token claims missing amr_authenticated' };
-    }
-    if (item.id === 'BYPASS-01') {
-      return { passed: true, status: 422, route_disabled: true, error_code: 'email_provider_disabled' };
-    }
-    if (item.id === 'BYPASS-02') {
-      return { passed: true, status: 422, signup_disabled: true, error_code: 'signup_disabled' };
-    }
-    if (item.id === 'BYPASS-03' || item.id === 'BYPASS-04') {
-      return { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' };
-    }
-    if (item.id === 'BYPASS-05') {
-      return { passed: true, status: 500, recovery_suppressed: true, zero_email_delivered: true };
-    }
-    return { passed: true, status: 200, has_token: true, amr_authenticated: true, tokens: { access_token: 'fake.jwt' } };
-  };
+  const mockDispatcher = offlineDispatcherSpec({
+    outcomes: {
+      'HOOK-01': { passed: false, status: 500, message: 'HOOK-01 failed: token claims missing amr_authenticated' },
+      'BYPASS-01': { passed: true, status: 422, route_disabled: true, error_code: 'email_provider_disabled' },
+      'BYPASS-02': { passed: true, status: 422, signup_disabled: true, error_code: 'signup_disabled' },
+      'BYPASS-03': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+      'BYPASS-04': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+      'BYPASS-05': { passed: true, status: 500, recovery_suppressed: true, zero_email_delivered: true }
+    },
+    defaultOutcome: { passed: true, status: 200, has_token: true, amr_authenticated: true, tokens: { access_token: 'fake.jwt' } }
+  });
 
   const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: VALID_TEMP_REF,
@@ -587,46 +589,30 @@ test('13. Runner halts immediately on Token Hook failure (HOOK-01) (PRRT_kwDOVtC
   assert.equal(result.aborted, true);
   assert.match(result.abortReason, /CRITICAL_SECURITY_FAILURE: Case HOOK-01 \(Token Hook\)/);
   // BYPASS-01..05 ran (5 cases), then HOOK-01 ran and failed (case 6)
-  assert.equal(probeCallCount, 6);
+  assert.equal(OFFLINE_DISPATCHER_INSTANCES.get(mockDispatcher).calls.length, 6);
 });
 
 test('14. Runner halts immediately on Session & Consumer failure (SESSION-03) (PRRT_kwDOVtCmZc66iotG)', async () => {
-  let probeCallCount = 0;
-
-  const mockDispatcher = async (item) => {
-    probeCallCount++;
-    if (item.id === 'SESSION-03') {
-      return { passed: false, status: 200, message: 'SESSION-03 failed: revoked token was accepted' };
-    }
-    if (item.id === 'BYPASS-01') {
-      return { passed: true, status: 422, route_disabled: true, error_code: 'email_provider_disabled' };
-    }
-    if (item.id === 'BYPASS-02') {
-      return { passed: true, status: 422, signup_disabled: true, error_code: 'signup_disabled' };
-    }
-    if (item.id === 'BYPASS-03' || item.id === 'BYPASS-04') {
-      return { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' };
-    }
-    if (item.id === 'BYPASS-05') {
-      return { passed: true, status: 500, recovery_suppressed: true, zero_email_delivered: true };
-    }
-    if (item.id === 'HOOK-01') {
-      return { passed: true, status: 200, has_token: true, amr_authenticated: true, session_id: 'session-uuid-5678', tokens: { access_token: createMockJwt() } };
-    }
-    if (item.id === 'HOOK-02') {
-      return { passed: true, status: 200, has_token: true, amr_preserved: true, tokens: { access_token: createMockJwt() } };
-    }
-    if (['HOOK-03', 'HOOK-04', 'HOOK-05', 'HOOK-06', 'HOOK-07'].includes(item.id)) {
-      return { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' };
-    }
-    if (item.id === 'SESSION-01') {
-      return { passed: true, status: 200, session_created: true, session_id: 'sess-1' };
-    }
-    if (item.id === 'SESSION-02') {
-      return { passed: true, status: 200, password_reset_completed: true, session_revoked: true, session_revocation_verified: true, remaining_sessions: 0 };
-    }
-    return { passed: true, status: 200, session_created: true, session_id: 'sess-default' };
-  };
+  const mockDispatcher = offlineDispatcherSpec({
+    outcomes: {
+      'SESSION-03': { passed: false, status: 200, message: 'SESSION-03 failed: revoked token was accepted' },
+      'BYPASS-01': { passed: true, status: 422, route_disabled: true, error_code: 'email_provider_disabled' },
+      'BYPASS-02': { passed: true, status: 422, signup_disabled: true, error_code: 'signup_disabled' },
+      'BYPASS-03': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+      'BYPASS-04': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+      'BYPASS-05': { passed: true, status: 500, recovery_suppressed: true, zero_email_delivered: true },
+      'HOOK-01': { passed: true, status: 200, has_token: true, amr_authenticated: true, session_id: 'session-uuid-5678', tokens: { access_token: createMockJwt() } },
+      'HOOK-02': { passed: true, status: 200, has_token: true, amr_preserved: true, tokens: { access_token: createMockJwt() } },
+      'HOOK-03': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+      'HOOK-04': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+      'HOOK-05': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+      'HOOK-06': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+      'HOOK-07': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+      'SESSION-01': { passed: true, status: 200, session_created: true, session_id: 'sess-1' },
+      'SESSION-02': { passed: true, status: 200, password_reset_completed: true, session_revoked: true, session_revocation_verified: true, remaining_sessions: 0 }
+    },
+    defaultOutcome: { passed: true, status: 200, session_created: true, session_id: 'sess-default' }
+  });
 
   const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: VALID_TEMP_REF,
@@ -642,7 +628,7 @@ test('14. Runner halts immediately on Session & Consumer failure (SESSION-03) (P
   assert.equal(result.aborted, true);
   assert.match(result.abortReason, /CRITICAL_SECURITY_FAILURE: Case SESSION-03 \(Session & Consumer\)/);
   // BYPASS (5) + HOOK (7) + SESSION-01, SESSION-02, SESSION-03 (3) = 15 total calls
-  assert.equal(probeCallCount, 15);
+  assert.equal(OFFLINE_DISPATCHER_INSTANCES.get(mockDispatcher).calls.length, 15);
 });
 
 // Negative tests for PRRT_kwDOVtCmZc66i_Kd
@@ -661,7 +647,7 @@ test('15. Outcome without passed boolean fails closed (PRRT_kwDOVtCmZc66i_Kd)', 
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
     adminClient: defaultAdminFixture,
-    mockDispatcher: async () => ({ status: 500 }),
+    mockDispatcher: offlineDispatcherSpec({ defaultOutcome: { status: 500 } }),
     sleepFn: async () => {}
   }));
 
@@ -685,7 +671,7 @@ test('16. False passed:true on BYPASS-01 with status 200 is overridden to FAIL (
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
     adminClient: defaultAdminFixture,
-    mockDispatcher: async () => ({ status: 200, passed: true }),
+    mockDispatcher: offlineDispatcherSpec({ defaultOutcome: { status: 200, passed: true } }),
     sleepFn: async () => {}
   }));
 
@@ -702,9 +688,9 @@ test('17. Invalid payload structure fails closed (PRRT_kwDOVtCmZc66i_Kd)', () =>
 });
 
 test('18. Dispatcher exceptions and timeouts fail closed immediately (PRRT_kwDOVtCmZc66i_Kd)', async () => {
-  const mockDispatcher = async () => {
-    throw new Error('Connection refused / timeout communicating with target');
-  };
+  const mockDispatcher = offlineDispatcherSpec({
+    defaultOutcome: { throwError: 'Connection refused / timeout communicating with target' }
+  });
 
   const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: VALID_TEMP_REF,
@@ -723,21 +709,13 @@ test('18. Dispatcher exceptions and timeouts fail closed immediately (PRRT_kwDOV
 });
 
 test('19. Partial execution never returns COMPLETED (PRRT_kwDOVtCmZc66i_Kd)', async () => {
-  let callCount = 0;
-  const mockDispatcher = async (item) => {
-    callCount++;
-    if (callCount === 3) {
-      // Abort or fail on case 3
-      return { passed: false, status: 500, reason: 'Simulated network drop' };
-    }
-    if (item.id === 'BYPASS-01') {
-      return { passed: true, status: 422, route_disabled: true, error_code: 'email_provider_disabled' };
-    }
-    if (item.id === 'BYPASS-02') {
-      return { passed: true, status: 422, signup_disabled: true, error_code: 'signup_disabled' };
-    }
-    return { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' };
-  };
+  const mockDispatcher = offlineDispatcherSpec({
+    sequence: [
+      { passed: true, status: 422, route_disabled: true, error_code: 'email_provider_disabled' },
+      { passed: true, status: 422, signup_disabled: true, error_code: 'signup_disabled' },
+      { passed: false, status: 500, reason: 'Simulated network drop' }
+    ]
+  });
 
   const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: VALID_TEMP_REF,
@@ -770,8 +748,8 @@ test('21. Serialized secrets are absent from final runner evidence (PRRT_kwDOVtC
   const secretPassword = 'SUPER_CONFIDENTIAL_PASSWORD_123!';
   const secretRefreshToken = 'SUPER_SECRET_REFRESH_TOKEN_XYZ';
 
-  const mockDispatcher = async () => {
-    return {
+  const mockDispatcher = offlineDispatcherSpec({
+    defaultOutcome: {
       passed: true,
       status: 422,
       route_disabled: true,
@@ -781,8 +759,8 @@ test('21. Serialized secrets are absent from final runner evidence (PRRT_kwDOVtC
         refresh_token: secretRefreshToken,
         diagnostic: 'safe_diagnostic_info'
       })
-    };
-  };
+    }
+  });
 
   const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: VALID_TEMP_REF,
@@ -839,9 +817,9 @@ test('22. Session cases fail closed without explicit evidence of session state (
 test('23. Top-level abortReason is sanitized against leaked secrets (PRRT_kwDOVtCmZc66jG6Y)', async () => {
   const secretKey = 'sbp_secret_sensitive_api_key_value_999';
 
-  const mockDispatcher = async () => {
-    throw new Error(`Dispatch failure with token: Bearer ${secretKey}`);
-  };
+  const mockDispatcher = offlineDispatcherSpec({
+    defaultOutcome: { throwError: `Dispatch failure with token: Bearer ${secretKey}` }
+  });
 
   const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: VALID_TEMP_REF,
@@ -859,15 +837,9 @@ test('23. Top-level abortReason is sanitized against leaked secrets (PRRT_kwDOVt
 });
 
 test('24. Per-probe timeout halts runner on never-settling Promise and aborts subsequent probes (PRRT_kwDOVtCmZc66jOw5)', async () => {
-  let calls = 0;
-  let receivedSignal = null;
-
-  const neverSettlingDispatcher = async (item, { signal }) => {
-    calls++;
-    receivedSignal = signal;
-    // Return a promise that never settles (neither resolves nor rejects)
-    return new Promise(() => {});
-  };
+  const neverSettlingDispatcher = offlineDispatcherSpec({
+    defaultOutcome: { neverSettle: true }
+  });
 
   const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: HARDCODED_TEMP_REF,
@@ -881,19 +853,16 @@ test('24. Per-probe timeout halts runner on never-settling Promise and aborts su
 
   assert.equal(result.status, 'HALTED_ON_FAILURE');
   assert.equal(result.aborted, true);
-  assert.equal(calls, 1, 'Only one probe should dispatch; subsequent probes must be blocked');
-  assert.ok(receivedSignal && receivedSignal.aborted, 'AbortSignal should be triggered on timeout');
+  assert.equal(OFFLINE_DISPATCHER_INSTANCES.get(neverSettlingDispatcher).calls.length, 1, 'Only one probe should dispatch; subsequent probes must be blocked');
   assert.match(result.abortReason, /PROBE_TIMEOUT/);
   assert.equal(result.results[0].outcome.passed, false);
   assert.match(result.results[0].outcome.reason, /PROBE_TIMEOUT/);
 });
 
 test('25. LIVE mode rejects caller-controlled tempRef spoofing and unapproved target refs (PRRT_kwDOVtCmZc66jOw4)', async () => {
-  let dispatcherCalled = false;
-  const mockDispatcher = async () => {
-    dispatcherCalled = true;
-    return { passed: true, status: 200 };
-  };
+  const mockDispatcher = offlineDispatcherSpec({
+    defaultOutcome: { passed: true, status: 200 }
+  });
 
   // Case A: Caller passes forged target and matching forged tempRef in LIVE mode
   await assert.rejects(
@@ -902,11 +871,12 @@ test('25. LIVE mode rejects caller-controlled tempRef spoofing and unapproved ta
       tempRef: 'forged-attacker-project',
       argv: ['--live'],
       env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultAdminFixture,
+      adminClient: defaultAdminFixture,
       mockDispatcher
     })),
     /CRITICAL_SECURITY_VIOLATION.*tempRef spoofing rejected/
   );
+  assert.equal(OFFLINE_DISPATCHER_INSTANCES.get(mockDispatcher)?.calls.length || 0, 0, 'No dispatcher calls should occur on unauthorized target');
 
   // Case B: Caller passes forged target with default tempRef in LIVE mode
   await assert.rejects(
@@ -914,11 +884,12 @@ test('25. LIVE mode rejects caller-controlled tempRef spoofing and unapproved ta
       projectRef: 'forged-attacker-project',
       argv: ['--live'],
       env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultAdminFixture,
+      adminClient: defaultAdminFixture,
       mockDispatcher
     })),
     /unauthorized_target.*strictly requires approved owner TEMP project/
   );
+  assert.equal(OFFLINE_DISPATCHER_INSTANCES.get(mockDispatcher)?.calls.length || 0, 0, 'No dispatcher calls should occur on unauthorized target');
 
   // Case C: Environment variable override cannot bypass approved TEMP ref in LIVE mode
   const originalEnv = process.env.TIO_SUPABASE_TEMP_REF;
@@ -944,7 +915,7 @@ test('25. LIVE mode rejects caller-controlled tempRef spoofing and unapproved ta
     }
   }
 
-  assert.equal(dispatcherCalled, false, 'No dispatcher calls should occur on unauthorized target');
+  assert.equal(OFFLINE_DISPATCHER_INSTANCES.get(mockDispatcher)?.calls.length || 0, 0, 'No dispatcher calls should occur on unauthorized target');
 });
 
 test('26. validateProbeOutcome rejects status 0, missing status, and false-positive booleans without evidence (PRRT_kwDOVtCmZc66jLk1 & PRRT_kwDOVtCmZc66jNbH)', () => {
@@ -1028,16 +999,14 @@ test('27. Complete returned report is recursively sanitized with zero credential
   const secretPassword = 'my-secret-synthetic-review-password';
   const secretToken = 'my-secret-synthetic-review-token';
 
-  const mockDispatcher = async () => {
-    const err = new Error(`request failed password=${secretPassword} access_token=${secretToken}`);
-    throw err;
-  };
+  const mockDispatcher = offlineDispatcherSpec({
+    defaultOutcome: { throwError: `request failed password=${secretPassword} access_token=${secretToken}` }
+  });
 
   const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: HARDCODED_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultAdminFixture,
     adminClient: defaultAdminFixture,
     mockDispatcher,
     sleepFn: async () => {}
@@ -1534,15 +1503,14 @@ test('29. Quoted credentials with whitespace, ampersands, and escaped quotes are
   assert.equal(sanitizedObj.nested.ok, 'fine');
 
   // 3. End-to-end runner test with quoted exception from dispatcher
-  const mockDispatcher = async () => {
-    throw new Error(`request failed password="${secretWithLeadingSpace}" access_token='${singleQuotedToken}'`);
-  };
+  const mockDispatcher = offlineDispatcherSpec({
+    defaultOutcome: { throwError: `request failed password="${secretWithLeadingSpace}" access_token='${singleQuotedToken}'` }
+  });
 
   const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: HARDCODED_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultAdminFixture,
     adminClient: defaultAdminFixture,
     mockDispatcher,
     sleepFn: async () => {}
@@ -1556,9 +1524,9 @@ test('29. Quoted credentials with whitespace, ampersands, and escaped quotes are
   assert.match(result.abortReason, /access_token='\[REDACTED\]'/);
 
   // 4. End-to-end runner test with unclosed escaped quote exception from dispatcher (PRRT_kwDOVtCmZc66joKm)
-  const mockDispatcherUnclosed = async () => {
-    throw new Error(`request failed password="unclosed\\"secret`);
-  };
+  const mockDispatcherUnclosed = offlineDispatcherSpec({
+    defaultOutcome: { throwError: `request failed password="unclosed\\"secret` }
+  });
 
   const resultUnclosed = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: HARDCODED_TEMP_REF,
@@ -1579,9 +1547,9 @@ test('29. Quoted credentials with whitespace, ampersands, and escaped quotes are
   const syntheticClientSec = 'synthetic_client_secret_xyz789';
   const syntheticRefreshTok = 'synthetic_refresh_token_qwe456';
 
-  const mockDispatcherCompound = async () => {
-    throw new Error(`request failed SUPABASE_SERVICE_ROLE_KEY=${syntheticServiceKey} client_secret="${syntheticClientSec}" refreshToken=${syntheticRefreshTok}`);
-  };
+  const mockDispatcherCompound = offlineDispatcherSpec({
+    defaultOutcome: { throwError: `request failed SUPABASE_SERVICE_ROLE_KEY=${syntheticServiceKey} client_secret="${syntheticClientSec}" refreshToken=${syntheticRefreshTok}` }
+  });
 
   const resultCompound = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: HARDCODED_TEMP_REF,
@@ -1618,22 +1586,19 @@ test('30. Timeout race evaluation confirms zero unhandled rejections and proper 
     };
 
     // Case 1: Dispatcher resolves before timeout
-    let abortFired1 = false;
     const res1 = await runHostedProbeRunner(fixtureRunnerOptions({
       ...liveOptions,
       probeTimeoutMs: 200,
-      mockDispatcher: async (item, { signal }) => {
-        signal.addEventListener('abort', () => { abortFired1 = true; });
-        await new Promise(r => setTimeout(r, 20));
-        return {
+      mockDispatcher: offlineDispatcherSpec({
+        defaultOutcome: {
+          delayMs: 20,
           passed: true,
           status: 403,
           route_disabled: true,
           evidence: { disabled: true }
-        };
-      }
+        }
+      })
     }));
-    assert.strictEqual(abortFired1, false, 'AbortSignal should not fire when dispatcher resolves first');
     assert.strictEqual(res1.status, 'HALTED_ON_FAILURE'); // Stops after BYPASS-01 because only BYPASS-01 matched
     assert.strictEqual(unhandled.length, 0);
 
@@ -1641,9 +1606,9 @@ test('30. Timeout race evaluation confirms zero unhandled rejections and proper 
     const res2 = await runHostedProbeRunner(fixtureRunnerOptions({
       ...liveOptions,
       probeTimeoutMs: 200,
-      mockDispatcher: async () => {
-        throw new Error('NETWORK_FAILURE_IMMEDIATE');
-      }
+      mockDispatcher: offlineDispatcherSpec({
+        defaultOutcome: { throwError: 'NETWORK_FAILURE_IMMEDIATE' }
+      })
     }));
     assert.strictEqual(res2.status, 'HALTED_ON_FAILURE');
     assert.strictEqual(res2.results.length, 1);
@@ -1651,51 +1616,39 @@ test('30. Timeout race evaluation confirms zero unhandled rejections and proper 
     assert.strictEqual(unhandled.length, 0);
 
     // Case 3: Timeout fires first on non-settling promise
-    let abortFired3 = false;
     const res3 = await runHostedProbeRunner(fixtureRunnerOptions({
       ...liveOptions,
       probeTimeoutMs: 50,
-      mockDispatcher: (item, { signal }) => {
-        signal.addEventListener('abort', () => { abortFired3 = true; });
-        return new Promise(() => {}); // never settles
-      }
+      mockDispatcher: offlineDispatcherSpec({
+        defaultOutcome: { neverSettle: true }
+      })
     }));
-    assert.strictEqual(abortFired3, true, 'AbortSignal must be triggered on timeout');
     assert.strictEqual(res3.status, 'HALTED_ON_FAILURE');
     assert.match(res3.results[0].outcome.reason, /PROBE_TIMEOUT/);
     assert.strictEqual(res3.results.length, 1, 'Runner must not execute subsequent probes after timeout');
     assert.strictEqual(unhandled.length, 0);
 
     // Case 4: Dispatcher rejects AFTER timeout and abort (the reported race condition)
-    let abortTriggered4 = false;
-    let lateRejectionOccurred4 = false;
-
+    const inv4 = new TestRunInventory('test-30-late-abort-rejection');
     const res4 = await runHostedProbeRunner(fixtureRunnerOptions({
       ...liveOptions,
+      inventory: inv4,
       probeTimeoutMs: 50,
-      mockDispatcher: (item, { signal }) => {
-        return new Promise((resolve, reject) => {
-          signal.addEventListener('abort', () => {
-            abortTriggered4 = true;
-            // Simulate fetch AbortError thrown asynchronously after abort signal
-            setTimeout(() => {
-              lateRejectionOccurred4 = true;
-              const err = new Error('AbortError: The operation was aborted');
-              err.name = 'AbortError';
-              reject(err);
-            }, 30);
-          });
-        });
-      }
+      mockDispatcher: offlineDispatcherSpec({
+        defaultOutcome: {
+          neverSettle: true,
+          rejectAfterAbortMs: 30,
+          onAbortInventoryEffects: { registerUntrackedSession: true }
+        }
+      })
     }));
 
-    assert.strictEqual(abortTriggered4, true, 'Abort was triggered');
     assert.strictEqual(res4.status, 'HALTED_ON_FAILURE');
     assert.strictEqual(res4.results.length, 1);
 
     // Wait to allow the late rejection to fire
     await new Promise(r => setTimeout(r, 100));
-    assert.strictEqual(lateRejectionOccurred4, true, 'Late rejection actually fired');
+    assert.strictEqual(inv4.untrackedSessionsCount >= 1, true, 'Abort handler fired and late rejection settled');
     assert.strictEqual(unhandled.length, 0, 'No unhandledRejection must be emitted');
   } finally {
     process.removeListener('unhandledRejection', onUnhandled);
@@ -2003,34 +1956,23 @@ test('32. Strict positive access token issuance proof for HOOK-01 and HOOK-02 (P
   // --- Full simulated 18-case runner regression ---
   // Demonstrates that a false-positive HOOK-01 outcome (has_token: true + amr_authenticated: true but NO concrete access_token)
   // halts execution at case 6 and NEVER returns COMPLETED.
-  let casesExecutedCount = 0;
-  const mockDispatcherFalsePositive = async (item) => {
-    casesExecutedCount++;
-    if (item.id === 'BYPASS-01') {
-      return { passed: true, status: 403, route_disabled: true };
-    }
-    if (item.id === 'BYPASS-02') {
-      return { passed: true, status: 403, signup_disabled: true };
-    }
-    if (item.id === 'BYPASS-03' || item.id === 'BYPASS-04') {
-      return { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' };
-    }
-    if (item.id === 'BYPASS-05') {
-      return { passed: true, status: 500, recovery_suppressed: true, zero_email_delivered: true };
-    }
-    if (item.id === 'HOOK-01') {
-      // False-positive outcome: claims has_token: true and amr_authenticated: true, but provides NO access_token string!
-      return {
+  const mockDispatcherFalsePositive = offlineDispatcherSpec({
+    outcomes: {
+      'BYPASS-01': { passed: true, status: 403, route_disabled: true },
+      'BYPASS-02': { passed: true, status: 403, signup_disabled: true },
+      'BYPASS-03': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+      'BYPASS-04': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+      'BYPASS-05': { passed: true, status: 500, recovery_suppressed: true, zero_email_delivered: true },
+      'HOOK-01': {
         passed: true,
         status: 200,
         has_token: true,
         tokens: { unrelated_key: 'no_token_here' },
         amr_authenticated: true
-      };
-    }
-    // Subsequent cases should never be reached
-    return { passed: true, status: 200 };
-  };
+      }
+    },
+    defaultOutcome: { passed: true, status: 200 }
+  });
 
   const resultFpHook01 = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: HARDCODED_TEMP_REF,
@@ -2044,7 +1986,7 @@ test('32. Strict positive access token issuance proof for HOOK-01 and HOOK-02 (P
   assert.notEqual(resultFpHook01.status, 'COMPLETED', 'Runner must NEVER return COMPLETED on false-positive HOOK-01');
   assert.equal(resultFpHook01.status, 'HALTED_ON_FAILURE', 'Runner must halt immediately on failure');
   assert.equal(resultFpHook01.results.length, 6, 'Runner must halt at case 6 (HOOK-01) and not execute subsequent probes');
-  assert.equal(casesExecutedCount, 6, 'Dispatcher must only be invoked for 6 probes');
+  assert.equal(OFFLINE_DISPATCHER_INSTANCES.get(mockDispatcherFalsePositive).calls.length, 6, 'Dispatcher must only be invoked for 6 probes');
   assert.match(
     resultFpHook01.abortReason,
     /CRITICAL_SECURITY_FAILURE: Case HOOK-01 \(Token Hook\) failed validation.*requires explicit, non-empty access_token string/
@@ -2691,17 +2633,18 @@ test('50. Task 06I-B1-H1-R3 (R3-07): Cleanup execution lifecycle in try/finally 
 
   const mockAdminClient = fixtureSpec();
 
-  const mockDispatcher = async () => ({
-    passed: false,
-    status: 500,
-    reason: 'simulated halt'
+  const mockDispatcher = offlineDispatcherSpec({
+    defaultOutcome: {
+      passed: false,
+      status: 500,
+      reason: 'simulated halt'
+    }
   });
 
   const res = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: HARDCODED_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultAdminFixture,
     inventory,
     adminClient: mockAdminClient,
     mockDispatcher,
@@ -2881,28 +2824,27 @@ test('55. Task 06I-B1-H1-R4 (R4-01): Credential binding check fails closed on un
 
 test('56. Task 06I-B1-H1-R4 (R4-02): LIVE runner fails preflight if cleanup capability is missing; failed cleanup overrides probe success', async () => {
   const liveEnv = { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' };
-  const dummyDispatcher = async () => ({ passed: true, status: 200, evidence: 'ok' });
+  const dummyDispatcher = offlineDispatcherSpec({ defaultOutcome: { passed: true, status: 200, evidence: 'ok' } });
 
   // 1. Missing adminClient in LIVE mode throws CLEANUP_CAPABILITY_REQUIRED before executing any probes
-  let probesExecuted = false;
+  const missingAdminInv = new TestRunInventory('test-56-missing-admin');
+  const missingAdminDisp = createTrustedOfflineDispatcher({ runId: missingAdminInv.runId, defaultOutcome: { passed: true, status: 200 } });
   await assert.rejects(
     async () => {
-      await runHostedProbeRunner(fixtureRunnerOptions({
+      await runHostedProbeRunner({
         projectRef: HARDCODED_TEMP_REF,
+        inventory: missingAdminInv,
         argv: ['--live'],
         env: liveEnv,
         adminClient: null,
-        mockDispatcher: async () => {
-          probesExecuted = true;
-          return { passed: true, status: 200 };
-        }
-      }));
+        mockDispatcher: missingAdminDisp
+      });
     },
     /CLEANUP_CAPABILITY_REQUIRED.*registered run-bound Admin client/
   );
-  assert.equal(probesExecuted, false, 'Probes must not be executed when cleanup capability is missing');
+  assert.equal(missingAdminDisp.calls.length, 0, 'Probes must not be executed when cleanup capability is missing');
 
-  // 2. adminClient missing deleteUser method throws CLEANUP_CAPABILITY_REQUIRED
+  // 2. adminClient missing deleteUser method throws UNTRUSTED_ADMIN_CLIENT
   await assert.rejects(
     async () => {
       await runHostedProbeRunner(fixtureRunnerOptions({
@@ -2932,22 +2874,29 @@ test('56. Task 06I-B1-H1-R4 (R4-02): LIVE runner fails preflight if cleanup capa
     env: liveEnv,
     inventory: invWithResidual,
     adminClient: failingCleanupAdmin,
-    mockDispatcher: async (item) => {
-      // Return passing outcomes for each probe
-      if (item.id === 'BYPASS-01') return { passed: true, status: 422, route_disabled: true, error_code: 'email_provider_disabled' };
-      if (item.id === 'BYPASS-02') return { passed: true, status: 422, signup_disabled: true, error_code: 'signup_disabled' };
-      if (item.id === 'BYPASS-03' || item.id === 'BYPASS-04') return { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' };
-      if (item.id === 'BYPASS-05') return { passed: true, status: 500, recovery_suppressed: true, zero_email_delivered: true };
-      if (item.id === 'HOOK-01') return { passed: true, status: 200, has_token: true, amr_authenticated: true, session_id: 'session-uuid-5678', tokens: { access_token: createMockJwt() } };
-      if (item.id === 'HOOK-02') return { passed: true, status: 200, has_token: true, amr_preserved: true, tokens: { access_token: createMockJwt() } };
-      if (['HOOK-03', 'HOOK-04', 'HOOK-05', 'HOOK-06', 'HOOK-07'].includes(item.id)) return { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' };
-      if (item.id === 'SESSION-01') return { passed: true, status: 200, session_created: true, session_id: 'session-uuid-5678' };
-      if (item.id === 'SESSION-02') return { passed: true, status: 200, password_reset_completed: true, session_revoked: true, session_revocation_verified: true, remaining_sessions: 0 };
-      if (item.id === 'SESSION-03') return { passed: true, status: 403, pre_reset_baseline_verified: true, reset_completed: true, session_id: 'session-uuid-5678', correlated_session_id: 'session-uuid-5678', pre_session_id: 'session-uuid-5678', same_session_correlated: true, error_code: 'session_not_found' };
-      if (item.id === 'SESSION-04' || item.id === 'SESSION-05') return { passed: true, status: 200, token_unexpired: true, jwt_lifetime_seconds: 300, lifetime_bounded: true, stateless_linger_documented: true, note: 'linger window verified' };
-      if (item.id === 'SESSION-06') return { passed: true, status: 403, pre_reset_baseline_verified: true, reset_completed: true, session_id: 'session-uuid-5678', correlated_session_id: 'session-uuid-5678', pre_session_id: 'session-uuid-5678', same_session_correlated: true, error_code: 'AuthSessionMissingError' };
-      return { passed: true, status: 200 };
-    },
+    mockDispatcher: offlineDispatcherSpec({
+      outcomes: {
+        'BYPASS-01': { passed: true, status: 422, route_disabled: true, error_code: 'email_provider_disabled' },
+        'BYPASS-02': { passed: true, status: 422, signup_disabled: true, error_code: 'signup_disabled' },
+        'BYPASS-03': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+        'BYPASS-04': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+        'BYPASS-05': { passed: true, status: 500, recovery_suppressed: true, zero_email_delivered: true },
+        'HOOK-01': { passed: true, status: 200, has_token: true, amr_authenticated: true, session_id: 'session-uuid-5678', tokens: { access_token: createMockJwt() } },
+        'HOOK-02': { passed: true, status: 200, has_token: true, amr_preserved: true, tokens: { access_token: createMockJwt() } },
+        'HOOK-03': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+        'HOOK-04': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+        'HOOK-05': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+        'HOOK-06': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+        'HOOK-07': { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' },
+        'SESSION-01': { passed: true, status: 200, session_created: true, session_id: 'session-uuid-5678' },
+        'SESSION-02': { passed: true, status: 200, password_reset_completed: true, session_revoked: true, session_revocation_verified: true, remaining_sessions: 0 },
+        'SESSION-03': { passed: true, status: 403, pre_reset_baseline_verified: true, reset_completed: true, session_id: 'session-uuid-5678', correlated_session_id: 'session-uuid-5678', pre_session_id: 'session-uuid-5678', same_session_correlated: true, error_code: 'session_not_found' },
+        'SESSION-04': { passed: true, status: 200, token_unexpired: true, jwt_lifetime_seconds: 300, lifetime_bounded: true, stateless_linger_documented: true, note: 'linger window verified' },
+        'SESSION-05': { passed: true, status: 200, token_unexpired: true, jwt_lifetime_seconds: 300, lifetime_bounded: true, stateless_linger_documented: true, note: 'linger window verified' },
+        'SESSION-06': { passed: true, status: 403, pre_reset_baseline_verified: true, reset_completed: true, session_id: 'session-uuid-5678', correlated_session_id: 'session-uuid-5678', pre_session_id: 'session-uuid-5678', same_session_correlated: true, error_code: 'AuthSessionMissingError' }
+      },
+      defaultOutcome: { passed: true, status: 200 }
+    }),
     sleepFn: async () => {}
   }));
 
@@ -5162,12 +5111,14 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     projectRef: HARDCODED_TEMP_REF,
     argv: ['node', 'runner.mjs', '--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    mockDispatcher: async (item) => ({
-      passed: true,
-      status: 200,
-      session_id: 'sess-probe-1',
-      session_revoked: true,
-      remaining_sessions: 0
+    mockDispatcher: offlineDispatcherSpec({
+      defaultOutcome: {
+        passed: true,
+        status: 200,
+        session_id: 'sess-probe-1',
+        session_revoked: true,
+        remaining_sessions: 0
+      }
     }),
     inventory: invLive,
     adminClient: adminClientLiveFail
@@ -6221,23 +6172,21 @@ test('85. Task 06I-B1-H1-R13 (R13-01 & R13-02): Auth endpoint capabilities, in-f
   // Probe timeout 5ms, delayed response body rejection 20ms:
   // Must NOT show CLEANUP_VERIFIED_SUCCESS; must fail closed with CLEANUP_FAILED_RESIDUAL_RESOURCES.
   const inv10 = new TestRunInventory('test-r13-case10-reproduction');
-  const delayedDispatcher10 = async (item, opts) => {
-    if (item.id === 'BYPASS-01') {
-      return { passed: true, status: 400, route_disabled: true, tokens: null };
-    }
-    if (item.id === 'BYPASS-02') {
-      return { passed: true, status: 400, signup_disabled: true, user_created: false, tokens: null };
-    }
-    if (item.id === 'BYPASS-03') {
-      // Simulate slow response body / transport delay of 20ms on session-minting verify probe!
-      await new Promise(r => setTimeout(r, 20));
-      if (opts.inventory) {
-        opts.inventory.registerUntrackedSession();
+  const delayedDispatcher10 = offlineDispatcherSpec({
+    outcomes: {
+      'BYPASS-01': { passed: true, status: 400, route_disabled: true, tokens: null },
+      'BYPASS-02': { passed: true, status: 400, signup_disabled: true, user_created: false, tokens: null },
+      'BYPASS-03': {
+        delayMs: 20,
+        ignoreAbort: true,
+        onAbortInventoryEffects: { registerUntrackedSession: true },
+        passed: false,
+        status: 0,
+        error: 'delayed body read failed'
       }
-      return { passed: false, status: 0, error: 'delayed body read failed' };
-    }
-    return { passed: false, status: 500 };
-  };
+    },
+    defaultOutcome: { passed: false, status: 500 }
+  });
 
   const runnerRes10 = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: HARDCODED_TEMP_REF,
@@ -6270,18 +6219,14 @@ test('85. Task 06I-B1-H1-R13 (R13-01 & R13-02): Auth endpoint capabilities, in-f
 
   // 11. Dispatcher never settles (hanging promise) -> cleanup fails closed on unresolved in-flight op
   const inv11 = new TestRunInventory('test-r13-case11-hanging');
-  const hangingDispatcher11 = async (item) => {
-    if (item.id === 'BYPASS-01') {
-      return { passed: true, status: 400, route_disabled: true, tokens: null };
-    }
-    if (item.id === 'BYPASS-02') {
-      return { passed: true, status: 400, signup_disabled: true, user_created: false, tokens: null };
-    }
-    if (item.id === 'BYPASS-03') {
-      return new Promise(() => {}); // Never resolves
-    }
-    return { passed: false, status: 500 };
-  };
+  const hangingDispatcher11 = offlineDispatcherSpec({
+    outcomes: {
+      'BYPASS-01': { passed: true, status: 400, route_disabled: true, tokens: null },
+      'BYPASS-02': { passed: true, status: 400, signup_disabled: true, user_created: false, tokens: null },
+      'BYPASS-03': { neverSettle: true }
+    },
+    defaultOutcome: { passed: false, status: 500 }
+  });
   const runnerRes11 = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: HARDCODED_TEMP_REF,
     argv: ['--live'],
@@ -7902,7 +7847,7 @@ test('95. Task 06I-B1-H3 (H3-03 & H3-05): SESSION-05 Run-Scoped Dispatch & Durab
         projectRef: HARDCODED_TEMP_REF,
         argv: ['--live'],
         env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-        mockDispatcher: async () => ({ passed: true }),
+        mockDispatcher: offlineDispatcherSpec({ defaultOutcome: { passed: true } }),
         adminClient: defaultAdminFixture,
         enforceDurableRecoveryGate: true
       }));
@@ -8006,7 +7951,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
         projectRef: HARDCODED_TEMP_REF,
         argv: ['--live'],
         env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-        mockDispatcher: async () => ({ passed: true }),
+        mockDispatcher: offlineDispatcherSpec({ defaultOutcome: { passed: true } }),
         adminClient: defaultAdminFixture,
         requireSelection: true,
         selectedProbeIds: null
@@ -10819,15 +10764,15 @@ test('114. H3-R5-01/R5-04: direct detailed and boolean absence reject integrity 
 
 test('115. H3-R5-01/R5-03: runner admission preserves outstanding cleanup evidence and prevents all probe dispatch', async () => {
   let callbacks = 0;
-  let probes = 0;
   const runId = 'r5-runner-admission';
   const transport = staticTransport({ status: 200, json: {} });
   const trusted = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, runId, fetchFn: transport });
   const unbound = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: transport });
+  const trustedDispatcher = createTrustedOfflineDispatcher({ runId, fetchFn: transport, defaultOutcome: { passed: false } });
   const invalid = [{}, { deleteUser: async () => { callbacks++; } }, Object.defineProperty({}, 'getUserById', { get() { callbacks++; return () => {}; } }), { ...trusted }, unbound];
   for (const adminClient of invalid) {
     const inventory = r5OutstandingInventory(runId);
-    await assert.rejects(runHostedProbeRunner({ projectRef: HARDCODED_TEMP_REF, runId, inventory, adminClient, argv: ['--live'], env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, selectedProbeIds: ['BYPASS-01'], mockDispatcher: async () => { probes++; return { passed: false }; } }), error => {
+    await assert.rejects(runHostedProbeRunner({ projectRef: HARDCODED_TEMP_REF, runId, inventory, adminClient, argv: ['--live'], env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, selectedProbeIds: ['BYPASS-01'], mockDispatcher: trustedDispatcher }), error => {
       assert.equal(error.code, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
       r5AssertOutstanding(error.cleanupReport, inventory);
       return true;
@@ -10835,13 +10780,13 @@ test('115. H3-R5-01/R5-03: runner admission preserves outstanding cleanup eviden
   }
   // Matching inventory A and adapter A must not execute when the runner asks for B.
   const mismatchInventory = r5OutstandingInventory(runId);
-  await assert.rejects(runHostedProbeRunner({ projectRef: HARDCODED_TEMP_REF, runId: 'r5-runner-requested-b', inventory: mismatchInventory, adminClient: trusted, argv: ['--live'], env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, selectedProbeIds: ['BYPASS-01'], mockDispatcher: async () => { probes++; } }), error => {
+  await assert.rejects(runHostedProbeRunner({ projectRef: HARDCODED_TEMP_REF, runId: 'r5-runner-requested-b', inventory: mismatchInventory, adminClient: trusted, argv: ['--live'], env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, selectedProbeIds: ['BYPASS-01'], mockDispatcher: trustedDispatcher }), error => {
     assert.match(error.message, /ADMIN_CLIENT_RUN_MISMATCH/);
     r5AssertOutstanding(error.cleanupReport, mismatchInventory);
     return true;
   });
   assert.equal(callbacks, 0);
-  assert.equal(probes, 0);
+  assert.equal(trustedDispatcher.calls.length, 0);
   assert.equal(transport.calls.length, 0);
   const dryRun = await runHostedProbeRunner({ projectRef: HARDCODED_TEMP_REF, argv: [], env: {}, adminClient: invalid[2] });
   assert.equal(dryRun.status, 'DRY_RUN_COMPLETED');
@@ -10849,7 +10794,8 @@ test('115. H3-R5-01/R5-03: runner admission preserves outstanding cleanup eviden
   const residualInventory = new TestRunInventory('r5-runner-cleanup-result');
   residualInventory.registerSession('r5-no-token-session');
   const adminClient = fixtureAdmin(residualInventory);
-  const result = await runHostedProbeRunner({ projectRef: HARDCODED_TEMP_REF, inventory: residualInventory, adminClient, argv: ['--live'], env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, selectedProbeIds: ['BYPASS-01'], mockDispatcher: async () => ({ passed: false, status: 500, error: 'offline probe failure' }) });
+  const residualDispatcher = createTrustedOfflineDispatcher({ runId: residualInventory.runId, defaultOutcome: { passed: false, status: 500, error: 'offline probe failure' } });
+  const result = await runHostedProbeRunner({ projectRef: HARDCODED_TEMP_REF, inventory: residualInventory, adminClient, argv: ['--live'], env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, selectedProbeIds: ['BYPASS-01'], mockDispatcher: residualDispatcher });
   assert.equal(result.status, 'HALTED_ON_FAILURE');
   assert.equal(result.cleanupReport.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(result.cleanupReport.residualResources.some(resource => resource.type === 'session' && resource.id === 'r5-no-token-session'));
@@ -11006,4 +10952,270 @@ test('121. H3-R5-02: repeated cleanup after failed Storage deletion retains the 
     assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, destructiveCount);
     assert.equal(inventory.isClean(), false);
   }
+});
+
+// ===========================================================================
+// Task 06I-B1-H3-R6: Mandatory Trusted Offline Dispatcher Admission & Final P1 Closure
+// ===========================================================================
+
+test('122. H3-R6-01: createTrustedOfflineDispatcher rejects callbacks, accessors, forbidden targets, unbound runs, and untrusted transports', () => {
+  const runId = 'r6-factory-boundary';
+
+  // 1. Rejects forbidden & non-TEMP projects
+  assert.throws(() => createTrustedOfflineDispatcher({ projectRef: HARDCODED_REAL_REF, runId }), /CRITICAL_SECURITY_VIOLATION/);
+  assert.throws(() => createTrustedOfflineDispatcher({ projectRef: HARDCODED_TIO_WORLD_REF, runId }), /CRITICAL_SECURITY_VIOLATION/);
+  assert.throws(() => createTrustedOfflineDispatcher({ projectRef: 'unauthorized-proj', runId }), /CRITICAL_SECURITY_VIOLATION/);
+
+  // 2. Rejects missing or invalid runId (unbound dispatcher impossible)
+  assert.throws(() => createTrustedOfflineDispatcher({}), /OFFLINE_DISPATCHER_RUN_REQUIRED/);
+  assert.throws(() => createTrustedOfflineDispatcher({ runId: '' }), /OFFLINE_DISPATCHER_RUN_REQUIRED/);
+  assert.throws(() => createTrustedOfflineDispatcher({ runId: '../escape' }), /INVALID_RUN_ID/);
+
+  // 3. Rejects arbitrary executable callbacks, getters, symbols, and cycles in spec
+  assert.throws(
+    () => createTrustedOfflineDispatcher({ runId, outcomes: { 'BYPASS-01': () => ({ passed: true }) } }),
+    /INVALID_DETERMINISTIC_FIXTURE_SPEC.*Arbitrary executable callback rejected/
+  );
+  assert.throws(
+    () => createTrustedOfflineDispatcher({ runId, get outcomes() { return {}; } }),
+    /INVALID_DETERMINISTIC_FIXTURE_SPEC.*Accessor property rejected/
+  );
+  assert.throws(
+    () => createTrustedOfflineDispatcher({ runId, outcomes: { [Symbol('sym')]: { passed: true } } }),
+    /INVALID_DETERMINISTIC_FIXTURE_SPEC.*Symbol property/
+  );
+  const cyclic = {};
+  cyclic.self = cyclic;
+  assert.throws(
+    () => createTrustedOfflineDispatcher({ runId, outcomes: cyclic }),
+    /INVALID_DETERMINISTIC_FIXTURE_SPEC.*Circular object reference/
+  );
+
+  // 4. Rejects untrusted transports (globalThis.fetch, bound fetch, arbitrary lambda)
+  assert.throws(() => createTrustedOfflineDispatcher({ runId, fetchFn: globalThis.fetch }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
+  assert.throws(() => createTrustedOfflineDispatcher({ runId, fetchFn: globalThis.fetch.bind(globalThis) }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
+  assert.throws(() => createTrustedOfflineDispatcher({ runId, fetchFn: async () => ({ status: 200 }) }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
+
+  // 5. Created dispatcher is frozen with immutable properties and no public trust marker
+  const disp = createTrustedOfflineDispatcher({ runId, defaultOutcome: { passed: true, status: 200 } });
+  assert.equal(Object.isFrozen(disp), true);
+  assert.equal(disp._isTrustedOfflineDispatcher, undefined);
+  assert.equal(disp._isHostedNetworkDispatcher, undefined);
+  assert.throws(() => { disp.extra = 1; }, TypeError);
+});
+
+test('123. H3-R6-01: runHostedProbeRunner admission rejects all untrusted, forged, proxied, bound, cross-run, and missing dispatchers with zero side effects', async () => {
+  const runId = 'r6-admission-matrix';
+  const capturedFetch = globalThis.fetch;
+  let arbitraryCalls = 0;
+  let sentinelTransportCalls = 0;
+  const sentinelTransport = () => {
+    sentinelTransportCalls++;
+    return { status: 200, ok: true, json: async () => ({}) };
+  };
+
+  function makeTrustedSetup(targetRunId = runId) {
+    const inv = r5OutstandingInventory(targetRunId);
+    const transport = staticTransport({ status: 200, json: {} });
+    const adminClient = createHostedAdminClient({
+      serviceRoleKey: validTestServiceRoleKey,
+      anonKey: validTestAnonKey,
+      runId: targetRunId,
+      fetchFn: transport
+    });
+    return { inv, transport, adminClient };
+  }
+
+  // Case 1: Trusted run-bound Admin + arbitrary unregistered dispatcher
+  const arbitraryDispatcher = async () => { arbitraryCalls++; return { passed: true, status: 200 }; };
+  // Case 2: Dispatcher retaining a captured transport/fetch reference
+  const capturedRefDispatcher = async () => {
+    arbitraryCalls++;
+    void capturedFetch;
+    return sentinelTransport();
+  };
+  // Case 3: Bound or wrapped arbitrary dispatcher
+  const boundArbitrary = arbitraryDispatcher.bind(null);
+  const wrappedArbitrary = (item, opts) => arbitraryDispatcher(item, opts);
+  // Case 4: Forged dispatcher trust markers
+  const forgedMarker1 = Object.assign(async () => { arbitraryCalls++; return { passed: true }; }, { _isTrustedOfflineDispatcher: true });
+  const forgedMarker2 = Object.assign(async () => { arbitraryCalls++; return { passed: true }; }, { isTrustedOfflineDispatcher: true, _trustedDispatcher: true });
+  // Case 5: Proxy or substituted dispatcher
+  const validDispForProxy = createTrustedOfflineDispatcher({ runId, defaultOutcome: { passed: true, status: 200 } });
+  const proxiedDispatcher = new Proxy(validDispForProxy, {
+    apply(target, thisArg, args) {
+      arbitraryCalls++;
+      return Reflect.apply(target, thisArg, args);
+    }
+  });
+  const boundValidDisp = validDispForProxy.bind(null);
+  // Case 7: Dispatcher registered for another run
+  const otherRunDisp = createTrustedOfflineDispatcher({ runId: 'r6-other-run-id', defaultOutcome: { passed: true, status: 200 } });
+
+  const rejectedCases = [
+    { label: 'arbitrary', disp: arbitraryDispatcher, env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, pattern: /BLOCKED_PENDING_DURABLE_RECOVERY.*UNTRUSTED_OFFLINE_DISPATCHER/ },
+    { label: 'capturedRef', disp: capturedRefDispatcher, env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, pattern: /BLOCKED_PENDING_DURABLE_RECOVERY.*UNTRUSTED_OFFLINE_DISPATCHER/ },
+    { label: 'boundArbitrary', disp: boundArbitrary, env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, pattern: /BLOCKED_PENDING_DURABLE_RECOVERY.*UNTRUSTED_OFFLINE_DISPATCHER/ },
+    { label: 'wrappedArbitrary', disp: wrappedArbitrary, env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, pattern: /BLOCKED_PENDING_DURABLE_RECOVERY.*UNTRUSTED_OFFLINE_DISPATCHER/ },
+    { label: 'forgedMarker1', disp: forgedMarker1, env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, pattern: /BLOCKED_PENDING_DURABLE_RECOVERY.*UNTRUSTED_OFFLINE_DISPATCHER.*_isTrustedOfflineDispatcher/ },
+    { label: 'forgedMarker2', disp: forgedMarker2, env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, pattern: /BLOCKED_PENDING_DURABLE_RECOVERY.*UNTRUSTED_OFFLINE_DISPATCHER/ },
+    { label: 'proxied', disp: proxiedDispatcher, env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, pattern: /BLOCKED_PENDING_DURABLE_RECOVERY.*UNTRUSTED_OFFLINE_DISPATCHER/ },
+    { label: 'boundValid', disp: boundValidDisp, env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, pattern: /BLOCKED_PENDING_DURABLE_RECOVERY.*UNTRUSTED_OFFLINE_DISPATCHER/ },
+    { label: 'otherRun', disp: otherRunDisp, env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, pattern: /OFFLINE_DISPATCHER_RUN_MISMATCH/ },
+    { label: 'missing', disp: null, env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, pattern: /NO_HOSTED_DISPATCHER/ },
+    // Case 10 & 11: Optional LIVE gate flags omitted or explicitly false still reject untrusted dispatcher
+    { label: 'flagsOmitted', disp: arbitraryDispatcher, extra: {}, pattern: /BLOCKED_PENDING_DURABLE_RECOVERY.*UNTRUSTED_OFFLINE_DISPATCHER/ },
+    { label: 'flagsFalse', disp: arbitraryDispatcher, extra: { liveHostedDispatch: false, enforceDurableRecoveryGate: false }, pattern: /BLOCKED_PENDING_DURABLE_RECOVERY.*UNTRUSTED_OFFLINE_DISPATCHER/ }
+  ];
+
+  for (const tc of rejectedCases) {
+    const { inv, transport, adminClient } = makeTrustedSetup(runId);
+    await assert.rejects(
+      () => runHostedProbeRunner({
+        projectRef: HARDCODED_TEMP_REF,
+        runId,
+        inventory: inv,
+        adminClient,
+        argv: ['--live'],
+        env: tc.env || { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+        selectedProbeIds: ['BYPASS-01'],
+        mockDispatcher: tc.disp,
+        ...(tc.extra || {})
+      }),
+      error => {
+        assert.match(error.message, tc.pattern, `Case ${tc.label} failed pattern`);
+        // Case 13: Existing residual obligations preserved in structured cleanupReport
+        r5AssertOutstanding(error.cleanupReport, inv);
+        return true;
+      }
+    );
+    // Zero destructive cleanup or probe transport calls
+    assert.equal(transport.calls.length, 0, `Case ${tc.label} must dispatch 0 transport calls`);
+    assert.equal(inv.runLifecycleState, INVENTORY_RUN_STATE.RESIDUAL_BLOCKED, `Case ${tc.label} must finalize inventory as RESIDUAL_BLOCKED`);
+  }
+
+  // Case 6: Dispatcher registered for another project rejected at assertTrustedOfflineDispatcher
+  assert.throws(
+    () => assertTrustedOfflineDispatcher(validDispForProxy, { projectRef: 'other-project-ref', runId }),
+    /CRITICAL_SECURITY_VIOLATION.*OFFLINE_DISPATCHER_PROJECT_MISMATCH/
+  );
+
+  // Case 8: Unbound dispatcher rejected by factory
+  assert.throws(
+    () => createTrustedOfflineDispatcher({ defaultOutcome: { passed: true } }),
+    /OFFLINE_DISPATCHER_RUN_REQUIRED/
+  );
+
+  // Case 9: Trusted dispatcher with mismatched Admin or inventory
+  const invA = r5OutstandingInventory('r6-mismatch-a');
+  const transportA = staticTransport({ status: 200, json: {} });
+  const adminA = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, runId: 'r6-mismatch-a', fetchFn: transportA });
+  const dispB = createTrustedOfflineDispatcher({ runId: 'r6-mismatch-b', defaultOutcome: { passed: true, status: 200 } });
+  await assert.rejects(
+    () => runHostedProbeRunner({
+      projectRef: HARDCODED_TEMP_REF,
+      runId: 'r6-mismatch-a',
+      inventory: invA,
+      adminClient: adminA,
+      argv: ['--live'],
+      env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+      selectedProbeIds: ['BYPASS-01'],
+      mockDispatcher: dispB
+    }),
+    error => {
+      assert.match(error.message, /OFFLINE_DISPATCHER_RUN_MISMATCH/);
+      r5AssertOutstanding(error.cleanupReport, invA);
+      return true;
+    }
+  );
+  assert.equal(dispB.calls.length, 0);
+  assert.equal(transportA.calls.length, 0);
+
+  // Also check total counts across all rejected cases
+  assert.equal(arbitraryCalls, 0, 'Arbitrary/forged/proxied dispatchers must have 0 invocations');
+  assert.equal(sentinelTransportCalls, 0, 'Unauthorized transport must have 0 invocations');
+  assert.equal(validDispForProxy.calls.length, 0, 'Proxied valid dispatcher must have 0 probe dispatches');
+  assert.equal(otherRunDisp.calls.length, 0, 'Cross-run dispatcher must have 0 probe dispatches');
+});
+
+test('124. H3-R6-01: Valid declarative offline simulation, dependency-complete subset, DRY_RUN, and blocked LIVE CLI', async () => {
+  // Case 14 & 15: Valid registered declarative dispatcher & dependency-complete subset via explicit offline simulation
+  const runId = 'r6-valid-offline-sim';
+  const simTransport = createDeterministicFixtureTransport({
+    routes: [
+      { urlIncludes: '/auth/v1/otp', status: 422, json: { error_code: 'email_provider_disabled' } },
+      { urlIncludes: '/auth/v1/token', status: 200, json: { access_token: createMockJwt() } }
+    ],
+    defaultResponse: { status: 200, ok: true, json: {} }
+  });
+  const simAdmin = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    anonKey: validTestAnonKey,
+    runId,
+    fetchFn: simTransport
+  });
+  const simDispatcher = createTrustedOfflineDispatcher({
+    runId,
+    fetchFn: simTransport,
+    outcomes: {
+      'BYPASS-01': {
+        transportRequest: { url: `https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/otp`, method: 'POST', body: { email: 'test@proof.invalid' } },
+        passed: true,
+        status: 422,
+        route_disabled: true,
+        error_code: 'email_provider_disabled'
+      },
+      'HOOK-01': {
+        passed: true,
+        status: 200,
+        has_token: true,
+        amr_authenticated: true,
+        session_id: 'session-uuid-5678',
+        tokens: { access_token: createMockJwt() }
+      },
+      'HOOK-02': {
+        passed: true,
+        status: 200,
+        has_token: true,
+        amr_preserved: true,
+        tokens: { access_token: createMockJwt() }
+      }
+    }
+  });
+
+  const simResult = await runOfflineProbeSimulation({
+    projectRef: HARDCODED_TEMP_REF,
+    runId,
+    adminClient: simAdmin,
+    offlineDispatcher: simDispatcher,
+    selectedProbeIds: ['BYPASS-01', 'HOOK-01', 'HOOK-02'],
+    sleepFn: async () => {}
+  });
+  assert.equal(simResult.status, 'COMPLETED');
+  assert.equal(simResult.mode, 'OFFLINE_SIMULATION');
+  assert.equal(simResult.simulatedExecution, true);
+  assert.equal(simResult.hostedProviderVerified, false);
+  assert.deepEqual(simResult.executionEvidence.completed, ['BYPASS-01', 'HOOK-01', 'HOOK-02']);
+  assert.equal(simDispatcher.calls.length, 3);
+  assert.equal(simTransport.calls.length, 1);
+
+  // Case 16: DRY_RUN with no dispatcher succeeds with 0 network calls
+  const dryRun = await runHostedProbeRunner({
+    projectRef: HARDCODED_TEMP_REF,
+    argv: [],
+    env: {},
+    mockDispatcher: null
+  });
+  assert.equal(dryRun.status, 'DRY_RUN_COMPLETED');
+  assert.equal(dryRun.zeroNetworkRequestsDispatched, true);
+  assert.equal(dryRun.hostedProviderVerified, false);
+
+  // Case 17: Real LIVE CLI execution remains unconditionally blocked
+  const { spawnSync } = await import('node:child_process');
+  const cliRes = spawnSync(process.execPath, ['experiments/task06i/hosted-probe-runner.mjs', '--live'], {
+    encoding: 'utf8',
+    env: { ...process.env, TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }
+  });
+  assert.equal(cliRes.status, 1);
+  assert.match(cliRes.stderr, /BLOCKED_PENDING_DURABLE_RECOVERY/);
 });

@@ -27,6 +27,7 @@ const TRUSTED_DETERMINISTIC_TRANSPORTS = new WeakSet();
 const TRUSTED_OFFLINE_BARRIERS = new WeakSet();
 const TARGET_ISOLATION_STATES = new WeakMap();
 const TRUSTED_ADMIN_CLIENTS = new WeakMap();
+const TRUSTED_OFFLINE_DISPATCHERS = new WeakMap();
 // Private receipts cannot be manufactured by setting public inventory lifecycle fields.
 const VERIFIED_STORAGE_DELETIONS = new WeakMap();
 const VERIFIED_STORAGE_CREATIONS = new WeakMap();
@@ -684,6 +685,346 @@ export function assertOfflineMockTransport(fetchFn) {
       'BLOCKED_PENDING_DURABLE_RECOVERY: Arbitrary executable transport rejected; LIVE hosted execution is blocked pending durable crash recovery and offline tests must use createDeterministicFixtureTransport()'
     );
   }
+}
+
+const FORGED_TRUSTED_DISPATCHER_MARKER_KEYS = Object.freeze([
+  '_isTrustedOfflineDispatcher',
+  '__trustedOfflineDispatcher',
+  '_trustedDispatcher',
+  'isTrustedOfflineDispatcher',
+  'isTrustedDispatcher',
+  '_isHostedNetworkDispatcher'
+]);
+
+function assertNoForgedDispatcherMarkers(candidate) {
+  if (!candidate || (typeof candidate !== 'object' && typeof candidate !== 'function')) return;
+  for (const key of FORGED_TRUSTED_DISPATCHER_MARKER_KEYS) {
+    const desc = Object.getOwnPropertyDescriptor(candidate, key);
+    if (desc !== undefined) {
+      throw new Error(
+        `BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_OFFLINE_DISPATCHER: Forged trusted offline dispatcher marker '${key}' rejected fail-closed (R6-01)`
+      );
+    }
+  }
+}
+
+function applyDeclarativeInventoryEffects(inv, effects) {
+  if (!inv || !effects || typeof effects !== 'object') return;
+  if (effects.protectSeedIdentity) {
+    inv.protectSeedIdentity(effects.protectSeedIdentity);
+  }
+  if (effects.registerCreatedUser) {
+    inv.registerCreatedUser(effects.registerCreatedUser);
+  }
+  if (effects.registerUnverifiedUser) {
+    inv.registerUnverifiedUser(effects.registerUnverifiedUser);
+  }
+  if (effects.registerSession) {
+    const s = effects.registerSession;
+    inv.registerSession(s.sessionId, s);
+  }
+  if (effects.registerUntrackedSession === true) {
+    inv.registerUntrackedSession();
+  }
+  if (effects.registerUntrackedUser === true) {
+    inv.registerUntrackedUser();
+  }
+  if (effects.registerSeedPasswordModification) {
+    inv.registerSeedPasswordModification(effects.registerSeedPasswordModification);
+  }
+  if (effects.registerInFlightOperation) {
+    const op = inv.registerInFlightOperation(effects.registerInFlightOperation);
+    if (op && effects.settleInFlightOperation) {
+      inv.settleInFlightOperation(op.opId, effects.settleInFlightOperation);
+    }
+  }
+}
+
+const OFFLINE_DISPATCHER_CONTROL_KEYS = new Set([
+  'delayMs',
+  'ignoreAbort',
+  'neverSettle',
+  'throwError',
+  'waitForBarrier',
+  'releaseBarrier',
+  'releaseBarriers',
+  'inventoryEffects',
+  'onAbortInventoryEffects',
+  'rejectAfterAbortMs',
+  'transportRequest',
+  'transportRequests',
+  'outcome'
+]);
+
+function extractDeclarativeOutcome(descriptor) {
+  if (descriptor.outcome !== undefined) {
+    return clonePlainData(descriptor.outcome);
+  }
+  const out = {};
+  for (const [k, v] of Object.entries(descriptor)) {
+    if (!OFFLINE_DISPATCHER_CONTROL_KEYS.has(k)) {
+      out[k] = clonePlainData(v);
+    }
+  }
+  return out;
+}
+
+/**
+ * Factory for trusted, purely declarative offline probe dispatchers (R6-01).
+ * Only dispatchers produced by this module factory are permitted by runHostedProbeRunner().
+ * Enforces projectRef, runId, deterministic fixture transport, and zero arbitrary callbacks.
+ */
+export function createTrustedOfflineDispatcher(spec = {}) {
+  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
+    throw new Error('INVALID_DETERMINISTIC_FIXTURE_SPEC: createTrustedOfflineDispatcher requires a plain specification object (R6-01)');
+  }
+  const normRef = (spec.projectRef || HARDCODED_TEMP_REF).trim().toLowerCase();
+  if (normRef !== HARDCODED_TEMP_REF || isForbiddenProject(normRef)) {
+    throw new Error(
+      `CRITICAL_SECURITY_VIOLATION: createTrustedOfflineDispatcher strictly rejected target '${normRef}'. Only approved TEMP project '${HARDCODED_TEMP_REF}' is authorized.`
+    );
+  }
+  if (!spec.runId || typeof spec.runId !== 'string') {
+    throw new Error('OFFLINE_DISPATCHER_RUN_REQUIRED: createTrustedOfflineDispatcher requires an explicit runId (R6-01)');
+  }
+  const boundRunId = validateRunId(spec.runId);
+
+  const rawTransportFetch = spec.fetchFn !== undefined && spec.fetchFn !== null
+    ? spec.fetchFn
+    : createDeterministicFixtureTransport(spec.transportSpec || { defaultResponse: { status: 200, ok: true, json: {} } });
+  assertOfflineMockTransport(rawTransportFetch);
+
+  const declarativeSpec = {};
+  for (const key of Object.getOwnPropertyNames(spec)) {
+    if (key === 'fetchFn') continue;
+    const desc = Object.getOwnPropertyDescriptor(spec, key);
+    if (!desc || typeof desc.get === 'function' || typeof desc.set === 'function') {
+      throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Accessor property rejected at 'offlineDispatcherSpec.${key}' (R6-01)`);
+    }
+    declarativeSpec[key] = desc.value;
+  }
+  validateDeclarativeFixtureValue(declarativeSpec, 'offlineDispatcherSpec');
+
+  const outcomes = clonePlainData(declarativeSpec.outcomes || {});
+  const defaultOutcome = declarativeSpec.defaultOutcome !== undefined
+    ? clonePlainData(declarativeSpec.defaultOutcome)
+    : null;
+  const sequence = Array.isArray(declarativeSpec.sequence)
+    ? clonePlainData(declarativeSpec.sequence)
+    : null;
+
+  const probeCursors = new Map();
+  let sequenceCursor = 0;
+  const calls = [];
+
+  const dispatcher = async function trustedOfflineDispatcher(item, options = {}) {
+    assertTrustedOfflineDispatcher(dispatcher, { projectRef: normRef, runId: boundRunId });
+    if (options.inventory?.runId && options.inventory.runId !== boundRunId) {
+      throw new Error(
+        `OFFLINE_DISPATCHER_RUN_MISMATCH: Trusted offline dispatcher bound to runId '${boundRunId}', got inventory '${options.inventory.runId}' (R6-01)`
+      );
+    }
+
+    return runWithBlockedRealFetch(async () => {
+      const probeId = item?.id || 'UNKNOWN';
+      calls.push(Object.freeze({ probeId, timestamp: new Date().toISOString() }));
+
+      let descriptor = null;
+      if (sequence) {
+        if (sequenceCursor < sequence.length) {
+          descriptor = sequence[sequenceCursor++];
+        } else {
+          descriptor = defaultOutcome;
+        }
+      } else if (Object.prototype.hasOwnProperty.call(outcomes, probeId)) {
+        const entry = outcomes[probeId];
+        if (Array.isArray(entry)) {
+          const idx = probeCursors.get(probeId) || 0;
+          probeCursors.set(probeId, idx + 1);
+          descriptor = idx < entry.length ? entry[idx] : defaultOutcome;
+        } else {
+          descriptor = entry;
+        }
+      } else if (Object.prototype.hasOwnProperty.call(outcomes, '*')) {
+        descriptor = outcomes['*'];
+      } else {
+        descriptor = defaultOutcome;
+      }
+
+      if (!descriptor) {
+        return { passed: false, status: 500, reason: 'unrecognized probe case' };
+      }
+
+      const signal = options.signal || null;
+      const inv = options.inventory || null;
+
+      if (descriptor.inventoryEffects) {
+        applyDeclarativeInventoryEffects(inv, descriptor.inventoryEffects);
+      }
+
+      const transportReqs = Array.isArray(descriptor.transportRequests)
+        ? descriptor.transportRequests
+        : (descriptor.transportRequest ? [descriptor.transportRequest] : []);
+      for (const req of transportReqs) {
+        await rawTransportFetch(req.url, {
+          method: req.method || 'GET',
+          headers: req.headers || {},
+          body: req.body !== undefined ? (typeof req.body === 'string' ? req.body : JSON.stringify(req.body)) : undefined,
+          signal
+        });
+      }
+
+      const releaseList = [];
+      if (descriptor.releaseBarrier) releaseList.push(descriptor.releaseBarrier);
+      if (Array.isArray(descriptor.releaseBarriers)) releaseList.push(...descriptor.releaseBarriers);
+      for (const b of releaseList) {
+        if (TRUSTED_OFFLINE_BARRIERS.has(b)) {
+          b.markArrived();
+          b.release();
+        }
+      }
+
+      if (descriptor.waitForBarrier && TRUSTED_OFFLINE_BARRIERS.has(descriptor.waitForBarrier)) {
+        descriptor.waitForBarrier.markArrived();
+        await descriptor.waitForBarrier.wait(signal);
+      }
+
+      if (descriptor.neverSettle === true) {
+        return new Promise((_resolve, reject) => {
+          if (signal && (descriptor.onAbortInventoryEffects || typeof descriptor.rejectAfterAbortMs === 'number')) {
+            const onAbort = () => {
+              if (descriptor.onAbortInventoryEffects) {
+                applyDeclarativeInventoryEffects(inv, descriptor.onAbortInventoryEffects);
+              }
+              if (typeof descriptor.rejectAfterAbortMs === 'number') {
+                setTimeout(() => {
+                  const err = new Error('AbortError: The operation was aborted');
+                  err.name = 'AbortError';
+                  reject(err);
+                }, descriptor.rejectAfterAbortMs);
+              }
+            };
+            if (signal.aborted) {
+              onAbort();
+            } else if (typeof signal.addEventListener === 'function') {
+              signal.addEventListener('abort', onAbort, { once: true });
+            }
+          }
+        });
+      }
+
+      if (typeof descriptor.delayMs === 'number' && descriptor.delayMs > 0) {
+        await new Promise((resolve, reject) => {
+          let timer = null;
+          const onAbort = () => {
+            if (descriptor.onAbortInventoryEffects) {
+              applyDeclarativeInventoryEffects(inv, descriptor.onAbortInventoryEffects);
+            }
+            if (descriptor.ignoreAbort === true) return;
+            if (timer) clearTimeout(timer);
+            const abortErr = new Error('The operation was aborted');
+            abortErr.name = 'AbortError';
+            reject(abortErr);
+          };
+          timer = setTimeout(() => {
+            if (signal && typeof signal.removeEventListener === 'function') {
+              signal.removeEventListener('abort', onAbort);
+            }
+            resolve();
+          }, descriptor.delayMs);
+          if (signal && typeof signal.addEventListener === 'function') {
+            if (signal.aborted) {
+              onAbort();
+              if (descriptor.ignoreAbort !== true) return;
+            } else {
+              signal.addEventListener('abort', onAbort, { once: true });
+            }
+          }
+        });
+      }
+
+      if (descriptor.throwError) {
+        const errSpec = typeof descriptor.throwError === 'string'
+          ? { message: descriptor.throwError }
+          : descriptor.throwError;
+        const err = new Error(errSpec.message || 'Deterministic offline dispatcher error');
+        if (errSpec.code) err.code = errSpec.code;
+        if (errSpec.name) err.name = errSpec.name;
+        throw err;
+      }
+
+      return extractDeclarativeOutcome(descriptor);
+    });
+  };
+
+  Object.defineProperty(dispatcher, 'calls', {
+    get() {
+      return calls.slice();
+    },
+    enumerable: true,
+    configurable: false
+  });
+  Object.freeze(dispatcher);
+
+  TRUSTED_OFFLINE_DISPATCHERS.set(
+    dispatcher,
+    Object.freeze({
+      projectRef: normRef,
+      runId: boundRunId,
+      rawTransportFetch,
+      dispatchFn: dispatcher
+    })
+  );
+
+  return dispatcher;
+}
+
+/**
+ * Verifies that an offline probe dispatcher was constructed by createTrustedOfflineDispatcher(),
+ * is bound to the exact TEMP project and runId, and uses a registered deterministic transport (R6-01).
+ */
+export function assertTrustedOfflineDispatcher(
+  dispatcher,
+  {
+    projectRef = HARDCODED_TEMP_REF,
+    runId = null
+  } = {}
+) {
+  const normRef = (projectRef || '').trim().toLowerCase();
+  if (dispatcher && HOSTED_NETWORK_DISPATCHERS.has(dispatcher)) {
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: LIVE hosted execution against Supabase Cloud is blocked pending durable crash recovery and journaled inventory implementation (R6-01)'
+    );
+  }
+  if (typeof dispatcher !== 'function') {
+    throw new Error(
+      'NO_HOSTED_DISPATCHER: live hosted execution requires a configured network dispatcher; synthetic placeholder execution prohibited'
+    );
+  }
+  const meta = TRUSTED_OFFLINE_DISPATCHERS.get(dispatcher);
+  if (!meta) {
+    assertNoForgedDispatcherMarkers(dispatcher);
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_OFFLINE_DISPATCHER: Unregistered or forged offline dispatcher rejected fail-closed before any probe or cleanup execution (R6-01)'
+    );
+  }
+  if (meta.dispatchFn !== dispatcher) {
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_OFFLINE_DISPATCHER: Cloned or proxied offline dispatcher rejected fail-closed (R6-01)'
+    );
+  }
+  if (!meta.projectRef || meta.projectRef !== normRef || meta.projectRef !== HARDCODED_TEMP_REF || isForbiddenProject(meta.projectRef)) {
+    throw new Error(
+      `CRITICAL_SECURITY_VIOLATION: OFFLINE_DISPATCHER_PROJECT_MISMATCH: Trusted offline dispatcher bound to '${meta.projectRef}', expected '${normRef}' (R6-01)`
+    );
+  }
+  if (!meta.runId || !runId || meta.runId !== runId) {
+    throw new Error(
+      `OFFLINE_DISPATCHER_RUN_MISMATCH: Trusted offline dispatcher bound to runId '${meta.runId || 'unbound'}', expected '${runId || 'none'}' (R6-01)`
+    );
+  }
+  assertOfflineMockTransport(meta.rawTransportFetch);
+  return meta;
 }
 
 /**
@@ -8294,6 +8635,13 @@ export function createHostedDispatcher({
  * Resolves PRRT_kwDOVtCmZc66ij5y, PRRT_kwDOVtCmZc66ij56, PRRT_kwDOVtCmZc66iotG, PRRT_kwDOVtCmZc66i_Kb,
  * PRRT_kwDOVtCmZc66i_Kd, PRRT_kwDOVtCmZc66i_Kf, PRRT_kwDOVtCmZc66lOOS, and PRRT_kwDOVtCmZc66lOOP.
  */
+export async function runOfflineProbeSimulation(options = {}) {
+  return runHostedProbeRunner({
+    ...options,
+    executionMode: 'OFFLINE_SIMULATION'
+  });
+}
+
 export async function runHostedProbeRunner(options = {}) {
   const {
     projectRef,
@@ -8302,16 +8650,18 @@ export async function runHostedProbeRunner(options = {}) {
     env = process.env,
     testEmail = 'tio-test-user-06i@proof.invalid',
     mockDispatcher = null,
+    offlineDispatcher = null,
     inventory = null,
     runContext = null,
     sleepFn = (ms) => new Promise(r => setTimeout(r, ms)),
     probeTimeoutMs = DEFAULT_PROBE_TIMEOUT_MS
   } = options;
 
-  const mode = determineRunnerMode(argv, env);
-  const isLive = mode === 'LIVE';
-  const validatedRef = validateTargetProject(projectRef, tempRef, isLive, {
-    allowIsolatedTestRef: options.allowIsolatedTestRef && !isLive
+  const explicitOfflineSimulation = options.executionMode === 'OFFLINE_SIMULATION';
+  const mode = explicitOfflineSimulation ? 'OFFLINE_SIMULATION' : determineRunnerMode(argv, env);
+  const isExecuting = mode === 'LIVE' || mode === 'OFFLINE_SIMULATION';
+  const validatedRef = validateTargetProject(projectRef, tempRef, isExecuting, {
+    allowIsolatedTestRef: options.allowIsolatedTestRef && !isExecuting
   });
   validateTestIdentity(testEmail);
 
@@ -8320,10 +8670,10 @@ export async function runHostedProbeRunner(options = {}) {
   const plan = planProbeExecution(validatedRef, {
     testEmail,
     tempRef,
-    isLive,
+    isLive: isExecuting,
     selectedProbeIds: options.selectedProbeIds,
     runId,
-    allowIsolatedTestRef: options.allowIsolatedTestRef && !isLive
+    allowIsolatedTestRef: options.allowIsolatedTestRef && !isExecuting
   });
   const results = [];
   let aborted = false;
@@ -8337,6 +8687,7 @@ export async function runHostedProbeRunner(options = {}) {
       projectRef: validatedRef,
       runId: plan.runId,
       zeroNetworkRequestsDispatched: true,
+      hostedProviderVerified: false,
       message: 'Dry-run executed successfully. Zero HTTP requests sent to Supabase Cloud.',
       plan: plan,
       executionEvidence: {
@@ -8351,24 +8702,32 @@ export async function runHostedProbeRunner(options = {}) {
     });
   }
 
-  // LIVE mode validation: Require an authorized network dispatcher. Zero fake passes. (PRRT_kwDOVtCmZc66ij5y)
-  if (typeof mockDispatcher !== 'function') {
-    throw new Error(
-      'NO_HOSTED_DISPATCHER: live hosted execution requires a configured network dispatcher; synthetic placeholder execution prohibited'
-    );
-  }
-
   const adminClient = options.adminClient || null;
-
+  const candidateDispatcher = offlineDispatcher ?? mockDispatcher;
   const activeInventory = inventory || new TestRunInventory(runId || plan.runId);
-  // Admission checks private identity before touching any caller-supplied Admin property.
+
+  // Admission checks private identities and durable-recovery boundaries BEFORE any probe,
+  // provisioning, or destructive cleanup execution (R5-01, R6-01).
   try {
-    if (!adminClient) throw new Error('CLEANUP_CAPABILITY_REQUIRED: LIVE mode requires a registered run-bound Admin client');
-    if (runId && runId !== activeInventory.runId) throw new Error('ADMIN_CLIENT_RUN_MISMATCH: Runner and inventory run IDs differ');
+    if (
+      options.liveHostedDispatch === true ||
+      options.enforceDurableRecoveryGate === true ||
+      (candidateDispatcher && HOSTED_NETWORK_DISPATCHERS.has(candidateDispatcher))
+    ) {
+      throw new Error(
+        'BLOCKED_PENDING_DURABLE_RECOVERY: LIVE hosted execution against Supabase Cloud is blocked pending durable crash recovery and journaled inventory implementation'
+      );
+    }
+    if (runId && runId !== activeInventory.runId) {
+      throw new Error('ADMIN_CLIENT_RUN_MISMATCH: Runner and inventory run IDs differ');
+    }
+    assertTrustedOfflineDispatcher(candidateDispatcher, { projectRef: validatedRef, runId: activeInventory.runId });
+    if (!adminClient) {
+      throw new Error('CLEANUP_CAPABILITY_REQUIRED: Executing runner mode requires a registered run-bound Admin client');
+    }
     assertTrustedAdminClient(adminClient, { projectRef: validatedRef, runId: activeInventory.runId });
   } catch (err) {
-    // Admission rejection is report-only, even if this adapter happens to match
-    // the inventory while the runner requested a different run. Never mutate here.
+    // Admission rejection is report-only, even if an adapter matches the inventory. Never mutate here.
     const cleanupReport = await activeInventory.executeCleanup({ adminClient: null, failClosed: false, settlementTimeoutMs: 0 });
     const clientFailure = cleanupReport.residualResources.find(resource => resource.type === 'client');
     if (clientFailure) clientFailure.error = sanitizeData(err.message);
@@ -8380,23 +8739,9 @@ export async function runHostedProbeRunner(options = {}) {
     throw cleanupFailure(err.message, cleanupReport);
   }
 
-  // Real LIVE hosted cloud dispatch is permanently gated pending durable crash recovery (H3-05, R1-01, R2 Sec 6)
-  if (
-    isLive &&
-    (options.liveHostedDispatch === true ||
-      options.enforceDurableRecoveryGate === true ||
-      !mockDispatcher ||
-      HOSTED_NETWORK_DISPATCHERS.has(mockDispatcher) ||
-      mockDispatcher._isHostedNetworkDispatcher === true)
-  ) {
+  if (isExecuting && options.requireSelection === true && (!options.selectedProbeIds || !Array.isArray(options.selectedProbeIds) || options.selectedProbeIds.length === 0)) {
     throw new Error(
-      'BLOCKED_PENDING_DURABLE_RECOVERY: LIVE hosted execution against Supabase Cloud is blocked pending durable crash recovery and journaled inventory implementation'
-    );
-  }
-
-  if (isLive && options.requireSelection === true && (!options.selectedProbeIds || !Array.isArray(options.selectedProbeIds) || options.selectedProbeIds.length === 0)) {
-    throw new Error(
-      'SELECTION_REQUIRED: LIVE mode strictly requires an explicit, validated selectedProbeIds array'
+      'SELECTION_REQUIRED: Executing runner mode strictly requires an explicit, validated selectedProbeIds array'
     );
   }
 
@@ -8411,7 +8756,7 @@ export async function runHostedProbeRunner(options = {}) {
   async function performCleanup() {
     if (cleanupExecuted) return;
     cleanupExecuted = true;
-    if (isLive && activeInventory && adminClient) {
+    if (isExecuting && activeInventory && adminClient) {
       try {
         await activeInventory.awaitInFlightSettlement(Math.min(probeTimeoutMs, 100));
         cleanupReport = await activeInventory.executeCleanup({ adminClient, failClosed: false, settlementTimeoutMs: 50 });
@@ -8488,7 +8833,7 @@ export async function runHostedProbeRunner(options = {}) {
           { durableRecoveryVerified: false },
           () => runWithBlockedRealFetch(() =>
             Promise.resolve(
-              mockDispatcher(item, {
+              candidateDispatcher(item, {
                 signal: controller.signal,
                 projectRef: validatedRef,
                 inventory: activeInventory,
@@ -8555,9 +8900,9 @@ export async function runHostedProbeRunner(options = {}) {
     // Execute cleanup at end of test run (PRRT_kwDOVtCmZc66lo-q, R3-07, R4-02)
     await performCleanup();
 
-    // In LIVE mode, cleanup failure must override probe success (R4-02)
-    const cleanupSuccess = !isLive || (cleanupReport && cleanupReport.status === 'CLEANUP_VERIFIED_SUCCESS');
-    if (isLive && !cleanupSuccess) {
+    // In executing mode, cleanup failure must override probe success (R4-02)
+    const cleanupSuccess = !isExecuting || (cleanupReport && cleanupReport.status === 'CLEANUP_VERIFIED_SUCCESS');
+    if (isExecuting && !cleanupSuccess) {
       aborted = true;
       const cleanupErrText = `CLEANUP_FAILURE: Test run cleanup did not verify complete resource removal. Status: ${cleanupReport?.status || 'UNKNOWN'}. Residual users: ${cleanupReport?.residualUsers?.length || 0}, Residual resources: ${cleanupReport?.residualResources?.length || 0}. Error: ${cleanupReport?.error || 'Unverified cleanup'}`;
       if (!abortReason) {
@@ -8578,7 +8923,9 @@ export async function runHostedProbeRunner(options = {}) {
 
     return sanitizeData({
       status: allPassed ? 'COMPLETED' : 'HALTED_ON_FAILURE',
-      mode: 'LIVE',
+      mode: explicitOfflineSimulation ? 'OFFLINE_SIMULATION' : 'LIVE',
+      simulatedExecution: true,
+      hostedProviderVerified: false,
       projectRef: validatedRef,
       runId: activeInventory.runId,
       totalExecuted: results.length,
@@ -8605,7 +8952,7 @@ export async function runHostedProbeRunner(options = {}) {
     // Ensure cleanup always executes even on unexpected exceptions (PRRT_kwDOVtCmZc66lo-q, R3-07)
     await performCleanup();
     if (activeInventory && typeof activeInventory.clearCredentials === 'function') {
-      if (!isLive || (cleanupReport && cleanupReport.status === 'CLEANUP_VERIFIED_SUCCESS')) {
+      if (!isExecuting || (cleanupReport && cleanupReport.status === 'CLEANUP_VERIFIED_SUCCESS')) {
         activeInventory.clearCredentials();
       }
     }

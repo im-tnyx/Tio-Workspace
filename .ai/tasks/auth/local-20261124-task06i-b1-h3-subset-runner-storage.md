@@ -1,14 +1,14 @@
 # Task 06I-B1-H3 — Controlled Subset Dispatch & Run-Scoped Storage Implementation
 
-**Task ID:** `06I-B1-H3` (Revision `R5`)<br>
+**Task ID:** `06I-B1-H3` (Revision `R6`)<br>
 **Creation Date:** 2026-11-24<br>
 **Revision Date:** 2026-11-25<br>
 **Author:** Santosh Jangid (`im-tnyx`)<br>
-**Reviewer:** `im-tio` (Independent Reviewer), Codex, Cursor Bugbot<br>
+**Reviewer:** `im-tio` (Independent Reviewer), Codex, Cursor Bugbot, Cursor Security Reviewer<br>
 **Branch:** `feat/task06i-b1-h3-subset-runner-storage`<br>
 **Base:** `main` at `4569479e8fe2caa6659fe1cc6c7a484596a01bbc` (PR #43 merge commit)<br>
 **PR Reference:** https://github.com/im-tnyx/Tio-Workspace/pull/44<br>
-**Prior Audited HEAD:** `b06ab2993658aefb8d48de2d9a337392f2599bbb`<br>
+**Prior Audited HEAD:** `6c54ab2f2a0c72e479bbc686c067e0c0d9c8c43f`<br>
 **Cost Ceiling:** $0.00 (Free-Tier Only)<br>
 **Mode:** Local Implementation, Mocked Transport Tests & Offline Verification ONLY<br>
 **Hosted LIVE Dispatch:** **NOT AUTHORIZED**<br>
@@ -422,4 +422,62 @@ Remote bootstrap checks: six SUCCESS, Cursor Bugbot NEUTRAL; baseline review thr
 
 H3 Subset Runner and H3 Storage Lifecycle: `IMPLEMENTED_OFFLINE_TESTED / BLOCKED` after the verified R5 offline results above. Durable Recovery: NOT IMPLEMENTED. Run-Created Seed Support: NOT IMPLEMENTED. Hosted Verification: 0/18. Hosted LIVE: NOT AUTHORIZED. Production Real Auth: STRICT NO-GO. Hosted Mutations: 0. Cost: $0. Merge: NOT AUTHORIZED.
 
-Offline verification and independent diff review are complete for implementation `3542e23777bceb3461959fa708a588ef9adf7d11`. Publication, individual finding replies/resolution and re-review requests are recorded above. Next authorized action: inspect requested reviews/current CI on PR #44 and address only bounded R5 findings; repeat exact-HEAD review requests after any material follow-up. No further implementation slice is authorized.
+Offline verification and independent diff review are complete for implementation `3542e23777bceb3461959fa708a588ef9adf7d11`. Publication, individual finding replies/resolution and re-review requests are recorded above.
+
+---
+
+## 10. Revision R6 — Mandatory Trusted Offline Dispatcher Admission & Final P1 Closure
+
+**Bootstrap baseline:** Local/remote HEAD `6c54ab2f2a0c72e479bbc686c067e0c0d9c8c43f`, `main` `4569479e8fe2caa6659fe1cc6c7a484596a01bbc`, clean worktree, 32 review threads (31 resolved, 1 unresolved P1 `PRRT_kwDOVtCmZc67xeWI`), 8/8 CI checks PASS (including Cursor Bugbot PASS & Cursor Security Reviewer PASS), and independent `im-tio` review `CHANGES_REQUESTED` (`2026-11-25T07:21:46Z`).
+
+### R6-01: Mandatory Trusted Offline Dispatcher & Mode Separation (`PRRT_kwDOVtCmZc67xeWI`)
+
+1. **Private Registration (`TRUSTED_OFFLINE_DISPATCHERS`):** `createTrustedOfflineDispatcher(spec)` constructs frozen, declarative-only offline dispatchers backed by `createDeterministicFixtureTransport()`, bound strictly to `HARDCODED_TEMP_REF` and an explicit `validateRunId(runId)`, with zero arbitrary callbacks, accessors, symbols, cycles, or public trust markers.
+2. **Mandatory Runner Admission (`assertTrustedOfflineDispatcher`):** `runHostedProbeRunner()` and `runOfflineProbeSimulation()` unconditionally validate BOTH `assertTrustedOfflineDispatcher()` and `assertTrustedAdminClient()` before any probe, provisioning, or destructive cleanup call. Unregistered functions, captured-fetch closures, bound/wrapped functions, forged markers (`_isTrustedOfflineDispatcher`, etc.), `Proxy` wrappers, cross-project/cross-run/unbound dispatchers, and `HOSTED_NETWORK_DISPATCHERS` are rejected fail-closed while preserving existing residual obligations in `error.cleanupReport` (`RESIDUAL_BLOCKED`).
+3. **Explicit Mode Separation:**
+   - `DRY_RUN`: planning only; zero network calls; no dispatcher/Admin required.
+   - `OFFLINE_SIMULATION` (`runOfflineProbeSimulation()` or compatibility `LIVE` simulation): requires registered declarative dispatcher + registered Admin adapter; reports `simulatedExecution: true`, `hostedProviderVerified: false`.
+   - Real `LIVE` hosted dispatch: unconditionally blocked (`BLOCKED_PENDING_DURABLE_RECOVERY`) at CLI `--live` and for `HOSTED_NETWORK_DISPATCHERS`, independent of optional flags (`liveHostedDispatch`, `enforceDurableRecoveryGate`, `requireSelection`, `_isHostedNetworkDispatcher`, function names, or caller booleans).
+4. **Legacy Test Migration:** All callback-based `mockDispatcher` runner tests in `experiments/task06i/hosted-probe-runner.test.mjs` migrated to declarative `offlineDispatcherSpec` / `createTrustedOfflineDispatcher` fixtures preserving all H1–H3 behavioral assertions.
+
+### Executable Dependency Audit Matrix (R6)
+
+| Boundary / Entry Point | Trust Validation | Registration Source | Project / Run Binding | Invocation Boundary | Negative Regression Coverage | Reachable Native Network? |
+|---|---|---|---|---|---|---|
+| **Runner Admission** (`runHostedProbeRunner` / `runOfflineProbeSimulation`) | `assertTrustedOfflineDispatcher` + `assertTrustedAdminClient` + `HOSTED_NETWORK_DISPATCHERS` block | `TRUSTED_OFFLINE_DISPATCHERS` & `TRUSTED_ADMIN_CLIENTS` `WeakMap`s | `HARDCODED_TEMP_REF` + exact `activeInventory.runId` | Before probe loop, provisioning, or cleanup | Tests 11, 25, 56, 96, 100, 115, 123 | **No** (no caller callbacks admitted) |
+| **Offline Dispatcher** (`createTrustedOfflineDispatcher`) | `validateDeclarativeFixtureValue` + `assertOfflineMockTransport` + `Object.freeze` | `TRUSTED_OFFLINE_DISPATCHERS` `WeakMap` | `HARDCODED_TEMP_REF` + required `runId` | `runWithBlockedRealFetch()` | Tests 122, 123, 124 | **No** (declarative fixtures + `TRUSTED_DETERMINISTIC_TRANSPORTS` only) |
+| **Hosted Network Dispatcher** (`createHostedDispatcher`) | `assertOfflineMockTransport` + `HOSTED_NETWORK_DISPATCHERS` `WeakSet` | `HOSTED_NETWORK_DISPATCHERS` | `HARDCODED_TEMP_REF` + `validateProjectCredentialBinding` | Unconditionally blocked in `runHostedProbeRunner` | Tests 34, 96, 100, 102, 112 | **No** (blocked in runner; `fetchFn` gated to deterministic transport) |
+| **Probe Helpers & `TestRunInventory`** | Pure data / `validateProbeOutcome` + private `VERIFIED_STORAGE_CREATIONS` / `VERIFIED_STORAGE_DELETIONS` | Module-private `WeakMap`s | `inventory.runId` | In-process state & `executeCleanup` | Tests 15–32, 113–121 | **No** (zero network APIs) |
+| **Admin Adapter** (`createHostedAdminClient`) | `assertTrustedAdminClient` + frozen capabilities + `Reflect.apply` | `TRUSTED_ADMIN_CLIENTS` `WeakMap` | `HARDCODED_TEMP_REF` + `runId` / Storage path `runId` | `runWithBlockedRealFetch()` | Tests 108, 113, 114, 115, 119 | **No** (`TRUSTED_DETERMINISTIC_TRANSPORTS` only) |
+| **Storage Provisioning** (`provisionStorageProbeFixture`) | `assertTrustedAdminClient` + `assertOfflineMockTransport` + `ownershipLookupFn` rejected | `TRUSTED_ADMIN_CLIENTS` + `TRUSTED_DETERMINISTIC_TRANSPORTS` | `HARDCODED_TEMP_REF` + `runId` + `/auth/v1/user` `sub` | `runWithBlockedRealFetch()` | Tests 93, 96–100, 103, 108, 112 | **No** (arbitrary callbacks rejected pre-mutation) |
+| **Cleanup & Absence** (`executeCleanup`, `verifyStorageObjectAbsenceDetailed`) | `assertTrustedAdminClient` + private deletion/creation receipts | `TRUSTED_ADMIN_CLIENTS` + `VERIFIED_STORAGE_*` | `HARDCODED_TEMP_REF` + `inventory.runId` | `runWithBlockedRealFetch()` + structured `failClosed` / `INDETERMINATE` | Tests 113–121 | **No** (`TRUSTED_DETERMINISTIC_TRANSPORTS` only) |
+| **Reporting** (`sanitizeData`, `cleanupFailure`) | Recursive secret redaction + `simulatedExecution: true`, `hostedProviderVerified: false` | Module-internal | `runId` + sanitized `cleanupReport` | Post-run / admission-error | Tests 9, 9b, 21, 23, 27, 29, 115, 123, 124 | **No** (pure serialization) |
+
+*Containment Note:* Application-level `WeakMap` capability restrictions and `runWithBlockedRealFetch()` do not claim to sandbox arbitrary JavaScript executed outside the exported runner in the host Node process; OS/container network isolation (`docker --network none`) is a separate security layer verified alongside the full runner suite.
+
+### R6 Verification Matrix
+
+| Check Executed | Result / Exit Code |
+|---|---|
+| `node --test experiments/task06i/hosted-probe-runner.test.mjs` | **128/128 PASS**, exit 0 (includes Tests 122–124) |
+| `node --test experiments/task06i/*.test.mjs` | **196/196 PASS**, exit 0 |
+| Docker `node:24-bookworm --network none --pull never` runner suite | **128/128 PASS**, exit 0 |
+| `node experiments/task06i/sql-contract-parity.mjs` | **POSTGRES_VERIFIED 18/18** on PostgreSQL 17.11, exit 0 |
+| `node --test experiments/task06h/*.test.mjs` | **115/115 PASS**, exit 0 |
+| `npm run verify` | Tokens guard, `tsc --noEmit`, `eslint --max-warnings=0`, **22/22 shell tests PASS**, exit 0 |
+| `git diff --check` & `git diff --check origin/main...HEAD` | **CLEAN**, exit 0 |
+
+*Preserved R5/Environment Limitations:* Synthetic local metadata verification is not full Supabase Storage integration; pinned Supabase CLI telemetry-write denial remains an environment limitation; actual hosted verification remains `0/18`; H4 durable recovery and Option B run-created seed support remain `NOT IMPLEMENTED`.
+
+### Final R6 Decisions
+
+- **H3 Subset Runner:** `IMPLEMENTED_OFFLINE_TESTED / BLOCKED`
+- **H3 Storage Lifecycle:** `IMPLEMENTED_OFFLINE_TESTED / BLOCKED`
+- **Durable Recovery:** `NOT IMPLEMENTED`
+- **Run-Created Seed Support:** `NOT IMPLEMENTED`
+- **Hosted Verification:** `0/18`
+- **Hosted LIVE:** `NOT AUTHORIZED`
+- **Production Real Auth:** `STRICT NO-GO`
+- **Hosted Mutations:** `0`
+- **Cost:** `$0`
+- **Merge:** `NOT AUTHORIZED`
