@@ -1,6 +1,6 @@
 # Task 06I-B1-H3 — Controlled Subset Dispatch & Run-Scoped Storage Implementation
 
-**Task ID:** `06I-B1-H3` (Revision `R8`)<br>
+**Task ID:** `06I-B1-H3` (Revision `R9`)<br>
 **Creation Date:** 2026-11-24<br>
 **Revision Date:** 2026-11-25<br>
 **Author:** Santosh Jangid (`im-tnyx`)<br>
@@ -8,7 +8,7 @@
 **Branch:** `feat/task06i-b1-h3-subset-runner-storage`<br>
 **Base:** `main` at `4569479e8fe2caa6659fe1cc6c7a484596a01bbc` (PR #43 merge commit)<br>
 **PR Reference:** https://github.com/im-tnyx/Tio-Workspace/pull/44<br>
-**Prior Audited HEAD:** `9a6cb6cc258a675434fabd1a465364eff6149a5b` (R7)<br>
+**Prior Audited HEAD:** `d82ef6bb44b16ab9774d5536464e738b2849a947` (R8)<br>
 **Cost Ceiling:** $0.00 (Free-Tier Only)<br>
 **Mode:** Local Implementation, Mocked Transport Tests & Offline Verification ONLY<br>
 **Hosted LIVE Dispatch:** **NOT AUTHORIZED**<br>
@@ -577,6 +577,57 @@ Offline verification and independent diff review are complete for implementation
 | `git diff --check` & `git diff --check origin/main...HEAD` | **CLEAN**, exit 0 |
 
 ### Final R8 Decisions
+
+- **H3 Subset Runner:** `IMPLEMENTED_OFFLINE_TESTED / BLOCKED`
+- **H3 Storage Lifecycle:** `IMPLEMENTED_OFFLINE_TESTED / BLOCKED`
+- **Durable Recovery:** `NOT IMPLEMENTED`
+- **Run-Created Seed Support:** `NOT IMPLEMENTED`
+- **Hosted Verification:** `0/18`
+- **Hosted LIVE:** `NOT AUTHORIZED`
+- **Production Real Auth:** `STRICT NO-GO`
+- **Hosted Mutations:** `0`
+- **Cost:** `$0`
+- **Merge:** `NOT AUTHORIZED`
+
+---
+
+## 13. Revision R9 — Unified Typed Admission, Immutable Run Binding & Dispatcher Factory Closure
+
+**Bootstrap baseline:** Local/remote HEAD `d82ef6bb44b16ab9774d5536464e738b2849a947`, `main` `4569479e8fe2caa6659fe1cc6c7a484596a01bbc`, clean worktree, 40 review threads (36 resolved, 4 unresolved: `PRRT_kwDOVtCmZc672Fba`, `PRRT_kwDOVtCmZc672Fbi`, `PRRT_kwDOVtCmZc672Im5`, `PRRT_kwDOVtCmZc672Im8`), 6 successful checks, Cursor Bugbot NEUTRAL, and independent `im-tio` review `CHANGES_REQUESTED` (`2026-11-25T10:31:37Z`).
+
+### R9-01..R9-04 Remediation Summary
+
+1. **R9-01 (`PRRT_kwDOVtCmZc672Fba` P1) — Immutable `RunContext` Binding:** `createRunContext()` defines `runId` and `projectRef` via `Object.defineProperty(..., { writable: false, configurable: false })` and tracks `cleared` state in `TRUSTED_RUN_CONTEXTS`. `assertTrustedRunContext()` compares `expectedRunId` against immutable `meta.runId`, verifies `runId`/`projectRef` own data descriptors match `meta`, enforces `HARDCODED_TEMP_REF`, and rejects cleared contexts (`UNTRUSTED_RUN_CONTEXT: Cleared run context is terminal`).
+2. **R9-02 (`PRRT_kwDOVtCmZc672Fbi` P2) — Standalone `DRY_RUN` Default:** `determineRunnerMode(argv = [], env = {})`, `snapshotRunnerArgv(rawArgv = [])`, and `snapshotRunnerEnv(rawEnv = {})` default to empty `[]`/`{}` instead of ambient `process.argv`/`process.env`; only the standalone CLI block passes `process.argv`/`process.env` explicitly.
+3. **R9-03 (`PRRT_kwDOVtCmZc672Im5` P1) — Typed Probe Selection Snapshot:** `validateSelectedProbeIds()` and `planProbeExecution()` reuse `snapshotStringArray()` (rejecting Proxies, non-Arrays, custom prototypes, symbols including `Symbol.iterator`, indexed accessors, overridden methods, sparse holes, and non-strings) before any iteration.
+4. **R9-04 (`PRRT_kwDOVtCmZc672Im8` P1) — Dispatcher Factory & Per-Call Capability Enforcement:** `createHostedDispatcher()` enforces `admitValidatedInput(rawOptions, 'createHostedDispatcherOptions')`, credential binding, `assertOfflineMockTransport(fetchFn)` BEFORE touching `inventory`/`runContext`, then `assertTrustedRunInventory()` and `assertTrustedRunContext()` with immutable project/run correlation before `protectSeedIdentity()`. Returned `hostedDispatcher(rawItem, rawCallOptions)` enforces `admitValidatedInput(rawCallOptions, 'dispatcherCallOptions')` and validates per-call `inventory`/`runContext` overrides.
+
+### Source-Backed Executable Boundary Audit Matrix (R9)
+
+| Public entry point | Typed data schema | Trusted capability checks | Immutable binding | Before first execution | Regression test |
+|---|---|---|---|---|---|
+| `runHostedProbeRunner` / `runOfflineProbeSimulation` (`hosted-probe-runner.mjs`) | `UNIFIED_ADMISSION_SCHEMAS.runnerOptions` via `admitValidatedInput()`, `snapshotRunnerArgv()`, `snapshotRunnerEnv()`, `snapshotStringArray()` | `assertTrustedRunInventory()`, `assertTrustedRunContext()`, `assertTrustedOfflineDispatcher()`, `assertTrustedAdminClient()` | `HARDCODED_TEMP_REF` + exact `activeInventory.runId` | Yes (prior to probe loop, provisioning, or cleanup) | Tests 11, 25, 56, 115, 123, 125, 127–129, 131–133 |
+| `determineRunnerMode` / `planProbeExecution` / `validateSelectedProbeIds` | `planProbeExecutionOptions` + `snapshotStringArray()` | Inert data only (zero callbacks/capabilities) | `HARDCODED_TEMP_REF` + `runId` | Yes (prior to `for` / `Array.from`) | Tests 7, 8, 90, 91, 128, 132, 133 |
+| `createTrustedOfflineDispatcher` | `extractValidatedPlainOptions()` + `validateDeclarativeFixtureValue()` (incl. `isProxy`, `isRegExp`) | `assertOfflineMockTransport(fetchFn)` + `TRUSTED_OFFLINE_BARRIERS` + per-call `assertTrustedRunInventory` / `assertTrustedRunContext` | `HARDCODED_TEMP_REF` + required `runId` | Yes (prior to `TRUSTED_OFFLINE_DISPATCHERS` registration) | Tests 122–124, 126, 130 |
+| `createHostedDispatcher` & `hostedDispatcher` | `createHostedDispatcherOptions` & `dispatcherCallOptions` via `admitValidatedInput()` | `assertOfflineMockTransport()`, `assertTrustedRunInventory()`, `assertTrustedRunContext()` (factory & per-call) | `HARDCODED_TEMP_REF` + correlated `runId` | Yes (prior to `protectSeedIdentity()` or `fetchFn` call) | Tests 34, 96, 100, 102, 127, 134 |
+| `createRunContext` & `assertTrustedRunContext` | `createRunContextOptions` via `admitValidatedInput()` | `TRUSTED_RUN_CONTEXTS` `WeakMap` + `clear` method identity + `cleared` terminal flag | Non-writable, non-configurable `runId` & `projectRef` | Yes (prior to returning context or reading fields) | Tests 129, 131, 134 |
+| `TestRunInventory` & `assertTrustedRunInventory` | `extractValidatedPlainOptions()` | `TRUSTED_RUN_INVENTORIES` `WeakMap` + baseline method equality | `HARDCODED_TEMP_REF` + `meta.runId` | Yes (prior to `runId` read or `executeCleanup()`) | Tests 113–121, 127, 129, 134 |
+| `createHostedAdminClient` & `assertTrustedAdminClient` | `extractValidatedPlainOptions()` | `TRUSTED_ADMIN_CLIENTS` `WeakMap` + frozen capabilities + `assertOfflineMockTransport()` | `HARDCODED_TEMP_REF` + `runId` | Yes (prior to capability execution) | Tests 108, 113–115, 119, 127 |
+| `provisionStorageProbeFixture`, `executeCleanup`, `verifyStorageObjectAbsenceDetailed` | `extractValidatedPlainOptions()` | `assertTrustedAdminClient()`, `assertTrustedRunInventory()`, `assertOfflineMockTransport()` | `HARDCODED_TEMP_REF` + `runId` | Yes (prior to reservation or provider call) | Tests 93–100, 103–108, 112–121, 127 |
+
+### R9 Verification Matrix
+
+| Check Executed | Result / Exit Code |
+|---|---|
+| `node --test experiments/task06i/hosted-probe-runner.test.mjs` | **138/138 PASS**, exit 0 (includes Tests 131–134) |
+| `node --test experiments/task06i/*.test.mjs` | **206/206 PASS**, exit 0 |
+| Docker `node:24-bookworm --network none --pull never` runner suite | **138/138 PASS**, exit 0 |
+| `node experiments/task06i/sql-contract-parity.mjs` | **POSTGRES_VERIFIED 18/18** on PostgreSQL 17.11, exit 0 |
+| `node --test experiments/task06h/*.test.mjs` | **115/115 PASS**, exit 0 |
+| `npm run verify` | Tokens guard, `tsc --noEmit`, `eslint --max-warnings=0`, **22/22 shell tests PASS**, exit 0 |
+| `git diff --check` & `git diff --check origin/main...HEAD` | **CLEAN**, exit 0 |
+
+### Final R9 Decisions
 
 - **H3 Subset Runner:** `IMPLEMENTED_OFFLINE_TESTED / BLOCKED`
 - **H3 Storage Lifecycle:** `IMPLEMENTED_OFFLINE_TESTED / BLOCKED`

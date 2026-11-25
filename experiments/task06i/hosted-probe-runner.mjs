@@ -542,6 +542,146 @@ function extractValidatedPlainOptions(rawInput, label, { allowNullUndefined = tr
   return snapshot;
 }
 
+function snapshotStringArray(
+  rawArr,
+  label,
+  { allowEmpty = true, trimNonEmpty = false, errorCode = 'INVALID_DETERMINISTIC_FIXTURE_SPEC' } = {}
+) {
+  if (utilTypes.isProxy(rawArr)) {
+    throw new Error(`${errorCode}: Proxy array rejected at '${label}' (R9-03)`);
+  }
+  if (!Array.isArray(rawArr) || Object.getPrototypeOf(rawArr) !== Array.prototype) {
+    throw new Error(`${errorCode}: ${label} must be an array (genuine Array of strings required, R9-03)`);
+  }
+  if (Object.getOwnPropertySymbols(rawArr).length > 0) {
+    throw new Error(`${errorCode}: Symbol properties on '${label}' rejected (R9-03)`);
+  }
+  const lenDesc = Object.getOwnPropertyDescriptor(rawArr, 'length');
+  if (!lenDesc || !Object.hasOwn(lenDesc, 'value') || typeof lenDesc.value !== 'number') {
+    throw new Error(`${errorCode}: Invalid length descriptor on '${label}' (R9-03)`);
+  }
+  const len = lenDesc.value;
+  if (!allowEmpty && len === 0) {
+    throw new Error(`${errorCode}: ${label} must be a non-empty array`);
+  }
+  for (const key of Object.getOwnPropertyNames(rawArr)) {
+    if (key === 'length') continue;
+    const idx = Number(key);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= len || String(idx) !== key) {
+      throw new Error(`${errorCode}: Unexpected property '${key}' on '${label}' rejected (R9-03)`);
+    }
+  }
+  const copy = [];
+  for (let i = 0; i < len; i++) {
+    const desc = Object.getOwnPropertyDescriptor(rawArr, String(i));
+    if (!desc || !Object.hasOwn(desc, 'value') || typeof desc.value !== 'string') {
+      if (errorCode === 'INVALID_PROBE_SELECTION') {
+        throw new Error(`${errorCode}: each probe ID must be a non-empty string (R9-03)`);
+      }
+      throw new Error(`${errorCode}: ${label}[${i}] must be a primitive string data property (R9-03)`);
+    }
+    if (trimNonEmpty && !desc.value.trim()) {
+      if (errorCode === 'INVALID_PROBE_SELECTION') {
+        throw new Error(`${errorCode}: each probe ID must be a non-empty string (R9-03)`);
+      }
+      throw new Error(`${errorCode}: each element in ${label} must be a non-empty string`);
+    }
+    copy.push(desc.value);
+  }
+  return copy;
+}
+
+/**
+ * Single unified typed admission schema registry (R9 Sec 6).
+ * Every public execution path admits inputs through extractValidatedPlainOptions() + schema field contracts
+ * before any subsequent property read or capability invocation.
+ */
+export const UNIFIED_ADMISSION_SCHEMAS = Object.freeze({
+  runnerOptions: Object.freeze({
+    projectRef: { type: 'string', required: false, kind: 'inert_data', binding: 'project' },
+    tempRef: { type: 'string', required: false, kind: 'inert_data', binding: 'project' },
+    argv: { type: 'string_array', required: false, kind: 'inert_data', binding: 'none' },
+    env: { type: 'env_record', required: false, kind: 'inert_data', binding: 'none' },
+    testEmail: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
+    testUser: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
+    seedEmail: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
+    seedUserId: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
+    targetUserId: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
+    runId: { type: 'string', required: false, kind: 'inert_data', binding: 'run' },
+    selectedProbeIds: { type: 'string_array', required: false, kind: 'inert_data', binding: 'none' },
+    timing: { type: 'declarative_record', required: false, kind: 'inert_data', binding: 'offline_only' },
+    mockDispatcher: { type: 'trusted_offline_dispatcher', required: false, kind: 'registered_capability', binding: 'project+run' },
+    offlineDispatcher: { type: 'trusted_offline_dispatcher', required: false, kind: 'registered_capability', binding: 'project+run' },
+    adminClient: { type: 'trusted_admin_client', required: false, kind: 'registered_capability', binding: 'project+run' },
+    inventory: { type: 'trusted_inventory', required: false, kind: 'registered_capability', binding: 'project+run' },
+    runContext: { type: 'trusted_run_context', required: false, kind: 'registered_capability', binding: 'project+run' },
+    executionMode: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
+    probeTimeoutMs: { type: 'number', required: false, kind: 'inert_data', binding: 'none' }
+  }),
+  planProbeExecutionOptions: Object.freeze({
+    testEmail: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
+    tempRef: { type: 'string', required: false, kind: 'inert_data', binding: 'project' },
+    isLive: { type: 'boolean', required: false, kind: 'inert_data', binding: 'none' },
+    selectedProbeIds: { type: 'string_array', required: false, kind: 'inert_data', binding: 'none' },
+    runId: { type: 'string', required: false, kind: 'inert_data', binding: 'run' },
+    allowIsolatedTestRef: { type: 'boolean', required: false, kind: 'inert_data', binding: 'none' }
+  }),
+  createHostedDispatcherOptions: Object.freeze({
+    projectRef: { type: 'string', required: false, kind: 'inert_data', binding: 'project' },
+    anonKey: { type: 'string', required: true, kind: 'inert_data', binding: 'project' },
+    serviceRoleKey: { type: 'string', required: false, kind: 'inert_data', binding: 'project' },
+    fetchFn: { type: 'trusted_transport', required: true, kind: 'registered_capability', binding: 'offline_transport' },
+    inventory: { type: 'trusted_inventory', required: false, kind: 'registered_capability', binding: 'project+run' },
+    runContext: { type: 'trusted_run_context', required: false, kind: 'registered_capability', binding: 'project+run' },
+    testEmail: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
+    seedEmail: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
+    seedUserId: { type: 'string', required: false, kind: 'inert_data', binding: 'none' }
+  }),
+  dispatcherCallOptions: Object.freeze({
+    signal: { type: 'abort_signal', required: false, kind: 'trusted_internal_object', binding: 'none' },
+    projectRef: { type: 'string', required: false, kind: 'inert_data', binding: 'project' },
+    runId: { type: 'string', required: false, kind: 'inert_data', binding: 'run' },
+    inventory: { type: 'trusted_inventory', required: false, kind: 'registered_capability', binding: 'project+run' },
+    runContext: { type: 'trusted_run_context', required: false, kind: 'registered_capability', binding: 'project+run' },
+    testPassword: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
+    testEmail: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
+    testUser: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
+    seedEmail: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
+    seedUserId: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
+    activeRefreshToken: { type: 'string', required: false, kind: 'inert_data', binding: 'none' }
+  }),
+  createRunContextOptions: Object.freeze({
+    runId: { type: 'string', required: false, kind: 'inert_data', binding: 'run' },
+    storageFixturePath: { type: 'string', required: false, kind: 'inert_data', binding: 'run' },
+    testPassword: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
+    testEmail: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
+    testUser: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
+    seedUserId: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
+    seedEmail: { type: 'string', required: false, kind: 'inert_data', binding: 'none' }
+  })
+});
+
+function admitValidatedInput(rawInput, schemaName, { allowNullUndefined = true } = {}) {
+  const snapshot = extractValidatedPlainOptions(rawInput, schemaName, { allowNullUndefined });
+  const schema = UNIFIED_ADMISSION_SCHEMAS[schemaName];
+  if (schema) {
+    for (const key of Object.getOwnPropertyNames(snapshot)) {
+      const val = snapshot[key];
+      if (val === undefined || val === null) continue;
+      const spec = schema[key];
+      if (typeof val === 'function' && (!spec || spec.kind === 'inert_data')) {
+        if (schemaName === 'runnerOptions' && (key === 'sleepFn' || key === 'timing')) {
+          continue; // Rejected in _runHostedProbeRunnerInternal admission try/catch so valid inventory residual obligations are preserved on error.cleanupReport (R7-01)
+        }
+        throw new Error(
+          `BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_EXECUTABLE_INPUT: Function value rejected at '${schemaName}.${key}' (R9 Sec 6)`
+        );
+      }
+    }
+  }
+  return snapshot;
+}
+
 function internalThrottleWait(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -946,12 +1086,15 @@ export function createTrustedOfflineDispatcher(rawSpec = {}) {
   let sequenceCursor = 0;
   const calls = [];
 
-  const dispatcher = async function trustedOfflineDispatcher(item, options = {}) {
+  const dispatcher = async function trustedOfflineDispatcher(rawItem, rawOptions = {}) {
+    const item = extractValidatedPlainOptions(rawItem, 'probeItem');
+    const options = extractValidatedPlainOptions(rawOptions, 'offlineDispatcherCallOptions');
     assertTrustedOfflineDispatcher(dispatcher, { projectRef: normRef, runId: boundRunId });
-    if (options.inventory?.runId && options.inventory.runId !== boundRunId) {
-      throw new Error(
-        `OFFLINE_DISPATCHER_RUN_MISMATCH: Trusted offline dispatcher bound to runId '${boundRunId}', got inventory '${options.inventory.runId}' (R6-01)`
-      );
+    if (options.inventory !== undefined && options.inventory !== null) {
+      assertTrustedRunInventory(options.inventory, { projectRef: normRef, expectedRunId: boundRunId });
+    }
+    if (options.runContext !== undefined && options.runContext !== null) {
+      assertTrustedRunContext(options.runContext, { projectRef: normRef, expectedRunId: boundRunId });
     }
 
     return runWithBlockedRealFetch(async () => {
@@ -1410,20 +1553,17 @@ export function getStorageProbeObjectKey(runId) {
  * Validates selected probe subset for unknown IDs, duplicates, dependency completeness,
  * and live-mode support (H3-01).
  */
-export function validateSelectedProbeIds(selectedProbeIds, options = {}) {
-  if (!Array.isArray(selectedProbeIds)) {
-    throw new Error('INVALID_PROBE_SELECTION: selectedProbeIds must be an array');
-  }
-  if (selectedProbeIds.length === 0) {
-    throw new Error('INVALID_PROBE_SELECTION: selectedProbeIds must be a non-empty array');
-  }
+export function validateSelectedProbeIds(selectedProbeIds, rawOptions = {}) {
+  extractValidatedPlainOptions(rawOptions, 'validateSelectedProbeIdsOptions');
+  const safeIds = snapshotStringArray(selectedProbeIds, 'selectedProbeIds', {
+    allowEmpty: false,
+    trimNonEmpty: true,
+    errorCode: 'INVALID_PROBE_SELECTION'
+  });
 
   const seen = new Set();
-  for (const id of selectedProbeIds) {
-    if (typeof id !== 'string' || !id.trim()) {
-      throw new Error('INVALID_PROBE_SELECTION: each probe ID must be a non-empty string');
-    }
-    const cleanId = id.trim();
+  for (let i = 0; i < safeIds.length; i++) {
+    const cleanId = safeIds[i].trim();
     if (seen.has(cleanId)) {
       throw new Error(`INVALID_PROBE_SELECTION: duplicate probe ID '${cleanId}' detected`);
     }
@@ -2096,42 +2236,13 @@ export function validateTargetProject(projectRef, tempRef = HARDCODED_TEMP_REF, 
   return normRef;
 }
 
-function snapshotRunnerArgv(rawArgv) {
-  const source = rawArgv === undefined ? process.argv : rawArgv;
-  if (utilTypes.isProxy(source)) {
-    throw new Error('INVALID_RUNNER_ARGV: Proxy argv rejected (R8-01)');
-  }
-  if (!Array.isArray(source) || Object.getPrototypeOf(source) !== Array.prototype) {
-    throw new Error('INVALID_RUNNER_ARGV: argv must be a genuine Array of strings (R8-01)');
-  }
-  if (Object.getOwnPropertySymbols(source).length > 0) {
-    throw new Error('INVALID_RUNNER_ARGV: Symbol properties on argv rejected (R8-01)');
-  }
-  const lenDesc = Object.getOwnPropertyDescriptor(source, 'length');
-  if (!lenDesc || !Object.hasOwn(lenDesc, 'value') || typeof lenDesc.value !== 'number') {
-    throw new Error('INVALID_RUNNER_ARGV: Invalid argv length descriptor (R8-01)');
-  }
-  const len = lenDesc.value;
-  for (const key of Object.getOwnPropertyNames(source)) {
-    if (key === 'length') continue;
-    const idx = Number(key);
-    if (!Number.isInteger(idx) || idx < 0 || idx >= len || String(idx) !== key) {
-      throw new Error(`INVALID_RUNNER_ARGV: Unexpected property '${key}' on argv rejected (R8-01)`);
-    }
-  }
-  const copy = [];
-  for (let i = 0; i < len; i++) {
-    const desc = Object.getOwnPropertyDescriptor(source, String(i));
-    if (!desc || !Object.hasOwn(desc, 'value') || typeof desc.value !== 'string') {
-      throw new Error(`INVALID_RUNNER_ARGV: argv[${i}] must be a primitive string data property (R8-01)`);
-    }
-    copy.push(desc.value);
-  }
-  return copy;
+function snapshotRunnerArgv(rawArgv = []) {
+  const source = rawArgv === undefined ? [] : rawArgv;
+  return snapshotStringArray(source, 'argv', { allowEmpty: true, trimNonEmpty: false, errorCode: 'INVALID_RUNNER_ARGV' });
 }
 
-function snapshotRunnerEnv(rawEnv) {
-  const source = rawEnv === undefined ? process.env : rawEnv;
+function snapshotRunnerEnv(rawEnv = {}) {
+  const source = rawEnv === undefined ? {} : rawEnv;
   if (utilTypes.isProxy(source)) {
     throw new Error('INVALID_RUNNER_ENV: Proxy env rejected (R8-01)');
   }
@@ -2176,7 +2287,7 @@ function snapshotRunnerEnv(rawEnv) {
  * Determines runner execution mode.
  * Defaults strictly to DRY_RUN unless explicit --live flag AND env var are present.
  */
-export function determineRunnerMode(argv = process.argv, env = process.env) {
+export function determineRunnerMode(argv = [], env = {}) {
   const safeArgv = snapshotRunnerArgv(argv);
   const safeEnv = snapshotRunnerEnv(env);
   const hasLiveFlag = safeArgv.includes('--live');
@@ -2206,7 +2317,8 @@ function getProbeReadinessStatus(id) {
  * Plans probe execution across the canonical 18 preflight requirements, supporting
  * controlled subset execution, dependency completeness validation, and run-scoped target formatting (H3-01).
  */
-export function planProbeExecution(projectRef, options = {}) {
+export function planProbeExecution(projectRef, rawOptions = {}) {
+  const options = admitValidatedInput(rawOptions, 'planProbeExecutionOptions');
   const isLive = options.isLive === true;
   const tempRef = options.tempRef || HARDCODED_TEMP_REF;
   const validatedRef = validateTargetProject(projectRef, tempRef, isLive, {
@@ -4165,7 +4277,8 @@ export function assertTrustedRunInventory(
   return meta;
 }
 
-export function assertTrustedRunContext(ctx, { expectedRunId = null } = {}) {
+export function assertTrustedRunContext(ctx, { projectRef = HARDCODED_TEMP_REF, expectedRunId = null } = {}) {
+  const normRef = (projectRef || '').trim().toLowerCase();
   if (!ctx || typeof ctx !== 'object' || Array.isArray(ctx) || utilTypes.isProxy(ctx)) {
     throw new Error(
       'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_RUN_CONTEXT: Run context must be a registered instance from createRunContext() (R8-01)'
@@ -4175,6 +4288,11 @@ export function assertTrustedRunContext(ctx, { expectedRunId = null } = {}) {
   if (!meta || meta.instance !== ctx) {
     throw new Error(
       'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_RUN_CONTEXT: Unregistered or forged run context rejected fail-closed (R8-01)'
+    );
+  }
+  if (meta.cleared === true) {
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_RUN_CONTEXT: Cleared run context is terminal and cannot be reused (R9-01)'
     );
   }
   const proto = Object.getPrototypeOf(ctx);
@@ -4201,10 +4319,31 @@ export function assertTrustedRunContext(ctx, { expectedRunId = null } = {}) {
       'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_RUN_CONTEXT: Run context clear() method was altered or replaced (R8-01)'
     );
   }
-  const runIdDesc = Object.getOwnPropertyDescriptor(ctx, 'runId');
-  if (expectedRunId && runIdDesc && runIdDesc.value !== null && runIdDesc.value !== expectedRunId) {
+  if (!meta.projectRef || meta.projectRef !== normRef || meta.projectRef !== HARDCODED_TEMP_REF || isForbiddenProject(meta.projectRef)) {
     throw new Error(
-      `ADMIN_CLIENT_RUN_MISMATCH: Run context runId '${runIdDesc.value}' does not match expected '${expectedRunId}' (R8-01)`
+      `CRITICAL_SECURITY_VIOLATION: UNTRUSTED_RUN_CONTEXT: Run context bound to '${meta.projectRef}', expected '${normRef}' (R9-01)`
+    );
+  }
+  const projDesc = Object.getOwnPropertyDescriptor(ctx, 'projectRef');
+  if (!projDesc || !Object.hasOwn(projDesc, 'value') || projDesc.value !== meta.projectRef) {
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_RUN_CONTEXT: Run context projectRef tampered or missing (R9-01)'
+    );
+  }
+  if (!meta.runId || typeof meta.runId !== 'string') {
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_RUN_CONTEXT: Run context lacks valid registered runId (R9-01)'
+    );
+  }
+  const runIdDesc = Object.getOwnPropertyDescriptor(ctx, 'runId');
+  if (!runIdDesc || !Object.hasOwn(runIdDesc, 'value') || runIdDesc.value !== meta.runId) {
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_RUN_CONTEXT: Run context runId tampered, nullified, or missing (R9-01)'
+    );
+  }
+  if (expectedRunId && meta.runId !== expectedRunId) {
+    throw new Error(
+      `ADMIN_CLIENT_RUN_MISMATCH: Run context registered runId '${meta.runId}' does not match expected '${expectedRunId}' (R9-01)`
     );
   }
   return meta;
@@ -7009,14 +7148,23 @@ export function getRunTestPassword(options = {}) {
  * Resolves PRRT_kwDOVtCmZc66lOOP.
  */
 export function createRunContext(rawOptions = {}) {
-  const options = extractValidatedPlainOptions(rawOptions, 'createRunContextOptions');
+  const options = admitValidatedInput(rawOptions, 'createRunContextOptions');
   const testEmail = options.testEmail || options.testUser || null;
   const runId = options.runId ? validateRunId(options.runId) : `run-${Date.now()}-${crypto.randomUUID()}`;
-  const ctx = {
+  const projectRef = HARDCODED_TEMP_REF;
+  const metaState = {
+    instance: null,
     runId,
+    projectRef,
+    cleared: false,
+    methods: null
+  };
+  const ctx = {
     storageFixturePath: options.storageFixturePath || getStorageProbeObjectPath(runId),
     testPassword: getRunTestPassword(options),
     testEmail: testEmail ? String(testEmail).trim().toLowerCase() : null,
+    seedUserId: options.seedUserId || null,
+    seedEmail: options.seedEmail || null,
     activeAccessToken: null,
     activeRefreshToken: null,
     activeUserId: null,
@@ -7029,12 +7177,14 @@ export function createRunContext(rawOptions = {}) {
     originalSeedPassword: null,
     activeSeedPassword: null,
     clear() {
-      this.runId = null;
+      metaState.cleared = true;
       this.storageFixturePath = null;
       this.activeAccessToken = null;
       this.activeRefreshToken = null;
       this.testPassword = null;
       this.testEmail = null;
+      this.seedUserId = null;
+      this.seedEmail = null;
       this.activeSessionId = null;
       this.activeUserId = null;
       this.preInvalidationSessionValid = false;
@@ -7046,14 +7196,21 @@ export function createRunContext(rawOptions = {}) {
       this.activeSeedPassword = null;
     }
   };
-  TRUSTED_RUN_CONTEXTS.set(
-    ctx,
-    Object.freeze({
-      instance: ctx,
-      runId,
-      methods: Object.freeze({ clear: ctx.clear })
-    })
-  );
+  Object.defineProperty(ctx, 'runId', {
+    value: runId,
+    writable: false,
+    enumerable: true,
+    configurable: false
+  });
+  Object.defineProperty(ctx, 'projectRef', {
+    value: projectRef,
+    writable: false,
+    enumerable: true,
+    configurable: false
+  });
+  metaState.instance = ctx;
+  metaState.methods = Object.freeze({ clear: ctx.clear });
+  TRUSTED_RUN_CONTEXTS.set(ctx, metaState);
   return ctx;
 }
 
@@ -7474,7 +7631,7 @@ export const HOSTED_PROBE_SPECIFICATIONS = Object.freeze({
  * PRRT_kwDOVtCmZc66lo-o, PRRT_kwDOVtCmZc66lo-t, PRRT_kwDOVtCmZc66lq3S, and PRRT_kwDOVtCmZc66lq3W.
  */
 export function createHostedDispatcher(rawOptions = {}) {
-  const opts = extractValidatedPlainOptions(rawOptions, 'createHostedDispatcherOptions');
+  const opts = admitValidatedInput(rawOptions, 'createHostedDispatcherOptions');
   let {
     projectRef = HARDCODED_TEMP_REF,
     anonKey,
@@ -7512,16 +7669,27 @@ export function createHostedDispatcher(rawOptions = {}) {
     validateProjectCredentialBinding(serviceRoleKey, normRef);
   }
 
+  // 5. Structural Fail-Closed Transport / Durable Recovery Gate BEFORE touching inventory/context (R1-01, R2 Sec 6, R9-04)
+  assertOfflineMockTransport(fetchFn);
+
+  // 6. Mandatory trusted inventory and runContext capability validation + immutable project/run correlation (R9-04)
+  if (inventory !== null && inventory !== undefined) {
+    assertTrustedRunInventory(inventory, { projectRef: normRef, expectedRunId: null });
+  }
+  if (runContext !== null && runContext !== undefined) {
+    assertTrustedRunContext(runContext, {
+      projectRef: normRef,
+      expectedRunId: inventory ? inventory.runId : null
+    });
+  }
+
   const factorySeedEmail = seedEmail || null;
-  const factorySeedUserId = seedUserId || runContext?.seedUserId || null;
+  const factorySeedUserId = seedUserId || (runContext ? runContext.seedUserId : null) || null;
   if (inventory && factorySeedUserId) {
     inventory.protectSeedIdentity({ email: factorySeedEmail, id: factorySeedUserId });
   }
 
   const baseUrl = `https://${normRef}.supabase.co`;
-
-  // 5. Structural Fail-Closed Transport / Durable Recovery Gate (R1-01, R2 Sec 6)
-  assertOfflineMockTransport(fetchFn);
 
   const transportFetch = fetchFn;
   fetchFn = async (url, opts) => {
@@ -7538,12 +7706,22 @@ export function createHostedDispatcher(rawOptions = {}) {
   };
 
   // Return the async dispatcher matching (item, options) contract
-  const dispatcher = async function hostedDispatcher(item, options = {}) {
+  const dispatcher = async function hostedDispatcher(rawItem, rawCallOptions = {}) {
     const liveCtx = RUNNER_LIVE_DISPATCH_CONTEXT.getStore();
     if (liveCtx && liveCtx.durableRecoveryVerified !== true) {
       throw new Error(
         'BLOCKED_PENDING_DURABLE_RECOVERY: Hosted network dispatcher cannot execute inside LIVE runner while durable crash recovery is not implemented'
       );
+    }
+    const item = extractValidatedPlainOptions(rawItem, 'probeItem', { allowNullUndefined: false });
+    const options = admitValidatedInput(rawCallOptions, 'dispatcherCallOptions');
+    const expectedCallRunId = options.runId || (inventory ? inventory.runId : (runContext ? runContext.runId : null));
+    if (options.inventory !== undefined && options.inventory !== null) {
+      assertTrustedRunInventory(options.inventory, { projectRef: normRef, expectedRunId: expectedCallRunId });
+    }
+    if (options.runContext !== undefined && options.runContext !== null) {
+      const ctxExpectedRun = (options.inventory ? options.inventory.runId : null) || expectedCallRunId;
+      assertTrustedRunContext(options.runContext, { projectRef: normRef, expectedRunId: ctxExpectedRun });
     }
     const callCtx = { trappedRecoveryError: null };
     const outcome = await DISPATCHER_CALL_CONTEXT.run(callCtx, async () => {
@@ -9019,12 +9197,12 @@ export async function runHostedProbeRunner(rawOptions = {}) {
 }
 
 async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMode = null) {
-  const options = extractValidatedPlainOptions(rawOptions, 'runnerOptions');
+  const options = admitValidatedInput(rawOptions, 'runnerOptions');
   const {
     projectRef,
     tempRef = HARDCODED_TEMP_REF,
-    argv = process.argv,
-    env = process.env,
+    argv = [],
+    env = {},
     testEmail = 'tio-test-user-06i@proof.invalid',
     mockDispatcher = null,
     offlineDispatcher = null,
@@ -9092,7 +9270,7 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
       validateDeclarativeTimingConfig(options.timing, true);
     }
     if (runContext !== null && runContext !== undefined) {
-      assertTrustedRunContext(runContext, { expectedRunId: runId });
+      assertTrustedRunContext(runContext, { projectRef: validatedRef, expectedRunId: runId });
     }
     return sanitizeData({
       status: 'DRY_RUN_COMPLETED',
@@ -9142,7 +9320,7 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
       throw new Error('ADMIN_CLIENT_RUN_MISMATCH: Runner and inventory run IDs differ');
     }
     if (runContext !== null && runContext !== undefined) {
-      assertTrustedRunContext(runContext, { expectedRunId: activeInventory.runId });
+      assertTrustedRunContext(runContext, { projectRef: validatedRef, expectedRunId: activeInventory.runId });
     }
     assertTrustedOfflineDispatcher(candidateDispatcher, { projectRef: validatedRef, runId: activeInventory.runId });
     if (!adminClient) {
@@ -9172,7 +9350,14 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
   if (verifiedSeedId) {
     activeInventory.protectSeedIdentity({ email: options.seedEmail || testEmail || null, id: verifiedSeedId });
   }
-  const activeRunContext = runContext || createRunContext({ ...options, runId: activeInventory.runId, testEmail });
+  const activeRunContext = runContext || createRunContext({
+    runId: activeInventory.runId,
+    testEmail,
+    testPassword: options.testPassword,
+    seedUserId: options.seedUserId,
+    seedEmail: options.seedEmail,
+    storageFixturePath: options.storageFixturePath
+  });
   let cleanupReport = null;
   let cleanupExecuted = false;
 
@@ -10083,20 +10268,20 @@ export function createHostedAdminClient(rawOptions = {}) {
 
 // Standalone CLI execution: defaults strictly to DRY_RUN
 if (process.argv[1] && process.argv[1].endsWith('hosted-probe-runner.mjs')) {
-  const argv = process.argv.slice(2);
-  const hasLiveFlag = argv.includes('--live');
+  const cliArgv = process.argv.slice(2);
+  const hasLiveFlag = cliArgv.includes('--live');
 
   if (hasLiveFlag) {
     console.error('BLOCKED_PENDING_DURABLE_RECOVERY: LIVE hosted execution against Supabase Cloud is blocked pending durable crash recovery and journaled inventory implementation');
     process.exit(1);
   }
 
-  const mode = determineRunnerMode(argv, process.env);
+  const mode = determineRunnerMode(cliArgv, process.env);
 
   if (mode === 'DRY_RUN') {
     runHostedProbeRunner({
       projectRef: HARDCODED_TEMP_REF,
-      argv,
+      argv: cliArgv,
       env: process.env
     }).then(res => {
       console.log(`[HOSTED PROBE RUNNER] Mode: ${res.mode} | Status: ${res.status} | Project: ${res.projectRef} | Planned Probes: ${res.plan?.totalProbes}`);

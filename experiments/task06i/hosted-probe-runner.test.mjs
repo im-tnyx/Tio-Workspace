@@ -60,6 +60,7 @@ import {
   assertTrustedAdminClient,
   assertTrustedRunInventory,
   assertTrustedRunContext,
+  UNIFIED_ADMISSION_SCHEMAS,
   createTrustedOfflineDispatcher,
   assertTrustedOfflineDispatcher,
   runOfflineProbeSimulation,
@@ -3342,7 +3343,7 @@ test('65. Task 06I-B1-H1-R5 (R5-03): User absence check requires structured 404;
 test('66. Task 06I-B1-H1-R5 (R5-04): Successful password grant mints session that is tracked for cleanup immediately even when JWT claim validation fails', async () => {
   const hook01 = { id: 'HOOK-01', category: 'Token Hook' };
   const inv = new TestRunInventory('test-run-r5-04');
-  const runCtx = createRunContext();
+  const runCtx = createRunContext({ runId: inv.runId });
 
   // Create JWT with malformed AMR (string array ['password']) that fails parseAndValidateJwt
   const tokenWithBadAmr = createMockJwt({
@@ -3438,7 +3439,7 @@ test('68. Task 06I-B1-H1-R5 (R5-06): Seed credential lifecycle: password reset m
 
   // --- RUN 1: Login, Password Reset, and Cleanup ---
   const inv1 = new TestRunInventory('run-1-seed-lifecycle');
-  const runCtx1 = createRunContext();
+  const runCtx1 = createRunContext({ runId: inv1.runId });
   runCtx1.activeUserId = 'seed-user-uuid-1';
   runCtx1.activeSessionId = 'sess-run-1';
   runCtx1.activeAccessToken = createMockJwt({ sub: 'seed-user-uuid-1', session_id: 'sess-run-1' });
@@ -3471,7 +3472,7 @@ test('68. Task 06I-B1-H1-R5 (R5-06): Seed credential lifecycle: password reset m
 
   // --- RUN 2: Sequential run authenticates with original seed password ---
   const inv2 = new TestRunInventory('run-2-seed-lifecycle');
-  const runCtx2 = createRunContext();
+  const runCtx2 = createRunContext({ runId: inv2.runId });
 
   const tokenRun2 = createMockJwt({ sub: 'seed-user-uuid-1', session_id: 'sess-run-2' });
   const disp2 = createHostedDispatcher({
@@ -4383,7 +4384,7 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
   const s02Token = createMockJwt({ session_id: s02SessionId });
   invSession02.registerSession(s02SessionId, { accessToken: s02Token });
 
-  const runCtxS02 = createRunContext();
+  const runCtxS02 = createRunContext({ runId: invSession02.runId });
   runCtxS02.activeUserId = 'u-s02-test';
   runCtxS02.activeSessionId = s02SessionId;
   runCtxS02.activeAccessToken = s02Token;
@@ -4473,7 +4474,7 @@ test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, stat
   // Restoration obligation MUST be registered and in 'dispatched' state BEFORE PUT request completes
   const preDispatchBarrier = createOfflineBarrier('r9-pre-dispatch');
   const invPre = new TestRunInventory('test-run-pre-dispatch');
-  const runCtxPre = createRunContext();
+  const runCtxPre = createRunContext({ runId: invPre.runId });
   runCtxPre.activeUserId = seedUserId;
   runCtxPre.originalSeedPassword = origPassword;
   runCtxPre.activeSessionId = 'sess-pre-1';
@@ -4516,7 +4517,7 @@ test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, stat
   // 2. Transport failure (ECONNRESET / socket hangup) retains obligation as indeterminate:
   // If fetch throws AFTER dispatch, probe fails closed, but restoration obligation remains intact!
   const invTransport = new TestRunInventory('test-run-transport-failure');
-  const runCtxTransport = createRunContext();
+  const runCtxTransport = createRunContext({ runId: invTransport.runId });
   runCtxTransport.activeUserId = seedUserId;
   runCtxTransport.originalSeedPassword = origPassword;
   runCtxTransport.activeSessionId = 'sess-trans-1';
@@ -4564,7 +4565,7 @@ test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, stat
 
   // 3. Malformed JSON response retains obligation as indeterminate:
   const invJsonErr = new TestRunInventory('test-run-json-error');
-  const runCtxJsonErr = createRunContext();
+  const runCtxJsonErr = createRunContext({ runId: invJsonErr.runId });
   runCtxJsonErr.activeUserId = seedUserId;
   runCtxJsonErr.originalSeedPassword = origPassword;
 
@@ -4602,7 +4603,7 @@ test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, stat
 
   // 4. HTTP 500 response marks obligation as indeterminate:
   const inv500 = new TestRunInventory('test-run-500');
-  const runCtx500 = createRunContext();
+  const runCtx500 = createRunContext({ runId: inv500.runId });
   runCtx500.activeUserId = seedUserId;
   runCtx500.originalSeedPassword = origPassword;
 
@@ -5140,7 +5141,7 @@ test('81. Task 06I-B1-H1-R10 (R10-02): Exact identity binding, seed user correla
   assert.equal(s02Item.testUser, customSeedEmail, 'planProbeExecution must set testUser to custom seed email');
 
   const invCustom = new TestRunInventory('test-r10-custom-inv');
-  const runCtxCustom = createRunContext({ testEmail: customSeedEmail, testPassword: initialPassword });
+  const runCtxCustom = createRunContext({ runId: invCustom.runId, testEmail: customSeedEmail, testPassword: initialPassword });
   runCtxCustom.activeUserId = seedUserId;
   runCtxCustom.activeSessionId = 'sess-custom-01';
   runCtxCustom.activeAccessToken = createMockJwt({
@@ -5175,7 +5176,7 @@ test('81. Task 06I-B1-H1-R10 (R10-02): Exact identity binding, seed user correla
   const invMismatch = new TestRunInventory('test-r10-mismatch-inv');
   invMismatch.trackReferencedUser({ id: seedUserId, email: 'tracked-original@proof.invalid', source: 'seed' });
 
-  const runCtxMismatch = createRunContext();
+  const runCtxMismatch = createRunContext({ runId: invMismatch.runId });
   runCtxMismatch.activeUserId = seedUserId;
   runCtxMismatch.activeSessionId = 'sess-mismatch';
 
@@ -5204,7 +5205,7 @@ test('81. Task 06I-B1-H1-R10 (R10-02): Exact identity binding, seed user correla
   const invConflict = new TestRunInventory('test-r10-conflict-inv');
   invConflict.trackReferencedUser({ id: 'u-other-account', email: customSeedEmail, source: 'seed' });
 
-  const runCtxConflict = createRunContext();
+  const runCtxConflict = createRunContext({ runId: invConflict.runId });
   runCtxConflict.activeUserId = 'u-new-account';
   runCtxConflict.activeSessionId = 'sess-conflict';
 
@@ -5300,7 +5301,7 @@ test('81. Task 06I-B1-H1-R10 (R10-02): Exact identity binding, seed user correla
 
   // 7. Indeterminate password update preserves verified custom identity
   const invIndet = new TestRunInventory('test-r10-indet');
-  const runCtxIndet = createRunContext({ testEmail: customSeedEmail, testPassword: initialPassword });
+  const runCtxIndet = createRunContext({ runId: invIndet.runId, testEmail: customSeedEmail, testPassword: initialPassword });
   runCtxIndet.activeUserId = seedUserId;
   runCtxIndet.activeSessionId = 'sess-indet';
 
@@ -5716,7 +5717,7 @@ test('83. Task 06I-B1-H1-R11 (R11-02): Secret boundary enforcement, private clea
 test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response boundary, indeterminate session tracking, and residual safety', async () => {
   // 1. HOOK-01 HTTP 200 with valid token and session ID -> passed: true, token observed
   const inv1 = new TestRunInventory('test-r12-case1');
-  const runCtx1 = createRunContext();
+  const runCtx1 = createRunContext({ runId: inv1.runId });
   const sess1 = 'sess-r12-case1-999';
   const token1 = createMockJwt({ session_id: sess1, sub: 'user-r12-case1' });
   const disp1 = createHostedDispatcher({
@@ -5743,7 +5744,7 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
 
   // 2. HOOK-01 HTTP 200 with truncated JSON -> passed: false, indeterminate_session: true, inv.untrackedSessionsCount incremented, cleanup fails closed
   const inv2 = new TestRunInventory('test-r12-case2');
-  const runCtx2 = createRunContext();
+  const runCtx2 = createRunContext({ runId: inv2.runId });
   const disp2 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv2,
@@ -5766,7 +5767,7 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
 
   // 3. HOOK-01 HTTP 200 with HTML response -> indeterminate_session: true, inv.untrackedSessionsCount incremented
   const inv3 = new TestRunInventory('test-r12-case3');
-  const runCtx3 = createRunContext();
+  const runCtx3 = createRunContext({ runId: inv3.runId });
   const disp3 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv3,
@@ -5784,7 +5785,7 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
 
   // 4. HOOK-01 HTTP 200 with empty {} -> indeterminate_session: true, inv.untrackedSessionsCount incremented
   const inv4 = new TestRunInventory('test-r12-case4');
-  const runCtx4 = createRunContext();
+  const runCtx4 = createRunContext({ runId: inv4.runId });
   const disp4 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv4,
@@ -5801,7 +5802,7 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
 
   // 5. HOOK-01 HTTP 200 with missing access token -> indeterminate_session: true
   const inv5 = new TestRunInventory('test-r12-case5');
-  const runCtx5 = createRunContext();
+  const runCtx5 = createRunContext({ runId: inv5.runId });
   const disp5 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv5,
@@ -5818,7 +5819,7 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
 
   // 6. HOOK-01 HTTP 200 with malformed JWT -> passed: false, unverified JWT NOT stored in ctx.activeAccessToken, session retained in inv
   const inv6 = new TestRunInventory('test-r12-case6');
-  const runCtx6 = createRunContext();
+  const runCtx6 = createRunContext({ runId: inv6.runId });
   const sess6 = 'sess-malformed-jwt-6';
   const disp6 = createHostedDispatcher({
     anonKey: validTestAnonKey,
@@ -5841,7 +5842,7 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
 
   // 7. HOOK-01 token issued but session ID unavailable -> UNTRACKED_SESSION, inv.untrackedSessionsCount incremented
   const inv7 = new TestRunInventory('test-r12-case7');
-  const runCtx7 = createRunContext();
+  const runCtx7 = createRunContext({ runId: inv7.runId });
   const disp7 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv7,
@@ -5861,7 +5862,7 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
 
   // 8. HOOK-01 response read failure after successful HTTP status -> indeterminate_session: true
   const inv8 = new TestRunInventory('test-r12-case8');
-  const runCtx8 = createRunContext();
+  const runCtx8 = createRunContext({ runId: inv8.runId });
   const disp8 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv8,
@@ -5879,7 +5880,7 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
 
   // 9. Request transport failure after possible server-side commit (ECONNRESET) -> indeterminate_session: true, inv.untrackedSessionsCount incremented
   const inv9 = new TestRunInventory('test-r12-case9');
-  const runCtx9 = createRunContext();
+  const runCtx9 = createRunContext({ runId: inv9.runId });
   const disp9 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv9,
@@ -5893,7 +5894,7 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
 
   // 10. Genuine rejected authentication (HTTP 400 invalid grant) -> AUTH_RESPONSE_VERIFIED_REJECTION, no sessions in inv
   const inv10 = new TestRunInventory('test-r12-case10');
-  const runCtx10 = createRunContext();
+  const runCtx10 = createRunContext({ runId: inv10.runId });
   const disp10 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv10,
@@ -6359,11 +6360,14 @@ test('86. Task 06I-B1-H1-R14 (R14-01 & R14-02): Asynchronous mutation tracking, 
   inv4.trackReferencedUser({ id: seedUid4, email: 'seed4@proof.invalid', source: 'seed' });
   const abortCtrl4 = new AbortController();
   abortCtrl4.abort(); // pre-aborted signal
+  const runCtx4 = createRunContext({ runId: inv4.runId });
+  runCtx4.activeUserId = seedUid4;
+  runCtx4.activeAccessToken = 'mock-token';
   const disp4 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     serviceRoleKey: validTestServiceRoleKey,
     inventory: inv4,
-    runContext: { activeUserId: seedUid4, activeAccessToken: 'mock-token' },
+    runContext: runCtx4,
     fetchFn: errorTransport({ message: 'The operation was aborted', name: 'AbortError' })
   });
   const res4 = await disp4({ id: 'SESSION-02' }, { signal: abortCtrl4.signal });
@@ -6705,25 +6709,7 @@ test('87. Task 06I-B1-H1-R15 (R15-01 & R15-02): OTP user-creation tracking, capa
 
   // 12. R15-02: Capability consistency between dispatchers and canonical definitions
   const inv12 = new TestRunInventory('test-r15-case12');
-  const registeredOps12 = [];
-  const captureInv12 = {
-    registerInFlightOperation(params) {
-      registeredOps12.push(params);
-      return inv12.registerInFlightOperation(params);
-    },
-    settleInFlightOperation(opId, result) {
-      return inv12.settleInFlightOperation(opId, result);
-    },
-    isUserReferenced() { return false; },
-    isUserCreated() { return false; },
-    registerCreatedUser() {},
-    registerObservedUser() {},
-    protectSeedIdentity() {},
-    isSeedIdentity() { return false; },
-    getUserOwnership() { return USER_OWNERSHIP.OWNERSHIP_UNKNOWN; },
-    registerUntrackedUser() {},
-    registerUntrackedSession() {}
-  };
+  const captureInv12 = new TestRunInventory('test-r15-cap-12');
 
   const probesToTest = ['BYPASS-01', 'BYPASS-02', 'BYPASS-03', 'BYPASS-05', 'HOOK-01'];
   for (const pid of probesToTest) {
@@ -6738,7 +6724,7 @@ test('87. Task 06I-B1-H1-R15 (R15-01 & R15-02): OTP user-creation tracking, capa
       })
     });
     await disp({ id: pid });
-    const matchingOp = registeredOps12.find(o => o.probeId === pid);
+    const matchingOp = Array.from(captureInv12.inFlightOperations.values()).find(o => o.probeId === pid);
     assert.ok(matchingOp, `Dispatcher for ${pid} must register in-flight operation`);
     assert.equal(matchingOp.canMintSession, cap.canMintSession, `${pid} canMintSession must match canonical capability`);
     assert.equal(matchingOp.canCreateUser, cap.canCreateUser, `${pid} canCreateUser must match canonical capability`);
@@ -8273,22 +8259,11 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
   // R1-07: Remove SESSION-05 Shared-Path Fallback
   // (PRRT_kwDOVtCmZc67grUw)
   // ==========================================
-  // 22. SESSION-05 requires valid runId
+  // 22. SESSION-05 requires valid runId (and runId on RunContext is immutable, R9-01)
   const runCtxNoRunId = createRunContext({ runId: 'valid-temp-id' });
-  runCtxNoRunId.runId = null;
-  runCtxNoRunId.activeAccessToken = testToken;
-  runCtxNoRunId.preInvalidationSessionValid = true;
-  runCtxNoRunId.passwordResetCompleted = true;
-  runCtxNoRunId.sessionRevocationConfirmed = true;
-  runCtxNoRunId.revokedSessionId = 'session-uuid-5678';
-  const dispNoRunId = createHostedDispatcher({
-    anonKey: validTestAnonKey,
-    runContext: runCtxNoRunId,
-    fetchFn: staticTransport({ status: 200 })
-  });
-  const outNoRunId = await dispNoRunId({ id: 'SESSION-05', category: 'Session & Consumer' });
-  assert.equal(outNoRunId.passed, false);
-  assert.match(outNoRunId.error, /PREREQUISITE_MISSING: SESSION-05 requires valid runId/);
+  assert.throws(() => { runCtxNoRunId.runId = null; }, TypeError);
+  assert.throws(() => { delete runCtxNoRunId.runId; }, TypeError);
+  assert.equal(runCtxNoRunId.runId, 'valid-temp-id');
 
   // 23. SESSION-05 requires fixture in inventory when inventory provided
   const invEmpty = new TestRunInventory(runId);
@@ -11856,5 +11831,295 @@ test('130. H3-R8-02/R8-03: Nested RegExp fixtures reject accessors, subclasses, 
 
   assert.equal(getterCalls, 0);
   assert.equal(methodCalls, 0);
+  assert.equal(trapCalls, 0);
+});
+
+// ===========================================================================
+// Task 06I-B1-H3-R9: Unified Typed Admission, Immutable Run Binding & Dispatcher Factory Closure
+// ===========================================================================
+
+test('131. H3-R9-01: Immutable RunContext binding prevents runId/projectRef tampering, cleared reuse, and cross-run credential reuse', async () => {
+  const runA = 'r9-01-run-a';
+  const runB = 'r9-01-run-b';
+  const transport = staticTransport({ status: 200, json: {} });
+  const adminB = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, anonKey: validTestAnonKey, runId: runB, fetchFn: transport });
+  const dispB = createTrustedOfflineDispatcher({
+    runId: runB,
+    fetchFn: transport,
+    outcomes: { 'BYPASS-01': { passed: true, status: 422, route_disabled: true, error_code: 'email_provider_disabled' } }
+  });
+
+  // 1. Immutable runId and projectRef cannot be reassigned, deleted, or replaced with getter
+  const ctxA = createRunContext({ runId: runA, testEmail: 'r9-a@proof.invalid' });
+  ctxA.activeAccessToken = createMockJwt({ sub: 'user-a', session_id: 'sess-a' });
+  ctxA.activeSessionId = 'sess-a';
+  assert.throws(() => { ctxA.runId = runB; }, TypeError);
+  assert.throws(() => { ctxA.runId = null; }, TypeError);
+  assert.throws(() => { delete ctxA.runId; }, TypeError);
+  assert.throws(() => { Object.defineProperty(ctxA, 'runId', { get() { return runB; } }); }, TypeError);
+  assert.throws(() => { ctxA.projectRef = 'other-proj'; }, TypeError);
+  assert.equal(ctxA.runId, runA);
+
+  // 2. Run A context with credentials/session state supplied to Run B rejects with 0 probes/transports
+  await assert.rejects(
+    () => runOfflineProbeSimulation({
+      projectRef: HARDCODED_TEMP_REF,
+      runId: runB,
+      inventory: new TestRunInventory(runB),
+      runContext: ctxA,
+      adminClient: adminB,
+      offlineDispatcher: dispB,
+      selectedProbeIds: ['BYPASS-01']
+    }),
+    /ADMIN_CLIENT_RUN_MISMATCH/
+  );
+  assert.equal(dispB.calls.length, 0);
+  assert.equal(transport.calls.length, 0);
+
+  // 3. Cross-project context check fails closed
+  assert.throws(
+    () => assertTrustedRunContext(ctxA, { projectRef: 'other-project', expectedRunId: runA }),
+    /CRITICAL_SECURITY_VIOLATION.*UNTRUSTED_RUN_CONTEXT/
+  );
+
+  // 4. Cleared context is terminal and cannot be reused
+  const ctxCleared = createRunContext({ runId: runB, testEmail: 'r9-clr@proof.invalid' });
+  ctxCleared.clear();
+  assert.throws(
+    () => assertTrustedRunContext(ctxCleared, { projectRef: HARDCODED_TEMP_REF, expectedRunId: runB }),
+    /UNTRUSTED_RUN_CONTEXT.*Cleared run context is terminal/
+  );
+  await assert.rejects(
+    () => runOfflineProbeSimulation({
+      projectRef: HARDCODED_TEMP_REF,
+      runId: runB,
+      inventory: new TestRunInventory(runB),
+      runContext: ctxCleared,
+      adminClient: adminB,
+      offlineDispatcher: dispB,
+      selectedProbeIds: ['BYPASS-01']
+    }),
+    /UNTRUSTED_RUN_CONTEXT.*Cleared run context/
+  );
+  assert.equal(dispB.calls.length, 0);
+
+  // 5. Fresh independently constructed context for Run B succeeds
+  const freshCtxB = createRunContext({ runId: runB, testEmail: 'r9-b@proof.invalid' });
+  const okRes = await runOfflineProbeSimulation({
+    projectRef: HARDCODED_TEMP_REF,
+    runId: runB,
+    inventory: new TestRunInventory(runB),
+    runContext: freshCtxB,
+    adminClient: adminB,
+    offlineDispatcher: dispB,
+    selectedProbeIds: ['BYPASS-01']
+  });
+  assert.equal(okRes.status, 'COMPLETED');
+});
+
+test('132. H3-R9-02: Standalone determineRunnerMode defaults to DRY_RUN regardless of ambient process.argv', async () => {
+  const origArgv = process.argv.slice();
+  const origEnv = process.env.TASK06I_HOSTED_PROBE_AUTHORIZED;
+  try {
+    process.argv.push('--live');
+    process.env.TASK06I_HOSTED_PROBE_AUTHORIZED = 'true';
+
+    // 1. Omitted arguments remain DRY_RUN even with ambient --live and auth env
+    assert.equal(determineRunnerMode(), 'DRY_RUN');
+    assert.equal(determineRunnerMode(undefined, { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }), 'DRY_RUN');
+    assert.equal(determineRunnerMode([], { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }), 'DRY_RUN');
+
+    // 2. Explicit valid LIVE flags classify as LIVE
+    assert.equal(determineRunnerMode(['--live'], { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }), 'LIVE');
+  } finally {
+    process.argv.length = 0;
+    process.argv.push(...origArgv);
+    if (origEnv === undefined) {
+      delete process.env.TASK06I_HOSTED_PROBE_AUTHORIZED;
+    } else {
+      process.env.TASK06I_HOSTED_PROBE_AUTHORIZED = origEnv;
+    }
+  }
+
+  // 3. Real LIVE CLI remains blocked before network dispatch
+  const { spawnSync } = await import('node:child_process');
+  const cliRes = spawnSync(process.execPath, ['experiments/task06i/hosted-probe-runner.mjs', '--live'], {
+    encoding: 'utf8',
+    env: { ...process.env, TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }
+  });
+  assert.equal(cliRes.status, 1);
+  assert.match(cliRes.stderr, /BLOCKED_PENDING_DURABLE_RECOVERY/);
+});
+
+test('133. H3-R9-03: Typed probe selection snapshot rejects iterators, accessors, Proxies, and overridden methods with zero invocations', async () => {
+  const runId = 'r9-03-selection';
+  let callbackCalls = 0;
+  let getterCalls = 0;
+  let trapCalls = 0;
+
+  const transport = staticTransport({ status: 200, json: {} });
+  const admin = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, anonKey: validTestAnonKey, runId, fetchFn: transport });
+  const disp = createTrustedOfflineDispatcher({
+    runId,
+    fetchFn: transport,
+    outcomes: {
+      'BYPASS-01': { passed: true, status: 422, route_disabled: true, error_code: 'email_provider_disabled' },
+      'HOOK-01': { passed: true, status: 200, has_token: true, amr_authenticated: true, session_id: 'session-uuid-5678', tokens: { access_token: createMockJwt() } },
+      'HOOK-02': { passed: true, status: 200, has_token: true, amr_preserved: true, tokens: { access_token: createMockJwt() } }
+    }
+  });
+
+  // 1. Custom Symbol.iterator
+  const iterArr = ['BYPASS-01'];
+  iterArr[Symbol.iterator] = () => { callbackCalls++; return ['BYPASS-01'][Symbol.iterator](); };
+  // 2. Indexed getter
+  const idxGetterArr = [];
+  Object.defineProperty(idxGetterArr, 0, { enumerable: true, get() { getterCalls++; return 'BYPASS-01'; } });
+  // 3. Non-enumerable accessor
+  const nonEnumArr = ['BYPASS-01'];
+  Object.defineProperty(nonEnumArr, 'trap', { enumerable: false, get() { getterCalls++; return 1; } });
+  // 4. Proxy array
+  const proxyArr = new Proxy(['BYPASS-01'], {
+    get(t, p, r) { trapCalls++; return Reflect.get(t, p, r); },
+    ownKeys(t) { trapCalls++; return Reflect.ownKeys(t); },
+    getOwnPropertyDescriptor(t, p) { trapCalls++; return Reflect.getOwnPropertyDescriptor(t, p); },
+    getPrototypeOf(t) { trapCalls++; return Reflect.getPrototypeOf(t); }
+  });
+  // 5. Custom array prototype
+  const customProtoArr = ['BYPASS-01'];
+  Object.setPrototypeOf(customProtoArr, Object.create(Array.prototype));
+  // 6. Overridden map/includes
+  const overriddenMapArr = ['BYPASS-01'];
+  overriddenMapArr.map = () => { callbackCalls++; return []; };
+  const overriddenIncArr = ['BYPASS-01'];
+  overriddenIncArr.includes = () => { callbackCalls++; return false; };
+  // 7. Sparse array & 8. Non-string element
+  const sparseArr = [];
+  sparseArr[1] = 'BYPASS-01';
+  const nonStrArr = [123];
+
+  for (const badSel of [iterArr, idxGetterArr, nonEnumArr, proxyArr, customProtoArr, overriddenMapArr, overriddenIncArr, sparseArr, nonStrArr]) {
+    assert.throws(() => validateSelectedProbeIds(badSel), /INVALID_PROBE_SELECTION/);
+    assert.throws(() => planProbeExecution(HARDCODED_TEMP_REF, { selectedProbeIds: badSel }), /INVALID_PROBE_SELECTION/);
+    await assert.rejects(
+      () => runHostedProbeRunner({
+        projectRef: HARDCODED_TEMP_REF,
+        runId,
+        argv: ['--live'],
+        env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+        adminClient: admin,
+        mockDispatcher: disp,
+        selectedProbeIds: badSel
+      }),
+      /INVALID_PROBE_SELECTION/
+    );
+    await assert.rejects(
+      () => runOfflineProbeSimulation({
+        projectRef: HARDCODED_TEMP_REF,
+        runId,
+        adminClient: admin,
+        offlineDispatcher: disp,
+        selectedProbeIds: badSel
+      }),
+      /INVALID_PROBE_SELECTION/
+    );
+  }
+
+  // Valid dependency-complete subset & incomplete dependency rejection
+  assert.throws(() => validateSelectedProbeIds(['HOOK-02']), /DEPENDENCY_INCOMPLETE/);
+  const simRes = await runOfflineProbeSimulation({
+    projectRef: HARDCODED_TEMP_REF,
+    runId,
+    adminClient: admin,
+    offlineDispatcher: disp,
+    selectedProbeIds: ['HOOK-02', 'BYPASS-01', 'HOOK-01'],
+    timing: { mode: 'recorded_zero_wait' }
+  });
+  assert.equal(simRes.status, 'COMPLETED');
+  assert.deepEqual(simRes.executionEvidence.completed, ['BYPASS-01', 'HOOK-01', 'HOOK-02']);
+
+  assert.equal(callbackCalls, 0);
+  assert.equal(getterCalls, 0);
+  assert.equal(trapCalls, 0);
+});
+
+test('134. H3-R9-04: createHostedDispatcher and per-call overrides enforce trusted inventory/runContext capabilities and admission schemas', async () => {
+  const runId = 'r9-04-dispatcher-factory';
+  let sentinelCalls = 0;
+  let getterCalls = 0;
+  let trapCalls = 0;
+  const transport = staticTransport({ status: 422, json: { error_code: 'email_provider_disabled' } });
+  const validInv = new TestRunInventory(runId);
+  const validCtx = createRunContext({ runId, testEmail: 'r9-04@proof.invalid' });
+
+  // 1. Plain forged inventory & protectSeedIdentity sentinel
+  const forgedInv = { runId, protectSeedIdentity: () => { sentinelCalls++; } };
+  // 2. Inventory getter & Proxy inventory & replaced method
+  const getterInv = {};
+  Object.defineProperty(getterInv, 'runId', { enumerable: true, get() { getterCalls++; return runId; } });
+  const proxyInv = new Proxy(validInv, {
+    get(t, p, r) { trapCalls++; return Reflect.get(t, p, r); },
+    getPrototypeOf(t) { trapCalls++; return Reflect.getPrototypeOf(t); }
+  });
+  const replacedInv = new TestRunInventory(runId);
+  replacedInv.protectSeedIdentity = () => { sentinelCalls++; };
+
+  for (const badInv of [forgedInv, getterInv, proxyInv, replacedInv]) {
+    assert.throws(
+      () => createHostedDispatcher({ anonKey: validTestAnonKey, inventory: badInv, seedUserId: '11111111-1111-4111-a111-111111111111', fetchFn: transport }),
+      /UNTRUSTED_RUN_INVENTORY/
+    );
+  }
+
+  // 3. Unregistered runContext, seedUserId getter, and cross-run registered context
+  const unregisteredCtx = { runId, seedUserId: '11111111-1111-4111-a111-111111111111' };
+  const getterCtx = {};
+  Object.defineProperty(getterCtx, 'seedUserId', { enumerable: true, get() { getterCalls++; return '11111111-1111-4111-a111-111111111111'; } });
+  const crossRunCtx = createRunContext({ runId: 'r9-04-other-run', testEmail: 'other@proof.invalid' });
+
+  for (const badCtx of [unregisteredCtx, getterCtx, crossRunCtx]) {
+    assert.throws(
+      () => createHostedDispatcher({ anonKey: validTestAnonKey, inventory: validInv, runContext: badCtx, fetchFn: transport }),
+      /UNTRUSTED_RUN_CONTEXT|ADMIN_CLIENT_RUN_MISMATCH/
+    );
+  }
+
+  // 4. Invalid transport combined with valid inventory rejects BEFORE touching inventory
+  assert.throws(
+    () => createHostedDispatcher({ anonKey: validTestAnonKey, inventory: validInv, seedUserId: '11111111-1111-4111-a111-111111111111', fetchFn: globalThis.fetch }),
+    /BLOCKED_PENDING_DURABLE_RECOVERY/
+  );
+  assert.equal(validInv.protectedSeedIdentities.size, 0);
+
+  // 5. Valid registered factory dependencies & per-call override validation
+  const disp = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    inventory: validInv,
+    runContext: validCtx,
+    fetchFn: transport
+  });
+  await assert.rejects(() => disp({ id: 'BYPASS-01' }, { inventory: forgedInv }), /UNTRUSTED_RUN_INVENTORY/);
+  await assert.rejects(() => disp({ id: 'BYPASS-01' }, { runContext: crossRunCtx }), /UNTRUSTED_RUN_CONTEXT|ADMIN_CLIENT_RUN_MISMATCH/);
+  const trappedCallOpts = {};
+  Object.defineProperty(trappedCallOpts, 'signal', { enumerable: true, get() { getterCalls++; return undefined; } });
+  await assert.rejects(() => disp({ id: 'BYPASS-01' }, trappedCallOpts), /Accessor property rejected/);
+  await assert.rejects(
+    () => disp({ id: 'BYPASS-01' }, new Proxy({}, { get(t, p, r) { trapCalls++; return Reflect.get(t, p, r); }, getPrototypeOf(t) { trapCalls++; return Reflect.getPrototypeOf(t); } })),
+    /Proxy object rejected/
+  );
+  assert.equal(transport.calls.length, 0);
+
+  // Valid same-run invocation succeeds
+  const out = await disp({ id: 'BYPASS-01', testUser: 'r9-04@proof.invalid' });
+  assert.equal(out.status, 422);
+  assert.equal(transport.calls.length, 1);
+
+  // 6. Schema registry exported
+  assert.ok(UNIFIED_ADMISSION_SCHEMAS.runnerOptions);
+  assert.ok(UNIFIED_ADMISSION_SCHEMAS.createHostedDispatcherOptions);
+  assert.ok(UNIFIED_ADMISSION_SCHEMAS.dispatcherCallOptions);
+
+  assert.equal(sentinelCalls, 0);
+  assert.equal(getterCalls, 0);
   assert.equal(trapCalls, 0);
 });
