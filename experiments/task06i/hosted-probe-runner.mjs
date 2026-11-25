@@ -1,4 +1,4 @@
-import { registerConditionalStorageFixtureTransport, getConditionalStorageFixtureProvider, observeConditionalStorageUpload } from './conditional-storage-fixture.mjs';
+import { registerConditionalStorageFixtureTransport, getConditionalStorageFixtureProvider, observeConditionalStorageUpload, decodeOfflineJwtClaims, extractOfflineStorageObjectId } from './conditional-storage-fixture.mjs';
 import { admitInventoryEffects, snapshotInventoryEffectData, snapshotDirectInventoryInput } from './inventory-effect-admission.mjs';
 // Hosted Probe Runner Specification & Harness for Task 06I-B1-H0-R2
 // Prepares the opt-in, fail-closed hosted test runner for future authorized testing.
@@ -24,6 +24,11 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { getRunRequestBudget } from './run-request-budget.mjs';
 import { types as utilTypes } from 'node:util';
 import { PREFLIGHT_REQUIREMENTS, EXPECTED_REQUIREMENT_IDS } from './preflight-evaluator.mjs';
+
+function snapshotJwtRecord(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  return snapshotInventoryEffectData(value, 'jwtClaims');
+}
 
 const RUN_REQUEST_BUDGET_CONTEXT = new AsyncLocalStorage();
 const TRANSPORT_REQUEST_BUDGET_MODES = new WeakMap();
@@ -1532,8 +1537,9 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
         await waitWithTrustedSignal(selected.delayMs, signal);
       }
 
-      observeConditionalStorageUpload(transport, req, selected);
+      const uploadIdentity = observeConditionalStorageUpload(transport, req, selected);
       let response = buildDeterministicResponse(selected);
+      if (uploadIdentity) response.conditionalUploadIdentity = Object.freeze(uploadIdentity);
       // A declarative absent route cannot override authoritative current provider state.
       // Re-read after awaits so a replacement during DELETE/GET delay is preserved.
       const provider = getConditionalStorageFixtureProvider(transport);
@@ -3233,7 +3239,7 @@ export function observeAuthResponse({
     try {
       const parts = accessToken.split('.');
       if (parts.length === 3) {
-        const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+        const payload = snapshotJwtRecord(JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')));
         if (!rawSessionId && typeof payload?.session_id === 'string' && payload.session_id.trim()) {
           rawSessionId = payload.session_id.trim();
         }
@@ -3523,7 +3529,7 @@ export function observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser
     try {
       const parts = accessToken.split('.');
       if (parts.length === 3) {
-        const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+        const payload = snapshotJwtRecord(JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')));
         if (!rawSessionId && payload?.session_id) {
           rawSessionId = payload.session_id;
         }
@@ -7123,7 +7129,7 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
   try {
     const parts = userAccessToken.trim().split('.');
     if (parts.length !== 3) throw new Error('JWT must have 3 parts');
-    jwtClaims = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    jwtClaims = snapshotJwtRecord(JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')));
   } catch (err) {
     throw new Error(`MALFORMED_CREDENTIAL_JWT: Failed to decode userAccessToken payload: ${err.message}`);
   }
@@ -7132,8 +7138,9 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
     throw new Error('STORAGE_PROVISIONING_FAILED: seedUserId is required to identify fixture owner');
   }
   const validSeedUserId = validateUuid(seedUserId);
-  if (!jwtClaims || jwtClaims.sub !== validSeedUserId) {
-    throw new Error(`CREDENTIAL_BINDING_ERROR: userAccessToken sub claim ('${jwtClaims?.sub || 'none'}') does not match seedUserId ('${validSeedUserId}')`);
+  const uploadClaims = decodeOfflineJwtClaims(userAccessToken);
+  if (!uploadClaims || uploadClaims.sub !== validSeedUserId) {
+    throw new Error('CREDENTIAL_BINDING_ERROR: userAccessToken sub claim is missing, invalid or does not match seedUserId');
   }
 
   // 3. Validate run ID (R1-02)
@@ -7307,7 +7314,8 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
         `SEED_IDENTITY_VERIFICATION_FAILED: Provider /auth/v1/user returned HTTP ${authUserRes.status} (${authUserEnv.parseStatus}); cannot prove seed identity from decoded JWT alone (R2-01)`
       );
     }
-    const providerUserId = typeof authUserEnv.body.id === 'string' ? authUserEnv.body.id.trim() : null;
+    const ownProviderUserId = Object.getOwnPropertyDescriptor(authUserEnv.body, 'id')?.value;
+    const providerUserId = typeof ownProviderUserId === 'string' ? ownProviderUserId.trim() : null;
     if (!providerUserId) {
       safeUpdateFixture({
         lifecycleState: STORAGE_LIFECYCLE_STATE.DEFINITIVE_NON_CREATION,
@@ -7526,9 +7534,8 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
 
     // POST succeeded (HTTP 200/201): Immediately create committed resource obligation! (R2-02 #1, #2)
     // Verification failure below MUST preserve RESIDUAL_OWNERSHIP_BLOCKED and never downgrade to CREATION_FAILED.
-    const uploadedObjectId = typeof uploadEnv.body?.Id === 'string' && uploadEnv.body.Id.trim()
-      ? uploadEnv.body.Id.trim()
-      : null;
+    const uploadObjectIdentity = extractOfflineStorageObjectId(uploadEnv.body);
+    const uploadedObjectId = uploadObjectIdentity.objectId;
 
     safeUpdateFixture({
       lifecycleState: STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED,
@@ -7537,6 +7544,13 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
       deletionEligible: false,
       providerObjectId: uploadedObjectId
     });
+    const uploadObservation = Object.getOwnPropertyDescriptor(uploadRes, 'conditionalUploadIdentity')?.value;
+    if ((uploadObservation && uploadObservation.status !== 'UPLOAD_IDENTITY_OBSERVED') ||
+        (!uploadObjectIdentity.valid && uploadObjectIdentity.reason !== 'OBJECT_ID_MISSING')) {
+      safeUpdateFixture({ status: 'UPLOAD_IDENTITY_INDETERMINATE', deletionEligible: false,
+        residualReason: uploadObservation?.reason || uploadObjectIdentity.reason });
+      throw new Error('STORAGE_UPLOAD_IDENTITY_INDETERMINATE: HTTP success retained; no affirmative identity receipt');
+    }
 
     // 11. Verification of accessibility (GET 200) and byte/digest integrity (R2-01 #7, #9)
     let verifyRes;
@@ -7656,7 +7670,7 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
       );
     }
 
-    const meta = lookupRes.data;
+    const meta = snapshotInventoryEffectData(lookupRes.data, 'storageOwnershipMetadata');
     if (meta.project_ref && String(meta.project_ref).trim().toLowerCase() !== normRef) {
       safeUpdateFixture({
         lifecycleState: STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED,
@@ -7903,7 +7917,7 @@ export function parseAndValidateJwt(token, { expectedIssuer, expectedAudience = 
   let header, payload;
   try {
     header = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
-    payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    payload = snapshotJwtRecord(JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')));
   } catch (err) {
     return { valid: false, reason: `TOKEN_PARSE_ERROR: Failed to decode JWT base64url JSON: ${err.message}` };
   }
@@ -8017,7 +8031,7 @@ export function validateProjectCredentialBinding(key, expectedProjectRef = HARDC
   let header, payload;
   try {
     header = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
-    payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    payload = snapshotJwtRecord(JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')));
   } catch (err) {
     throw new Error(`MALFORMED_CREDENTIAL_JWT: Failed to decode credential base64url JSON: ${err.message}`);
   }
@@ -9512,7 +9526,7 @@ export function createHostedDispatcher(rawOptions = {}) {
         try {
           const parts = token.split('.');
           if (parts.length === 3) {
-            const p = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+            const p = snapshotJwtRecord(JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')));
             if (typeof p?.exp === 'number' && Number.isFinite(p.exp)) {
               tokenExpiry = p.exp;
             }
@@ -9624,7 +9638,7 @@ export function createHostedDispatcher(rawOptions = {}) {
         try {
           const parts = token.split('.');
           if (parts.length === 3) {
-            const p = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+            const p = snapshotJwtRecord(JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')));
             if (typeof p?.exp === 'number' && Number.isFinite(p.exp)) {
               tokenExpiry = p.exp;
             }
@@ -10803,8 +10817,8 @@ export function createHostedAdminClient(rawOptions = {}) {
         };
       }
 
-      const row = Array.isArray(rawJson) ? rawJson[0] || null : rawJson;
-      if (!row || typeof row !== 'object') {
+      const row = Array.isArray(rawJson) ? Object.getOwnPropertyDescriptor(rawJson, '0')?.value || null : rawJson;
+      if (!row || typeof row !== 'object' || Array.isArray(row)) {
         return {
           found: false,
           source: 'storage.objects.owner_id',

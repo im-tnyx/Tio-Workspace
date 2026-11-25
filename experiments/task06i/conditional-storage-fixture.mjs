@@ -4,6 +4,7 @@
 import { types } from 'node:util';
 
 const PROVIDERS = new WeakSet();
+const PROVIDER_BINDINGS = new WeakMap();
 const TRANSPORT_PROVIDERS = new WeakMap();
 const TEMP_REF = 'wvdabiwbaavfggcmpizd';
 const BUCKET = 'task06i_probe_bucket';
@@ -131,6 +132,7 @@ export function createConditionalStorageFixtureProvider(rawSpec) {
   for (const method of Object.values(provider)) Object.freeze(method);
   Object.freeze(provider);
   PROVIDERS.add(provider);
+  PROVIDER_BINDINGS.set(provider, Object.freeze({ projectRef: spec.projectRef, runId: spec.runId }));
   return provider;
 }
 
@@ -150,24 +152,96 @@ export function getConditionalStorageFixtureProvider(transport) {
   return TRANSPORT_PROVIDERS.get(transport) || null;
 }
 
+function ownData(value, key) {
+  if (!value || typeof value !== 'object' || types.isProxy(value)) return undefined;
+  const descriptor = Object.getOwnPropertyDescriptor(value, key);
+  return descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : undefined;
+}
+function plainRecord(value) {
+  return value !== null && typeof value === 'object' && !types.isProxy(value) &&
+    [null, Object.prototype].includes(Object.getPrototypeOf(value));
+}
+function uuid(value) {
+  return typeof value === 'string' && UUID.test(value) ? value.toLowerCase() : null;
+}
+function parseJsonEvidence(text) {
+  if (typeof text !== 'string') return null;
+  try { return JSON.parse(text); }
+  catch (error) { if (error instanceof SyntaxError) return null; throw error; }
+}
+
+// Structural decoding only, never cryptographic signature verification.
+export function decodeOfflineJwtClaims(token) {
+  if (typeof token !== 'string') return null;
+  const parts = token.split('.');
+  if (parts.length !== 3 || parts.some(part => !/^[A-Za-z0-9_-]+$/.test(part))) return null;
+  const decode = part => {
+    if (part.length % 4 === 1) return null;
+    const bytes = Buffer.from(part, 'base64url');
+    if (bytes.toString('base64url') !== part) return null;
+    let text;
+    try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
+    catch (error) { if (error instanceof TypeError) return null; throw error; }
+    return parseJsonEvidence(text);
+  };
+  const header = decode(parts[0]);
+  const claims = decode(parts[1]);
+  if (!plainRecord(header) || !plainRecord(claims)) return null;
+  const algorithm = ownData(header, 'alg');
+  if (typeof algorithm !== 'string' || !algorithm || algorithm.toLowerCase() === 'none' ||
+      Object.hasOwn(header, 'crit') || (Object.hasOwn(header, 'b64') && ownData(header, 'b64') !== true)) return null;
+  // JSON.parse creates own data properties; copy only those into an inert record.
+  const snapshot = Object.create(null);
+  for (const key of Object.keys(claims)) Object.defineProperty(snapshot, key, { value: ownData(claims, key), enumerable: true });
+  return snapshot;
+}
+
+export function extractOfflineStorageObjectId(row) {
+  if (!plainRecord(row)) return { valid: false, reason: 'OBJECT_ID_MISSING', objectId: null };
+  const fields = ['Id', 'id'].filter(key => Object.hasOwn(row, key));
+  if (!fields.length) return { valid: false, reason: 'OBJECT_ID_MISSING', objectId: null };
+  const ids = fields.map(key => uuid(ownData(row, key)));
+  if (ids.some(id => id === null)) return { valid: false, reason: 'OBJECT_ID_INVALID', objectId: null };
+  if (ids.some(id => id !== ids[0])) return { valid: false, reason: 'OBJECT_ID_CONFLICT', objectId: null };
+  return { valid: true, reason: null, objectId: ids[0] };
+}
+
+function uploadIdentity(provider, request, response, bucket, path) {
+  const binding = PROVIDER_BINDINGS.get(provider);
+  let target;
+  try { target = new URL(request.url); }
+  catch (error) { if (error instanceof TypeError) return { reason: 'UPLOAD_SCOPE_MISMATCH' }; throw error; }
+  if (target.protocol !== 'https:' || target.hostname !== `${binding.projectRef}.supabase.co` || target.port ||
+      target.username || target.password || bucket !== BUCKET || path !== `${binding.runId}/probe.txt`) {
+    return { reason: 'UPLOAD_SCOPE_MISMATCH' };
+  }
+  let row = ownData(response, 'json') ?? ownData(response, 'body');
+  if (row == null) row = parseJsonEvidence(ownData(response, 'text'));
+  const object = extractOfflineStorageObjectId(row);
+  if (!object.valid) return { reason: object.reason };
+  const authorization = ownData(request.headers, 'authorization');
+  if (typeof authorization !== 'string' || !/^Bearer [A-Za-z0-9_.-]+$/.test(authorization)) return { reason: 'OWNER_TOKEN_INVALID' };
+  const claims = decodeOfflineJwtClaims(authorization.slice(7));
+  const ownerId = uuid(ownData(claims, 'sub'));
+  if (!ownerId) return { reason: 'OWNER_SUBJECT_INVALID' };
+  return { identity: { ...binding, bucket, path, objectId: object.objectId, ownerId } };
+}
+
 export function observeConditionalStorageUpload(transport, request, response) {
   const provider = getConditionalStorageFixtureProvider(transport);
-  if (!provider || request.method !== 'POST' || !request.pathname.startsWith('/storage/v1/object/')) return;
+  if (!provider || request.method !== 'POST' || !request.pathname.startsWith('/storage/v1/object/')) return null;
   const status = typeof response.status === 'number' ? response.status : 200;
-  if (status < 200 || status >= 300 || response.throwError) return;
-  const segments = request.pathname.slice('/storage/v1/object/'.length).split('/').map(decodeURIComponent);
+  if (status < 200 || status >= 300 || response.throwError) return null;
+  let segments;
+  try { segments = request.pathname.slice('/storage/v1/object/'.length).split('/').map(decodeURIComponent); }
+  catch (error) { if (error instanceof URIError) return { status: 'UPLOAD_IDENTITY_INDETERMINATE', reason: 'UPLOAD_SCOPE_MALFORMED' }; throw error; }
   const bucket = segments.shift();
   const path = segments.join('/');
   provider.markIndeterminateObject({ bucket, path });
-  let row = response.json || response.body;
-  if (!row && typeof response.text === 'string') {
-    try { row = JSON.parse(response.text); } catch { row = null; }
-  }
-  const objectId = row && (Object.getOwnPropertyDescriptor(row, 'Id')?.value || Object.getOwnPropertyDescriptor(row, 'id')?.value);
-  const authorization = Object.getOwnPropertyDescriptor(request.headers, 'authorization')?.value;
-  if (typeof authorization !== 'string' || typeof objectId !== 'string') { provider.markIndeterminateObject({ bucket, path }); return; }
-  let ownerId;
-  try { ownerId = JSON.parse(Buffer.from(authorization.replace(/^Bearer /i, '').split('.')[1], 'base64url').toString('utf8')).sub; } catch { provider.markIndeterminateObject({ bucket, path }); return; }
-  const runId = path.split('/')[0];
-  provider.putObject({ projectRef: TEMP_REF, runId, bucket, path, objectId, ownerId });
+  const observation = uploadIdentity(provider, request, response, bucket, path);
+  const admittedIdentity = ownData(observation, 'identity');
+  if (!admittedIdentity) return { status: 'UPLOAD_IDENTITY_INDETERMINATE', reason: ownData(observation, 'reason') };
+  // Expected invalid evidence returned above; genuine internal failures propagate.
+  provider.putObject(admittedIdentity);
+  return { status: 'UPLOAD_IDENTITY_OBSERVED', cryptographicallyVerified: false };
 }
