@@ -13014,3 +13014,245 @@ test('142. H3-R12-02: Exception-safe timer and listener lifecycle prevents leake
     globalThis.clearTimeout = origClearTimeout;
   }
 });
+
+// R13 prototype mutation and timer instrumentation are scoped to sequential tests
+// and every modified descriptor/global is restored even when an assertion fails.
+async function withR13DelayResources(check) {
+  const originalSet = globalThis.setTimeout;
+  const originalClear = globalThis.clearTimeout;
+  const active = new Set();
+  globalThis.setTimeout = (fn, ms, ...args) => {
+    const timer = originalSet(() => { active.delete(timer); fn(...args); }, ms);
+    active.add(timer);
+    return timer;
+  };
+  globalThis.clearTimeout = timer => { active.delete(timer); return originalClear(timer); };
+  try {
+    await check(active, ms => new Promise(resolve => originalSet(resolve, ms)));
+    assert.equal(active.size, 0, 'No owned timer remains after settlement');
+  } finally {
+    for (const timer of active) originalClear(timer);
+    globalThis.setTimeout = originalSet;
+    globalThis.clearTimeout = originalClear;
+  }
+}
+
+async function withR13PrototypeProperties(descriptors, check) {
+  const saved = new Map(Object.keys(descriptors).map(key => [key, Object.getOwnPropertyDescriptor(Object.prototype, key)]));
+  try {
+    for (const [key, descriptor] of Object.entries(descriptors)) Object.defineProperty(Object.prototype, key, { configurable: true, ...descriptor });
+    await check();
+  } finally {
+    for (const [key, descriptor] of saved) {
+      if (descriptor) Object.defineProperty(Object.prototype, key, descriptor);
+      else delete Object.prototype[key];
+    }
+  }
+}
+
+test('143. H3-R13-01: direct delayed transport ignores inherited abort options and admission defaults with zero sentinel execution', { concurrency: false }, async () => {
+  await withR13DelayResources(async active => {
+    let callbacks = 0;
+    let getters = 0;
+    let network = 0;
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = () => { network++; throw new Error('Unexpected native network'); };
+    const inheritedCallback = () => { callbacks++; };
+    const getter = () => { getters++; return inheritedCallback; };
+    const scenarios = [
+      { onAbort: { value: inheritedCallback } },
+      { onAbort: { get: getter } },
+      { ignoreAbort: { value: true } },
+      { ignoreAbort: { get: getter } },
+      { onAbort: { value: inheritedCallback }, ignoreAbort: { value: true } },
+      { onAbort: { get: getter }, ignoreAbort: { get: getter } },
+      { allowNullUndefined: { get: getter } },
+      { headersMatch: { get: getter }, delayMs: { get: getter }, onAbortInventoryEffects: { get: getter } }
+    ];
+    try {
+      for (const descriptors of scenarios) {
+        await withR13PrototypeProperties(descriptors, async () => {
+          const transport = createDeterministicFixtureTransport({ routes: [{ pathEquals: '/delayed', delayMs: 30, status: 200, json: {} }] });
+          for (const alreadyAborted of [false, true]) {
+            const controller = new AbortController();
+            if (alreadyAborted) controller.abort();
+            const pending = transport('https://offline.invalid/delayed', { signal: controller.signal });
+            const rejected = assert.rejects(pending, { name: 'AbortError' });
+            if (!alreadyAborted) controller.abort();
+            await rejected;
+            assert.equal(active.size, 0);
+            assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+          }
+          assert.equal(transport.calls.length, 1, 'Already-aborted request is not dispatched');
+        });
+      }
+      assert.equal(callbacks, 0);
+      assert.equal(getters, 0);
+      assert.equal(network, 0);
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+});
+
+test('144. H3-R13-01: delay races, overlapping cancellation, explicit ignore-abort and invalid timing preserve resource ownership', { concurrency: false }, async () => {
+  await withR13DelayResources(async (active, sleep) => {
+    const transport = createDeterministicFixtureTransport({ defaultResponse: { delayMs: 8, status: 200, json: {} } });
+    const controllers = Array.from({ length: 4 }, () => new AbortController());
+    const pending = controllers.map(controller => transport('https://offline.invalid/delay', { signal: controller.signal }));
+    const settled = Promise.allSettled(pending);
+    controllers[0].abort();
+    controllers[1].abort();
+    const outcomes = await settled;
+    assert.deepEqual(outcomes.map(outcome => outcome.status), ['rejected', 'rejected', 'fulfilled', 'fulfilled']);
+    assert.equal(outcomes[0].reason.name, 'AbortError');
+    for (const controller of controllers) assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+    assert.equal(active.size, 0);
+
+    // Timer completion wins one same-deadline race; immediate abort wins the other.
+    const raceController = new AbortController();
+    const race = transport('https://offline.invalid/race', { signal: raceController.signal });
+    const abortAtCompletion = sleep(8).then(() => raceController.abort());
+    const raceResult = await Promise.allSettled([race]);
+    await abortAtCompletion;
+    assert.ok(raceResult[0].status === 'fulfilled' || raceResult[0].reason.name === 'AbortError');
+    assert.equal(active.size, 0);
+    assert.equal(getEventListeners(raceController.signal, 'abort').length, 0);
+
+    for (const alreadyAborted of [false, true]) {
+      const runId = 'r13-ignore-' + alreadyAborted;
+      const inventory = new TestRunInventory(runId);
+      const dispatcher = createTrustedOfflineDispatcher({ runId, outcomes: { 'BYPASS-01': {
+        delayMs: 8, ignoreAbort: true, onAbortInventoryEffects: { registerUntrackedUser: true }, outcome: { passed: true, status: 422 }
+      } } });
+      const controller = new AbortController();
+      if (alreadyAborted) controller.abort();
+      const operation = dispatcher({ id: 'BYPASS-01' }, { inventory, signal: controller.signal });
+      if (!alreadyAborted) { controller.abort(); controller.abort(); }
+      assert.equal((await operation).status, 422);
+      assert.equal(inventory.untrackedUsersCount, 1);
+      assert.equal(active.size, 0);
+      assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+      assert.equal(inventory.isClean(), false);
+    }
+
+    let coercions = 0;
+    for (const delayMs of [-1, NaN, Infinity, 2147483648, '10', null, { toString() { coercions++; return '1'; } }]) {
+      await assert.rejects(async () => {
+        const invalid = createDeterministicFixtureTransport({ defaultResponse: { delayMs, status: 200 } });
+        await invalid('https://offline.invalid/bad-delay');
+      }, /INVALID_ADMISSION_RANGE|INVALID_DETERMINISTIC_FIXTURE_SPEC/);
+      assert.equal(active.size, 0);
+    }
+    for (const ignoreAbort of [1, 'true', null]) {
+      const dispatcher = createTrustedOfflineDispatcher({ runId: 'r13-invalid-ignore', defaultOutcome: { delayMs: 2, ignoreAbort, status: 422 } });
+      await assert.rejects(dispatcher({ id: 'BYPASS-01' }), /INVALID_INTERNAL_DELAY_OPTIONS/);
+      assert.equal(active.size, 0);
+    }
+    assert.equal(coercions, 0);
+  });
+});
+
+test('145. H3-R13-01: internal abort-effect exceptions reject structurally after cleanup and retain partial inventory obligations', { concurrency: false }, async () => {
+  await withR13DelayResources(async (active, sleep) => {
+    const unhandled = [];
+    const onUnhandled = reason => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    try {
+      for (const neverSettle of [false, true]) {
+        for (const ignoreAbort of [false, true]) {
+          for (const alreadyAborted of [false, true]) {
+            const runId = 'r13-effect-' + neverSettle + '-' + ignoreAbort + '-' + alreadyAborted;
+            const inventory = new TestRunInventory(runId);
+            const op = inventory.registerInFlightOperation({ probeId: 'R13-PENDING', canModifyProviderState: true, requiresCleanupReconciliation: true });
+            const descriptor = {
+              ...(neverSettle ? { neverSettle: true, rejectAfterAbortMs: 5 } : { delayMs: 30 }),
+              ignoreAbort,
+              onAbortInventoryEffects: { registerUntrackedUser: true, registerSeedPasswordModification: {} },
+              outcome: { passed: true, status: 422 }
+            };
+            const dispatcher = createTrustedOfflineDispatcher({ runId, defaultOutcome: descriptor });
+            const controller = new AbortController();
+            if (alreadyAborted) controller.abort();
+            const operation = dispatcher({ id: 'BYPASS-01' }, { inventory, signal: controller.signal });
+            const rejected = assert.rejects(operation, error => {
+              assert.equal(error.code, 'INTERNAL_ABORT_EFFECT_FAILED');
+              assert.equal(error.inventoryEffectsMayBePartial, true);
+              return true;
+            });
+            if (!alreadyAborted) { controller.abort(); controller.abort(); }
+            await rejected;
+            assert.equal(inventory.untrackedUsersCount, 1, 'Effect completed before failure is retained exactly once');
+            assert.ok(inventory.getUnresolvedOperations().some(record => record.opId === op.opId));
+            assert.equal(inventory.isClean(), false);
+            assert.equal(active.size, 0);
+            assert.equal(getEventListeners(controller.signal, 'abort').length, 0);
+          }
+        }
+      }
+      await sleep(5);
+      assert.deepEqual(unhandled, []);
+    } finally {
+      process.removeListener('unhandledRejection', onUnhandled);
+    }
+  });
+});
+
+test('146. H3-R13-02: nullable and omitted headers normalize without inherited matches or TypeErrors', { concurrency: false }, async () => {
+  const spec = { routes: [{ headersMatch: { 'X-Required': 'yes' }, status: 201, tag: 'matched', json: {} }] };
+  for (const headers of [null, undefined, {}]) {
+    const transport = createDeterministicFixtureTransport(spec);
+    await assert.rejects(transport('https://offline.invalid/headers', headers === undefined ? {} : { headers }), /DETERMINISTIC_TRANSPORT_UNMATCHED_ROUTE/);
+    assert.equal(transport.calls.length, 0);
+  }
+  for (const headers of [{ 'X-Required': 'yes' }, new Headers({ 'X-REQUIRED': 'yes' })]) {
+    const transport = createDeterministicFixtureTransport(spec);
+    assert.equal((await transport('https://offline.invalid/headers', { headers })).status, 201);
+    assert.equal(transport.calls[0].headers['x-required'], 'yes');
+  }
+  const fallbackSpec = { ...spec, fallback: { status: 409, json: { code: 'HEADER_NOT_MATCHED' } } };
+  for (const headers of [null, undefined, {}, { 'X-Required': 'no' }]) {
+    const transport = createDeterministicFixtureTransport(fallbackSpec);
+    const response = await transport('https://offline.invalid/headers', headers === undefined ? {} : { headers });
+    assert.equal(response.status, 409);
+    assert.deepEqual(await response.json(), { code: 'HEADER_NOT_MATCHED' });
+    assert.equal(transport.calls[0].routeIndex, -1);
+    assert.ok(transport.calls[0].headers);
+  }
+  let inheritedReads = 0;
+  await withR13PrototypeProperties({ 'x-required': { get() { inheritedReads++; return 'yes'; } } }, async () => {
+    for (const headers of [null, undefined, {}]) {
+      const transport = createDeterministicFixtureTransport(fallbackSpec);
+      assert.equal((await transport('https://offline.invalid/headers', { headers })).status, 409);
+    }
+  });
+  assert.equal(inheritedReads, 0);
+});
+
+
+test('147. H3-R13 audit: route body and state matching ignore inherited properties and state setters', { concurrency: false }, async () => {
+  let getterReads = 0;
+  await withR13PrototypeProperties({ r13BodySentinel: { get() { getterReads++; return 'yes'; } } }, async () => {
+    const transport = createDeterministicFixtureTransport({ routes: [{ bodyMatch: { r13BodySentinel: 'yes' }, status: 201 }], fallback: { status: 409 } });
+    assert.equal((await transport('https://offline.invalid/body', { body: '{}' })).status, 409);
+    assert.equal((await transport('https://offline.invalid/body', { body: '{"r13BodySentinel":"yes"}' })).status, 201);
+    assert.equal((await transport('https://offline.invalid/body', { body: '{"r13BodySentinel":"no"}' })).status, 409);
+  });
+  assert.equal(getterReads, 0);
+  let stateGetters = 0;
+  let stateSetters = 0;
+  await withR13PrototypeProperties({ r13StateSentinel: {
+    get() { stateGetters++; return 'yes'; },
+    set() { stateSetters++; }
+  } }, async () => {
+    const transport = createDeterministicFixtureTransport({
+      initialState: {}, routes: [{ whenState: { r13StateSentinel: 'yes' }, status: 201 }],
+      fallback: { status: 409, setsState: { r13StateSentinel: 'yes' } }
+    });
+    assert.equal((await transport('https://offline.invalid/state')).status, 409);
+    assert.equal((await transport('https://offline.invalid/state')).status, 201);
+    assert.equal(Object.hasOwn(transport.getState(), 'r13StateSentinel'), true);
+  });
+  assert.equal(stateGetters, 0);
+  assert.equal(stateSetters, 0);
+});

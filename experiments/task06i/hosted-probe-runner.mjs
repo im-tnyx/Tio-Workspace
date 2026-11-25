@@ -193,7 +193,7 @@ function isTrustedSignalAborted(signal) {
 function addTrustedSignalAbortListener(signal, listener) {
   if (signal === null || signal === undefined) return;
   validateTrustedAbortSignal(signal, 'signal');
-  INTRINSIC_ABORT_SIGNAL_ADD_EVENT_LISTENER.call(signal, 'abort', listener, { once: true });
+  INTRINSIC_ABORT_SIGNAL_ADD_EVENT_LISTENER.call(signal, 'abort', listener, Object.assign(Object.create(null), { once: true }));
 }
 
 function removeTrustedSignalAbortListener(signal, listener) {
@@ -204,68 +204,86 @@ function removeTrustedSignalAbortListener(signal, listener) {
   INTRINSIC_ABORT_SIGNAL_REMOVE_EVENT_LISTENER.call(signal, 'abort', listener);
 }
 
-function waitWithTrustedSignal(delayMs, signal, { onAbort = null, ignoreAbort = false } = {}) {
-  if (typeof delayMs !== 'number' || !Number.isFinite(delayMs) || delayMs < 0) {
-    return Promise.reject(new Error(`INVALID_ADMISSION_RANGE: Expected finite non-negative delayMs, received ${String(delayMs)} (R12-02)`));
-  }
-  if (signal !== null && signal !== undefined) {
-    validateTrustedAbortSignal(signal, 'signal');
-  }
-  if (isTrustedSignalAborted(signal)) {
-    if (onAbort) onAbort();
-    if (!ignoreAbort) {
-      const abortErr = new Error('The operation was aborted');
-      abortErr.name = 'AbortError';
-      return Promise.reject(abortErr);
-    }
-  }
+function internalAbortEffectFailure() {
+  const error = new Error('INTERNAL_ABORT_EFFECT_FAILED: Module-owned abort effect failed; inventory evidence may be partial');
+  error.code = 'INTERNAL_ABORT_EFFECT_FAILED';
+  error.inventoryEffectsMayBePartial = true;
+  return error;
+}
+
+// Private positional arguments: all call sites supply only module-owned callbacks.
+function waitWithTrustedSignal(delayMs, signal, onAbort = null, ignoreAbort = false) {
   return new Promise((resolve, reject) => {
+    if (typeof delayMs !== 'number' || !Number.isFinite(delayMs) || delayMs < 0 || delayMs > 2147483647) {
+      throw new Error('INVALID_ADMISSION_RANGE: Expected finite delayMs in timer range (R13-01)');
+    }
+    if (typeof ignoreAbort !== 'boolean' || (onAbort !== null && typeof onAbort !== 'function')) {
+      throw new Error('INVALID_INTERNAL_DELAY_OPTIONS: Expected module-owned effect and boolean cancellation setting');
+    }
+    if (signal !== null && signal !== undefined) validateTrustedAbortSignal(signal, 'signal');
     let settled = false;
     let abortHandled = false;
     let timer = null;
     let listenerAttached = false;
 
-    const cleanup = () => {
-      if (timer !== null) {
-        clearTimeout(timer);
-        timer = null;
-      }
-      if (listenerAttached && signal !== null && signal !== undefined) {
+    const detachListener = () => {
+      if (listenerAttached) {
         listenerAttached = false;
         removeTrustedSignalAbortListener(signal, handleAbort);
       }
     };
-
+    const finish = (error = null) => {
+      if (settled) return;
+      settled = true;
+      let cleanupFailed = false;
+      if (timer !== null) {
+        const ownedTimer = timer;
+        timer = null;
+        try { clearTimeout(ownedTimer); } catch { cleanupFailed = true; }
+      }
+      try { detachListener(); } catch { cleanupFailed = true; }
+      if (cleanupFailed) {
+        const cleanupError = new Error('TRUSTED_DELAY_CLEANUP_FAILED: Delay resource cleanup failed');
+        cleanupError.code = 'TRUSTED_DELAY_CLEANUP_FAILED';
+        cleanupError.abortEffectFailed = error?.code === 'INTERNAL_ABORT_EFFECT_FAILED';
+        reject(cleanupError);
+      } else if (error) reject(error);
+      else resolve();
+    };
     const handleAbort = () => {
       if (settled || abortHandled) return;
       abortHandled = true;
-      if (onAbort) onAbort();
-      if (ignoreAbort) {
-        listenerAttached = false;
+      try {
+        detachListener();
+      } catch {
+        const error = new Error('TRUSTED_DELAY_CLEANUP_FAILED: Abort listener cleanup failed');
+        error.code = 'TRUSTED_DELAY_CLEANUP_FAILED';
+        finish(error);
         return;
       }
-      settled = true;
-      cleanup();
-      const abortErr = new Error('The operation was aborted');
-      abortErr.name = 'AbortError';
-      reject(abortErr);
+      try {
+        if (onAbort !== null) onAbort();
+      } catch {
+        finish(internalAbortEffectFailure());
+        return;
+      }
+      if (!ignoreAbort) {
+        const error = new Error('The operation was aborted');
+        error.name = 'AbortError';
+        finish(error);
+      }
     };
 
     try {
+      if (isTrustedSignalAborted(signal)) handleAbort();
+      if (settled) return;
       if (signal !== null && signal !== undefined && !abortHandled) {
-        addTrustedSignalAbortListener(signal, handleAbort);
         listenerAttached = true;
+        addTrustedSignalAbortListener(signal, handleAbort);
       }
-      timer = setTimeout(() => {
-        if (settled) return;
-        settled = true;
-        cleanup();
-        resolve();
-      }, delayMs);
-    } catch (setupErr) {
-      settled = true;
-      cleanup();
-      reject(setupErr);
+      timer = setTimeout(() => finish(), delayMs);
+    } catch (setupError) {
+      finish(setupError);
     }
   });
 }
@@ -633,7 +651,7 @@ function deepSubsetMatches(candidate, expectedSubset) {
     return expectedSubset.every((item, idx) => deepSubsetMatches(candidate[idx], item));
   }
   for (const [k, v] of Object.entries(expectedSubset)) {
-    if (!(k in candidate)) return false;
+    if (!Object.hasOwn(candidate, k)) return false;
     if (!deepSubsetMatches(candidate[k], v)) return false;
   }
   return true;
@@ -643,7 +661,7 @@ function buildDeterministicResponse(descriptor) {
   if (descriptor.throwError) {
     const errSpec = typeof descriptor.throwError === 'string'
       ? { message: descriptor.throwError }
-      : descriptor.throwError;
+      : extractValidatedPlainOptions(descriptor.throwError, 'fixtureError', false);
     const err = new Error(errSpec.message || 'Deterministic transport simulated failure');
     if (errSpec.code) err.code = errSpec.code;
     if (errSpec.name) err.name = errSpec.name;
@@ -715,7 +733,8 @@ function buildDeterministicResponse(descriptor) {
   return res;
 }
 
-function extractValidatedPlainOptions(rawInput, label, { allowNullUndefined = true } = {}) {
+function extractValidatedPlainOptions(rawInput, label, allowNullUndefined = true) {
+  if (typeof allowNullUndefined !== 'boolean') throw new Error('INVALID_INTERNAL_ADMISSION_OPTIONS');
   if (rawInput === undefined || rawInput === null) {
     if (allowNullUndefined) return Object.create(null);
     throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: ${label} requires a plain object (R7-02)`);
@@ -756,7 +775,7 @@ function extractValidatedPlainOptions(rawInput, label, { allowNullUndefined = tr
 function snapshotStringArray(
   rawArr,
   label,
-  { allowEmpty = true, trimNonEmpty = false, errorCode = 'INVALID_DETERMINISTIC_FIXTURE_SPEC' } = {}
+  allowEmpty = true, trimNonEmpty = false, errorCode = 'INVALID_DETERMINISTIC_FIXTURE_SPEC'
 ) {
   if (utilTypes.isProxy(rawArr)) {
     throw new Error(`${errorCode}: Proxy array rejected at '${label}' (R9-03)`);
@@ -987,14 +1006,15 @@ function setNullProtoField(target, key, value) {
   });
 }
 
-function admitValidatedInput(rawInput, schemaName, { allowNullUndefined = true } = {}) {
+function admitValidatedInput(rawInput, schemaName, allowNullUndefined = true) {
+  if (typeof allowNullUndefined !== 'boolean') throw new Error('INVALID_INTERNAL_ADMISSION_OPTIONS');
   const schema = Object.hasOwn(INTERNAL_ADMISSION_SCHEMAS, schemaName)
     ? INTERNAL_ADMISSION_SCHEMAS[schemaName]
     : null;
   if (!schema) {
     throw new Error(`UNKNOWN_ADMISSION_SCHEMA: Admission schema '${schemaName}' is not registered (R10-01)`);
   }
-  const snapshot = extractValidatedPlainOptions(rawInput, schemaName, { allowNullUndefined });
+  const snapshot = extractValidatedPlainOptions(rawInput, schemaName, allowNullUndefined);
   const admitted = Object.create(null);
 
   for (const key of Object.getOwnPropertyNames(snapshot)) {
@@ -1080,11 +1100,7 @@ function admitValidatedInput(rawInput, schemaName, { allowNullUndefined = true }
         const allowEmpty = ownSchemaMeta(spec, 'allowEmpty');
         const trimNonEmpty = Boolean(ownSchemaMeta(spec, 'trimNonEmpty', false));
         const errorCode = ownSchemaMeta(spec, 'errorCode', 'INVALID_ADMISSION_TYPE');
-        setNullProtoField(admitted, key, snapshotStringArray(val, `${schemaName}.${key}`, {
-          allowEmpty: allowEmpty !== false,
-          trimNonEmpty,
-          errorCode
-        }));
+        setNullProtoField(admitted, key, snapshotStringArray(val, `${schemaName}.${key}`, allowEmpty !== false, trimNonEmpty, errorCode));
         break;
       }
       case 'env_record': {
@@ -1101,7 +1117,7 @@ function admitValidatedInput(rawInput, schemaName, { allowNullUndefined = true }
             setNullProtoField(cleanHeaders, String(hk).toLowerCase(), String(hv));
           }
         } else {
-          const plainHdrs = extractValidatedPlainOptions(val, `${schemaName}.${key}`, { allowNullUndefined: false });
+          const plainHdrs = extractValidatedPlainOptions(val, `${schemaName}.${key}`, false);
           for (const hk of Object.getOwnPropertyNames(plainHdrs)) {
             const hv = plainHdrs[hk];
             if (typeof hv !== 'string' && typeof hv !== 'number' && typeof hv !== 'boolean') {
@@ -1217,7 +1233,7 @@ function validateDeclarativeTimingConfig(rawTiming, isOfflineAllowed = false) {
   if (rawTiming === undefined || rawTiming === null) {
     return { mode: 'standard', intervalMs: RATE_LIMIT_CONFIG.minIntervalMs };
   }
-  const timing = extractValidatedPlainOptions(rawTiming, 'runnerOptions.timing', { allowNullUndefined: false });
+  const timing = extractValidatedPlainOptions(rawTiming, 'runnerOptions.timing', false);
   validateDeclarativeFixtureValue(timing, 'runnerOptions.timing');
   if (!isOfflineAllowed) {
     throw new Error('BLOCKED_PENDING_DURABLE_RECOVERY: Declarative timing overrides are prohibited for real hosted execution (R7-01)');
@@ -1248,7 +1264,7 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
   }
   const normalizedSpec = rawSpec && typeof rawSpec === 'object' && !Array.isArray(rawSpec)
     ? extractValidatedPlainOptions(rawSpec, 'transportSpec')
-    : { routes: Array.isArray(rawSpec) ? rawSpec : [] };
+    : Object.assign(Object.create(null), { routes: Array.isArray(rawSpec) ? rawSpec : [] });
   validateDeclarativeFixtureValue(normalizedSpec, 'transportSpec');
 
   const state = clonePlainData(normalizedSpec.initialState || {});
@@ -1257,11 +1273,12 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
     ? clonePlainData(normalizedSpec.defaultResponse)
     : (normalizedSpec.fallback !== undefined ? clonePlainData(normalizedSpec.fallback) : null);
 
-  const compiledRoutes = rawRoutes.map((route, idx) => ({
-    ...clonePlainData(route),
-    _index: idx,
-    _remaining: typeof route.times === 'number' ? Math.max(0, Math.floor(route.times)) : Infinity
-  }));
+  const compiledRoutes = rawRoutes.map((route, idx) => {
+    const compiled = extractValidatedPlainOptions(clonePlainData(route), 'transportRoute', false);
+    compiled._index = idx;
+    compiled._remaining = typeof compiled.times === 'number' ? Math.max(0, Math.floor(compiled.times)) : Infinity;
+    return compiled;
+  });
 
   const calls = [];
 
@@ -1309,7 +1326,7 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
     }
     if (route.whenState && typeof route.whenState === 'object') {
       for (const [sk, sv] of Object.entries(route.whenState)) {
-        if (state[sk] !== sv) return false;
+        if (!Object.hasOwn(state, sk) || state[sk] !== sv) return false;
       }
     }
     return true;
@@ -1351,7 +1368,7 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
 
       const rawMethod = ownSchemaMeta(opts, 'method', 'GET');
       const method = rawMethod.toUpperCase();
-      const lowerHeaders = ownSchemaMeta(opts, 'headers', Object.create(null));
+      const lowerHeaders = ownSchemaMeta(opts, 'headers', null) ?? Object.create(null);
       const admittedBody = ownSchemaMeta(opts, 'body', undefined);
 
       let rawBody = null;
@@ -1373,7 +1390,8 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
       if (matched && Number.isFinite(matched._remaining)) {
         matched._remaining -= 1;
       }
-      const selected = matched || defaultResponse;
+      const selectedRecord = matched || defaultResponse;
+      const selected = selectedRecord ? extractValidatedPlainOptions(selectedRecord, 'transportResponse', false) : null;
       if (!selected) {
         throw new Error(`DETERMINISTIC_TRANSPORT_UNMATCHED_ROUTE: No matching route for ${method} ${urlStr}`);
       }
@@ -1392,7 +1410,7 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
 
       if (selected.setsState && typeof selected.setsState === 'object') {
         for (const [sk, sv] of Object.entries(selected.setsState)) {
-          state[sk] = clonePlainData(sv);
+          setNullProtoField(state, sk, clonePlainData(sv));
         }
       }
 
@@ -1411,7 +1429,7 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
         await selected.waitForBarrier.wait(signal);
       }
 
-      if (typeof selected.delayMs === 'number' && selected.delayMs > 0) {
+      if (selected.delayMs !== undefined) {
         await waitWithTrustedSignal(selected.delayMs, signal);
       }
 
@@ -1472,6 +1490,7 @@ function assertNoForgedDispatcherMarkers(candidate) {
 
 function applyDeclarativeInventoryEffects(inv, effects) {
   if (!inv || !effects || typeof effects !== 'object') return;
+  effects = extractValidatedPlainOptions(effects, 'inventoryEffects', false);
   if (effects.protectSeedIdentity) {
     inv.protectSeedIdentity(effects.protectSeedIdentity);
   }
@@ -1482,7 +1501,7 @@ function applyDeclarativeInventoryEffects(inv, effects) {
     inv.registerUnverifiedUser(effects.registerUnverifiedUser);
   }
   if (effects.registerSession) {
-    const s = effects.registerSession;
+    const s = extractValidatedPlainOptions(effects.registerSession, 'sessionEffect', false);
     inv.registerSession(s.sessionId, s);
   }
   if (effects.registerUntrackedSession === true) {
@@ -1537,7 +1556,7 @@ function extractDeclarativeOutcome(descriptor) {
  * Enforces projectRef, runId, deterministic fixture transport, and zero arbitrary callbacks.
  */
 export function createTrustedOfflineDispatcher(rawSpec = {}) {
-  const snapshot = extractValidatedPlainOptions(rawSpec, 'offlineDispatcherSpec', { allowNullUndefined: false });
+  const snapshot = extractValidatedPlainOptions(rawSpec, 'offlineDispatcherSpec', false);
   const declarativeSpec = Object.create(null);
   let candidateFetchFn = null;
   let hasFetchFn = false;
@@ -1650,6 +1669,7 @@ export function createTrustedOfflineDispatcher(rawSpec = {}) {
         return { passed: false, status: 500, reason: 'unrecognized probe case' };
       }
 
+      descriptor = extractValidatedPlainOptions(descriptor, 'offlineOutcome', false);
       const signal = options.signal || null;
       const inv = options.inventory || null;
 
@@ -1660,7 +1680,8 @@ export function createTrustedOfflineDispatcher(rawSpec = {}) {
       const transportReqs = Array.isArray(descriptor.transportRequests)
         ? descriptor.transportRequests
         : (descriptor.transportRequest ? [descriptor.transportRequest] : []);
-      for (const req of transportReqs) {
+      for (const rawReq of transportReqs) {
+        const req = extractValidatedPlainOptions(rawReq, 'offlineTransportRequest', false);
         await rawTransportFetch(req.url, {
           method: req.method || 'GET',
           headers: req.headers || {},
@@ -1685,44 +1706,58 @@ export function createTrustedOfflineDispatcher(rawSpec = {}) {
       }
 
       if (descriptor.neverSettle === true) {
+        // Deliberately pending fixtures retain unresolved obligations; failed abort effects must reject.
         return new Promise((_resolve, reject) => {
-          if (signal && (descriptor.onAbortInventoryEffects || typeof descriptor.rejectAfterAbortMs === 'number')) {
-            const onAbort = () => {
-              if (descriptor.onAbortInventoryEffects) {
-                applyDeclarativeInventoryEffects(inv, descriptor.onAbortInventoryEffects);
-              }
-              if (typeof descriptor.rejectAfterAbortMs === 'number') {
-                setTimeout(() => {
-                  const err = new Error('AbortError: The operation was aborted');
-                  err.name = 'AbortError';
-                  reject(err);
-                }, descriptor.rejectAfterAbortMs);
-              }
-            };
-            if (isTrustedSignalAborted(signal)) {
-              onAbort();
-            } else if (signal !== null && signal !== undefined) {
-              addTrustedSignalAbortListener(signal, onAbort);
+          let abortHandled = false;
+          let attached = false;
+          const detach = () => {
+            if (attached) {
+              attached = false;
+              removeTrustedSignalAbortListener(signal, handleAbort);
             }
+          };
+          const handleAbort = () => {
+            if (abortHandled) return;
+            abortHandled = true;
+            try {
+              detach();
+              if (descriptor.onAbortInventoryEffects) applyDeclarativeInventoryEffects(inv, descriptor.onAbortInventoryEffects);
+            } catch {
+              reject(internalAbortEffectFailure());
+              return;
+            }
+            if (descriptor.rejectAfterAbortMs !== undefined) {
+              waitWithTrustedSignal(descriptor.rejectAfterAbortMs, null).then(() => {
+                const error = new Error('The operation was aborted');
+                error.name = 'AbortError';
+                reject(error);
+              }, reject);
+            }
+          };
+          try {
+            if (signal && (descriptor.onAbortInventoryEffects || descriptor.rejectAfterAbortMs !== undefined)) {
+              if (isTrustedSignalAborted(signal)) handleAbort();
+              else {
+                attached = true;
+                addTrustedSignalAbortListener(signal, handleAbort);
+              }
+            }
+          } catch (error) {
+            try { detach(); } finally { reject(error); }
           }
         });
       }
 
-      if (typeof descriptor.delayMs === 'number' && descriptor.delayMs > 0) {
-        await waitWithTrustedSignal(descriptor.delayMs, signal, {
-          ignoreAbort: descriptor.ignoreAbort === true,
-          onAbort: () => {
-            if (descriptor.onAbortInventoryEffects) {
-              applyDeclarativeInventoryEffects(inv, descriptor.onAbortInventoryEffects);
-            }
-          }
-        });
+      if (descriptor.delayMs !== undefined) {
+        await waitWithTrustedSignal(descriptor.delayMs, signal, () => {
+          if (descriptor.onAbortInventoryEffects) applyDeclarativeInventoryEffects(inv, descriptor.onAbortInventoryEffects);
+        }, descriptor.ignoreAbort === undefined ? false : descriptor.ignoreAbort);
       }
 
       if (descriptor.throwError) {
         const errSpec = typeof descriptor.throwError === 'string'
           ? { message: descriptor.throwError }
-          : descriptor.throwError;
+          : extractValidatedPlainOptions(descriptor.throwError, 'offlineError', false);
         const err = new Error(errSpec.message || 'Deterministic offline dispatcher error');
         if (errSpec.code) err.code = errSpec.code;
         if (errSpec.name) err.name = errSpec.name;
@@ -2059,11 +2094,7 @@ export function getStorageProbeObjectKey(runId) {
  */
 export function validateSelectedProbeIds(selectedProbeIds, rawOptions = {}) {
   admitValidatedInput(rawOptions, 'validateSelectedProbeIdsOptions');
-  const safeIds = snapshotStringArray(selectedProbeIds, 'selectedProbeIds', {
-    allowEmpty: false,
-    trimNonEmpty: true,
-    errorCode: 'INVALID_PROBE_SELECTION'
-  });
+  const safeIds = snapshotStringArray(selectedProbeIds, 'selectedProbeIds', false, true, 'INVALID_PROBE_SELECTION');
 
   const seen = new Set();
   for (let i = 0; i < safeIds.length; i++) {
@@ -2742,7 +2773,7 @@ export function validateTargetProject(projectRef, tempRef = HARDCODED_TEMP_REF, 
 
 function snapshotRunnerArgv(rawArgv = []) {
   const source = rawArgv === undefined ? [] : rawArgv;
-  return snapshotStringArray(source, 'argv', { allowEmpty: true, trimNonEmpty: false, errorCode: 'INVALID_RUNNER_ARGV' });
+  return snapshotStringArray(source, 'argv', true, false, 'INVALID_RUNNER_ARGV');
 }
 
 function snapshotRunnerEnv(rawEnv = {}) {
@@ -8220,7 +8251,7 @@ export function createHostedDispatcher(rawOptions = {}) {
         'BLOCKED_PENDING_DURABLE_RECOVERY: Hosted network dispatcher cannot execute inside LIVE runner while durable crash recovery is not implemented'
       );
     }
-    const item = admitValidatedInput(rawItem, 'probeItem', { allowNullUndefined: false });
+    const item = admitValidatedInput(rawItem, 'probeItem', false);
     const options = admitValidatedInput(rawCallOptions, 'dispatcherCallOptions');
     if (options.projectRef !== undefined && options.projectRef.trim().toLowerCase() !== normRef) {
       throw new Error(
