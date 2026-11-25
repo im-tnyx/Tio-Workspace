@@ -19,6 +19,7 @@ import {
   TIO_SUPABASE_TEMP_REF,
   BREVO_AUDIT_BASELINE,
   TestRunInventory,
+  INVENTORY_RUN_STATE,
   createHostedDispatcher,
   parseAndValidateJwt,
   DEFAULT_TEST_PASSWORD,
@@ -55,6 +56,11 @@ import {
   verifyStorageObjectAbsence,
   verifyStorageObjectAbsenceDetailed,
   assertOfflineMockTransport,
+  createDeterministicFixtureTransport,
+  createOfflineBarrier,
+  createFetchIsolationCoordinator,
+  runWithBlockedRealFetch,
+  getFetchIsolationDebugState,
   validateUuid
 } from './hosted-probe-runner.mjs';
 
@@ -87,6 +93,16 @@ function createMockJwt(claims = {}) {
   const b64Payload = Buffer.from(JSON.stringify(payload)).toString('base64url');
   const signature = Buffer.from('mock_test_signature').toString('base64url');
   return `${b64Header}.${b64Payload}.${signature}`;
+}
+
+function staticTransport(descriptor) {
+  return createDeterministicFixtureTransport({ defaultResponse: descriptor });
+}
+
+function errorTransport(errSpec) {
+  return createDeterministicFixtureTransport({
+    defaultResponse: { throwError: typeof errSpec === 'string' ? { message: errSpec } : errSpec }
+  });
 }
 
 const VALID_TEMP_REF = HARDCODED_TEMP_REF;
@@ -2061,33 +2077,30 @@ test('34. Task 06I-B1-H1-R1 (R1-01): LIVE dispatcher contract, boundary checks, 
   );
 
   // 3. Dispatches HTTP requests to approved TEMP project with AbortSignal and headers
-  const dispatchedRequests = [];
-  const mockFetch = async (url, init) => {
-    dispatchedRequests.push({ url, init });
-    if (url.endsWith('/auth/v1/otp')) {
-      return {
+  const mockLiveJwt = createMockJwt();
+  const mockFetch = createDeterministicFixtureTransport({
+    routes: [
+      {
+        urlRegex: /\/auth\/v1\/otp$/,
         status: 422,
-        json: async () => ({ error_code: 'email_provider_disabled', message: 'Email provider disabled' })
-      };
-    }
-    if (url.endsWith('/auth/v1/signup')) {
-      return {
+        json: { error_code: 'email_provider_disabled', message: 'Email provider disabled' }
+      },
+      {
+        urlRegex: /\/auth\/v1\/signup$/,
         status: 422,
-        json: async () => ({ error_code: 'signup_disabled', message: 'Signups disabled' })
-      };
-    }
-    const mockLiveJwt = createMockJwt();
-    if (url.endsWith('/auth/v1/token?grant_type=password')) {
-      return {
+        json: { error_code: 'signup_disabled', message: 'Signups disabled' }
+      },
+      {
+        urlRegex: /\/auth\/v1\/token\?grant_type=password$/,
         status: 200,
-        json: async () => ({
+        json: {
           access_token: mockLiveJwt,
           user: { app_metadata: { amr_authenticated: true } }
-        })
-      };
-    }
-    return { status: 400, json: async () => ({ message: 'Mock bad request' }) };
-  };
+        }
+      }
+    ],
+    defaultResponse: { status: 400, json: { message: 'Mock bad request' } }
+  });
 
   const dispatcher = createHostedDispatcher({
     projectRef: HARDCODED_TEMP_REF,
@@ -2102,15 +2115,15 @@ test('34. Task 06I-B1-H1-R1 (R1-01): LIVE dispatcher contract, boundary checks, 
   assert.equal(outcomeBypass01.status, 422);
   assert.equal(outcomeBypass01.route_disabled, true);
   assert.equal(outcomeBypass01.error_code, 'email_provider_disabled');
-  assert.equal(dispatchedRequests[0].url, `https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/otp`);
-  assert.equal(dispatchedRequests[0].init.headers.apikey, validTestAnonKey);
+  assert.equal(mockFetch.calls[0].url, `https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/otp`);
+  assert.equal(mockFetch.calls[0].headers.apikey, validTestAnonKey);
 
   // Probe BYPASS-02 dispatch
   const outcomeBypass02 = await dispatcher({ id: 'BYPASS-02', testUser: 'probe-test@proof.invalid' }, {});
   assert.equal(outcomeBypass02.status, 422);
   assert.equal(outcomeBypass02.signup_disabled, true);
   assert.equal(outcomeBypass02.error_code, 'signup_disabled');
-  assert.equal(dispatchedRequests[1].url, `https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/signup`);
+  assert.equal(mockFetch.calls[1].url, `https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/signup`);
 
   // Probe HOOK-01 dispatch
   const outcomeHook01 = await dispatcher({ id: 'HOOK-01', testUser: 'probe-test@proof.invalid' }, {});
@@ -2229,48 +2242,48 @@ test('36. Task 06I-B1-H1-R1 (R1-04): Evidence classification audit distinguishes
 
 test('37. Task 06I-B1-H1-R2 (R2-01): False-positive bypass probe prevention', async () => {
   // 1. Generic 400 on OTP rejected, route_disabled must be false
-  const fetchOtp400 = async () => ({ status: 400, json: async () => ({ message: 'Bad request' }) });
+  const fetchOtp400 = staticTransport({ status: 400, json: { message: 'Bad request' } });
   const dispOtp400 = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: fetchOtp400 });
   const outOtp400 = await dispOtp400({ id: 'BYPASS-01', testUser: 'test@proof.invalid' });
   assert.equal(outOtp400.passed, false);
   assert.equal(outOtp400.route_disabled, false);
 
   // 2. 422 on OTP with email_provider_disabled passes
-  const fetchOtpDisabled = async () => ({ status: 422, json: async () => ({ error_code: 'email_provider_disabled', message: 'Email provider is disabled' }) });
+  const fetchOtpDisabled = staticTransport({ status: 422, json: { error_code: 'email_provider_disabled', message: 'Email provider is disabled' } });
   const dispOtpDisabled = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: fetchOtpDisabled });
   const outOtpDisabled = await dispOtpDisabled({ id: 'BYPASS-01', testUser: 'test@proof.invalid' });
   assert.equal(outOtpDisabled.passed, true);
   assert.equal(outOtpDisabled.route_disabled, true);
 
   // 3. 200 on /signup fails closed
-  const fetchSignup200 = async () => ({ status: 200, json: async () => ({ id: 'usr-123' }) });
+  const fetchSignup200 = staticTransport({ status: 200, json: { id: 'usr-123' } });
   const dispSignup200 = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: fetchSignup200 });
   const outSignup200 = await dispSignup200({ id: 'BYPASS-02', testUser: 'test@proof.invalid' });
   assert.equal(outSignup200.passed, false);
 
   // 4. Generic 400 password too short on /signup does NOT fabricate signup_disabled
-  const fetchSignup400 = async () => ({ status: 400, json: async () => ({ message: 'Password is too short' }) });
+  const fetchSignup400 = staticTransport({ status: 400, json: { message: 'Password is too short' } });
   const dispSignup400 = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: fetchSignup400 });
   const outSignup400 = await dispSignup400({ id: 'BYPASS-02', testUser: 'test@proof.invalid' });
   assert.equal(outSignup400.passed, false);
   assert.equal(outSignup400.signup_disabled, false);
 
   // 5. 422 on /signup with signup_disabled passes
-  const fetchSignupDisabled = async () => ({ status: 422, json: async () => ({ error_code: 'signup_disabled', message: 'Signups not allowed' }) });
+  const fetchSignupDisabled = staticTransport({ status: 422, json: { error_code: 'signup_disabled', message: 'Signups not allowed' } });
   const dispSignupDisabled = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: fetchSignupDisabled });
   const outSignupDisabled = await dispSignupDisabled({ id: 'BYPASS-02', testUser: 'test@proof.invalid' });
   assert.equal(outSignupDisabled.passed, true);
   assert.equal(outSignupDisabled.signup_disabled, true);
 
   // 6. 200 on /recover fails (cannot prove email suppression due to anti-enumeration)
-  const fetchRecover200 = async () => ({ status: 200, json: async () => ({}) });
+  const fetchRecover200 = staticTransport({ status: 200, json: {} });
   const dispRecover200 = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: fetchRecover200 });
   const outRecover200 = await dispRecover200({ id: 'BYPASS-05', testUser: 'test@proof.invalid' });
   assert.equal(outRecover200.passed, false);
   assert.equal(outRecover200.recovery_suppressed, false);
 
   // 7. 500 on /recover with 42501 / send_email_hook passes
-  const fetchRecover500 = async () => ({ status: 500, json: async () => ({ message: 'send_email_hook: native recovery email dispatch suppressed (SQLSTATE 42501)' }) });
+  const fetchRecover500 = staticTransport({ status: 500, json: { message: 'send_email_hook: native recovery email dispatch suppressed (SQLSTATE 42501)' } });
   const dispRecover500 = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: fetchRecover500 });
   const outRecover500 = await dispRecover500({ id: 'BYPASS-05', testUser: 'test@proof.invalid' });
   assert.equal(outRecover500.passed, true);
@@ -2316,33 +2329,35 @@ test('38. Task 06I-B1-H1-R2 (R2-02): JWT claim extraction & AMR verification', (
 
 test('39. Task 06I-B1-H1-R2 (R2-03): Run-scoped refresh token propagation & AMR preservation in HOOK-02', async () => {
   const runCtx = createRunContext();
-  const mockFetchRefresh = async (url, init) => {
-    if (url.includes('grant_type=password')) {
-      return {
+  const mockFetchRefresh = createDeterministicFixtureTransport({
+    routes: [
+      {
+        urlIncludes: 'grant_type=password',
         status: 200,
-        json: async () => ({
+        json: {
           access_token: createMockJwt(),
           refresh_token: 'fresh-refresh-token-xyz',
           user: { id: 'usr-1' },
           session_id: 'sess-1'
-        })
-      };
-    }
-    if (url.includes('grant_type=refresh_token')) {
-      const body = JSON.parse(init.body);
-      if (body.refresh_token === 'fresh-refresh-token-xyz') {
-        return {
-          status: 200,
-          json: async () => ({
-            access_token: createMockJwt({ exp: Math.floor(Date.now() / 1000) + 600 }),
-            refresh_token: 'refreshed-token-2'
-          })
-        };
+        }
+      },
+      {
+        urlIncludes: 'grant_type=refresh_token',
+        bodyMatch: { refresh_token: 'fresh-refresh-token-xyz' },
+        status: 200,
+        json: {
+          access_token: createMockJwt({ exp: Math.floor(Date.now() / 1000) + 600 }),
+          refresh_token: 'refreshed-token-2'
+        }
+      },
+      {
+        urlIncludes: 'grant_type=refresh_token',
+        status: 400,
+        json: { message: 'Invalid refresh token' }
       }
-      return { status: 400, json: async () => ({ message: 'Invalid refresh token' }) };
-    }
-    return { status: 400, json: async () => ({}) };
-  };
+    ],
+    defaultResponse: { status: 400, json: {} }
+  });
 
   const dispWithCtx = createHostedDispatcher({ anonKey: validTestAnonKey, runContext: runCtx, fetchFn: mockFetchRefresh });
 
@@ -2377,7 +2392,7 @@ test('40. Task 06I-B1-H1-R2 (R2-04 & R2-05): Inventory integration and robust cl
   inv.registerStorageObject('task06i_probe_bucket', 'file-1.txt');
 
   // 1. Accidental user creation in BYPASS-02 is captured into inventory
-  const mockFetchAccidental = async () => ({ status: 200, json: async () => ({ user: { id: 'accidental-user-uuid' } }) });
+  const mockFetchAccidental = staticTransport({ status: 200, json: { user: { id: 'accidental-user-uuid' } } });
   const dispAccidental = createHostedDispatcher({ anonKey: validTestAnonKey, inventory: inv, fetchFn: mockFetchAccidental });
   const bypass02Res = await dispAccidental({ id: 'BYPASS-02', testUser: 'accidental@proof.invalid' });
   assert.equal(bypass02Res.passed, false);
@@ -2443,30 +2458,18 @@ test('43. Task 06I-B1-H1-R2 (R2-08): All 18 LIVE probes dispatchers implemented 
     'SESSION-01', 'SESSION-02', 'SESSION-03', 'SESSION-04', 'SESSION-05', 'SESSION-06'
   ];
 
-  const mockAllFetch = async (url) => {
-    if (url.includes('grant_type=password')) {
-      return { status: 200, json: async () => ({ access_token: createMockJwt(), refresh_token: 'r-1', user: { id: 'u-1' }, session_id: 's-1' }) };
-    }
-    if (url.includes('grant_type=refresh_token')) {
-      return { status: 200, json: async () => ({ access_token: createMockJwt(), refresh_token: 'r-2' }) };
-    }
-    if (url.includes('/auth/v1/user')) {
-      return { status: 200, json: async () => ({ id: 'u-1' }) };
-    }
-    if (url.includes('/auth/v1/logout')) {
-      return { status: 204, json: async () => ({}) };
-    }
-    if (url.includes('/rest/v1/task06i_session_probe')) {
-      return { status: 200, json: async () => ([]) };
-    }
-    if (url.includes('/storage/v1/object/')) {
-      return { status: 200, json: async () => ({}) };
-    }
-    if (url.includes('/functions/v1/auth-user-probe')) {
-      return { status: 401, json: async () => ({ error_code: 'AuthSessionMissingError' }) };
-    }
-    return { status: 500, json: async () => ({ error_code: 'hook_error', message: '42501' }) };
-  };
+  const mockAllFetch = createDeterministicFixtureTransport({
+    routes: [
+      { urlIncludes: 'grant_type=password', status: 200, json: { access_token: createMockJwt(), refresh_token: 'r-1', user: { id: 'u-1' }, session_id: 's-1' } },
+      { urlIncludes: 'grant_type=refresh_token', status: 200, json: { access_token: createMockJwt(), refresh_token: 'r-2' } },
+      { urlIncludes: '/auth/v1/user', status: 200, json: { id: 'u-1' } },
+      { urlIncludes: '/auth/v1/logout', status: 204, json: {} },
+      { urlIncludes: '/rest/v1/task06i_session_probe', status: 200, json: [] },
+      { urlIncludes: '/storage/v1/object/', status: 200, json: {} },
+      { urlIncludes: '/functions/v1/auth-user-probe', status: 401, json: { error_code: 'AuthSessionMissingError' } }
+    ],
+    defaultResponse: { status: 500, json: { error_code: 'hook_error', message: '42501' } }
+  });
 
   const allCtx = createRunContext();
   const allDisp = createHostedDispatcher({ anonKey: validTestAnonKey, serviceRoleKey: validTestServiceRoleKey, runContext: allCtx, fetchFn: mockAllFetch });
@@ -2503,7 +2506,7 @@ test('44. Task 06I-B1-H1-R3 (R3-01): OTP probes reject unsupported_grant_type as
   assert.match(resRec.reason, /FALSE_PROOF_REJECTED.*unsupported_grant_type/);
 
   // 2. Dispatcher returns PROVIDER_PRECONDITION_MISSING
-  const disp = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: async () => ({ status: 400 }) });
+  const disp = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: staticTransport({ status: 400 }) });
   const out03 = await disp(hook03);
   assert.equal(out03.status, 0);
   assert.equal(out03.passed, false);
@@ -2515,7 +2518,7 @@ test('45. Task 06I-B1-H1-R3 (R3-02): Client-controlled AMR injection rejected; P
   const hook06 = { id: 'HOOK-06', category: 'Token Hook' };
   const hook07 = { id: 'HOOK-07', category: 'Token Hook' };
 
-  const disp = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: async () => ({ status: 400 }) });
+  const disp = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: staticTransport({ status: 400 }) });
   for (const item of [hook05, hook06, hook07]) {
     const out = await disp(item);
     assert.equal(out.status, 0);
@@ -2593,7 +2596,7 @@ test('47. Task 06I-B1-H1-R3 (R3-04): Password reset strictly requires Admin priv
   const dispWithoutAdmin = createHostedDispatcher({
     anonKey: validTestAnonKey,
     serviceRoleKey: null,
-    fetchFn: async () => ({ status: 200 })
+    fetchFn: staticTransport({ status: 200 })
   });
   const outNoAdmin = await dispWithoutAdmin(session02);
   assert.equal(outNoAdmin.passed, false);
@@ -2630,7 +2633,7 @@ test('48. Task 06I-B1-H1-R3 (R3-05): Session identity correlation rejects user I
   const disp = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtx,
-    fetchFn: async () => ({ status: 404, json: async () => ({ message: 'Function not found' }) })
+    fetchFn: staticTransport({ status: 404, json: { message: 'Function not found' } })
   });
   const out06 = await disp(session06, { runContext: runCtx });
   assert.equal(out06.status, 404);
@@ -2991,16 +2994,13 @@ test('57. Task 06I-B1-H1-R4 (R4-03): Password reset in SESSION-02 requires affir
   runCtx.activeUserId = 'user-test-reset-123';
   runCtx.activeAccessToken = createMockJwt();
 
-  const mockFetchSurviving = async (url) => {
-    if (url.includes('/auth/v1/admin/users/')) {
-      return { status: 200, json: async () => ({ id: 'user-test-reset-123' }) };
-    }
-    if (url.includes('/auth/v1/user')) {
-      // Session survived! Still returns 200!
-      return { status: 200, json: async () => ({ id: 'user-test-reset-123' }) };
-    }
-    return { status: 400, json: async () => ({}) };
-  };
+  const mockFetchSurviving = createDeterministicFixtureTransport({
+    routes: [
+      { urlIncludes: '/auth/v1/admin/users/', status: 200, json: { id: 'user-test-reset-123' } },
+      { urlIncludes: '/auth/v1/user', status: 200, json: { id: 'user-test-reset-123' } }
+    ],
+    defaultResponse: { status: 400, json: {} }
+  });
 
   const dispSurviving = createHostedDispatcher({
     anonKey: validTestAnonKey,
@@ -3016,15 +3016,13 @@ test('57. Task 06I-B1-H1-R4 (R4-03): Password reset in SESSION-02 requires affir
   assert.match(outSurviving.error, /SECURITY_REGRESSION.*session was not revoked/);
 
   // 4. When /auth/v1/user returns generic 401 (e.g. 'Invalid token') without session_not_found, fails closed (R5-01)
-  const mockFetchGenericInvalidToken = async (url) => {
-    if (url.includes('/auth/v1/admin/users/')) {
-      return { status: 200, json: async () => ({ id: 'user-test-reset-123' }) };
-    }
-    if (url.includes('/auth/v1/user')) {
-      return { status: 401, json: async () => ({ message: 'Invalid token' }) };
-    }
-    return { status: 400, json: async () => ({}) };
-  };
+  const mockFetchGenericInvalidToken = createDeterministicFixtureTransport({
+    routes: [
+      { urlIncludes: '/auth/v1/admin/users/', status: 200, json: { id: 'user-test-reset-123' } },
+      { urlIncludes: '/auth/v1/user', status: 401, json: { message: 'Invalid token' } }
+    ],
+    defaultResponse: { status: 400, json: {} }
+  });
 
   const dispGeneric = createHostedDispatcher({
     anonKey: validTestAnonKey,
@@ -3039,15 +3037,13 @@ test('57. Task 06I-B1-H1-R4 (R4-03): Password reset in SESSION-02 requires affir
   assert.match(outGeneric.error, /FALSE_PROOF_REJECTED/);
 
   // 5. When /auth/v1/user returns affirmative session_not_found provider error, session revocation is verified
-  const mockFetchRevoked = async (url) => {
-    if (url.includes('/auth/v1/admin/users/')) {
-      return { status: 200, json: async () => ({ id: 'user-test-reset-123' }) };
-    }
-    if (url.includes('/auth/v1/user')) {
-      return { status: 401, json: async () => ({ error_code: 'session_not_found', message: 'Session not found' }) };
-    }
-    return { status: 400, json: async () => ({}) };
-  };
+  const mockFetchRevoked = createDeterministicFixtureTransport({
+    routes: [
+      { urlIncludes: '/auth/v1/admin/users/', status: 200, json: { id: 'user-test-reset-123' } },
+      { urlIncludes: '/auth/v1/user', status: 401, json: { error_code: 'session_not_found', message: 'Session not found' } }
+    ],
+    defaultResponse: { status: 400, json: {} }
+  });
 
   const dispRevoked = createHostedDispatcher({
     anonKey: validTestAnonKey,
@@ -3075,15 +3071,13 @@ test('58. Task 06I-B1-H1-R4 (R4-04): SESSION-06 and SESSION-03 reject generic 40
   runCtx.preInvalidationSessionValid = true;
   runCtx.passwordResetCompleted = true;
 
-  const mockFetchGenericForbidden = async (url) => {
-    if (url.includes('/functions/v1/auth-user-probe')) {
-      return { status: 403, json: async () => ({ message: 'Forbidden' }) };
-    }
-    if (url.includes('/auth/v1/user')) {
-      return { status: 403, json: async () => ({ message: 'Forbidden' }) };
-    }
-    return { status: 400, json: async () => ({}) };
-  };
+  const mockFetchGenericForbidden = createDeterministicFixtureTransport({
+    routes: [
+      { urlIncludes: '/functions/v1/auth-user-probe', status: 403, json: { message: 'Forbidden' } },
+      { urlIncludes: '/auth/v1/user', status: 403, json: { message: 'Forbidden' } }
+    ],
+    defaultResponse: { status: 400, json: {} }
+  });
 
   const disp = createHostedDispatcher({
     anonKey: validTestAnonKey,
@@ -3104,12 +3098,12 @@ test('58. Task 06I-B1-H1-R4 (R4-04): SESSION-06 and SESSION-03 reject generic 40
   assert.notEqual(out03.error_code, 'session_not_found', 'Must not synthesize session_not_found');
 
   // 3. Genuine AuthSessionMissingError in SESSION-06 passes
-  const mockFetchGenuineError = async (url) => {
-    if (url.includes('/functions/v1/auth-user-probe')) {
-      return { status: 401, json: async () => ({ error_code: 'AuthSessionMissingError', message: 'Session is revoked or missing' }) };
-    }
-    return { status: 400, json: async () => ({}) };
-  };
+  const mockFetchGenuineError = createDeterministicFixtureTransport({
+    routes: [
+      { urlIncludes: '/functions/v1/auth-user-probe', status: 401, json: { error_code: 'AuthSessionMissingError', message: 'Session is revoked or missing' } }
+    ],
+    defaultResponse: { status: 400, json: {} }
+  });
 
   const dispGenuine = createHostedDispatcher({
     anonKey: validTestAnonKey,
@@ -3274,7 +3268,7 @@ test('62. Task 06I-B1-H1-R4 (R4-08): Send Email Hook suppression (42501) cannot 
   // 1. createHostedDispatcher returns PROVIDER_PRECONDITION_MISSING because email suppression prevents obtaining redemption token
   const disp = createHostedDispatcher({
     anonKey: validTestAnonKey,
-    fetchFn: async () => ({ status: 200 })
+    fetchFn: staticTransport({ status: 200 })
   });
 
   const outcome = await disp(bypass04);
@@ -3307,11 +3301,13 @@ test('63. Task 06I-B1-H1-R5 (R5-01): SESSION-02 rejects generic 401/403, bad_jwt
     anonKey: validTestAnonKey,
     serviceRoleKey: validTestServiceRoleKey,
     runContext: runCtx,
-    fetchFn: async (url) => {
-      if (url.includes('/auth/v1/admin/users/')) return { status: 200, json: async () => ({ id: 'user-r5-01' }) };
-      if (url.includes('/auth/v1/user')) return { status: 401, json: async () => ({ error_code: 'bad_jwt', message: 'Token signature is invalid' }) };
-      return { status: 400, json: async () => ({}) };
-    }
+    fetchFn: createDeterministicFixtureTransport({
+      routes: [
+        { urlIncludes: '/auth/v1/admin/users/', status: 200, json: { id: 'user-r5-01' } },
+        { urlIncludes: '/auth/v1/user', status: 401, json: { error_code: 'bad_jwt', message: 'Token signature is invalid' } }
+      ],
+      defaultResponse: { status: 400, json: {} }
+    })
   });
   const outBadJwt = await dispBadJwt(session02);
   assert.equal(outBadJwt.passed, false);
@@ -3322,11 +3318,13 @@ test('63. Task 06I-B1-H1-R5 (R5-01): SESSION-02 rejects generic 401/403, bad_jwt
     anonKey: validTestAnonKey,
     serviceRoleKey: validTestServiceRoleKey,
     runContext: runCtx,
-    fetchFn: async (url) => {
-      if (url.includes('/auth/v1/admin/users/')) return { status: 200, json: async () => ({ id: 'user-r5-01' }) };
-      if (url.includes('/auth/v1/user')) return { status: 403, json: async () => ({ message: 'Forbidden' }) };
-      return { status: 400, json: async () => ({}) };
-    }
+    fetchFn: createDeterministicFixtureTransport({
+      routes: [
+        { urlIncludes: '/auth/v1/admin/users/', status: 200, json: { id: 'user-r5-01' } },
+        { urlIncludes: '/auth/v1/user', status: 403, json: { message: 'Forbidden' } }
+      ],
+      defaultResponse: { status: 400, json: {} }
+    })
   });
   const outAmbiguous = await dispAmbiguous(session02);
   assert.equal(outAmbiguous.passed, false);
@@ -3460,14 +3458,14 @@ test('66. Task 06I-B1-H1-R5 (R5-04): Successful password grant mints session tha
     anonKey: validTestAnonKey,
     inventory: inv,
     runContext: runCtx,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({
+      json: {
         access_token: tokenWithBadAmr,
         refresh_token: 'refresh-999',
         session_id: 'sess-minted-bad-amr-999',
         user: { id: 'user-minted-999', email: 'tio-test-user-06i@proof.invalid' }
-      })
+      }
     })
   });
 
@@ -3562,27 +3560,24 @@ test('68. Task 06I-B1-H1-R5 (R5-06): Seed credential lifecycle: password reset m
   runCtx1.activeSessionId = 'sess-run-1';
   runCtx1.activeAccessToken = createMockJwt({ sub: 'seed-user-uuid-1', session_id: 'sess-run-1' });
 
+  const disp1Transport = createDeterministicFixtureTransport({
+    routes: [
+      { urlIncludes: '/auth/v1/admin/users/', status: 200, json: { id: 'seed-user-uuid-1' } },
+      { urlIncludes: '/auth/v1/user', status: 401, json: { error_code: 'session_not_found', message: 'Session not found' } }
+    ],
+    defaultResponse: { status: 400, json: {} }
+  });
   const disp1 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     serviceRoleKey: validTestServiceRoleKey,
     inventory: inv1,
     runContext: runCtx1,
-    fetchFn: async (url, opts) => {
-      if (url.includes('/auth/v1/admin/users/')) {
-        const body = JSON.parse(opts.body);
-        providerSeedPassword = body.password;
-        return { status: 200, json: async () => ({ id: 'seed-user-uuid-1' }) };
-      }
-      if (url.includes('/auth/v1/user')) {
-        return { status: 401, json: async () => ({ error_code: 'session_not_found', message: 'Session not found' }) };
-      }
-      return { status: 400, json: async () => ({}) };
-    }
+    fetchFn: disp1Transport
   });
 
   const outReset = await disp1(session02);
   assert.equal(outReset.passed, true);
-  assert.equal(providerSeedPassword, 'TioNewPassword#2026!', 'Seed user password changed to new password in provider');
+  assert.equal(disp1Transport.calls.find(c => c.url.includes('/auth/v1/admin/users/'))?.bodyJson?.password, 'TioNewPassword#2026!', 'Seed user password changed to new password in provider');
   assert.equal(inv1.seedCredentialRestorations.length, 1, 'Inventory tracked password modification');
 
   // Run 1 Cleanup: Must restore original seed password!
@@ -3595,24 +3590,27 @@ test('68. Task 06I-B1-H1-R5 (R5-06): Seed credential lifecycle: password reset m
   const inv2 = new TestRunInventory('run-2-seed-lifecycle');
   const runCtx2 = createRunContext();
 
+  const tokenRun2 = createMockJwt({ sub: 'seed-user-uuid-1', session_id: 'sess-run-2' });
   const disp2 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv2,
     runContext: runCtx2,
-    fetchFn: async (url, opts) => {
-      if (url.includes('/auth/v1/token')) {
-        const creds = JSON.parse(opts.body);
-        if (creds.password === providerSeedPassword) {
-          const token = createMockJwt({ sub: 'seed-user-uuid-1', session_id: 'sess-run-2' });
-          return {
-            status: 200,
-            json: async () => ({ access_token: token, refresh_token: 'refr-run-2', session_id: 'sess-run-2', user: { id: 'seed-user-uuid-1' } })
-          };
+    fetchFn: createDeterministicFixtureTransport({
+      routes: [
+        {
+          urlIncludes: '/auth/v1/token',
+          bodyMatch: { password: providerSeedPassword },
+          status: 200,
+          json: { access_token: tokenRun2, refresh_token: 'refr-run-2', session_id: 'sess-run-2', user: { id: 'seed-user-uuid-1' } }
+        },
+        {
+          urlIncludes: '/auth/v1/token',
+          status: 400,
+          json: { message: 'Invalid login credentials' }
         }
-        return { status: 400, json: async () => ({ message: 'Invalid login credentials' }) };
-      }
-      return { status: 400, json: async () => ({}) };
-    }
+      ],
+      defaultResponse: { status: 400, json: {} }
+    })
   });
 
   const outLogin2 = await disp2(hook01);
@@ -3633,7 +3631,7 @@ test('69. Task 06I-B1-H1-R5 (R5-07): Storage fixture readiness: SESSION-05 disti
   const disp404 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtx,
-    fetchFn: async () => ({ status: 404, json: async () => ({ message: 'Object not found' }) })
+    fetchFn: staticTransport({ status: 404, json: { message: 'Object not found' } })
   });
   const out404 = await disp404(session05);
   assert.equal(out404.passed, false);
@@ -3673,9 +3671,9 @@ test('70. Task 06I-B1-H1-R5 (R5-08): Edge Function contract rejects false revoca
   const dispGeneric = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtx,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 401,
-      json: async () => ({ error: 'Invalid token: signature verification failed', error_code: 'invalid_token' })
+      json: { error: 'Invalid token: signature verification failed', error_code: 'invalid_token' }
     })
   });
   const outGeneric = await dispGeneric(session06);
@@ -3687,9 +3685,9 @@ test('70. Task 06I-B1-H1-R5 (R5-08): Edge Function contract rejects false revoca
   const disp500 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtx,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 500,
-      json: async () => ({ error: 'Internal server error connecting to GoTrue', error_code: 'internal_server_error' })
+      json: { error: 'Internal server error connecting to GoTrue', error_code: 'internal_server_error' }
     })
   });
   const out500 = await disp500(session06);
@@ -3700,9 +3698,9 @@ test('70. Task 06I-B1-H1-R5 (R5-08): Edge Function contract rejects false revoca
   const dispGenuine = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtx,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 401,
-      json: async () => ({ error: 'AuthSessionMissingError: session revoked by password change', error_code: 'AuthSessionMissingError' })
+      json: { error: 'AuthSessionMissingError: session revoked by password change', error_code: 'AuthSessionMissingError' }
     })
   });
   const outGenuine = await dispGenuine(session06);
@@ -3829,7 +3827,7 @@ test('72. Task 06I-B1-H1-R6 (R6-02): Real Storage object provisioning contract a
   const disp404 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtx,
-    fetchFn: async () => ({ status: 404, json: async () => ({ message: 'Object not found' }) })
+    fetchFn: staticTransport({ status: 404, json: { message: 'Object not found' } })
   });
   const out404 = await disp404(session05);
   assert.equal(out404.passed, false);
@@ -3840,7 +3838,7 @@ test('72. Task 06I-B1-H1-R6 (R6-02): Real Storage object provisioning contract a
   const disp200 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtx,
-    fetchFn: async () => ({ status: 200, json: async () => ({ probe: 'task06i-storage-probe-content' }) })
+    fetchFn: staticTransport({ status: 200, json: { probe: 'task06i-storage-probe-content' } })
   });
   const out200 = await disp200(session05);
   assert.equal(out200.passed, true);
@@ -3864,12 +3862,12 @@ test('73. Task 06I-B1-H1-R6 (R6-03): SESSION-06 accepts genuine provider-observe
   const dispSessionNotFound = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtx,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 403,
-      json: async () => ({
+      json: {
         error: 'Session from session_id claim in JWT does not exist',
         error_code: 'session_not_found'
-      })
+      }
     })
   });
   const outSessionNotFound = await dispSessionNotFound(session06);
@@ -3886,12 +3884,12 @@ test('73. Task 06I-B1-H1-R6 (R6-03): SESSION-06 accepts genuine provider-observe
   const dispAuthMissing = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtx,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 401,
-      json: async () => ({
+      json: {
         error: 'AuthSessionMissingError: Session invalidated',
         error_code: 'AuthSessionMissingError'
-      })
+      }
     })
   });
   const outAuthMissing = await dispAuthMissing(session06);
@@ -3903,9 +3901,9 @@ test('73. Task 06I-B1-H1-R6 (R6-03): SESSION-06 accepts genuine provider-observe
   const dispGeneric403 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtx,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 403,
-      json: async () => ({ message: 'Forbidden' })
+      json: { message: 'Forbidden' }
     })
   });
   const outGeneric403 = await dispGeneric403(session06);
@@ -3926,9 +3924,9 @@ test('73. Task 06I-B1-H1-R6 (R6-03): SESSION-06 accepts genuine provider-observe
   const dispBadJwt = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtx,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 401,
-      json: async () => ({ error_code: 'bad_jwt', message: 'Token is malformed' })
+      json: { error_code: 'bad_jwt', message: 'Token is malformed' }
     })
   });
   const outBadJwt = await dispBadJwt(session06);
@@ -3958,38 +3956,27 @@ test('74. Task 06I-B1-H1-R7 (R7-01): createHostedAdminClient adapter implements 
   );
 
   // 2. Inspect method definitions: verify NO duplicate signOut method exists
-  const calls = [];
-  const deletedUsers = new Set();
-  const mockFetch = async (url, opts) => {
-    calls.push({ url, method: opts?.method, headers: opts?.headers, body: opts?.body });
-    if (url.includes('/auth/v1/logout')) {
-      return { ok: true, status: 200, json: async () => ({}) };
-    }
-    if (url.includes('/auth/v1/admin/users/')) {
-      const userIdMatch = url.match(/\/auth\/v1\/admin\/users\/([^?]+)/);
-      const targetUserId = userIdMatch ? decodeURIComponent(userIdMatch[1]) : null;
-      if (opts?.method === 'DELETE') {
-        if (targetUserId) deletedUsers.add(targetUserId);
-        return { ok: true, status: 200, json: async () => ({}) };
-      }
-      if (opts?.method === 'GET') {
-        if (targetUserId && deletedUsers.has(targetUserId)) {
-          return { ok: false, status: 404, json: async () => ({ message: 'User not found', status: 404 }) };
-        }
-        return { ok: true, status: 200, json: async () => ({ id: targetUserId || 'u-r7-01', email: 'test@proof.invalid' }) };
-      }
-      if (opts?.method === 'PUT') {
-        return { ok: true, status: 200, json: async () => ({ id: targetUserId || 'u-r7-01' }) };
-      }
-    }
-    if (url.includes('/rest/v1/')) {
-      return { ok: true, status: 200, json: async () => ([]) };
-    }
-    if (url.includes('/storage/v1/object/')) {
-      return { ok: true, status: 200, json: async () => ({}) };
-    }
-    return { ok: false, status: 500, json: async () => ({ message: 'unexpected URL' }) };
-  };
+  const mockFetch = createDeterministicFixtureTransport({
+    initialState: {
+      del_u_test_123: false,
+      del_u_created_01: false,
+      del_u_created_02: false
+    },
+    routes: [
+      { urlIncludes: '/auth/v1/logout', status: 200, ok: true, json: {} },
+      { method: 'DELETE', pathIncludes: 'u-test-123', setsState: { del_u_test_123: true }, status: 200, json: {} },
+      { method: 'GET', pathIncludes: 'u-test-123', whenState: { del_u_test_123: true }, status: 404, json: { message: 'User not found', status: 404 } },
+      { method: 'DELETE', pathIncludes: 'u-created-01', setsState: { del_u_created_01: true }, status: 200, json: {} },
+      { method: 'GET', pathIncludes: 'u-created-01', whenState: { del_u_created_01: true }, status: 404, json: { message: 'User not found', status: 404 } },
+      { method: 'DELETE', pathIncludes: 'u-created-02', setsState: { del_u_created_02: true }, status: 200, json: {} },
+      { method: 'GET', pathIncludes: 'u-created-02', whenState: { del_u_created_02: true }, status: 404, json: { message: 'User not found', status: 404 } },
+      { method: 'GET', urlIncludes: '/auth/v1/admin/users/', status: 200, json: { id: 'u-r7-01', email: 'test@proof.invalid' } },
+      { method: 'PUT', urlIncludes: '/auth/v1/admin/users/', status: 200, json: { id: 'u-r7-01' } },
+      { urlIncludes: '/rest/v1/', status: 200, json: [] },
+      { urlIncludes: '/storage/v1/object/', status: 200, json: {} }
+    ],
+    defaultResponse: { status: 500, ok: false, json: { message: 'unexpected URL' } }
+  });
 
   const adminClient = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
@@ -4008,24 +3995,25 @@ test('74. Task 06I-B1-H1-R7 (R7-01): createHostedAdminClient adapter implements 
 
   // Verify signOut takes (token, scope) and is NOT shadowed by (sessionId)
   // Calling invalidateSession(sessionId, token) must invoke signOut(token, 'local')
-  calls.length = 0;
+  let prevCallsCount = mockFetch.calls.length;
   const testToken = createMockJwt();
   const resInvalidate = await adminClient.invalidateSession('sess-r7-01', testToken);
   assert.equal(resInvalidate.error, null);
   assert.equal(resInvalidate.data?.scope, 'local');
-  assert.equal(calls.length, 1);
-  assert.match(calls[0].url, /\/auth\/v1\/logout\?scope=local/);
-  assert.equal(calls[0].method, 'POST');
-  assert.equal(calls[0].headers.Authorization, `Bearer ${testToken}`);
-  assert.equal(calls[0].headers.apikey, validTestServiceRoleKey);
+  let newCalls = mockFetch.calls.slice(prevCallsCount);
+  assert.equal(newCalls.length, 1);
+  assert.match(newCalls[0].url, /\/auth\/v1\/logout\?scope=local/);
+  assert.equal(newCalls[0].method, 'POST');
+  assert.equal(newCalls[0].headers.authorization, `Bearer ${testToken}`);
+  assert.equal(newCalls[0].headers.apikey, validTestServiceRoleKey);
 
   // Calling invalidateSession without token fails closed with UNSUPPORTED_SESSION_REVOCATION
-  calls.length = 0;
+  prevCallsCount = mockFetch.calls.length;
   const resNoToken = await adminClient.invalidateSession('sess-r7-01', null);
   assert.ok(resNoToken.error);
   assert.equal(resNoToken.error.status, 400);
   assert.match(resNoToken.error.message, /UNSUPPORTED_SESSION_REVOCATION/);
-  assert.equal(calls.length, 0, 'No fetch must be dispatched without token');
+  assert.equal(mockFetch.calls.length - prevCallsCount, 0, 'No fetch must be dispatched without token');
 
   // Calling signOut without token fails closed with MISSING_TOKEN
   const resEmptySignOut = await adminClient.signOut('');
@@ -4038,15 +4026,16 @@ test('74. Task 06I-B1-H1-R7 (R7-01): createHostedAdminClient adapter implements 
   assert.match(resEmptyDeleteUser.error.message, /MISSING_USER_ID/);
 
   // Calling deleteUser with valid userId dispatches DELETE /auth/v1/admin/users/:id
-  calls.length = 0;
+  prevCallsCount = mockFetch.calls.length;
   const resDelUser = await adminClient.deleteUser('u-test-123');
   assert.equal(resDelUser.error, null);
-  assert.equal(calls.length, 1);
-  assert.match(calls[0].url, /\/auth\/v1\/admin\/users\/u-test-123/);
-  assert.equal(calls[0].method, 'DELETE');
+  newCalls = mockFetch.calls.slice(prevCallsCount);
+  assert.equal(newCalls.length, 1);
+  assert.match(newCalls[0].url, /\/auth\/v1\/admin\/users\/u-test-123/);
+  assert.equal(newCalls[0].method, 'DELETE');
 
   // Calling getUserById with 404 response returns clean 404 object without throwing
-  const mock404Fetch = async () => ({ ok: false, status: 404, json: async () => ({}) });
+  const mock404Fetch = staticTransport({ ok: false, status: 404, json: {} });
   const admin404 = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: mock404Fetch });
   const res404 = await admin404.getUserById('u-nonexistent');
   assert.equal(res404.data, null);
@@ -4067,7 +4056,6 @@ test('74. Task 06I-B1-H1-R7 (R7-01): createHostedAdminClient adapter implements 
     creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
   });
 
-  calls.length = 0;
   const cleanupReport = await inv.executeCleanup({ adminClient });
   assert.equal(cleanupReport.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(cleanupReport.sessionsRevoked, 1);
@@ -4244,7 +4232,7 @@ test('75. Task 06I-B1-H1-R7 (R7-02): 300-second JWT lifetime contract enforcemen
   const dispValid = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtxValid,
-    fetchFn: async () => ({ status: 200, json: async () => ([]) })
+    fetchFn: staticTransport({ status: 200, json: [] })
   });
   const out04Valid = await dispValid(session04);
   assert.equal(out04Valid.passed, true);
@@ -4264,7 +4252,7 @@ test('75. Task 06I-B1-H1-R7 (R7-02): 300-second JWT lifetime contract enforcemen
   const dispOversized = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtxOversized,
-    fetchFn: async () => ({ status: 200, json: async () => ([]) })
+    fetchFn: staticTransport({ status: 200, json: [] })
   });
   const out04Oversized = await dispOversized(session04);
   assert.equal(out04Oversized.passed, false);
@@ -4295,7 +4283,7 @@ test('75. Task 06I-B1-H1-R7 (R7-02): 300-second JWT lifetime contract enforcemen
   const dispNoIat = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtxNoIat,
-    fetchFn: async () => ({ status: 200, json: async () => ([]) })
+    fetchFn: staticTransport({ status: 200, json: [] })
   });
   const out04NoIat = await dispNoIat(session04);
   assert.equal(out04NoIat.passed, false);
@@ -4312,7 +4300,7 @@ test('75. Task 06I-B1-H1-R7 (R7-02): 300-second JWT lifetime contract enforcemen
   const dispInconsistent = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtxInconsistent,
-    fetchFn: async () => ({ status: 200, json: async () => ([]) })
+    fetchFn: staticTransport({ status: 200, json: [] })
   });
   const out04Inconsistent = await dispInconsistent(session04);
   assert.equal(out04Inconsistent.passed, false);
@@ -4328,7 +4316,7 @@ test('75. Task 06I-B1-H1-R7 (R7-02): 300-second JWT lifetime contract enforcemen
   const dispStorage = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtxStorage,
-    fetchFn: async () => ({ status: 200, json: async () => ({}) })
+    fetchFn: staticTransport({ status: 200, json: {} })
   });
   const out05Valid = await dispStorage(session05);
   assert.equal(out05Valid.passed, true);
@@ -4389,27 +4377,23 @@ test('76. Task 06I-B1-H1-R8 (R8-01): Unexpected session tracking captures sessio
   const invBypass = new TestRunInventory('test-run-bypass03-unexpected');
   const unexpectedSessionId = 'sess-bypass03-minted';
   const unexpectedToken = createMockJwt({ session_id: unexpectedSessionId, sub: 'u-seed-bypass03' });
-  const calls = [];
-  const mockFetchBypass = async (url, opts) => {
-    calls.push({ url, method: opts.method || 'GET', headers: opts.headers });
-    if (url.includes('/auth/v1/verify')) {
-      // Unexpectedly returns HTTP 200 with tokens
-      return {
+  const mockFetchBypass = createDeterministicFixtureTransport({
+    routes: [
+      {
+        urlIncludes: '/auth/v1/verify',
         status: 200,
         ok: true,
-        json: async () => ({
+        json: {
           access_token: unexpectedToken,
           refresh_token: 'refresh-bypass03',
           session_id: unexpectedSessionId,
           user: { id: 'u-seed-bypass03', email: 'tio-test-user-06i@proof.invalid' }
-        })
-      };
-    }
-    if (url.includes('/auth/v1/logout')) {
-      return { status: 200, ok: true, json: async () => ({}) };
-    }
-    return { status: 200, ok: true, json: async () => ({}) };
-  };
+        }
+      },
+      { urlIncludes: '/auth/v1/logout', status: 200, ok: true, json: {} }
+    ],
+    defaultResponse: { status: 200, ok: true, json: {} }
+  });
 
   const dispBypass = createHostedDispatcher({
     anonKey: validTestAnonKey,
@@ -4434,23 +4418,24 @@ test('76. Task 06I-B1-H1-R8 (R8-01): Unexpected session tracking captures sessio
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: mockFetchBypass
   });
-  calls.length = 0;
+  const preCleanupCalls = mockFetchBypass.calls.length;
   const bypassCleanup = await invBypass.executeCleanup({ adminClient: adminClientBypass });
   assert.equal(bypassCleanup.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(bypassCleanup.sessionsRevoked, 1);
-  assert.equal(calls.length, 1);
-  assert.match(calls[0].url, /\/auth\/v1\/logout\?scope=local/);
-  assert.equal(calls[0].headers.Authorization, `Bearer ${unexpectedToken}`);
+  const cleanupCalls = mockFetchBypass.calls.slice(preCleanupCalls);
+  assert.equal(cleanupCalls.length, 1);
+  assert.match(cleanupCalls[0].url, /\/auth\/v1\/logout\?scope=local/);
+  assert.equal(cleanupCalls[0].headers.authorization, `Bearer ${unexpectedToken}`);
 
   // 3. Normal negative probe rejection (no tokens) does NOT populate sessions
   const invNormal = new TestRunInventory('test-run-normal-rejection');
   const dispNormal = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: invNormal,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 400,
       ok: false,
-      json: async () => ({ error_code: 'otp_expired', msg: 'Token expired' })
+      json: { error_code: 'otp_expired', msg: 'Token expired' }
     })
   });
   const normalOutcome = await dispNormal({ id: 'BYPASS-03', category: 'Auth Bypass & Registration' });
@@ -4469,7 +4454,6 @@ test('76. Task 06I-B1-H1-R8 (R8-01): Unexpected session tracking captures sessio
 });
 
 test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed session absence handling', async () => {
-  const calls = [];
   const testToken = createMockJwt({ session_id: 'sess-idemp-1' });
 
   // 1. createHostedAdminClient.signOut provider responses
@@ -4477,7 +4461,7 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
   const client200 = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async () => ({ status: 200, ok: true, json: async () => ({}) })
+    fetchFn: staticTransport({ status: 200, ok: true, json: {} })
   });
   const res200 = await client200.signOut(testToken);
   assert.equal(res200.error, null);
@@ -4487,14 +4471,14 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
   const clientNotFound = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 403,
       ok: false,
-      json: async () => ({
+      json: {
         code: 403,
         error_code: 'session_not_found',
         msg: 'Session from session_id claim in JWT does not exist'
-      })
+      }
     })
   });
   const resNotFound = await clientNotFound.signOut(testToken);
@@ -4506,14 +4490,14 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
   const clientMissing = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 400,
       ok: false,
-      json: async () => ({
+      json: {
         code: 400,
         error_code: 'authsessionmissingerror',
         msg: 'Auth session missing!'
-      })
+      }
     })
   });
   const resMissing = await clientMissing.signOut(testToken);
@@ -4524,10 +4508,10 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
   const clientBadJwt = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 401,
       ok: false,
-      json: async () => ({ code: 401, error_code: 'bad_jwt', msg: 'Invalid JWT' })
+      json: { code: 401, error_code: 'bad_jwt', msg: 'Invalid JWT' }
     })
   });
   const resBadJwt = await clientBadJwt.signOut(testToken);
@@ -4538,10 +4522,10 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
   const clientExpired = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 401,
       ok: false,
-      json: async () => ({ code: 401, error_code: 'jwt_expired', msg: 'JWT expired' })
+      json: { code: 401, error_code: 'jwt_expired', msg: 'JWT expired' }
     })
   });
   const resExpired = await clientExpired.signOut(testToken);
@@ -4551,10 +4535,10 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
   const clientGeneric403 = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 403,
       ok: false,
-      json: async () => ({ code: 403, msg: 'Forbidden' })
+      json: { code: 403, msg: 'Forbidden' }
     })
   });
   const resGeneric403 = await clientGeneric403.signOut(testToken);
@@ -4564,10 +4548,10 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
   const client500 = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 500,
       ok: false,
-      json: async () => ({ code: 500, msg: 'Internal server error' })
+      json: { code: 500, msg: 'Internal server error' }
     })
   });
   const res500 = await client500.signOut(testToken);
@@ -4589,21 +4573,13 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
     serviceRoleKey: validTestServiceRoleKey,
     inventory: invSession02,
     runContext: runCtxS02,
-    fetchFn: async (url, opts) => {
-      calls.push({ url, method: opts.method || 'GET' });
-      if (url.includes('/auth/v1/admin/users/')) {
-        return { status: 200, ok: true, json: async () => ({ id: 'u-s02-test' }) };
-      }
-      if (url.includes('/auth/v1/user')) {
-        // Post-reset check affirmatively proves revocation
-        return {
-          status: 403,
-          ok: false,
-          json: async () => ({ error_code: 'session_not_found', msg: 'Session not found' })
-        };
-      }
-      return { status: 200, ok: true, json: async () => ({}) };
-    }
+    fetchFn: createDeterministicFixtureTransport({
+      routes: [
+        { urlIncludes: '/auth/v1/admin/users/', status: 200, ok: true, json: { id: 'u-s02-test' } },
+        { urlIncludes: '/auth/v1/user', status: 403, ok: false, json: { error_code: 'session_not_found', msg: 'Session not found' } }
+      ],
+      defaultResponse: { status: 200, ok: true, json: {} }
+    })
   });
 
   const outS02 = await dispS02({ id: 'SESSION-02', category: 'Session & Consumer' });
@@ -4611,33 +4587,29 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
   assert.equal(invSession02.isSessionRevoked(s02SessionId), true, 'SESSION-02 must mark session as revoked in inventory');
 
   // When cleanup runs on invSession02, it skips calling logout for already-revoked session
-  calls.length = 0;
+  const verifyTokenS02 = createMockJwt({ sub: 'u-s02-test', session_id: 'sess-s02-v' });
+  const adminTransportS02 = createDeterministicFixtureTransport({
+    routes: [
+      {
+        urlIncludes: '/auth/v1/token?grant_type=password',
+        status: 200,
+        ok: true,
+        json: { access_token: verifyTokenS02, session_id: 'sess-s02-v', user: { id: 'u-s02-test' } }
+      }
+    ],
+    defaultResponse: { status: 200, ok: true, json: {} }
+  });
   const adminClientS02 = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async (url, opts) => {
-      calls.push({ url, method: opts.method || 'GET', auth: opts.headers?.Authorization });
-      if (url.includes('/auth/v1/token?grant_type=password')) {
-        const verifyToken = createMockJwt({ sub: 'u-s02-test', session_id: 'sess-s02-v' });
-        return {
-          status: 200,
-          ok: true,
-          json: async () => ({
-            access_token: verifyToken,
-            session_id: 'sess-s02-v',
-            user: { id: 'u-s02-test' }
-          })
-        };
-      }
-      return { status: 200, ok: true, json: async () => ({}) };
-    }
+    fetchFn: adminTransportS02
   });
 
   const cleanupS02 = await invSession02.executeCleanup({ adminClient: adminClientS02 });
   assert.equal(cleanupS02.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(cleanupS02.sessionsRevoked, 1);
   // Zero logout fetch calls for s02SessionId/s02Token because session was already marked revoked!
-  assert.equal(calls.filter(c => c.url.includes('/logout') && c.auth?.includes(s02Token)).length, 0);
+  assert.equal(adminTransportS02.calls.filter(c => c.url.includes('/logout') && c.headers.authorization?.includes(s02Token)).length, 0);
 
   // 3. Idempotent cleanup execution:
   // First run revokes session; second run on same inventory is cleanly idempotent
@@ -4645,30 +4617,28 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
   invIdemp.registerSession('sess-run-1', { accessToken: createMockJwt({ session_id: 'sess-run-1' }) });
   invIdemp.registerSession('sess-run-2', { accessToken: createMockJwt({ session_id: 'sess-run-2' }) });
 
-  calls.length = 0;
+  const idempTransport = staticTransport({ status: 200, ok: true, json: {} });
   const adminClientIdemp = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async (url, opts) => {
-      calls.push({ url, method: opts.method || 'GET' });
-      return { status: 200, ok: true, json: async () => ({}) };
-    }
+    fetchFn: idempTransport
   });
 
   // First cleanup call
+  const preFirstCount = idempTransport.calls.length;
   const firstCleanup = await invIdemp.executeCleanup({ adminClient: adminClientIdemp });
   assert.equal(firstCleanup.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(firstCleanup.sessionsRevoked, 2);
-  const firstLogoutCount = calls.filter(c => c.url.includes('/logout')).length;
+  const firstLogoutCount = idempTransport.calls.slice(preFirstCount).filter(c => c.url.includes('/logout')).length;
   assert.equal(firstLogoutCount, 2, 'First cleanup must call logout for both sessions');
 
   // Second cleanup call on same inventory
-  calls.length = 0;
+  const preSecondCount = idempTransport.calls.length;
   const secondCleanup = await invIdemp.executeCleanup({ adminClient: adminClientIdemp });
   assert.equal(secondCleanup.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(secondCleanup.sessionsRevoked, 2);
   assert.equal(secondCleanup.residualResources.length, 0);
-  const secondLogoutCount = calls.filter(c => c.url.includes('/logout')).length;
+  const secondLogoutCount = idempTransport.calls.slice(preSecondCount).filter(c => c.url.includes('/logout')).length;
   assert.equal(secondLogoutCount, 0, 'Second cleanup must be idempotent and make ZERO logout calls');
 });
 
@@ -4680,10 +4650,8 @@ test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, stat
   const seedEmail = 'tio-seed-r9-01@proof.invalid';
 
   // 1. Pre-dispatch registration invariance:
-  // Restoration obligation MUST be registered and in 'dispatched' state BEFORE PUT request proceeds
-  let preDispatchVerified = false;
-  let providerPassword = origPassword;
-
+  // Restoration obligation MUST be registered and in 'dispatched' state BEFORE PUT request completes
+  const preDispatchBarrier = createOfflineBarrier('r9-pre-dispatch');
   const invPre = new TestRunInventory('test-run-pre-dispatch');
   const runCtxPre = createRunContext();
   runCtxPre.activeUserId = seedUserId;
@@ -4691,38 +4659,36 @@ test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, stat
   runCtxPre.activeSessionId = 'sess-pre-1';
   runCtxPre.activeAccessToken = createMockJwt({ sub: seedUserId, session_id: 'sess-pre-1' });
 
+  const preTransport = createDeterministicFixtureTransport({
+    routes: [
+      { urlIncludes: '/auth/v1/admin/users/', waitForBarrier: preDispatchBarrier, status: 200, json: { id: seedUserId } },
+      { urlIncludes: '/auth/v1/user', status: 401, json: { error_code: 'session_not_found', message: 'Session not found' } }
+    ],
+    defaultResponse: { status: 400, json: {} }
+  });
+
   const dispPre = createHostedDispatcher({
     anonKey: validTestAnonKey,
     serviceRoleKey: validTestServiceRoleKey,
     inventory: invPre,
     runContext: runCtxPre,
     testEmail: seedEmail,
-    fetchFn: async (url, opts) => {
-      if (url.includes('/auth/v1/admin/users/')) {
-        // Assert pre-dispatch state inside fetchFn BEFORE any mutation or response!
-        assert.equal(invPre.seedCredentialRestorations.length, 1, 'Restoration MUST be registered before dispatch');
-        const rec = invPre.seedCredentialRestorations[0];
-        assert.equal(rec.userId, seedUserId);
-        assert.equal(rec.originalPassword, origPassword);
-        assert.equal(rec.targetPassword, newPassword);
-        assert.equal(rec.state, 'dispatched', 'Record state MUST be dispatched when network call begins');
-        assert.ok(rec.dispatchedAt, 'dispatchedAt timestamp MUST be recorded');
-        assert.equal(invPre.isUserTracked(seedUserId), true, 'Seed user MUST be tracked in inventory');
-        preDispatchVerified = true;
-
-        const body = JSON.parse(opts.body);
-        providerPassword = body.password;
-        return { status: 200, json: async () => ({ id: seedUserId }) };
-      }
-      if (url.includes('/auth/v1/user')) {
-        return { status: 401, json: async () => ({ error_code: 'session_not_found', message: 'Session not found' }) };
-      }
-      return { status: 400, json: async () => ({}) };
-    }
+    fetchFn: preTransport
   });
 
-  const outPre = await dispPre(session02);
-  assert.equal(preDispatchVerified, true, 'Pre-dispatch verification MUST be observed');
+  const prePromise = dispPre(session02);
+  await preDispatchBarrier.waitForArrivals(1);
+  assert.equal(invPre.seedCredentialRestorations.length, 1, 'Restoration MUST be registered before dispatch completes');
+  const recPre = invPre.seedCredentialRestorations[0];
+  assert.equal(recPre.userId, seedUserId);
+  assert.equal(recPre.originalPassword, origPassword);
+  assert.equal(recPre.targetPassword, newPassword);
+  assert.equal(recPre.state, 'dispatched', 'Record state MUST be dispatched when network call is in flight');
+  assert.ok(recPre.dispatchedAt, 'dispatchedAt timestamp MUST be recorded');
+  assert.equal(invPre.isUserTracked(seedUserId), true, 'Seed user MUST be tracked in inventory');
+  preDispatchBarrier.release();
+
+  const outPre = await prePromise;
   assert.equal(outPre.passed, true);
   assert.equal(invPre.seedCredentialRestorations[0].state, 'confirmed', 'Successful 200 transitions state to confirmed');
   assert.ok(invPre.seedCredentialRestorations[0].confirmedAt);
@@ -4736,26 +4702,20 @@ test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, stat
   runCtxTransport.activeSessionId = 'sess-trans-1';
   runCtxTransport.activeAccessToken = createMockJwt({ sub: seedUserId, session_id: 'sess-trans-1' });
 
-  // Simulate provider having updated password, but transport throwing ECONNRESET on client response
   let transportProviderPassword = origPassword;
+  const transportErrMock = createDeterministicFixtureTransport({
+    routes: [
+      { urlIncludes: '/auth/v1/admin/users/', throwError: { message: 'ECONNRESET: socket hang up', code: 'ECONNRESET' } }
+    ],
+    defaultResponse: { status: 400, json: {} }
+  });
   const dispTransport = createHostedDispatcher({
     anonKey: validTestAnonKey,
     serviceRoleKey: validTestServiceRoleKey,
     inventory: invTransport,
     runContext: runCtxTransport,
     testEmail: seedEmail,
-    fetchFn: async (url, opts) => {
-      if (url.includes('/auth/v1/admin/users/')) {
-        // Provider updates password in its database
-        const body = JSON.parse(opts.body);
-        transportProviderPassword = body.password;
-        // Client-side socket drops
-        const connErr = new Error('ECONNRESET: socket hang up');
-        connErr.code = 'ECONNRESET';
-        throw connErr;
-      }
-      return { status: 400, json: async () => ({}) };
-    }
+    fetchFn: transportErrMock
   });
 
   const outTransport = await dispTransport(session02);
@@ -4772,7 +4732,7 @@ test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, stat
   assert.equal(transRec.state, 'indeterminate');
   assert.ok(transRec.indeterminateAt);
   assert.match(transRec.error, /ECONNRESET/);
-  assert.equal(transportProviderPassword, newPassword, 'Provider database was mutated before drop');
+  assert.equal(transportErrMock.calls[0].bodyJson?.password, newPassword, 'PUT request carried newPassword before connection drop');
 
   // Cleanup MUST execute restoration and restore original password
   const mockAdminClient = {
@@ -4805,18 +4765,17 @@ test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, stat
     inventory: invJsonErr,
     runContext: runCtxJsonErr,
     testEmail: seedEmail,
-    fetchFn: async (url, opts) => {
-      if (url.includes('/auth/v1/admin/users/')) {
-        const body = JSON.parse(opts.body);
-        jsonProviderPassword = body.password;
-        return {
+    fetchFn: createDeterministicFixtureTransport({
+      routes: [
+        {
+          urlIncludes: '/auth/v1/admin/users/',
           status: 200,
-          text: async () => '<html><body>502 Bad Gateway</body></html>',
-          json: async () => { throw new SyntaxError('Unexpected token < in JSON at position 0'); }
-        };
-      }
-      return { status: 400, json: async () => ({}) };
-    }
+          text: '<html><body>502 Bad Gateway</body></html>',
+          jsonError: 'Unexpected token < in JSON at position 0'
+        }
+      ],
+      defaultResponse: { status: 400, json: {} }
+    })
   });
 
   const outJson = await dispJsonErr(session02);
@@ -4842,23 +4801,18 @@ test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, stat
   runCtx500.activeUserId = seedUserId;
   runCtx500.originalSeedPassword = origPassword;
 
-  let http500ProviderPassword = origPassword;
   const disp500 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     serviceRoleKey: validTestServiceRoleKey,
     inventory: inv500,
     runContext: runCtx500,
     testEmail: seedEmail,
-    fetchFn: async (url, opts) => {
-      if (url.includes('/auth/v1/admin/users/')) {
-        http500ProviderPassword = JSON.parse(opts.body).password;
-        return {
-          status: 500,
-          json: async () => ({ msg: 'Internal server error', error_code: 'internal_error' })
-        };
-      }
-      return { status: 400, json: async () => ({}) };
-    }
+    fetchFn: createDeterministicFixtureTransport({
+      routes: [
+        { urlIncludes: '/auth/v1/admin/users/', status: 500, json: { msg: 'Internal server error', error_code: 'internal_error' } }
+      ],
+      defaultResponse: { status: 400, json: {} }
+    })
   });
 
   const out500 = await disp500(session02);
@@ -4989,50 +4943,48 @@ test('79. Task 06I-B1-H1-R9 (R9-02): Controlled authentication verification, adv
   assert.equal(invUpdateFail.seedCredentialRestorations[0].state, 'restoration_failed');
 
   // 2. createHostedAdminClient.verifyUserCredentials unit behavior:
-  const calls = [];
+  const testClientTransport = createDeterministicFixtureTransport({
+    routes: [
+      {
+        urlIncludes: '/auth/v1/token?grant_type=password',
+        bodyMatch: { password: origPassword },
+        status: 200,
+        ok: true,
+        json: {
+          access_token: createMockJwt({ sub: seedUserId, session_id: 'verify-sess-1' }),
+          user: { id: seedUserId }
+        }
+      },
+      {
+        urlIncludes: '/auth/v1/token?grant_type=password',
+        status: 400,
+        ok: false,
+        json: { msg: 'Invalid login credentials', error_code: 'invalid_grant' }
+      },
+      { urlIncludes: '/auth/v1/logout', status: 200, ok: true, json: {} }
+    ],
+    defaultResponse: { status: 400, ok: false, json: {} }
+  });
   const testClient = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async (url, opts) => {
-      calls.push({ url, method: opts.method, body: opts.body ? JSON.parse(opts.body) : null });
-      if (url.includes('/auth/v1/token?grant_type=password')) {
-        const body = JSON.parse(opts.body);
-        if (body.password === origPassword) {
-          return {
-            status: 200,
-            ok: true,
-            json: async () => ({
-              access_token: createMockJwt({ sub: seedUserId, session_id: 'verify-sess-1' }),
-              user: { id: seedUserId }
-            })
-          };
-        }
-        return {
-          status: 400,
-          ok: false,
-          json: async () => ({ msg: 'Invalid login credentials', error_code: 'invalid_grant' })
-        };
-      }
-      if (url.includes('/auth/v1/logout')) {
-        return { status: 200, ok: true, json: async () => ({}) };
-      }
-      return { status: 400, ok: false, json: async () => ({}) };
-    }
+    fetchFn: testClientTransport
   });
 
   // Successful verification triggers login AND immediate local signout
-  calls.length = 0;
+  let preCalls = testClientTransport.calls.length;
   const verifyRes = await testClient.verifyUserCredentials(seedEmail, origPassword);
   assert.equal(verifyRes.error, null);
   assert.equal(verifyRes.data.verified, true);
   assert.equal(verifyRes.data.userId, seedUserId);
-  assert.equal(calls.length, 2, 'Must call /token AND /logout');
-  assert.ok(calls[0].url.includes('/token?grant_type=password'));
-  assert.ok(calls[1].url.includes('/logout?scope=local'), 'Must immediately revoke verification session');
+  let recentCalls = testClientTransport.calls.slice(preCalls);
+  assert.equal(recentCalls.length, 2, 'Must call /token AND /logout');
+  assert.ok(recentCalls[0].url.includes('/token?grant_type=password'));
+  assert.ok(recentCalls[1].url.includes('/logout?scope=local'), 'Must immediately revoke verification session');
 
   // Invalid password returns clean error without throwing
-  calls.length = 0;
+  preCalls = testClientTransport.calls.length;
   const badVerifyRes = await testClient.verifyUserCredentials(seedEmail, 'WrongPassword!');
   assert.equal(badVerifyRes.data, null);
   assert.ok(badVerifyRes.error);
@@ -5129,23 +5081,22 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async (url, opts) => {
-      if (url.includes('/auth/v1/token?grant_type=password')) {
-        return {
+    fetchFn: createDeterministicFixtureTransport({
+      routes: [
+        {
+          urlIncludes: '/auth/v1/token?grant_type=password',
           status: 200,
           ok: true,
-          json: async () => ({
+          json: {
             access_token: verifyToken,
             session_id: sessId,
             user: { id: seedUserId, email: seedEmail }
-          })
-        };
-      }
-      if (url.includes('/auth/v1/logout')) {
-        return { status: 200, ok: true, json: async () => ({}) };
-      }
-      return { status: 200, ok: true, json: async () => ({}) };
-    }
+          }
+        },
+        { urlIncludes: '/auth/v1/logout', status: 200, ok: true, json: {} }
+      ],
+      defaultResponse: { status: 200, ok: true, json: {} }
+    })
   });
 
   const resImmediate = await adminClientImmediate.verifyUserCredentials(seedEmail, initialPassword, { inventory: invImmediate });
@@ -5163,30 +5114,28 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async (url, opts) => {
-      if (url.includes('/auth/v1/token?grant_type=password')) {
-        return {
+    fetchFn: createDeterministicFixtureTransport({
+      routes: [
+        {
+          urlIncludes: '/auth/v1/token?grant_type=password',
           status: 200,
           ok: true,
-          json: async () => ({
+          json: {
             access_token: token503,
             session_id: s503Id,
             user: { id: seedUserId, email: seedEmail }
-          })
-        };
-      }
-      if (url.includes('/auth/v1/logout')) {
-        return {
+          }
+        },
+        {
+          urlIncludes: '/auth/v1/logout',
           status: 503,
           ok: false,
-          json: async () => ({ msg: 'Service Unavailable', error_code: 'service_unavailable' })
-        };
-      }
-      if (url.includes('/auth/v1/admin/users/')) {
-        return { status: 200, ok: true, json: async () => ({ id: seedUserId }) };
-      }
-      return { status: 200, ok: true, json: async () => ({}) };
-    }
+          json: { msg: 'Service Unavailable', error_code: 'service_unavailable' }
+        },
+        { urlIncludes: '/auth/v1/admin/users/', status: 200, ok: true, json: { id: seedUserId } }
+      ],
+      defaultResponse: { status: 200, ok: true, json: {} }
+    })
   });
 
   // verifyUserCredentials returns sessionRevocationFailed: true
@@ -5248,32 +5197,35 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async (url, opts) => {
-      if (url.includes('/auth/v1/token?grant_type=password')) {
-        return {
+    fetchFn: createDeterministicFixtureTransport({
+      routes: [
+        {
+          urlIncludes: '/auth/v1/token?grant_type=password',
           status: 200,
           ok: true,
-          json: async () => ({
+          json: {
             access_token: retryToken,
             session_id: retrySessId,
             user: { id: seedUserId, email: seedEmail }
-          })
-        };
-      }
-      if (url.includes('/auth/v1/logout')) {
-        logoutAttempt++;
-        if (logoutAttempt === 1) {
-          // First attempt during verifyUserCredentials fails
-          return { status: 503, ok: false, json: async () => ({ msg: 'Temporary drop' }) };
-        }
-        // Second attempt (fallback retry during executeCleanup) succeeds
-        return { status: 200, ok: true, json: async () => ({}) };
-      }
-      if (url.includes('/auth/v1/admin/users/')) {
-        return { status: 200, ok: true, json: async () => ({ id: seedUserId }) };
-      }
-      return { status: 200, ok: true, json: async () => ({}) };
-    }
+          }
+        },
+        {
+          urlIncludes: '/auth/v1/logout',
+          times: 1,
+          status: 503,
+          ok: false,
+          json: { msg: 'Temporary drop' }
+        },
+        {
+          urlIncludes: '/auth/v1/logout',
+          status: 200,
+          ok: true,
+          json: {}
+        },
+        { urlIncludes: '/auth/v1/admin/users/', status: 200, ok: true, json: { id: seedUserId } }
+      ],
+      defaultResponse: { status: 200, ok: true, json: {} }
+    })
   });
 
   const repRetry = await invRetry.executeCleanup({ adminClient: adminClientRetry });
@@ -5288,23 +5240,22 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async (url, opts) => {
-      if (url.includes('/auth/v1/token?grant_type=password')) {
-        return {
+    fetchFn: createDeterministicFixtureTransport({
+      routes: [
+        {
+          urlIncludes: '/auth/v1/token?grant_type=password',
           status: 200,
           ok: true,
-          json: async () => ({
+          json: {
             access_token: throwToken,
             session_id: 'sess-throws',
             user: { id: seedUserId, email: seedEmail }
-          })
-        };
-      }
-      if (url.includes('/auth/v1/logout')) {
-        throw new Error('ECONNRESET: socket hang up');
-      }
-      return { status: 200, ok: true, json: async () => ({}) };
-    }
+          }
+        },
+        { urlIncludes: '/auth/v1/logout', throwError: { message: 'ECONNRESET: socket hang up' } }
+      ],
+      defaultResponse: { status: 200, ok: true, json: {} }
+    })
   });
 
   const resThrows = await adminClientThrows.verifyUserCredentials(seedEmail, initialPassword, { inventory: invThrows });
@@ -5323,19 +5274,17 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async (url, opts) => {
-      if (url.includes('/auth/v1/token?grant_type=password')) {
-        return {
+    fetchFn: createDeterministicFixtureTransport({
+      routes: [
+        {
+          urlIncludes: '/auth/v1/token?grant_type=password',
           status: 200,
           ok: true,
-          json: async () => ({
-            access_token: noSessToken,
-            user: { id: seedUserId, email: seedEmail }
-          })
-        };
-      }
-      return { status: 200, ok: true, json: async () => ({}) };
-    }
+          json: { access_token: noSessToken, user: { id: seedUserId, email: seedEmail } }
+        }
+      ],
+      defaultResponse: { status: 200, ok: true, json: {} }
+    })
   });
 
   const resUntracked = await adminClientUntracked.verifyUserCredentials(seedEmail, initialPassword, { inventory: invUntracked });
@@ -5350,16 +5299,12 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async (url, opts) => {
-      if (url.includes('/auth/v1/logout')) {
-        return {
-          status: 401,
-          ok: false,
-          json: async () => ({ msg: 'bad_jwt: signature verification failed', error_code: 'bad_jwt' })
-        };
-      }
-      return { status: 200, ok: true, json: async () => ({}) };
-    }
+    fetchFn: createDeterministicFixtureTransport({
+      routes: [
+        { urlIncludes: '/auth/v1/logout', status: 401, ok: false, json: { msg: 'bad_jwt: signature verification failed', error_code: 'bad_jwt' } }
+      ],
+      defaultResponse: { status: 200, ok: true, json: {} }
+    })
   });
   const signOutBad = await adminClientBadJwt.signOut('some-token', 'local');
   assert.ok(signOutBad.error, 'bad_jwt must be rejected as false proof of revocation');
@@ -5368,16 +5313,12 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async (url, opts) => {
-      if (url.includes('/auth/v1/logout')) {
-        return {
-          status: 404,
-          ok: false,
-          json: async () => ({ msg: 'session not found', error_code: 'session_not_found' })
-        };
-      }
-      return { status: 200, ok: true, json: async () => ({}) };
-    }
+    fetchFn: createDeterministicFixtureTransport({
+      routes: [
+        { urlIncludes: '/auth/v1/logout', status: 404, ok: false, json: { msg: 'session not found', error_code: 'session_not_found' } }
+      ],
+      defaultResponse: { status: 200, ok: true, json: {} }
+    })
   });
   const signOutFound = await adminClientNotFound.signOut('some-token', 'local');
   assert.equal(signOutFound.error, null);
@@ -5459,22 +5400,19 @@ test('81. Task 06I-B1-H1-R10 (R10-02): Exact identity binding, seed user correla
     email: customSeedEmail
   });
 
-  let adminPutBody = null;
+  const dispCustomTransport = createDeterministicFixtureTransport({
+    routes: [
+      { urlIncludes: '/auth/v1/admin/users/', status: 200, ok: true, json: { id: seedUserId } },
+      { urlIncludes: '/auth/v1/user', status: 403, ok: false, json: { error_code: 'session_not_found', msg: 'Session not found' } }
+    ],
+    defaultResponse: { status: 200, ok: true, json: {} }
+  });
   const dispCustom = createHostedDispatcher({
     anonKey: validTestAnonKey,
     serviceRoleKey: validTestServiceRoleKey,
     inventory: invCustom,
     runContext: runCtxCustom,
-    fetchFn: async (url, opts) => {
-      if (url.includes('/auth/v1/admin/users/')) {
-        adminPutBody = JSON.parse(opts.body);
-        return { status: 200, ok: true, json: async () => ({ id: seedUserId }) };
-      }
-      if (url.includes('/auth/v1/user')) {
-        return { status: 403, ok: false, json: async () => ({ error_code: 'session_not_found', msg: 'Session not found' }) };
-      }
-      return { status: 200, ok: true, json: async () => ({}) };
-    }
+    fetchFn: dispCustomTransport
   });
 
   const outCustom = await dispCustom(s02Item);
@@ -5482,7 +5420,7 @@ test('81. Task 06I-B1-H1-R10 (R10-02): Exact identity binding, seed user correla
   assert.equal(invCustom.seedCredentialRestorations.length, 1);
   assert.equal(invCustom.seedCredentialRestorations[0].email, customSeedEmail, 'Restoration must bind to custom seed email, not default');
   assert.equal(runCtxCustom.testEmail, customSeedEmail);
-  assert.equal(adminPutBody?.password, 'TioNewPassword#2026!');
+  assert.equal(dispCustomTransport.calls.find(c => c.url.includes('/auth/v1/admin/users/'))?.bodyJson?.password, 'TioNewPassword#2026!');
 
   // 2. Mismatched candidate email and tracked user email rejects before password mutation
   const invMismatch = new TestRunInventory('test-r10-mismatch-inv');
@@ -5492,16 +5430,13 @@ test('81. Task 06I-B1-H1-R10 (R10-02): Exact identity binding, seed user correla
   runCtxMismatch.activeUserId = seedUserId;
   runCtxMismatch.activeSessionId = 'sess-mismatch';
 
-  let mutationDispatched = false;
+  const mismatchTransport = staticTransport({ status: 200, ok: true, json: {} });
   const dispMismatch = createHostedDispatcher({
     anonKey: validTestAnonKey,
     serviceRoleKey: validTestServiceRoleKey,
     inventory: invMismatch,
     runContext: runCtxMismatch,
-    fetchFn: async (url, opts) => {
-      if (opts.method === 'PUT') mutationDispatched = true;
-      return { status: 200, ok: true, json: async () => ({}) };
-    }
+    fetchFn: mismatchTransport
   });
 
   const outMismatch = await dispMismatch({
@@ -5513,7 +5448,7 @@ test('81. Task 06I-B1-H1-R10 (R10-02): Exact identity binding, seed user correla
   assert.equal(outMismatch.passed, false);
   assert.equal(outMismatch.status, 0);
   assert.ok(outMismatch.error.includes('IDENTITY_MISMATCH'));
-  assert.equal(mutationDispatched, false, 'Zero password mutations permitted on email mismatch');
+  assert.equal(mismatchTransport.calls.some(c => c.method === 'PUT'), false, 'Zero password mutations permitted on email mismatch');
   assert.equal(invMismatch.seedCredentialRestorations.length, 0);
 
   // 3. Cross-user identity conflict rejection in SESSION-02
@@ -5524,16 +5459,13 @@ test('81. Task 06I-B1-H1-R10 (R10-02): Exact identity binding, seed user correla
   runCtxConflict.activeUserId = 'u-new-account';
   runCtxConflict.activeSessionId = 'sess-conflict';
 
-  mutationDispatched = false;
+  const conflictTransport = staticTransport({ status: 200, ok: true, json: {} });
   const dispConflict = createHostedDispatcher({
     anonKey: validTestAnonKey,
     serviceRoleKey: validTestServiceRoleKey,
     inventory: invConflict,
     runContext: runCtxConflict,
-    fetchFn: async (url, opts) => {
-      if (opts.method === 'PUT') mutationDispatched = true;
-      return { status: 200, ok: true, json: async () => ({}) };
-    }
+    fetchFn: conflictTransport
   });
 
   const outConflict = await dispConflict({
@@ -5545,7 +5477,7 @@ test('81. Task 06I-B1-H1-R10 (R10-02): Exact identity binding, seed user correla
   assert.equal(outConflict.passed, false);
   assert.equal(outConflict.status, 0);
   assert.ok(outConflict.error.includes('IDENTITY_MISMATCH'));
-  assert.equal(mutationDispatched, false, 'Zero password mutations permitted when email is bound to another user');
+  assert.equal(conflictTransport.calls.some(c => c.method === 'PUT'), false, 'Zero password mutations permitted when email is bound to another user');
 
   // 4. registerSeedPasswordModification identity correlation and conflict rejection
   const invReg = new TestRunInventory('test-r10-reg');
@@ -5638,10 +5570,12 @@ test('81. Task 06I-B1-H1-R10 (R10-02): Exact identity binding, seed user correla
     serviceRoleKey: validTestServiceRoleKey,
     inventory: invIndet,
     runContext: runCtxIndet,
-    fetchFn: async (url, opts) => {
-      if (opts.method === 'PUT') throw new Error('ETIMEDOUT: Connection dropped');
-      return { status: 200, ok: true, json: async () => ({}) };
-    }
+    fetchFn: createDeterministicFixtureTransport({
+      routes: [
+        { method: 'PUT', throwError: { message: 'ETIMEDOUT: Connection dropped' } }
+      ],
+      defaultResponse: { status: 200, ok: true, json: {} }
+    })
   });
 
   const outIndet = await dispIndet(s02Item);
@@ -5677,28 +5611,22 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
 
   // 1. HTTP 200 with valid JSON, real access token, and session ID -> verified: true, session revoked
   const inv1 = new TestRunInventory('test-r11-case1');
-  const logoutCalls1 = [];
+  const transport1 = createDeterministicFixtureTransport({
+    routes: [
+      {
+        urlIncludes: '/auth/v1/token?grant_type=password',
+        status: 200,
+        ok: true,
+        json: { access_token: validToken, session_id: realSessId, user: { id: seedUserId } }
+      },
+      { urlIncludes: '/auth/v1/logout', status: 200, ok: true, json: {} }
+    ],
+    defaultResponse: { status: 200, ok: true, json: {} }
+  });
   const client1 = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async (url, opts) => {
-      if (url.includes('/auth/v1/token?grant_type=password')) {
-        return {
-          status: 200,
-          ok: true,
-          json: async () => ({
-            access_token: validToken,
-            session_id: realSessId,
-            user: { id: seedUserId }
-          })
-        };
-      }
-      if (url.includes('/auth/v1/logout')) {
-        logoutCalls1.push({ url, auth: opts.headers?.Authorization });
-        return { status: 200, ok: true, json: async () => ({}) };
-      }
-      return { status: 200, ok: true, json: async () => ({}) };
-    }
+    fetchFn: transport1
   });
 
   const res1 = await client1.verifyUserCredentials(seedEmail, seedPassword, { inventory: inv1 });
@@ -5706,7 +5634,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   assert.equal(res1.data?.verified, true);
   assert.equal(res1.data?.userId, seedUserId);
   assert.equal(res1.data?.sessionId, realSessId);
-  assert.equal(logoutCalls1.length, 1);
+  assert.equal(transport1.calls.filter(c => c.url.includes('/auth/v1/logout')).length, 1);
   assert.equal(inv1.isSessionRevoked(realSessId), true, 'Verification session must be revoked immediately');
 
   // 2. HTTP 200 with truncated JSON -> SyntaxError -> UNREADABLE_RESPONSE, indeterminateSession: true
@@ -5714,12 +5642,10 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   const client2 = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
       ok: true,
-      json: async () => {
-        throw new SyntaxError('Unexpected end of JSON input');
-      }
+      jsonError: 'Unexpected end of JSON input'
     })
   });
 
@@ -5737,12 +5663,10 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   const client3 = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
       ok: true,
-      json: async () => {
-        throw new SyntaxError("Unexpected token '<', <html>502... is not valid JSON");
-      }
+      jsonError: "Unexpected token '<', <html>502... is not valid JSON"
     })
   });
 
@@ -5757,10 +5681,10 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   const client4 = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
       ok: true,
-      json: async () => ({})
+      json: {}
     })
   });
 
@@ -5776,10 +5700,10 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   const client5 = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
       ok: true,
-      json: async () => ({ user: { id: seedUserId } })
+      json: { user: { id: seedUserId } }
     })
   });
 
@@ -5793,10 +5717,10 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   const client6 = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
       ok: true,
-      json: async () => ({ access_token: '   ', user: { id: seedUserId } })
+      json: { access_token: '   ', user: { id: seedUserId } }
     })
   });
 
@@ -5811,10 +5735,10 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   const client7 = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
       ok: true,
-      json: async () => ({ access_token: opaqueToken, user: { id: seedUserId } })
+      json: { access_token: opaqueToken, user: { id: seedUserId } }
     })
   });
 
@@ -5829,9 +5753,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   const client8 = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async () => {
-      throw new Error('ECONNRESET: Connection reset by peer');
-    }
+    fetchFn: errorTransport('ECONNRESET: Connection reset by peer')
   });
 
   const res8 = await client8.verifyUserCredentials(seedEmail, seedPassword);
@@ -5842,9 +5764,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   const client9 = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async () => {
-      throw new Error('ETIMEDOUT: Socket connect timeout');
-    }
+    fetchFn: errorTransport('ETIMEDOUT: Socket connect timeout')
   });
 
   const res9 = await client9.verifyUserCredentials(seedEmail, seedPassword);
@@ -5855,10 +5775,10 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   const client10 = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 500,
       ok: false,
-      json: async () => ({ code: 'internal_error', message: 'Internal Server Error' })
+      json: { code: 'internal_error', message: 'Internal Server Error' }
     })
   });
 
@@ -5875,23 +5795,13 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   const client12 = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async (url) => {
-      if (url.includes('/auth/v1/token?grant_type=password')) {
-        return {
-          status: 200,
-          ok: true,
-          json: async () => ({ access_token: token12, session_id: sess12 })
-        };
-      }
-      if (url.includes('/auth/v1/logout')) {
-        return {
-          status: 503,
-          ok: false,
-          json: async () => ({ code: 'service_unavailable', message: 'Service Unavailable' })
-        };
-      }
-      return { status: 200, ok: true, json: async () => ({}) };
-    }
+    fetchFn: createDeterministicFixtureTransport({
+      routes: [
+        { urlIncludes: '/auth/v1/token?grant_type=password', status: 200, ok: true, json: { access_token: token12, session_id: sess12 } },
+        { urlIncludes: '/auth/v1/logout', status: 503, ok: false, json: { code: 'service_unavailable', message: 'Service Unavailable' } }
+      ],
+      defaultResponse: { status: 200, ok: true, json: {} }
+    })
   });
 
   const res12 = await client12.verifyUserCredentials(seedEmail, seedPassword, { inventory: inv12 });
@@ -5908,19 +5818,13 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   const client13 = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async (url) => {
-      if (url.includes('/auth/v1/token?grant_type=password')) {
-        return {
-          status: 200,
-          ok: true,
-          json: async () => ({ access_token: token13, session_id: sess13 })
-        };
-      }
-      if (url.includes('/auth/v1/logout')) {
-        throw new Error('ETIMEDOUT: Sign-out gateway timeout');
-      }
-      return { status: 200, ok: true, json: async () => ({}) };
-    }
+    fetchFn: createDeterministicFixtureTransport({
+      routes: [
+        { urlIncludes: '/auth/v1/token?grant_type=password', status: 200, ok: true, json: { access_token: token13, session_id: sess13 } },
+        { urlIncludes: '/auth/v1/logout', throwError: { message: 'ETIMEDOUT: Sign-out gateway timeout' } }
+      ],
+      defaultResponse: { status: 200, ok: true, json: {} }
+    })
   });
 
   const res13 = await client13.verifyUserCredentials(seedEmail, seedPassword, { inventory: inv13 });
@@ -6000,20 +5904,20 @@ test('83. Task 06I-B1-H1-R11 (R11-02): Secret boundary enforcement, private clea
   const invSec = new TestRunInventory('test-r11-sec-inv');
   const failureShapes = [
     // a) Parse error
-    { status: 200, json: async () => { throw new SyntaxError('bad json'); } },
+    { status: 200, ok: true, jsonError: 'bad json' },
     // b) Non-object structure
-    { status: 200, json: async () => 'string-body' },
+    { status: 200, ok: true, json: 'string-body' },
     // c) Missing access_token
-    { status: 200, json: async () => ({ user: { id: seedUserId } }) },
+    { status: 200, ok: true, json: { user: { id: seedUserId } } },
     // d) Missing session identity in token
-    { status: 200, json: async () => ({ access_token: 'opaque-token-no-claims' }) }
+    { status: 200, ok: true, json: { access_token: 'opaque-token-no-claims' } }
   ];
 
   for (const shape of failureShapes) {
     const client = createHostedAdminClient({
       serviceRoleKey: validTestServiceRoleKey,
       projectRef: HARDCODED_TEMP_REF,
-      fetchFn: async () => ({ status: shape.status, ok: true, json: shape.json })
+      fetchFn: staticTransport(shape)
     });
     const res = await client.verifyUserCredentials(seedEmail, secretPassword, { inventory: invSec });
     assert.ok(res.error, 'Must return error object');
@@ -6028,10 +5932,10 @@ test('83. Task 06I-B1-H1-R11 (R11-02): Secret boundary enforcement, private clea
   const clientSignOutFail = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 500,
       ok: false,
-      json: async () => ({ error_code: 'server_error', msg: 'Logout gateway down' })
+      json: { error_code: 'server_error', msg: 'Logout gateway down' }
     })
   });
 
@@ -6154,14 +6058,14 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
     anonKey: validTestAnonKey,
     inventory: inv1,
     runContext: runCtx1,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({
+      json: {
         access_token: token1,
         refresh_token: 'refresh-case1',
         session_id: sess1,
         user: { id: 'user-r12-case1', email: 'tio-test-user-06i@proof.invalid' }
-      })
+      }
     })
   });
   const res1 = await disp1({ id: 'HOOK-01', category: 'Token Hook' });
@@ -6179,10 +6083,10 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
     anonKey: validTestAnonKey,
     inventory: inv2,
     runContext: runCtx2,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      text: async () => '{"access_token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
-      json: async () => { throw new SyntaxError('Unexpected end of JSON input'); }
+      text: '{"access_token":"eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...',
+      jsonError: 'Unexpected end of JSON input'
     })
   });
   const res2 = await disp2({ id: 'HOOK-01', category: 'Token Hook' });
@@ -6202,10 +6106,10 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
     anonKey: validTestAnonKey,
     inventory: inv3,
     runContext: runCtx3,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      text: async () => '<!DOCTYPE html><html><body>502 Bad Gateway</body></html>',
-      json: async () => { throw new SyntaxError('Unexpected token < in JSON at position 0'); }
+      text: '<!DOCTYPE html><html><body>502 Bad Gateway</body></html>',
+      jsonError: 'Unexpected token < in JSON at position 0'
     })
   });
   const res3 = await disp3({ id: 'HOOK-01', category: 'Token Hook' });
@@ -6220,9 +6124,9 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
     anonKey: validTestAnonKey,
     inventory: inv4,
     runContext: runCtx4,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({})
+      json: {}
     })
   });
   const res4 = await disp4({ id: 'HOOK-01', category: 'Token Hook' });
@@ -6237,9 +6141,9 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
     anonKey: validTestAnonKey,
     inventory: inv5,
     runContext: runCtx5,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({ user: { id: 'user-no-token' } })
+      json: { user: { id: 'user-no-token' } }
     })
   });
   const res5 = await disp5({ id: 'HOOK-01', category: 'Token Hook' });
@@ -6255,13 +6159,13 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
     anonKey: validTestAnonKey,
     inventory: inv6,
     runContext: runCtx6,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({
+      json: {
         access_token: 'malformed.token.value',
         session_id: sess6,
         user: { id: 'user-malformed-6' }
-      })
+      }
     })
   });
   const res6 = await disp6({ id: 'HOOK-01', category: 'Token Hook' });
@@ -6277,12 +6181,12 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
     anonKey: validTestAnonKey,
     inventory: inv7,
     runContext: runCtx7,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({
+      json: {
         access_token: 'opaque-token-without-claims-or-session-id',
         user: { id: 'user-opaque-7' }
-      })
+      }
     })
   });
   const res7 = await disp7({ id: 'HOOK-01', category: 'Token Hook' });
@@ -6297,10 +6201,10 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
     anonKey: validTestAnonKey,
     inventory: inv8,
     runContext: runCtx8,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      text: async () => { throw new Error('Premature socket termination while reading body'); },
-      json: async () => { throw new Error('Premature socket termination while reading body'); }
+      textError: 'Premature socket termination while reading body',
+      jsonError: 'Premature socket termination while reading body'
     })
   });
   const res8 = await disp8({ id: 'HOOK-01', category: 'Token Hook' });
@@ -6315,9 +6219,7 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
     anonKey: validTestAnonKey,
     inventory: inv9,
     runContext: runCtx9,
-    fetchFn: async () => {
-      throw new Error('ECONNRESET: Connection reset by peer');
-    }
+    fetchFn: errorTransport('ECONNRESET: Connection reset by peer')
   });
   const res9 = await disp9({ id: 'HOOK-01', category: 'Token Hook' });
   assert.equal(res9.passed, false);
@@ -6331,9 +6233,9 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
     anonKey: validTestAnonKey,
     inventory: inv10,
     runContext: runCtx10,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 400,
-      json: async () => ({ error: 'invalid_grant', error_description: 'Invalid login credentials' })
+      json: { error: 'invalid_grant', error_description: 'Invalid login credentials' }
     })
   });
   const res10 = await disp10({ id: 'HOOK-01', category: 'Token Hook' });
@@ -6349,13 +6251,13 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
   const disp11a = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv11,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({
+      json: {
         access_token: token11a,
         session_id: sess11a,
         user: { id: 'user-unexpected-11a' }
-      })
+      }
     })
   });
   const res11a = await disp11a({ id: 'BYPASS-01', testUser: 'unexpected@proof.invalid' });
@@ -6367,13 +6269,13 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
   const disp11b = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv11,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({
+      json: {
         access_token: token11b,
         session_id: sess11b,
         user: { id: 'user-unexpected-11b' }
-      })
+      }
     })
   });
   const res11b = await disp11b({ id: 'BYPASS-02', testUser: 'unexpected2@proof.invalid' });
@@ -6488,9 +6390,9 @@ test('85. Task 06I-B1-H1-R13 (R13-01 & R13-02): Auth endpoint capabilities, in-f
   const inv2 = new TestRunInventory('test-r13-case2');
   const disp2 = createHostedDispatcher({
     anonKey: validTestAnonKey,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 400,
-      json: async () => ({ code: 400, error_code: 'otp_expired', msg: 'Token has expired or is invalid' })
+      json: { code: 400, error_code: 'otp_expired', msg: 'Token has expired or is invalid' }
     })
   });
   const res2 = await disp2({ id: 'BYPASS-03' }, { inventory: inv2 });
@@ -6506,9 +6408,9 @@ test('85. Task 06I-B1-H1-R13 (R13-01 & R13-02): Auth endpoint capabilities, in-f
   const mockJwt3 = createMockJwt({ session_id: 'sess-verify-3', sub: 'user-verify-3' });
   const disp3 = createHostedDispatcher({
     anonKey: validTestAnonKey,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({ access_token: mockJwt3, session_id: 'sess-verify-3' })
+      json: { access_token: mockJwt3, session_id: 'sess-verify-3' }
     })
   });
   const res3 = await disp3({ id: 'BYPASS-03' }, { inventory: inv3 });
@@ -6526,9 +6428,9 @@ test('85. Task 06I-B1-H1-R13 (R13-01 & R13-02): Auth endpoint capabilities, in-f
   const inv4 = new TestRunInventory('test-r13-case4');
   const disp4 = createHostedDispatcher({
     anonKey: validTestAnonKey,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({})
+      json: {}
     })
   });
   const res4 = await disp4({ id: 'BYPASS-03' }, { inventory: inv4 });
@@ -6546,9 +6448,9 @@ test('85. Task 06I-B1-H1-R13 (R13-01 & R13-02): Auth endpoint capabilities, in-f
   const inv5 = new TestRunInventory('test-r13-case5');
   const disp5 = createHostedDispatcher({
     anonKey: validTestAnonKey,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => { throw new SyntaxError('Unexpected end of JSON input'); }
+      jsonError: 'Unexpected end of JSON input'
     })
   });
   const res5 = await disp5({ id: 'BYPASS-03' }, { inventory: inv5 });
@@ -6562,11 +6464,7 @@ test('85. Task 06I-B1-H1-R13 (R13-01 & R13-02): Auth endpoint capabilities, in-f
   const inv6 = new TestRunInventory('test-r13-case6');
   const disp6 = createHostedDispatcher({
     anonKey: validTestAnonKey,
-    fetchFn: async () => {
-      const err = new Error('read ECONNRESET');
-      err.code = 'ECONNRESET';
-      throw err;
-    }
+    fetchFn: errorTransport({ message: 'read ECONNRESET', code: 'ECONNRESET' })
   });
   const res6 = await disp6({ id: 'BYPASS-03' }, { inventory: inv6 });
   assert.equal(res6.passed, false);
@@ -6828,11 +6726,7 @@ test('86. Task 06I-B1-H1-R14 (R14-01 & R14-02): Asynchronous mutation tracking, 
     serviceRoleKey: validTestServiceRoleKey,
     inventory: inv4,
     runContext: { activeUserId: seedUid4, activeAccessToken: 'mock-token' },
-    fetchFn: async () => {
-      const err = new Error('The operation was aborted');
-      err.name = 'AbortError';
-      throw err;
-    }
+    fetchFn: errorTransport({ message: 'The operation was aborted', name: 'AbortError' })
   });
   const res4 = await disp4({ id: 'SESSION-02' }, { signal: abortCtrl4.signal });
   assert.equal(res4.passed, false);
@@ -6846,11 +6740,7 @@ test('86. Task 06I-B1-H1-R14 (R14-01 & R14-02): Asynchronous mutation tracking, 
   const disp5 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv5,
-    fetchFn: async () => {
-      const err = new Error('read ECONNRESET');
-      err.code = 'ECONNRESET';
-      throw err;
-    }
+    fetchFn: errorTransport({ message: 'read ECONNRESET', code: 'ECONNRESET' })
   });
   const res5 = await disp5({ id: 'BYPASS-02' });
   assert.equal(res5.passed, false);
@@ -6870,9 +6760,9 @@ test('86. Task 06I-B1-H1-R14 (R14-01 & R14-02): Asynchronous mutation tracking, 
   const disp6 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv6,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => { throw new SyntaxError('Unexpected token < in JSON at position 0'); }
+      jsonError: 'Unexpected token < in JSON at position 0'
     })
   });
   const res6 = await disp6({ id: 'BYPASS-02' });
@@ -6888,9 +6778,9 @@ test('86. Task 06I-B1-H1-R14 (R14-01 & R14-02): Asynchronous mutation tracking, 
   const disp7 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv7,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({ message: 'User created but no ID returned' })
+      json: { message: 'User created but no ID returned' }
     })
   });
   const res7 = await disp7({ id: 'BYPASS-02' });
@@ -6911,9 +6801,9 @@ test('86. Task 06I-B1-H1-R14 (R14-01 & R14-02): Asynchronous mutation tracking, 
   const disp8 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv8,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({ id: 'unexpected-user-uid-8', email: 'test@proof.invalid' })
+      json: { id: 'unexpected-user-uid-8', email: 'test@proof.invalid' }
     })
   });
   const res8 = await disp8({ id: 'BYPASS-02' });
@@ -7005,20 +6895,28 @@ test('87. Task 06I-B1-H1-R15 (R15-01 & R15-02): OTP user-creation tracking, capa
 
   // 3. R15-01: BYPASS-01 pre-dispatch in-flight registration and expected passing route disablement
   const inv3 = new TestRunInventory('test-r15-case3');
-  let inFlightCaptured3 = null;
+  const disp3Barrier = createOfflineBarrier('r15-case3');
   const disp3 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv3,
-    fetchFn: async () => {
-      // Capture registered in-flight operation DURING dispatch
-      inFlightCaptured3 = Array.from(inv3.inFlightOperations.values());
-      return {
-        status: 422,
-        json: async () => ({ error_code: 'email_provider_disabled', message: 'Email provider is disabled' })
-      };
-    }
+    fetchFn: createDeterministicFixtureTransport({
+      routes: [
+        {
+          urlIncludes: '/auth/v1/otp',
+          waitForBarrier: disp3Barrier,
+          status: 422,
+          json: { error_code: 'email_provider_disabled', message: 'Email provider is disabled' }
+        }
+      ],
+      defaultResponse: { status: 422, json: { error_code: 'email_provider_disabled' } }
+    })
   });
-  const res3 = await disp3({ id: 'BYPASS-01' });
+  const res3Promise = disp3({ id: 'BYPASS-01' });
+  await disp3Barrier.waitForArrivals(1);
+  // Capture registered in-flight operation DURING paused dispatch!
+  const inFlightCaptured3 = Array.from(inv3.inFlightOperations.values());
+  disp3Barrier.release();
+  const res3 = await res3Promise;
   assert.equal(res3.passed, true, 'BYPASS-01 must pass when route_disabled is observed');
   assert.equal(res3.route_disabled, true);
   assert.equal(res3.user_created, false);
@@ -7039,11 +6937,7 @@ test('87. Task 06I-B1-H1-R15 (R15-01 & R15-02): OTP user-creation tracking, capa
   const disp4 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv4,
-    fetchFn: async () => {
-      const err = new Error('read ECONNRESET');
-      err.code = 'ECONNRESET';
-      throw err;
-    }
+    fetchFn: errorTransport({ message: 'read ECONNRESET', code: 'ECONNRESET' })
   });
   const res4 = await disp4({ id: 'BYPASS-01' });
   assert.equal(res4.passed, false, 'Transport failure must fail probe');
@@ -7080,10 +6974,7 @@ test('87. Task 06I-B1-H1-R15 (R15-01 & R15-02): OTP user-creation tracking, capa
   const disp6 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv6,
-    fetchFn: async () => ({
-      status: 200,
-      json: async () => ({})
-    })
+    fetchFn: staticTransport({ status: 200, json: {} })
   });
   const res6 = await disp6({ id: 'BYPASS-01' });
   assert.equal(res6.passed, false, 'HTTP 200 empty body on user-creation endpoint must fail probe');
@@ -7098,10 +6989,10 @@ test('87. Task 06I-B1-H1-R15 (R15-01 & R15-02): OTP user-creation tracking, capa
   const disp7 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv7,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      text: async () => '{"id": "trunc',
-      json: async () => { throw new SyntaxError('Unexpected end of JSON input'); }
+      text: '{"id": "trunc',
+      jsonError: 'Unexpected end of JSON input'
     })
   });
   const res7 = await disp7({ id: 'BYPASS-01' });
@@ -7123,9 +7014,9 @@ test('87. Task 06I-B1-H1-R15 (R15-01 & R15-02): OTP user-creation tracking, capa
   const disp8 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv8,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({ user: { id: 'unexpected-otp-uid-8', email: 'otp-test@proof.invalid' } })
+      json: { user: { id: 'unexpected-otp-uid-8', email: 'otp-test@proof.invalid' } }
     })
   });
   const res8 = await disp8({ id: 'BYPASS-01' });
@@ -7160,9 +7051,9 @@ test('87. Task 06I-B1-H1-R15 (R15-01 & R15-02): OTP user-creation tracking, capa
     anonKey: validTestAnonKey,
     inventory: inv9,
     testEmail: seedEmail9,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({ id: 'seed-otp-uid-9', email: seedEmail9 })
+      json: { id: 'seed-otp-uid-9', email: seedEmail9 }
     })
   });
   const res9 = await disp9({ id: 'BYPASS-01' });
@@ -7227,9 +7118,9 @@ test('87. Task 06I-B1-H1-R15 (R15-01 & R15-02): OTP user-creation tracking, capa
     const disp = createHostedDispatcher({
       anonKey: validTestAnonKey,
       inventory: captureInv12,
-      fetchFn: async () => ({
+      fetchFn: staticTransport({
         status: 400,
-        json: async () => ({ error_code: 'test_rejection', message: 'Rejected for test' })
+        json: { error_code: 'test_rejection', message: 'Rejected for test' }
       })
     });
     await disp({ id: pid });
@@ -7254,9 +7145,9 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
   const disp1 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv1,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({ id: 'signup-user-no-session', email: 'signup-no-session@proof.invalid' })
+      json: { id: 'signup-user-no-session', email: 'signup-no-session@proof.invalid' }
     })
   });
   const res1 = await disp1({ id: 'BYPASS-02', testUser: 'signup-no-session@proof.invalid' });
@@ -7272,15 +7163,15 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
   const disp2 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv2,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({
+      json: {
         user: { id: 'user-signup-2', email: 'signup2@proof.invalid' },
         access_token: validSignupToken,
         refresh_token: 'rf-signup-2',
         token_type: 'bearer',
         expires_in: 3600
-      })
+      }
     })
   });
   const res2 = await disp2({ id: 'BYPASS-02', testUser: 'signup2@proof.invalid' });
@@ -7295,13 +7186,13 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
   const disp3 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv3,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({
+      json: {
         user: { id: 'user-signup-3', email: 'signup3@proof.invalid' },
         access_token: tokenNoSessId,
         refresh_token: 'rf-signup-3'
-      })
+      }
     })
   });
   const res3 = await disp3({ id: 'BYPASS-02', testUser: 'signup3@proof.invalid' });
@@ -7313,13 +7204,13 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
   const disp4 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv4,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({
+      json: {
         user: { id: 'user-signup-4', email: 'signup4@proof.invalid' },
         access_token: 'not-a-valid-jwt.garbage',
         refresh_token: 'rf-signup-4'
-      })
+      }
     })
   });
   const res4 = await disp4({ id: 'BYPASS-02', testUser: 'signup4@proof.invalid' });
@@ -7331,9 +7222,9 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
   const disp5 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv5,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({})
+      json: {}
     })
   });
   const res5 = await disp5({ id: 'BYPASS-02', testUser: 'signup5@proof.invalid' });
@@ -7346,9 +7237,9 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
   const disp6 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv6,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => { throw new SyntaxError('Unexpected end of JSON input'); }
+      jsonError: 'Unexpected end of JSON input'
     })
   });
   const res6 = await disp6({ id: 'BYPASS-02', testUser: 'signup6@proof.invalid' });
@@ -7361,7 +7252,7 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
   const disp7 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv7,
-    fetchFn: async () => { throw new Error('ECONNRESET: Connection reset by peer'); }
+    fetchFn: errorTransport('ECONNRESET: Connection reset by peer')
   });
   const res7 = await disp7({ id: 'BYPASS-02', testUser: 'signup7@proof.invalid' });
   assert.equal(res7.passed, false);
@@ -7424,9 +7315,9 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
     anonKey: validTestAnonKey,
     inventory: inv11,
     testEmail: seedEmail11,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({ user: { id: seedUid11, email: seedEmail11 } })
+      json: { user: { id: seedUid11, email: seedEmail11 } }
     })
   });
   const res11 = await disp11({ id: 'BYPASS-01' });
@@ -7451,9 +7342,9 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
     anonKey: validTestAnonKey,
     inventory: inv12,
     testEmail: seedEmail12,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({ user: { id: seedUid12, email: seedEmail12 } })
+      json: { user: { id: seedUid12, email: seedEmail12 } }
     })
   });
   const res12 = await disp12({ id: 'BYPASS-02', testUser: seedEmail12 });
@@ -7476,9 +7367,9 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
     inventory: inv13,
     testEmail: 'seed-email-13@proof.invalid',
     seedUserId: 'seed-uid-13',
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({ user: { id: 'seed-uid-13', email: 'seed-email-13@proof.invalid' } })
+      json: { user: { id: 'seed-uid-13', email: 'seed-email-13@proof.invalid' } }
     })
   });
   const res13 = await disp13({ id: 'BYPASS-01' });
@@ -7501,9 +7392,9 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
     anonKey: validTestAnonKey,
     inventory: inv14,
     testEmail: 'attacker-chosen@proof.invalid',
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({ user: { id: 'seed-fixed-uid', email: 'attacker-chosen@proof.invalid' } })
+      json: { user: { id: 'seed-fixed-uid', email: 'attacker-chosen@proof.invalid' } }
     })
   });
   const res14 = await disp14({ id: 'BYPASS-01' });
@@ -7524,9 +7415,9 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
   const disp15 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv15,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({ user: { id: 'unknown-uid-15', email: 'unknown15@proof.invalid' } })
+      json: { user: { id: 'unknown-uid-15', email: 'unknown15@proof.invalid' } }
     })
   });
   const res15 = await disp15({ id: 'BYPASS-02', testUser: 'unknown15@proof.invalid' });
@@ -7707,7 +7598,7 @@ test('89. Task 06I-B1-H1-R17: Seed identity proof, unexpected token tracking, an
   const disp2A = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtx2A,
-    fetchFn: async () => ({ status: 200, json: async () => ([]) })
+    fetchFn: staticTransport({ status: 200, json: [] })
   });
   const out2A = await disp2A(session04);
   assert.equal(out2A.passed, false);
@@ -7722,7 +7613,7 @@ test('89. Task 06I-B1-H1-R17: Seed identity proof, unexpected token tracking, an
   const disp2B = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtx2B,
-    fetchFn: async () => ({ status: 200, json: async () => ([]) })
+    fetchFn: staticTransport({ status: 200, json: [] })
   });
   const out2B = await disp2B(session04);
   assert.equal(out2B.passed, false);
@@ -7738,7 +7629,7 @@ test('89. Task 06I-B1-H1-R17: Seed identity proof, unexpected token tracking, an
   const disp2C = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtx2C,
-    fetchFn: async () => ({ status: 200, json: async () => ([]) })
+    fetchFn: staticTransport({ status: 200, json: [] })
   });
   const out2C = await disp2C(session04);
   assert.equal(out2C.passed, false);
@@ -7751,7 +7642,7 @@ test('89. Task 06I-B1-H1-R17: Seed identity proof, unexpected token tracking, an
   const disp2D = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtx2D,
-    fetchFn: async () => ({ status: 200, json: async () => ({}) })
+    fetchFn: staticTransport({ status: 200, json: {} })
   });
   const out2D = await disp2D(session05);
   assert.equal(out2D.passed, false);
@@ -7798,7 +7689,7 @@ test('89. Task 06I-B1-H1-R17: Seed identity proof, unexpected token tracking, an
   const disp2G = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtx2G,
-    fetchFn: async () => ({ status: 200, json: async () => ([]) })
+    fetchFn: staticTransport({ status: 200, json: [] })
   });
   const out2G = await disp2G(session04);
   assert.equal(out2G.passed, true);
@@ -7852,9 +7743,9 @@ test('89. Task 06I-B1-H1-R17: Seed identity proof, unexpected token tracking, an
     anonKey: validTestAnonKey,
     inventory: inv3D,
     testEmail: plannedTestEmail,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({ user: { id: 'unexpected-new-user-id-89', email: plannedTestEmail } })
+      json: { user: { id: 'unexpected-new-user-id-89', email: plannedTestEmail } }
     })
   });
 
@@ -7886,9 +7777,9 @@ test('89. Task 06I-B1-H1-R17: Seed identity proof, unexpected token tracking, an
     anonKey: validTestAnonKey,
     inventory: inv3E,
     testEmail: plannedTestEmail,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 200,
-      json: async () => ({ user: { id: 'unexpected-signup-user-id-89', email: plannedTestEmail } })
+      json: { user: { id: 'unexpected-signup-user-id-89', email: plannedTestEmail } }
     })
   });
 
@@ -8144,7 +8035,7 @@ test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — col
         userAccessToken: null,
         serviceRoleKey: validTestServiceRoleKey,
         inventory: inv,
-        fetchFn: async () => ({ status: 200 })
+        fetchFn: staticTransport({ status: 200 })
       });
     },
     /STORAGE_PROVISIONING_FAILED: userAccessToken is required/
@@ -8160,16 +8051,13 @@ test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — col
         anonKey: validTestAnonKey,
         serviceRoleKey: validTestServiceRoleKey,
         inventory: inv,
-        fetchFn: async (url, opts) => {
-          if (url.includes('/auth/v1/user')) {
-            return { status: 200, ok: true, json: async () => ({ id: seedUserId, aud: 'authenticated' }) };
-          }
-          // Pre-upload GET check returns 200 indicating collision
-          if (opts.method === 'GET') {
-            return { status: 200, ok: true };
-          }
-          return { status: 200, ok: true, json: async () => ({}) };
-        }
+        fetchFn: createDeterministicFixtureTransport({
+          routes: [
+            { urlIncludes: '/auth/v1/user', status: 200, ok: true, json: { id: seedUserId, aud: 'authenticated' } },
+            { method: 'GET', status: 200, ok: true }
+          ],
+          defaultResponse: { status: 200, ok: true, json: {} }
+        })
       });
     },
     /STORAGE_COLLISION_DETECTED: Object 'task06i_probe_bucket\/test-run-storage-provision-93\/probe.txt' already exists/
@@ -8186,18 +8074,14 @@ test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — col
         anonKey: validTestAnonKey,
         serviceRoleKey: validTestServiceRoleKey,
         inventory: invFail,
-        fetchFn: async (url, opts) => {
-          if (url.includes('/auth/v1/user')) {
-            return { status: 200, ok: true, json: async () => ({ id: seedUserId, aud: 'authenticated' }) };
-          }
-          if (opts.method === 'GET') {
-            return { status: 404, ok: false }; // no collision
-          }
-          if (opts.method === 'POST' && url.includes('/storage/v1/object/')) {
-            return { status: 500, ok: false, json: async () => ({ message: 'Internal Server Error' }) };
-          }
-          return { status: 500, ok: false };
-        }
+        fetchFn: createDeterministicFixtureTransport({
+          routes: [
+            { urlIncludes: '/auth/v1/user', status: 200, ok: true, json: { id: seedUserId, aud: 'authenticated' } },
+            { method: 'GET', status: 404, ok: false },
+            { method: 'POST', urlIncludes: '/storage/v1/object/', status: 500, ok: false, json: { message: 'Internal Server Error' } }
+          ],
+          defaultResponse: { status: 500, ok: false }
+        })
       });
     },
     /STORAGE_UPLOAD_FAILED: HTTP 500/
@@ -8209,7 +8093,55 @@ test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — col
 
   // 4. Successful provisioning: /auth/v1/user + pre-check 404 + upload 200 + realistic download (NO custom owner headers) + authoritative owner_id RPC
   const invSuccess = new TestRunInventory(runId);
-  let uploadCompleted = false;
+  const prov93Transport = createDeterministicFixtureTransport({
+    initialState: { uploaded: false },
+    routes: [
+      { urlIncludes: '/auth/v1/user', status: 200, ok: true, text: JSON.stringify({ id: seedUserId, aud: 'authenticated' }) },
+      {
+        urlIncludes: '/rest/v1/rpc/task06i_lookup_storage_object_owner',
+        headersMatch: { authorization: `Bearer ${validTestServiceRoleKey}` },
+        status: 200,
+        ok: true,
+        text: JSON.stringify([{
+          id: uploadedObjectId,
+          bucket_id: 'task06i_probe_bucket',
+          name: `${runId}/probe.txt`,
+          owner_id: seedUserId
+        }])
+      },
+      {
+        method: 'GET',
+        urlIncludes: '/storage/v1/object/authenticated/',
+        whenState: { uploaded: false },
+        status: 404,
+        ok: false
+      },
+      {
+        method: 'GET',
+        urlIncludes: '/storage/v1/object/authenticated/',
+        whenState: { uploaded: true },
+        status: 200,
+        ok: true,
+        text: 'task06i probe test fixture\n',
+        headers: {
+          'Content-Type': 'text/plain',
+          'ETag': '"abc123"',
+          'Last-Modified': 'Wed, 25 Nov 2026 04:00:00 GMT',
+          'X-Robots-Tag': 'none'
+        }
+      },
+      {
+        method: 'POST',
+        urlIncludes: '/storage/v1/object/',
+        headersMatch: { 'x-upsert': 'false' },
+        setsState: { uploaded: true },
+        status: 200,
+        ok: true,
+        text: JSON.stringify({ Id: uploadedObjectId, Key: `task06i_probe_bucket/${runId}/probe.txt` })
+      }
+    ],
+    defaultResponse: { status: 404, ok: false }
+  });
   const result = await provisionStorageProbeFixture({
     runId,
     seedUserId,
@@ -8218,55 +8150,7 @@ test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — col
     serviceRoleKey: validTestServiceRoleKey,
     inventory: invSuccess,
     probeContent: 'task06i probe test fixture\n',
-    fetchFn: async (url, opts) => {
-      if (url.includes('/auth/v1/user')) {
-        return {
-          status: 200,
-          ok: true,
-          text: async () => JSON.stringify({ id: seedUserId, aud: 'authenticated' })
-        };
-      }
-      if (url.includes('/rest/v1/rpc/task06i_lookup_storage_object_owner')) {
-        assert.equal(opts.headers.Authorization, `Bearer ${validTestServiceRoleKey}`);
-        return {
-          status: 200,
-          ok: true,
-          text: async () => JSON.stringify([{
-            id: uploadedObjectId,
-            bucket_id: 'task06i_probe_bucket',
-            name: `${runId}/probe.txt`,
-            owner_id: seedUserId
-          }])
-        };
-      }
-      if (opts.method === 'GET' && url.includes('/storage/v1/object/authenticated/')) {
-        if (!uploadCompleted) {
-          return { status: 404, ok: false };
-        }
-        // Realistic Supabase Storage GET response: standard HTTP headers ONLY, NO fabricated owner headers!
-        return {
-          status: 200,
-          ok: true,
-          text: async () => 'task06i probe test fixture\n',
-          headers: new Headers({
-            'Content-Type': 'text/plain',
-            'ETag': '"abc123"',
-            'Last-Modified': 'Wed, 25 Nov 2026 04:00:00 GMT',
-            'X-Robots-Tag': 'none'
-          })
-        };
-      }
-      if (opts.method === 'POST' && url.includes('/storage/v1/object/')) {
-        assert.equal(opts.headers['x-upsert'], 'false');
-        uploadCompleted = true;
-        return {
-          status: 200,
-          ok: true,
-          text: async () => JSON.stringify({ Id: uploadedObjectId, Key: `task06i_probe_bucket/${runId}/probe.txt` })
-        };
-      }
-      return { status: 404, ok: false };
-    }
+    fetchFn: prov93Transport
   });
 
   assert.equal(result.status, 'VERIFIED');
@@ -8428,27 +8312,20 @@ test('95. Task 06I-B1-H3 (H3-03 & H3-05): SESSION-05 Run-Scoped Dispatch & Durab
   runCtx.sessionRevocationConfirmed = true;
   runCtx.revokedSessionId = 'sess-revoked-uuid-95';
 
-  const requestedUrls = [];
-
   // 1. SESSION-05 dispatches against run-scoped path task06i_probe_bucket/<runId>/probe.txt
+  const dispSuccessTransport = staticTransport({ status: 200, json: { message: 'probe content' } });
   const dispSuccess = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtx,
-    fetchFn: async (url) => {
-      requestedUrls.push(url);
-      return {
-        status: 200,
-        json: async () => ({ message: 'probe content' })
-      };
-    }
+    fetchFn: dispSuccessTransport
   });
 
   const outSuccess = await dispSuccess(session05);
   assert.equal(outSuccess.passed, true);
   assert.equal(outSuccess.stateless_linger_documented, true);
-  assert.equal(requestedUrls.length, 1);
+  assert.equal(dispSuccessTransport.calls.length, 1);
   assert.match(
-    requestedUrls[0],
+    dispSuccessTransport.calls[0].url,
     new RegExp(`/storage/v1/object/authenticated/task06i_probe_bucket/${runId}/probe\\.txt`),
     'SESSION-05 must target exact run-scoped object path'
   );
@@ -8457,10 +8334,7 @@ test('95. Task 06I-B1-H3 (H3-03 & H3-05): SESSION-05 Run-Scoped Dispatch & Durab
   const disp404 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtx,
-    fetchFn: async () => ({
-      status: 404,
-      json: async () => ({ message: 'Object not found' })
-    })
+    fetchFn: staticTransport({ status: 404, json: { message: 'Object not found' } })
   });
 
   const out404 = await disp404(session05);
@@ -8544,7 +8418,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
   // 5. runHostedProbeRunner with real network dispatcher throws BLOCKED_PENDING_DURABLE_RECOVERY
   const hostedDispatcher = createHostedDispatcher({
     anonKey: validTestAnonKey,
-    fetchFn: async () => ({ status: 200 })
+    fetchFn: staticTransport({ status: 200 })
   });
   assert.equal(hostedDispatcher._isHostedNetworkDispatcher, true);
   await assert.rejects(
@@ -8593,11 +8467,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
   // R1-02: Storage Provisioner Project Isolation & Credential Binding
   // (PRRT_kwDOVtCmZc67gqOu & PRRT_kwDOVtCmZc67grUL)
   // ==========================================
-  let transportCalls = 0;
-  const mockTransportSpy = async () => {
-    transportCalls++;
-    return { status: 404, ok: false };
-  };
+  const mockTransportSpy = staticTransport({ status: 404, ok: false });
   // 8. Reject REAL project target immediately with 0 transport calls
   await assert.rejects(
     async () => {
@@ -8612,7 +8482,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
     },
     /CRITICAL_SECURITY_VIOLATION.*strictly rejected target 'bsfwzvgynwriswapxpsp'/
   );
-  assert.equal(transportCalls, 0);
+  assert.equal(mockTransportSpy.calls.length, 0);
 
   // 9. Reject Tio-world project target immediately with 0 transport calls
   await assert.rejects(
@@ -8628,7 +8498,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
     },
     /CRITICAL_SECURITY_VIOLATION.*strictly rejected target 'oykupyiitspujzpwwvuj'/
   );
-  assert.equal(transportCalls, 0);
+  assert.equal(mockTransportSpy.calls.length, 0);
 
   // 10. Reject token bound to different project with 0 transport calls
   const tokenOtherProject = createMockJwt({ sub: seedUserId, iss: `https://${HARDCODED_REAL_REF}.supabase.co/auth/v1` });
@@ -8645,7 +8515,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
     },
     /CRITICAL_SECURITY_VIOLATION.*forbidden project 'bsfwzvgynwriswapxpsp'/
   );
-  assert.equal(transportCalls, 0);
+  assert.equal(mockTransportSpy.calls.length, 0);
 
   // 11. Reject token sub mismatch with seedUserId with 0 transport calls
   const tokenMismatchedSub = createMockJwt({ sub: otherUserId });
@@ -8662,7 +8532,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
     },
     /CREDENTIAL_BINDING_ERROR: userAccessToken sub claim.*does not match seedUserId/
   );
-  assert.equal(transportCalls, 0);
+  assert.equal(mockTransportSpy.calls.length, 0);
 
   // 12. Reject invalid non-UUID seedUserId with 0 transport calls
   await assert.rejects(
@@ -8678,14 +8548,21 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
     },
     /INVALID_UUID/
   );
-  assert.equal(transportCalls, 0);
+  assert.equal(mockTransportSpy.calls.length, 0);
 
   // ==========================================
   // R1-03: Separate Storage Creation Obligation from Deletion Eligibility
   // (PRRT_kwDOVtCmZc67gqOz & PRRT_kwDOVtCmZc67grUX)
   // ==========================================
   // 13. Pre-upload collision check returning 403 or 500 fails closed without proceeding to upload
-  let uploadPostAttempted = false;
+  const transport13 = createDeterministicFixtureTransport({
+    routes: [
+      { urlIncludes: '/auth/v1/user', status: 200, ok: true, json: { id: seedUserId } },
+      { method: 'GET', status: 403, ok: false },
+      { method: 'POST', urlIncludes: '/storage/v1/object/', status: 200, ok: true }
+    ],
+    defaultResponse: { status: 500 }
+  });
   await assert.rejects(
     async () => {
       await provisionStorageProbeFixture({
@@ -8695,20 +8572,12 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
         anonKey: validTestAnonKey,
         serviceRoleKey: validTestServiceRoleKey,
         inventory: new TestRunInventory(runId),
-        fetchFn: async (url, opts) => {
-          if (url.includes('/auth/v1/user')) return { status: 200, ok: true, json: async () => ({ id: seedUserId }) };
-          if (opts.method === 'GET') return { status: 403, ok: false };
-          if (opts.method === 'POST' && url.includes('/storage/v1/object/')) {
-            uploadPostAttempted = true;
-            return { status: 200, ok: true };
-          }
-          return { status: 500 };
-        }
+        fetchFn: transport13
       });
     },
     /STORAGE_COLLISION_CHECK_FAILED:.*UNAUTHORIZED_OR_FORBIDDEN \(HTTP 403\)/
   );
-  assert.equal(uploadPostAttempted, false, 'Upload POST must never be attempted when collision check returns non-404');
+  assert.equal(transport13.calls.some(c => c.method === 'POST'), false, 'Upload POST must never be attempted when collision check returns non-404');
 
   // 14. Affirmative 404 followed by 409 Conflict preserves existing object without deletion eligibility
   const invConflict = new TestRunInventory(runId);
@@ -8721,14 +8590,14 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
         anonKey: validTestAnonKey,
         serviceRoleKey: validTestServiceRoleKey,
         inventory: invConflict,
-        fetchFn: async (url, opts) => {
-          if (url.includes('/auth/v1/user')) return { status: 200, ok: true, json: async () => ({ id: seedUserId }) };
-          if (opts.method === 'GET') return { status: 404, ok: false };
-          if (opts.method === 'POST' && url.includes('/storage/v1/object/')) {
-            return { status: 409, ok: false, json: async () => ({ statusCode: '409', code: 'KeyAlreadyExists', error: 'Duplicate', message: 'The resource already exists' }) };
-          }
-          return { status: 500 };
-        }
+        fetchFn: createDeterministicFixtureTransport({
+          routes: [
+            { urlIncludes: '/auth/v1/user', status: 200, ok: true, json: { id: seedUserId } },
+            { method: 'GET', status: 404, ok: false },
+            { method: 'POST', urlIncludes: '/storage/v1/object/', status: 409, ok: false, json: { statusCode: '409', code: 'KeyAlreadyExists', error: 'Duplicate', message: 'The resource already exists' } }
+          ],
+          defaultResponse: { status: 500 }
+        })
       });
     },
     /STORAGE_UPLOAD_CONFLICT/
@@ -8765,12 +8634,14 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
         anonKey: validTestAnonKey,
         serviceRoleKey: validTestServiceRoleKey,
         inventory: invIndet,
-        fetchFn: async (url, opts) => {
-          if (url.includes('/auth/v1/user')) return { status: 200, ok: true, json: async () => ({ id: seedUserId }) };
-          if (opts.method === 'GET') return { status: 404, ok: false };
-          if (opts.method === 'POST' && url.includes('/storage/v1/object/')) throw new Error('ECONNRESET: socket hang up');
-          return { status: 500 };
-        }
+        fetchFn: createDeterministicFixtureTransport({
+          routes: [
+            { urlIncludes: '/auth/v1/user', status: 200, ok: true, json: { id: seedUserId } },
+            { method: 'GET', status: 404, ok: false },
+            { method: 'POST', urlIncludes: '/storage/v1/object/', throwError: 'ECONNRESET: socket hang up' }
+          ],
+          defaultResponse: { status: 500 }
+        })
       });
     },
     /STORAGE_UPLOAD_INDETERMINATE/
@@ -8785,7 +8656,6 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
   // ==========================================
   const objId16 = '88888888-1111-4111-a111-111111111196';
   // 16. Verification GET with corrupted/wrong bytes throws STORAGE_PAYLOAD_INTEGRITY_MISMATCH and retains RESIDUAL_OWNERSHIP_BLOCKED
-  let uploaded16 = false;
   const invMismatch16 = new TestRunInventory(runId);
   await assert.rejects(
     async () => {
@@ -8797,23 +8667,16 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
         serviceRoleKey: validTestServiceRoleKey,
         inventory: invMismatch16,
         probeContent: 'expected-bytes\n',
-        fetchFn: async (url, opts) => {
-          if (url.includes('/auth/v1/user')) return { status: 200, ok: true, json: async () => ({ id: seedUserId }) };
-          if (opts.method === 'GET' && url.includes('/storage/v1/object/authenticated/')) {
-            if (!uploaded16) return { status: 404, ok: false };
-            return {
-              status: 200,
-              ok: true,
-              text: async () => 'corrupted-different-bytes\n',
-              headers: new Headers({ 'Content-Type': 'text/plain' })
-            };
-          }
-          if (opts.method === 'POST' && url.includes('/storage/v1/object/')) {
-            uploaded16 = true;
-            return { status: 200, ok: true, json: async () => ({ Id: objId16, Key: getStorageProbeObjectKey(runId) }) };
-          }
-          return { status: 500 };
-        }
+        fetchFn: createDeterministicFixtureTransport({
+          initialState: { uploaded: false },
+          routes: [
+            { urlIncludes: '/auth/v1/user', status: 200, ok: true, json: { id: seedUserId } },
+            { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: false }, status: 404, ok: false },
+            { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: true }, status: 200, ok: true, text: 'corrupted-different-bytes\n', headers: { 'Content-Type': 'text/plain' } },
+            { method: 'POST', urlIncludes: '/storage/v1/object/', setsState: { uploaded: true }, status: 200, ok: true, json: { Id: objId16, Key: getStorageProbeObjectKey(runId) } }
+          ],
+          defaultResponse: { status: 500 }
+        })
       });
     },
     /STORAGE_PAYLOAD_INTEGRITY_MISMATCH/
@@ -8824,7 +8687,6 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
   );
 
   // 17. Missing owner metadata in authoritative lookup throws STORAGE_OWNER_VERIFICATION_FAILED and preserves RESIDUAL_OWNERSHIP_BLOCKED
-  let uploaded17 = false;
   const invMissing17 = new TestRunInventory(runId);
   await assert.rejects(
     async () => {
@@ -8836,30 +8698,17 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
         serviceRoleKey: validTestServiceRoleKey,
         inventory: invMissing17,
         probeContent: 'valid-bytes\n',
-        fetchFn: async (url, opts) => {
-          if (url.includes('/auth/v1/user')) return { status: 200, ok: true, json: async () => ({ id: seedUserId }) };
-          if (url.includes('/rest/v1/rpc/task06i_lookup_storage_object_owner')) {
-            return {
-              status: 200,
-              ok: true,
-              text: async () => JSON.stringify([{ id: objId16, bucket_id: STORAGE_PROBE_BUCKET, name: getStorageProbeObjectPath(runId), owner_id: null }])
-            };
-          }
-          if (opts.method === 'GET' && url.includes('/storage/v1/object/authenticated/')) {
-            if (!uploaded17) return { status: 404, ok: false };
-            return {
-              status: 200,
-              ok: true,
-              text: async () => 'valid-bytes\n',
-              headers: new Headers({ 'Content-Type': 'text/plain' })
-            };
-          }
-          if (opts.method === 'POST' && url.includes('/storage/v1/object/')) {
-            uploaded17 = true;
-            return { status: 200, ok: true, json: async () => ({ Id: objId16, Key: getStorageProbeObjectKey(runId) }) };
-          }
-          return { status: 500 };
-        }
+        fetchFn: createDeterministicFixtureTransport({
+          initialState: { uploaded: false },
+          routes: [
+            { urlIncludes: '/auth/v1/user', status: 200, ok: true, json: { id: seedUserId } },
+            { urlIncludes: '/rest/v1/rpc/task06i_lookup_storage_object_owner', status: 200, ok: true, text: JSON.stringify([{ id: objId16, bucket_id: STORAGE_PROBE_BUCKET, name: getStorageProbeObjectPath(runId), owner_id: null }]) },
+            { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: false }, status: 404, ok: false },
+            { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: true }, status: 200, ok: true, text: 'valid-bytes\n', headers: { 'Content-Type': 'text/plain' } },
+            { method: 'POST', urlIncludes: '/storage/v1/object/', setsState: { uploaded: true }, status: 200, ok: true, json: { Id: objId16, Key: getStorageProbeObjectKey(runId) } }
+          ],
+          defaultResponse: { status: 500 }
+        })
       });
     },
     /STORAGE_OWNER_VERIFICATION_FAILED.*missing/
@@ -8870,7 +8719,6 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
   );
 
   // 18. Mismatched owner_id in authoritative lookup throws STORAGE_OWNER_VERIFICATION_FAILED and preserves RESIDUAL_OWNERSHIP_BLOCKED
-  let uploaded18 = false;
   const invOwnerMismatch18 = new TestRunInventory(runId);
   await assert.rejects(
     async () => {
@@ -8882,30 +8730,17 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
         serviceRoleKey: validTestServiceRoleKey,
         inventory: invOwnerMismatch18,
         probeContent: 'valid-bytes\n',
-        fetchFn: async (url, opts) => {
-          if (url.includes('/auth/v1/user')) return { status: 200, ok: true, json: async () => ({ id: seedUserId }) };
-          if (url.includes('/rest/v1/rpc/task06i_lookup_storage_object_owner')) {
-            return {
-              status: 200,
-              ok: true,
-              text: async () => JSON.stringify([{ id: objId16, bucket_id: STORAGE_PROBE_BUCKET, name: getStorageProbeObjectPath(runId), owner_id: otherUserId }])
-            };
-          }
-          if (opts.method === 'GET' && url.includes('/storage/v1/object/authenticated/')) {
-            if (!uploaded18) return { status: 404, ok: false };
-            return {
-              status: 200,
-              ok: true,
-              text: async () => 'valid-bytes\n',
-              headers: new Headers({ 'Content-Type': 'text/plain' })
-            };
-          }
-          if (opts.method === 'POST' && url.includes('/storage/v1/object/')) {
-            uploaded18 = true;
-            return { status: 200, ok: true, json: async () => ({ Id: objId16, Key: getStorageProbeObjectKey(runId) }) };
-          }
-          return { status: 500 };
-        }
+        fetchFn: createDeterministicFixtureTransport({
+          initialState: { uploaded: false },
+          routes: [
+            { urlIncludes: '/auth/v1/user', status: 200, ok: true, json: { id: seedUserId } },
+            { urlIncludes: '/rest/v1/rpc/task06i_lookup_storage_object_owner', status: 200, ok: true, text: JSON.stringify([{ id: objId16, bucket_id: STORAGE_PROBE_BUCKET, name: getStorageProbeObjectPath(runId), owner_id: otherUserId }]) },
+            { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: false }, status: 404, ok: false },
+            { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: true }, status: 200, ok: true, text: 'valid-bytes\n', headers: { 'Content-Type': 'text/plain' } },
+            { method: 'POST', urlIncludes: '/storage/v1/object/', setsState: { uploaded: true }, status: 200, ok: true, json: { Id: objId16, Key: getStorageProbeObjectKey(runId) } }
+          ],
+          defaultResponse: { status: 500 }
+        })
       });
     },
     /STORAGE_OWNER_VERIFICATION_FAILED.*does not match verified seed user/
@@ -8982,7 +8817,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
   const dispNoRunId = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtxNoRunId,
-    fetchFn: async () => ({ status: 200 })
+    fetchFn: staticTransport({ status: 200 })
   });
   const outNoRunId = await dispNoRunId({ id: 'SESSION-05', category: 'Session & Consumer' });
   assert.equal(outNoRunId.passed, false);
@@ -9000,7 +8835,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
     anonKey: validTestAnonKey,
     inventory: invEmpty,
     runContext: runCtxWithRunId,
-    fetchFn: async () => ({ status: 200 })
+    fetchFn: staticTransport({ status: 200 })
   });
   const outMissingFixture = await dispMissingFixture({ id: 'SESSION-05', category: 'Session & Consumer' });
   assert.equal(outMissingFixture.passed, false);
@@ -9018,7 +8853,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
         seedUserId,
         userAccessToken: testToken,
         inventory: null,
-        fetchFn: async () => ({ status: 404 })
+        fetchFn: staticTransport({ status: 404 })
       });
     },
     /STORAGE_PROVISIONING_FAILED: inventory is required for write-ahead tracking \(R1-08\)/
@@ -9034,7 +8869,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
         seedUserId,
         userAccessToken: testToken,
         inventory: invFinalized,
-        fetchFn: async () => ({ status: 404 })
+        fetchFn: staticTransport({ status: 404 })
       });
     },
     /INVENTORY_FINALIZED/
@@ -9049,7 +8884,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
         seedUserId,
         userAccessToken: testToken,
         inventory: invMismatched,
-        fetchFn: async () => ({ status: 404 })
+        fetchFn: staticTransport({ status: 404 })
       });
     },
     /INVENTORY_RUN_ID_MISMATCH/
@@ -9076,13 +8911,13 @@ test('97. Task 06I-B1-H3-R2 (R2-01): Authoritative storage.objects.owner_id Meta
   assert.match(sqlContent, /GRANT EXECUTE ON FUNCTION public\.task06i_lookup_storage_object_owner\(text, text\) TO service_role/);
   assert.ok(!/pgrst\.db_schemas|GRANT .* ON SCHEMA storage TO anon|GRANT .* ON SCHEMA storage TO authenticated/i.test(sqlContent));
 
-  // Helper creating realistic provider mock (NO custom x-owner-id headers on GET download!)
+  // Helper creating realistic deterministic provider mock (NO custom x-owner-id headers on GET download!)
   function makeProviderFetch({
     authUserStatus = 200,
     authUserBody = { id: seedUserId, aud: 'authenticated' },
     uploadObjectId = objectUuid,
     downloadBody = 'abcd-fixture-bytes\n',
-    downloadBodyFn = null,
+    downloadResponseOverride = null,
     downloadHeaders = {
       'Content-Type': 'text/plain',
       'ETag': '"realistic-etag-97"',
@@ -9101,67 +8936,57 @@ test('97. Task 06I-B1-H3-R2 (R2-01): Authoritative storage.objects.owner_id Meta
     ownershipRpcDelayMs = 0,
     ownershipRpcMalformed = false
   } = {}) {
-    let uploaded = false;
-    return async (url, opts = {}) => {
-      if (url.includes('/auth/v1/user')) {
-        return {
+    return createDeterministicFixtureTransport({
+      initialState: { uploaded: false },
+      routes: [
+        {
+          urlIncludes: '/auth/v1/user',
           status: authUserStatus,
           ok: authUserStatus === 200,
-          text: async () => JSON.stringify(authUserBody)
-        };
-      }
-      if (url.includes('/rest/v1/rpc/task06i_lookup_storage_object_owner')) {
-        assert.equal(opts.headers?.Authorization, `Bearer ${validTestServiceRoleKey}`);
-        if (ownershipRpcDelayMs > 0) {
-          await new Promise((resolve, reject) => {
-            const t = setTimeout(resolve, ownershipRpcDelayMs);
-            if (opts.signal) {
-              opts.signal.addEventListener('abort', () => {
-                clearTimeout(t);
-                const e = new Error('The operation was aborted');
-                e.name = 'AbortError';
-                reject(e);
-              }, { once: true });
-            }
-          });
-        }
-        if (ownershipRpcMalformed) {
-          return { status: 200, ok: true, text: async () => '<html>not-json</html>' };
-        }
-        return {
-          status: ownershipRpcStatus,
-          ok: ownershipRpcStatus >= 200 && ownershipRpcStatus < 300,
-          text: async () => JSON.stringify(ownershipRpcBody)
-        };
-      }
-      if (opts.method === 'GET' && url.includes('/storage/v1/object/authenticated/')) {
-        if (!uploaded) {
-          return {
-            status: 400,
-            ok: false,
-            text: async () => JSON.stringify({ error: 'Not found', message: 'The resource was not found', statusCode: '404', code: 'NoSuchKey' })
-          };
-        }
-        if (downloadBodyFn) {
-          return downloadBodyFn();
-        }
-        return {
+          text: JSON.stringify(authUserBody)
+        },
+        {
+          urlIncludes: '/rest/v1/rpc/task06i_lookup_storage_object_owner',
+          headersMatch: { authorization: `Bearer ${validTestServiceRoleKey}` },
+          delayMs: ownershipRpcDelayMs,
+          ...(ownershipRpcMalformed
+            ? { status: 200, ok: true, text: '<html>not-json</html>' }
+            : {
+                status: ownershipRpcStatus,
+                ok: ownershipRpcStatus >= 200 && ownershipRpcStatus < 300,
+                text: JSON.stringify(ownershipRpcBody)
+              })
+        },
+        {
+          method: 'GET',
+          urlIncludes: '/storage/v1/object/authenticated/',
+          whenState: { uploaded: false },
+          status: 400,
+          ok: false,
+          text: JSON.stringify({ error: 'Not found', message: 'The resource was not found', statusCode: '404', code: 'NoSuchKey' })
+        },
+        {
+          method: 'GET',
+          urlIncludes: '/storage/v1/object/authenticated/',
+          whenState: { uploaded: true },
+          ...(downloadResponseOverride || {
+            status: 200,
+            ok: true,
+            headers: downloadHeaders,
+            rawBytes: Buffer.from(downloadBody, 'utf8')
+          })
+        },
+        {
+          method: 'POST',
+          urlIncludes: '/storage/v1/object/',
+          setsState: { uploaded: true },
           status: 200,
           ok: true,
-          headers: new Headers(downloadHeaders),
-          arrayBuffer: async () => Buffer.from(downloadBody, 'utf8')
-        };
-      }
-      if (opts.method === 'POST' && url.includes('/storage/v1/object/')) {
-        uploaded = true;
-        return {
-          status: 200,
-          ok: true,
-          text: async () => JSON.stringify({ Id: uploadObjectId, Key: expectedKey })
-        };
-      }
-      return { status: 404, ok: false };
-    };
+          text: JSON.stringify({ Id: uploadObjectId, Key: expectedKey })
+        }
+      ],
+      defaultResponse: { status: 404, ok: false }
+    });
   }
 
   // 1 & 2. Realistic authenticated download WITHOUT custom owner headers + authoritative owner_id lookup + exact byte match
@@ -9287,7 +9112,12 @@ test('97. Task 06I-B1-H3-R2 (R2-01): Authoritative storage.objects.owner_id Meta
   assert.equal(invDiffId.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.deletionEligible, false);
 
   // 7. Unverified or mismatched seed identity (/auth/v1/user rejects forged JWT even when decoded sub matches)
-  let storageCalledOnBadIdentity = false;
+  const badIdentityTransport = createDeterministicFixtureTransport({
+    routes: [
+      { urlIncludes: '/auth/v1/user', status: 401, ok: false, text: JSON.stringify({ error: 'invalid_jwt' }) }
+    ],
+    defaultResponse: { status: 200 }
+  });
   await assert.rejects(
     () => provisionStorageProbeFixture({
       runId,
@@ -9295,17 +9125,11 @@ test('97. Task 06I-B1-H3-R2 (R2-01): Authoritative storage.objects.owner_id Meta
       userAccessToken: token,
       serviceRoleKey: validTestServiceRoleKey,
       inventory: new TestRunInventory(runId),
-      fetchFn: async (url) => {
-        if (url.includes('/auth/v1/user')) {
-          return { status: 401, ok: false, text: async () => JSON.stringify({ error: 'invalid_jwt' }) };
-        }
-        storageCalledOnBadIdentity = true;
-        return { status: 200 };
-      }
+      fetchFn: badIdentityTransport
     }),
     /SEED_IDENTITY_VERIFICATION_FAILED/
   );
-  assert.equal(storageCalledOnBadIdentity, false, 'Unverified /auth/v1/user must fail BEFORE any Storage call');
+  assert.equal(badIdentityTransport.calls.some(c => c.url.includes('/storage/v1/object/')), false, 'Unverified /auth/v1/user must fail BEFORE any Storage call');
 
   await assert.rejects(
     () => provisionStorageProbeFixture({
@@ -9349,7 +9173,7 @@ test('97. Task 06I-B1-H3-R2 (R2-01): Authoritative storage.objects.owner_id Meta
       inventory: invUnreadable,
       probeContent: 'abcd-fixture-bytes\n',
       fetchFn: makeProviderFetch({
-        downloadBodyFn: () => ({ status: 200, ok: true, arrayBuffer: async () => { throw new Error('Stream truncated'); } })
+        downloadResponseOverride: { status: 200, ok: true, arrayBufferError: 'Stream truncated' }
       })
     }),
     /STORAGE_VERIFICATION_FAILED/
@@ -9429,7 +9253,6 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
   // Scenarios 1, 2, 3: Successful POST followed by verification GET 403, 404, or 500
   for (const getErrStatus of [403, 404, 500]) {
     const inv = new TestRunInventory(runId);
-    let posted = false;
     await assert.rejects(
       () => provisionStorageProbeFixture({
         runId,
@@ -9437,17 +9260,16 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
         userAccessToken: token,
         serviceRoleKey: validTestServiceRoleKey,
         inventory: inv,
-        fetchFn: async (url, opts) => {
-          if (url.includes('/auth/v1/user')) return { status: 200, ok: true, text: async () => JSON.stringify({ id: seedUserId }) };
-          if (opts.method === 'GET' && url.includes('/storage/v1/object/authenticated/')) {
-            return posted ? { status: getErrStatus, ok: false } : { status: 404, ok: false };
-          }
-          if (opts.method === 'POST' && url.includes('/storage/v1/object/')) {
-            posted = true;
-            return { status: 200, ok: true, text: async () => JSON.stringify({ Id: objectUuid, Key: expectedKey }) };
-          }
-          return { status: 500 };
-        }
+        fetchFn: createDeterministicFixtureTransport({
+          initialState: { posted: false },
+          routes: [
+            { urlIncludes: '/auth/v1/user', status: 200, ok: true, text: JSON.stringify({ id: seedUserId }) },
+            { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { posted: false }, status: 404, ok: false },
+            { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { posted: true }, status: getErrStatus, ok: false },
+            { method: 'POST', urlIncludes: '/storage/v1/object/', setsState: { posted: true }, status: 200, ok: true, text: JSON.stringify({ Id: objectUuid, Key: expectedKey }) }
+          ],
+          defaultResponse: { status: 500 }
+        })
       }),
       /STORAGE_VERIFICATION_FAILED/
     );
@@ -9468,7 +9290,7 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
 
   for (const variant of post200FailureVariants) {
     const inv = new TestRunInventory(runId);
-    let posted = false;
+    const lookupStatus = variant.lookupStatus || 200;
     await assert.rejects(
       () => provisionStorageProbeFixture({
         runId,
@@ -9477,23 +9299,24 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
         serviceRoleKey: validTestServiceRoleKey,
         inventory: inv,
         probeContent: 'expected-98\n',
-        fetchFn: async (url, opts) => {
-          if (url.includes('/auth/v1/user')) return { status: 200, ok: true, text: async () => JSON.stringify({ id: seedUserId }) };
-          if (url.includes('/rest/v1/rpc/task06i_lookup_storage_object_owner')) {
-            const st = variant.lookupStatus || 200;
-            return { status: st, ok: st === 200, text: async () => JSON.stringify(variant.lookupRes || { message: 'db error' }) };
-          }
-          if (opts.method === 'GET' && url.includes('/storage/v1/object/authenticated/')) {
-            if (!posted) return { status: 404, ok: false };
-            if (variant.bodyRejects) return { status: 200, ok: true, arrayBuffer: async () => { throw new Error('ECONNRESET'); } };
-            return { status: 200, ok: true, text: async () => variant.body };
-          }
-          if (opts.method === 'POST' && url.includes('/storage/v1/object/')) {
-            posted = true;
-            return { status: 200, ok: true, text: async () => JSON.stringify({ Id: objectUuid, Key: expectedKey }) };
-          }
-          return { status: 500 };
-        }
+        fetchFn: createDeterministicFixtureTransport({
+          initialState: { posted: false },
+          routes: [
+            { urlIncludes: '/auth/v1/user', status: 200, ok: true, text: JSON.stringify({ id: seedUserId }) },
+            {
+              urlIncludes: '/rest/v1/rpc/task06i_lookup_storage_object_owner',
+              status: lookupStatus,
+              ok: lookupStatus === 200,
+              text: JSON.stringify(variant.lookupRes || { message: 'db error' })
+            },
+            { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { posted: false }, status: 404, ok: false },
+            variant.bodyRejects
+              ? { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { posted: true }, status: 200, ok: true, arrayBufferError: 'ECONNRESET' }
+              : { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { posted: true }, status: 200, ok: true, text: variant.body },
+            { method: 'POST', urlIncludes: '/storage/v1/object/', setsState: { posted: true }, status: 200, ok: true, text: JSON.stringify({ Id: objectUuid, Key: expectedKey }) }
+          ],
+          defaultResponse: { status: 500 }
+        })
       }),
       variant.errRegex
     );
@@ -9511,15 +9334,16 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
         userAccessToken: token,
         serviceRoleKey: validTestServiceRoleKey,
         inventory: inv,
-        fetchFn: async (url, opts) => {
-          if (url.includes('/auth/v1/user')) return { status: 200, ok: true, text: async () => JSON.stringify({ id: seedUserId }) };
-          if (opts.method === 'GET') return { status: 404, ok: false };
-          if (opts.method === 'POST') {
-            if (uploadFail === 'transport_reset') throw new Error('ETIMEDOUT: socket hang up');
-            return { status: 500, ok: false, text: async () => JSON.stringify({ message: 'upstream timeout' }) };
-          }
-          return { status: 500 };
-        }
+        fetchFn: createDeterministicFixtureTransport({
+          routes: [
+            { urlIncludes: '/auth/v1/user', status: 200, ok: true, text: JSON.stringify({ id: seedUserId }) },
+            { method: 'GET', status: 404, ok: false },
+            uploadFail === 'transport_reset'
+              ? { method: 'POST', throwError: 'ETIMEDOUT: socket hang up' }
+              : { method: 'POST', status: 500, ok: false, text: JSON.stringify({ message: 'upstream timeout' }) }
+          ],
+          defaultResponse: { status: 500 }
+        })
       })
     );
     assert.equal(inv.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.lifecycleState, STORAGE_LIFECYCLE_STATE.CREATION_INDETERMINATE);
@@ -9535,18 +9359,14 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
       userAccessToken: token,
       serviceRoleKey: validTestServiceRoleKey,
       inventory: invCollision,
-      fetchFn: async (url, opts) => {
-        if (url.includes('/auth/v1/user')) return { status: 200, ok: true, text: async () => JSON.stringify({ id: seedUserId }) };
-        if (opts.method === 'GET') return { status: 404, ok: false };
-        if (opts.method === 'POST') {
-          return {
-            status: 400,
-            ok: false,
-            text: async () => JSON.stringify({ statusCode: '409', code: 'KeyAlreadyExists', error: 'Duplicate', message: 'The resource already exists' })
-          };
-        }
-        return { status: 500 };
-      }
+      fetchFn: createDeterministicFixtureTransport({
+        routes: [
+          { urlIncludes: '/auth/v1/user', status: 200, ok: true, text: JSON.stringify({ id: seedUserId }) },
+          { method: 'GET', status: 404, ok: false },
+          { method: 'POST', status: 400, ok: false, text: JSON.stringify({ statusCode: '409', code: 'KeyAlreadyExists', error: 'Duplicate', message: 'The resource already exists' }) }
+        ],
+        defaultResponse: { status: 500 }
+      })
     }),
     /STORAGE_UPLOAD_CONFLICT/
   );
@@ -9732,7 +9552,7 @@ test('99. Task 06I-B1-H3-R2 (R2-03): Provider-Aware Storage Absence Normalizatio
   // 9. Transport timeout -> TRANSPORT_FAILURE
   const adminTimeoutClient = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
-    fetchFn: async () => { throw new Error('ETIMEDOUT: socket timed out'); }
+    fetchFn: errorTransport('ETIMEDOUT: socket timed out')
   });
   const detailTimeout = await verifyStorageObjectAbsenceDetailed(adminTimeoutClient, STORAGE_PROBE_BUCKET, path);
   assert.equal(detailTimeout.isAbsent, false);
@@ -9741,16 +9561,18 @@ test('99. Task 06I-B1-H3-R2 (R2-03): Provider-Aware Storage Absence Normalizatio
   // 10. Admin client preserves error body: HTTP 400 NoSuchKey + logical 404 IS recognized as absent in cleanup!
   const adminStructuredAbsent = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
-    fetchFn: async (url, opts) => {
-      if (opts.method === 'GET' && url.includes('/storage/v1/object/authenticated/')) {
-        return {
+    fetchFn: createDeterministicFixtureTransport({
+      routes: [
+        {
+          method: 'GET',
+          urlIncludes: '/storage/v1/object/authenticated/',
           status: 400,
           ok: false,
-          text: async () => JSON.stringify({ error: 'Not found', message: 'The resource was not found', statusCode: '404', code: 'NoSuchKey' })
-        };
-      }
-      return { status: 200, ok: true, text: async () => '{}' };
-    }
+          text: JSON.stringify({ error: 'Not found', message: 'The resource was not found', statusCode: '404', code: 'NoSuchKey' })
+        }
+      ],
+      defaultResponse: { status: 200, ok: true, text: '{}' }
+    })
   });
   const invStructuredDel = new TestRunInventory(runId);
   invStructuredDel.registerStorageFixture({
@@ -9769,10 +9591,12 @@ test('99. Task 06I-B1-H3-R2 (R2-03): Provider-Aware Storage Absence Normalizatio
   // 11. Object remains present (HTTP 200) -> RESIDUAL_BLOCKED, cleanup fails
   const adminStillPresent = createHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
-    fetchFn: async (url, opts) => {
-      if (opts.method === 'DELETE') return { status: 200, ok: true, text: async () => '{}' };
-      return { status: 200, ok: true, text: async () => 'still here' };
-    }
+    fetchFn: createDeterministicFixtureTransport({
+      routes: [
+        { method: 'DELETE', status: 200, ok: true, text: '{}' }
+      ],
+      defaultResponse: { status: 200, ok: true, text: 'still here' }
+    })
   });
   const invPresent = new TestRunInventory(runId);
   invPresent.registerStorageFixture({
@@ -9802,10 +9626,10 @@ test('99. Task 06I-B1-H3-R2 (R2-03): Provider-Aware Storage Absence Normalizatio
   const dispSess05 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     runContext: runCtx99,
-    fetchFn: async () => ({
+    fetchFn: staticTransport({
       status: 400,
       ok: false,
-      text: async () => JSON.stringify({ error: 'Not found', message: 'The resource was not found', statusCode: '404', code: 'NoSuchKey' })
+      text: JSON.stringify({ error: 'Not found', message: 'The resource was not found', statusCode: '404', code: 'NoSuchKey' })
     })
   });
   const outSess05 = await dispSess05({ id: 'SESSION-05', category: 'Session & Consumer' });
@@ -9826,67 +9650,81 @@ test('100. Task 06I-B1-H3-R2 (Sec 5 & 6): Unified Storage Lifecycle E2E Regressi
     exp: Math.floor(Date.now() / 1000) + 300
   });
 
-  // Part A: End-to-End 14-step Unified Lifecycle using actual components
-  let storageExists = false;
-  let storedBytes = null;
-  let storedOwner = null;
-  let userDeleted = false;
-  const auditEvents = [];
-
-  const mockProviderFetch = async (url, opts = {}) => {
-    if (url.includes('/auth/v1/user')) {
-      auditEvents.push('GET:/auth/v1/user');
-      return { status: 200, ok: true, text: async () => JSON.stringify({ id: seedUserId, email: seedEmail, aud: 'authenticated' }) };
-    }
-    if (url.includes('/rest/v1/rpc/task06i_lookup_storage_object_owner')) {
-      auditEvents.push('RPC:owner_lookup');
-      return {
+  // Part A: End-to-End 14-step Unified Lifecycle using deterministic fixture transport
+  const mockProviderFetch = createDeterministicFixtureTransport({
+    initialState: { storageExists: false },
+    routes: [
+      {
+        tag: 'GET:/auth/v1/user',
+        urlIncludes: '/auth/v1/user',
         status: 200,
         ok: true,
-        text: async () => JSON.stringify(
-          storageExists
-            ? [{ id: objectUuid, bucket_id: STORAGE_PROBE_BUCKET, name: getStorageProbeObjectPath(runId), owner_id: storedOwner }]
-            : []
-        )
-      };
-    }
-    if (url.includes('/storage/v1/object/authenticated/')) {
-      if (!storageExists) {
-        auditEvents.push('GET:storage_absent_400_NoSuchKey');
-        return {
-          status: 400,
-          ok: false,
-          text: async () => JSON.stringify({ error: 'Not found', message: 'The resource was not found', statusCode: '404', code: 'NoSuchKey' })
-        };
+        text: JSON.stringify({ id: seedUserId, email: seedEmail, aud: 'authenticated' })
+      },
+      {
+        tag: 'RPC:owner_lookup',
+        urlIncludes: '/rest/v1/rpc/task06i_lookup_storage_object_owner',
+        whenState: { storageExists: true },
+        status: 200,
+        ok: true,
+        text: JSON.stringify([{ id: objectUuid, bucket_id: STORAGE_PROBE_BUCKET, name: getStorageProbeObjectPath(runId), owner_id: seedUserId }])
+      },
+      {
+        tag: 'RPC:owner_lookup_absent',
+        urlIncludes: '/rest/v1/rpc/task06i_lookup_storage_object_owner',
+        whenState: { storageExists: false },
+        status: 200,
+        ok: true,
+        text: '[]'
+      },
+      {
+        tag: 'GET:storage_absent_400_NoSuchKey',
+        urlIncludes: '/storage/v1/object/authenticated/',
+        whenState: { storageExists: false },
+        status: 400,
+        ok: false,
+        text: JSON.stringify({ error: 'Not found', message: 'The resource was not found', statusCode: '404', code: 'NoSuchKey' })
+      },
+      {
+        tag: 'GET:storage_present_200',
+        urlIncludes: '/storage/v1/object/authenticated/',
+        whenState: { storageExists: true },
+        status: 200,
+        ok: true,
+        headers: { 'Content-Type': 'text/plain', 'ETag': '"e2e-100"' },
+        rawBytes: Buffer.from(payload, 'utf8')
+      },
+      {
+        tag: 'POST:storage_upload',
+        method: 'POST',
+        urlIncludes: '/storage/v1/object/',
+        headersMatch: { 'x-upsert': 'false' },
+        bodyIncludes: payload,
+        setsState: { storageExists: true },
+        status: 200,
+        ok: true,
+        text: JSON.stringify({ Id: objectUuid, Key: getStorageProbeObjectKey(runId) })
+      },
+      {
+        tag: 'DELETE:storage_object',
+        method: 'DELETE',
+        urlIncludes: '/storage/v1/object/',
+        setsState: { storageExists: false },
+        status: 200,
+        ok: true,
+        text: JSON.stringify({ message: 'Successfully deleted' })
+      },
+      {
+        tag: 'DELETE:admin_user',
+        method: 'DELETE',
+        urlIncludes: '/auth/v1/admin/users/',
+        status: 200,
+        ok: true,
+        text: '{}'
       }
-      auditEvents.push('GET:storage_present_200');
-      return {
-        status: 200,
-        ok: true,
-        headers: new Headers({ 'Content-Type': 'text/plain', 'ETag': '"e2e-100"' }),
-        arrayBuffer: async () => Buffer.from(storedBytes, 'utf8')
-      };
-    }
-    if (opts.method === 'POST' && url.includes('/storage/v1/object/')) {
-      auditEvents.push('POST:storage_upload');
-      assert.equal(opts.headers['x-upsert'], 'false');
-      storageExists = true;
-      storedBytes = opts.body;
-      storedOwner = seedUserId;
-      return { status: 200, ok: true, text: async () => JSON.stringify({ Id: objectUuid, Key: getStorageProbeObjectKey(runId) }) };
-    }
-    if (opts.method === 'DELETE' && url.includes('/storage/v1/object/')) {
-      auditEvents.push('DELETE:storage_object');
-      storageExists = false;
-      storedBytes = null;
-      return { status: 200, ok: true, text: async () => JSON.stringify({ message: 'Successfully deleted' }) };
-    }
-    if (opts.method === 'DELETE' && url.includes('/auth/v1/admin/users/')) {
-      userDeleted = true;
-      return { status: 200, ok: true, text: async () => JSON.stringify({}) };
-    }
-    return { status: 404, ok: false };
-  };
+    ],
+    defaultResponse: { status: 404, ok: false }
+  });
 
   // 1-2. Context & verified pre-existing seed identity (Option A)
   const ctx = createRunContext({ runId, testEmail: seedEmail });
@@ -9939,10 +9777,10 @@ test('100. Task 06I-B1-H3-R2 (Sec 5 & 6): Unified Storage Lifecycle E2E Regressi
   assert.equal(finalReport.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(finalReport.storageObjectsDeleted, 1);
   assert.equal(finalReport.usersDeleted, 0);
-  assert.equal(userDeleted, false, 'Pre-existing seed user must be preserved untouched');
+  assert.equal(mockProviderFetch.calls.some(c => c.tag === 'DELETE:admin_user'), false, 'Pre-existing seed user must be preserved untouched');
   assert.equal(inv.getStorageFixture(STORAGE_PROBE_BUCKET, getStorageProbeObjectPath(runId))?.lifecycleState, STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED);
   assert.equal(inv.isClean(), true);
-  assert.deepEqual(auditEvents, [
+  assert.deepEqual(mockProviderFetch.calls.map(c => c.tag), [
     'GET:/auth/v1/user',
     'GET:storage_absent_400_NoSuchKey',
     'POST:storage_upload',
@@ -9953,23 +9791,27 @@ test('100. Task 06I-B1-H3-R2 (Sec 5 & 6): Unified Storage Lifecycle E2E Regressi
     'GET:storage_absent_400_NoSuchKey'
   ]);
 
-  // Part B: Structural Real-Network Transport & Wrapped Dispatcher Bypass Hardening (Sec 6)
+  // Part B: Structural Real-Network Transport & Arbitrary Callback Hardening (Sec 6, R3-02)
   // 1. Bound globalThis.fetch rejected at factory/guard level
   const boundFetch = globalThis.fetch.bind(globalThis);
   assert.throws(() => assertOfflineMockTransport(boundFetch), /BLOCKED_PENDING_DURABLE_RECOVERY/);
   assert.throws(() => createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: boundFetch }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
   assert.throws(() => createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: boundFetch }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
 
-  // 2. Indirect arrow wrapper calling globalThis.fetch trapped at execution time (ZERO network requests)
+  // 2. Arbitrary arrow / closure-wrapped callbacks rejected immediately at factory boundary (R3-02)
+  const savedFetch = globalThis.fetch;
   const wrappedGlobalFetch = (...args) => globalThis.fetch(...args);
-  const dispWrappedFetch = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: wrappedGlobalFetch });
+  const closureSavedFetch = (...args) => savedFetch(...args);
+  assert.throws(() => createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: wrappedGlobalFetch }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
+  assert.throws(() => createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: closureSavedFetch }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
+  assert.throws(() => createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: closureSavedFetch }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
   await assert.rejects(
-    () => dispWrappedFetch({ id: 'BYPASS-01', testUser: 'probe@proof.invalid' }),
+    () => runWithBlockedRealFetch(() => wrappedGlobalFetch('https://wvdabiwbaavfggcmpizd.supabase.co/auth/v1/health')),
     /BLOCKED_PENDING_DURABLE_RECOVERY: Indirect, wrapped, or bound real network fetch invocation is strictly blocked/
   );
 
   // 3. Mutable _isHostedNetworkDispatcher property cannot be tampered to false (non-writable)
-  const hostedDisp = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: async () => ({ status: 200 }) });
+  const hostedDisp = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: staticTransport({ status: 200 }) });
   assert.throws(() => { hostedDisp._isHostedNetworkDispatcher = false; }, TypeError);
 
   // 4. Wrapping hostedDispatcher in an untagged arrow wrapper CANNOT bypass runHostedProbeRunner durable recovery gate!
@@ -9985,4 +9827,685 @@ test('100. Task 06I-B1-H3-R2 (Sec 5 & 6): Unified Storage Lifecycle E2E Regressi
     }),
     /BLOCKED_PENDING_DURABLE_RECOVERY/
   );
+});
+
+// ===========================================================================
+// Task 06I-B1-H3-R3: Structural Network Isolation, Atomic Storage Ownership &
+// Concurrent Cleanup Closure (R3-01 through R3-06 + Sec 8 Acceptance Matrix)
+// ===========================================================================
+
+test('101. Task 06I-B1-H3-R3 (R3-01): Reference-counted GlobalFetchIsolationCoordinator overlapping, nested, error, and timeout safety', async () => {
+  // Part A: Isolated reference-counted coordinator verifies exact 0 -> 1 -> 2 -> 1 -> 0 transitions and clean baseline restore
+  const originalTargetFetch = () => 'ORIGINAL_FETCH';
+  const isolatedTarget = { fetch: originalTargetFetch };
+  const coordinator = createFetchIsolationCoordinator(isolatedTarget);
+  assert.deepEqual(coordinator.getState(), { activeDepth: 0, isTrapped: false });
+
+  const barrierA = createOfflineBarrier('r3-01-scope-a');
+  const barrierB = createOfflineBarrier('r3-01-scope-b');
+
+  // 1. Overlapping scopes: A settles first while B remains active -> fetch MUST stay trapped until B finishes!
+  let midOverlapCheckError = null;
+  const scopeA = coordinator.run(async () => {
+    assert.equal(coordinator.getState().isTrapped, true);
+    await barrierA.wait();
+    return 'A_DONE';
+  });
+
+  const scopeB = coordinator.run(async () => {
+    assert.equal(coordinator.getState().activeDepth, 2);
+    assert.equal(coordinator.getState().isTrapped, true);
+    await barrierB.wait();
+    // Scope A has already finished here, yet Scope B MUST STILL see fetch trapped!
+    assert.equal(coordinator.getState().activeDepth, 1);
+    assert.equal(coordinator.getState().isTrapped, true);
+    try {
+      isolatedTarget.fetch('https://wvdabiwbaavfggcmpizd.supabase.co/auth/v1/health');
+    } catch (err) {
+      midOverlapCheckError = err;
+    }
+    return 'B_DONE';
+  });
+
+  assert.equal(coordinator.getState().activeDepth, 2);
+  barrierA.release();
+  assert.equal(await scopeA, 'A_DONE');
+  assert.equal(coordinator.getState().activeDepth, 1);
+  assert.equal(coordinator.getState().isTrapped, true, 'Trap must survive while Scope B is still in flight');
+
+  barrierB.release();
+  assert.equal(await scopeB, 'B_DONE');
+  assert.ok(midOverlapCheckError && /BLOCKED_PENDING_DURABLE_RECOVERY/.test(midOverlapCheckError.message));
+  assert.deepEqual(coordinator.getState(), { activeDepth: 0, isTrapped: false });
+  assert.equal(isolatedTarget.fetch, originalTargetFetch);
+
+  // 2. Idempotent double-release cannot underflow activeDepth
+  const rel1 = coordinator.acquire();
+  const rel2 = coordinator.acquire();
+  assert.equal(coordinator.getState().activeDepth, 2);
+  rel1();
+  rel1(); // duplicate call must be no-op
+  assert.equal(coordinator.getState().activeDepth, 1);
+  assert.equal(coordinator.getState().isTrapped, true);
+  rel2();
+  assert.equal(coordinator.getState().activeDepth, 0);
+  assert.equal(coordinator.getState().isTrapped, false);
+  assert.equal(isolatedTarget.fetch, originalTargetFetch);
+
+  // 3. Nested scopes + synchronous/async exception + timeout loser safety
+  const timeoutGate = createOfflineBarrier('r3-01-timeout-loser');
+  let depthAfterInnerError = null;
+  await coordinator.run(async () => {
+    assert.equal(coordinator.getState().activeDepth, 1);
+    await assert.rejects(
+      () => coordinator.run(async () => {
+        assert.equal(coordinator.getState().activeDepth, 2);
+        throw new Error('INNER_FAILURE');
+      }),
+      /INNER_FAILURE/
+    );
+    depthAfterInnerError = coordinator.getState();
+    assert.equal(depthAfterInnerError.activeDepth, 1);
+    assert.equal(depthAfterInnerError.isTrapped, true);
+
+    // Timeout race inside active outer lease keeps fetch trapped even after race settles
+    const loser = coordinator.run(async () => {
+      await timeoutGate.wait();
+      return 'LATE_DONE';
+    });
+    await assert.rejects(
+      () => Promise.race([
+        loser,
+        new Promise((_, reject) => setTimeout(() => reject(new Error('RACE_TIMEOUT')), 15))
+      ]),
+      /RACE_TIMEOUT/
+    );
+    assert.equal(coordinator.getState().activeDepth, 2, 'Timed-out inner lease still holds depth until its finally runs');
+    assert.equal(coordinator.getState().isTrapped, true);
+    timeoutGate.release();
+    await loser;
+    assert.equal(coordinator.getState().activeDepth, 1);
+  });
+
+  assert.deepEqual(coordinator.getState(), { activeDepth: 0, isTrapped: false });
+  assert.equal(isolatedTarget.fetch, originalTargetFetch);
+
+  // Part B: Global process runWithBlockedRealFetch maintains monotonic trap while overlapping on globalThis.fetch
+  const baseGlobalDepth = getFetchIsolationDebugState().activeDepth;
+  const globalOverlap = createOfflineBarrier('r3-01-global-overlap');
+  const g1 = runWithBlockedRealFetch(async () => {
+    assert.equal(getFetchIsolationDebugState().isTrapped, true);
+    assert.equal(getFetchIsolationDebugState().activeDepth, baseGlobalDepth + 1);
+    await globalOverlap.wait();
+  });
+  const g2 = runWithBlockedRealFetch(async () => {
+    assert.equal(getFetchIsolationDebugState().isTrapped, true);
+    assert.equal(getFetchIsolationDebugState().activeDepth, baseGlobalDepth + 2);
+  });
+  await g2;
+  assert.equal(getFetchIsolationDebugState().isTrapped, true, 'Global trap stays active while g1 is pending');
+  assert.equal(getFetchIsolationDebugState().activeDepth, baseGlobalDepth + 1);
+  globalOverlap.release();
+  await g1;
+  assert.equal(getFetchIsolationDebugState().activeDepth, baseGlobalDepth);
+});
+
+test('102. Task 06I-B1-H3-R3 (R3-02): Structural elimination of arbitrary transport trust and spec hardening', async () => {
+  const runId = 'test-run-h3-r3-02-transport';
+  const seedUserId = '11111111-1111-4111-a111-111111111102';
+  const token = createMockJwt({ sub: seedUserId });
+  const inv = new TestRunInventory(runId);
+
+  // 1. Closure-captured real fetch wrapper rejected across ALL factories BEFORE any execution
+  const capturedRealFetch = globalThis.fetch;
+  const wrappedSavedFetch = (...args) => capturedRealFetch(...args);
+  const customLambda = async () => ({ status: 200, ok: true, json: async () => ({}) });
+  const spoofedFn = Object.assign(() => ({ status: 200 }), {
+    _isDeterministicTransport: true,
+    isMock: true
+  });
+
+  for (const untrusted of [undefined, null, globalThis.fetch, globalThis.fetch.bind(globalThis), wrappedSavedFetch, customLambda, spoofedFn]) {
+    assert.throws(() => assertOfflineMockTransport(untrusted), /BLOCKED_PENDING_DURABLE_RECOVERY/);
+    assert.throws(() => createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: untrusted }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
+    assert.throws(() => createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: untrusted }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
+    await assert.rejects(
+      () => provisionStorageProbeFixture({
+        runId,
+        seedUserId,
+        userAccessToken: token,
+        serviceRoleKey: validTestServiceRoleKey,
+        inventory: inv,
+        fetchFn: untrusted
+      }),
+      /BLOCKED_PENDING_DURABLE_RECOVERY/
+    );
+  }
+
+  // 2. createDeterministicFixtureTransport rejects any arbitrary executable callback/getter inside spec
+  assert.throws(
+    () => createDeterministicFixtureTransport({ routes: [{ status: 200, json: () => ({}) }] }),
+    /INVALID_DETERMINISTIC_FIXTURE_SPEC.*Arbitrary executable callback rejected/
+  );
+  assert.throws(
+    () => createDeterministicFixtureTransport({
+      routes: [{
+        urlIncludes: '/auth/v1/user',
+        get status() { return 200; }
+      }]
+    }),
+    /INVALID_DETERMINISTIC_FIXTURE_SPEC.*Accessor property rejected/
+  );
+  assert.throws(
+    () => createDeterministicFixtureTransport({
+      routes: [{ urlIncludes: '/auth/v1/user', waitForBarrier: { wait: async () => {}, release() {} } }]
+    }),
+    /INVALID_DETERMINISTIC_FIXTURE_SPEC/
+  );
+
+  // 3. Trusted deterministic transport succeeds strictly offline without calling real fetch
+  const trusted = createDeterministicFixtureTransport({
+    routes: [{ urlIncludes: '/auth/v1/logout', status: 200, ok: true, json: {} }]
+  });
+  assert.doesNotThrow(() => assertOfflineMockTransport(trusted));
+  const admin = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: trusted });
+  const out = await admin.signOut(token, 'local');
+  assert.equal(out.error, null);
+  assert.equal(trusted.calls.length, 1);
+
+  // 4. Hosted network dispatcher built with trusted offline transport is STILL blocked inside LIVE runner
+  const disp = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: trusted });
+  await assert.rejects(
+    () => runHostedProbeRunner({
+      projectRef: HARDCODED_TEMP_REF,
+      argv: ['--live'],
+      env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+      mockDispatcher: disp,
+      adminClient: defaultMockAdminClient,
+      selectedProbeIds: ['BYPASS-01']
+    }),
+    /BLOCKED_PENDING_DURABLE_RECOVERY/
+  );
+});
+
+test('103. Task 06I-B1-H3-R3 (R3-03): Atomic Storage fixture reservation, single-owner mutations & immutable identity', async () => {
+  const runId = 'test-run-h3-r3-03-atomic';
+  const seedUserId = '11111111-1111-4111-a111-111111111103';
+  const objectUuid = '10301111-2222-4333-a444-555555555103';
+  const altObjectUuid = '99991111-2222-4333-a444-555555555103';
+  const token = createMockJwt({ sub: seedUserId });
+  const path = getStorageProbeObjectPath(runId);
+  const fullKey = getStorageProbeObjectKey(runId);
+
+  // 1. Concurrent overlapping provisionStorageProbeFixture calls for same (inventory, runId):
+  // First provisioner reserves slot BEFORE first await; second rejects with STORAGE_FIXTURE_RESERVATION_CONFLICT and ZERO HTTP calls!
+  const inv = new TestRunInventory(runId);
+  const authBarrier = createOfflineBarrier('r3-03-auth-pause');
+  const transportA = createDeterministicFixtureTransport({
+    initialState: { uploaded: false },
+    routes: [
+      { urlIncludes: '/auth/v1/user', waitForBarrier: authBarrier, status: 200, text: JSON.stringify({ id: seedUserId }) },
+      { urlIncludes: '/rest/v1/rpc/task06i_lookup_storage_object_owner', status: 200, text: JSON.stringify([{ id: objectUuid, bucket_id: STORAGE_PROBE_BUCKET, name: path, owner_id: seedUserId }]) },
+      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: false }, status: 400, ok: false, text: JSON.stringify({ statusCode: '404', code: 'NoSuchKey', resource: fullKey }) },
+      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: true }, status: 200, ok: true, text: 'atomic-payload-103\n' },
+      { method: 'POST', urlIncludes: '/storage/v1/object/', setsState: { uploaded: true }, status: 200, ok: true, text: JSON.stringify({ Id: objectUuid, Key: fullKey }) }
+    ]
+  });
+  const transportB = staticTransport({ status: 200 });
+
+  const provAPromise = provisionStorageProbeFixture({
+    runId,
+    seedUserId,
+    userAccessToken: token,
+    serviceRoleKey: validTestServiceRoleKey,
+    inventory: inv,
+    probeContent: 'atomic-payload-103\n',
+    fetchFn: transportA
+  });
+  await authBarrier.waitForArrivals(1);
+
+  // Reservation must ALREADY exist atomically with op-res ownership BEFORE /auth/v1/user returns!
+  const reservedFixture = inv.getStorageFixture(STORAGE_PROBE_BUCKET, path);
+  assert.ok(reservedFixture);
+  assert.equal(reservedFixture.lifecycleState, STORAGE_LIFECYCLE_STATE.CREATION_PENDING);
+  assert.ok(reservedFixture.reservationOpId);
+  assert.equal(reservedFixture.deletionEligible, false);
+
+  // Rival provisioner B fails immediately without touching provider
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      runId,
+      seedUserId,
+      userAccessToken: token,
+      serviceRoleKey: validTestServiceRoleKey,
+      inventory: inv,
+      probeContent: 'rival-payload\n',
+      fetchFn: transportB
+    }),
+    /STORAGE_FIXTURE_RESERVATION_CONFLICT/
+  );
+  assert.equal(transportB.calls.length, 0, 'Duplicate provisioner must emit ZERO network requests');
+
+  // Rival update with wrong ownerOpId rejected (cannot tamper or steal ownership)
+  assert.throws(
+    () => inv.updateStorageFixture(fullKey, { ownerOpId: 'wrong-op-id', lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED, deletionEligible: true }),
+    /STORAGE_FIXTURE_OWNERSHIP_VIOLATION/
+  );
+
+  // Legacy registerStorageObject cannot bypass active storageFixture lifecycle!
+  assert.throws(
+    () => inv.registerStorageObject(STORAGE_PROBE_BUCKET, path),
+    /STORAGE_LIFECYCLE_BYPASS_VIOLATION/
+  );
+
+  // Duplicate registerStorageFixture / reserveStorageFixture on same key rejected without overwrite
+  assert.throws(
+    () => inv.registerStorageFixture({ bucket: STORAGE_PROBE_BUCKET, path, ownerId: seedUserId }),
+    /STORAGE_FIXTURE_RESERVATION_CONFLICT/
+  );
+  assert.throws(
+    () => inv.reserveStorageFixture({ bucket: STORAGE_PROBE_BUCKET, path, ownerId: seedUserId }),
+    /STORAGE_FIXTURE_RESERVATION_CONFLICT/
+  );
+
+  authBarrier.release();
+  const provAResult = await provAPromise;
+  assert.equal(provAResult.lifecycleState, STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED);
+  assert.equal(provAResult.objectId, objectUuid);
+
+  // Immutable providerObjectId cannot be mutated after binding!
+  assert.throws(
+    () => inv.updateStorageFixture(fullKey, { ownerOpId: reservedFixture.reservationOpId, providerObjectId: altObjectUuid }),
+    /STORAGE_FIXTURE_IMMUTABLE_IDENTITY_VIOLATION/
+  );
+});
+
+test('104. Task 06I-B1-H3-R3 (R3-04): Run quiescing, admission closure, concurrent cleanup block, and live pre-deletion re-audit', async () => {
+  // Part A: Provisioner paused at /auth/v1/user while cleanup transitions ACTIVE -> QUIESCING -> CLEANUP_ACTIVE
+  const runIdA = 'test-run-h3-r3-04-quiesce';
+  const seedUserId = '11111111-1111-4111-a111-111111111104';
+  const createdUidA = '22222222-2222-4222-b222-222222222104';
+  const token = createMockJwt({ sub: seedUserId });
+  const invA = new TestRunInventory(runIdA, { seedUserId, seedEmail: 'seed104@proof.invalid' });
+  invA.registerCreatedUser({
+    id: createdUidA,
+    email: 'created-104a@proof.invalid',
+    creationProof: createCreationProof('before_after_check')
+  });
+
+  const pauseAtAuth = createOfflineBarrier('r3-04-pause-auth');
+  const transportA = createDeterministicFixtureTransport({
+    routes: [
+      { urlIncludes: '/auth/v1/user', waitForBarrier: pauseAtAuth, status: 200, text: JSON.stringify({ id: seedUserId }) },
+      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', status: 400, ok: false, text: JSON.stringify({ statusCode: '404', code: 'NoSuchKey' }) },
+      { method: 'POST', urlIncludes: '/storage/v1/object/', status: 200, text: JSON.stringify({ Id: 'aaaa1111-2222-4333-a444-555555555104' }) }
+    ]
+  });
+
+  const provPromise = provisionStorageProbeFixture({
+    runId: runIdA,
+    seedUserId,
+    userAccessToken: token,
+    serviceRoleKey: validTestServiceRoleKey,
+    inventory: invA,
+    fetchFn: transportA
+  });
+  await pauseAtAuth.waitForArrivals(1);
+  assert.equal(invA.runLifecycleState, INVENTORY_RUN_STATE.ACTIVE);
+
+  const deleteCallsA = [];
+  const adminMockA = {
+    deleteStorageObject: async () => ({ error: null }),
+    getStorageObject: async () => ({ status: 404, ok: false }),
+    deleteUser: async (id) => { deleteCallsA.push(id); return { data: { id }, error: null }; },
+    getUserById: async () => ({ notFound: true }),
+    signOut: async () => ({ error: null })
+  };
+
+  // Start cleanup (enters QUIESCING immediately!)
+  const cleanupPromise = invA.executeCleanup({ adminClient: adminMockA, failClosed: false, settlementTimeoutMs: 25 });
+  assert.equal(invA.runLifecycleState, INVENTORY_RUN_STATE.QUIESCING);
+
+  // Concurrent executeCleanup call rejected immediately
+  await assert.rejects(
+    () => invA.executeCleanup({ adminClient: adminMockA, failClosed: false }),
+    /CLEANUP_CONCURRENT_REENTRY_BLOCKED/
+  );
+
+  // New operation or reservation rejected while QUIESCING
+  assert.throws(
+    () => invA.reserveStorageFixture({ path: 'new-run/probe.txt', ownerId: seedUserId }),
+    /INVENTORY_ADMISSION_CLOSED/
+  );
+  assert.throws(
+    () => invA.registerInFlightOperation({ probeId: 'HOOK-01', canMintSession: true }),
+    /INVENTORY_ADMISSION_CLOSED/
+  );
+
+  const reportA = await cleanupPromise;
+  // Release /auth/v1/user after cleanup -> provisioner aborts BEFORE issuing GET/POST Storage upload!
+  pauseAtAuth.release();
+  await assert.rejects(provPromise, /PROVISIONING_ABORTED_DURING_CLEANUP|STORAGE_FIXTURE/);
+  assert.equal(transportA.calls.some(c => c.url.includes('/storage/v1/object/')), false, 'Woken provisioner must NEVER dispatch Storage POST after cleanup');
+  assert.equal(deleteCallsA.length, 0, 'Created Auth user must NEVER be deleted while storage provisioning was in-flight/unresolved');
+  assert.equal(reportA.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(invA.runLifecycleState, INVENTORY_RUN_STATE.RESIDUAL_BLOCKED);
+
+  // Part B: Provisioner completes GET/RPC late while Step 4 is ALREADY between deleteUser(u1) and deleteUser(u2)
+  const runIdB = 'test-run-h3-r3-04-mid-delete';
+  const uid1 = '22222222-2222-4222-b222-222222222001';
+  const uid2 = '22222222-2222-4222-b222-222222222002';
+  const invB = new TestRunInventory(runIdB);
+  invB.registerCreatedUser({ id: uid1, email: 'u1-104@proof.invalid', creationProof: createCreationProof('before_after_check') });
+  invB.registerCreatedUser({ id: uid2, email: 'u2-104@proof.invalid', creationProof: createCreationProof('before_after_check') });
+
+  const pausePost = createOfflineBarrier('r3-04-post-pause');
+  const midDeleteArrival = createOfflineBarrier('r3-04-mid-delete');
+  const transportB = createDeterministicFixtureTransport({
+    initialState: { uploaded: false },
+    routes: [
+      { urlIncludes: '/auth/v1/user', status: 200, text: JSON.stringify({ id: seedUserId }) },
+      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: false }, status: 400, ok: false, text: JSON.stringify({ statusCode: '404', code: 'NoSuchKey' }) },
+      { method: 'POST', urlIncludes: '/storage/v1/object/', waitForBarrier: pausePost, setsState: { uploaded: true }, status: 200, text: JSON.stringify({ Id: 'bbbb1111-2222-4333-a444-555555555104' }) },
+      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: true }, status: 200, text: 'late-upload-payload' },
+      { urlIncludes: '/rest/v1/rpc/task06i_lookup_storage_object_owner', status: 200, text: JSON.stringify([{ id: 'bbbb1111-2222-4333-a444-555555555104', bucket_id: STORAGE_PROBE_BUCKET, name: getStorageProbeObjectPath(runIdB), owner_id: seedUserId }]) }
+    ]
+  });
+
+  // Start provB with clean invC? Wait: if invB already has pausePost in-flight when cleanup starts, QUIESCING blocks BOTH uid1 and uid2!
+  // Also test dynamic mid-loop residual injection between uid1 deletion and uid2 deletion!
+  const invMid = new TestRunInventory(runIdB);
+  invMid.registerCreatedUser({ id: uid1, email: 'u1-mid@proof.invalid', creationProof: createCreationProof('before_after_check') });
+  invMid.registerCreatedUser({ id: uid2, email: 'u2-mid@proof.invalid', creationProof: createCreationProof('before_after_check') });
+  const deletedMid = [];
+  const adminMid = {
+    deleteStorageObject: async () => ({ error: null }),
+    getStorageObject: async () => ({ status: 404, ok: false }),
+    deleteUser: async (id) => {
+      deletedMid.push(id);
+      if (id === uid1) {
+        // Simulate a late storage settlement landing AFTER uid1 was deleted cleanly, right before uid2 check!
+        invMid.lateSettlementsDuringCleanup.push({ action: 'lateStorageCommit', key: getStorageProbeObjectKey(runIdB) });
+      }
+      return { data: { id }, error: null };
+    },
+    getUserById: async () => ({ notFound: true }),
+    signOut: async () => ({ error: null })
+  };
+  const reportMid = await invMid.executeCleanup({ adminClient: adminMid, failClosed: false });
+  assert.deepEqual(deletedMid, [uid1], 'Live pre-deletion predicate must halt BEFORE deleting uid2 once late settlement arrives');
+  assert.ok(reportMid.residualUsers.some(u => u.id === uid2 && /STORAGE_CLEANUP_FAILURE_CASCADE_PREVENTED/.test(u.error)));
+  assert.equal(reportMid.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+
+  // Verify pausePost releases cleanly for no leaked promise
+  pausePost.release();
+  midDeleteArrival.release();
+  const invCleanupPendingTest = new TestRunInventory(runIdB);
+  const provPending = provisionStorageProbeFixture({
+    runId: runIdB,
+    seedUserId,
+    userAccessToken: token,
+    serviceRoleKey: validTestServiceRoleKey,
+    inventory: invCleanupPendingTest,
+    probeContent: 'late-upload-payload',
+    fetchFn: transportB
+  });
+  await provPending.catch(() => {});
+});
+
+test('105. Task 06I-B1-H3-R3 (R3-05): Successful text/plain, binary, and HTTP 206 Storage collision handling vs malformed error envelopes', async () => {
+  const path = 'r3-05-run/probe.txt';
+
+  // 1. Unit checks on normalizeStorageObjectResponse
+  assert.equal(
+    normalizeStorageObjectResponse({ status: 200, parseStatus: 'invalid_json', expectedBucket: STORAGE_PROBE_BUCKET, expectedPath: path }).classification,
+    STORAGE_RESPONSE_CLASS.OBJECT_PRESENT
+  );
+  assert.equal(
+    normalizeStorageObjectResponse({ status: 201, parseStatus: 'non_object', expectedBucket: STORAGE_PROBE_BUCKET, expectedPath: path }).classification,
+    STORAGE_RESPONSE_CLASS.OBJECT_PRESENT
+  );
+  assert.equal(
+    normalizeStorageObjectResponse({ status: 206, parseStatus: 'invalid_json', expectedBucket: STORAGE_PROBE_BUCKET, expectedPath: path }).classification,
+    STORAGE_RESPONSE_CLASS.OBJECT_PRESENT
+  );
+  assert.equal(
+    normalizeStorageObjectResponse({ status: 200, parseStatus: 'unreadable_body', expectedBucket: STORAGE_PROBE_BUCKET, expectedPath: path }).classification,
+    STORAGE_RESPONSE_CLASS.MALFORMED_RESPONSE
+  );
+  assert.equal(
+    normalizeStorageObjectResponse({ status: 400, parseStatus: 'invalid_json', expectedBucket: STORAGE_PROBE_BUCKET, expectedPath: path }).classification,
+    STORAGE_RESPONSE_CLASS.MALFORMED_RESPONSE
+  );
+  assert.equal(
+    normalizeStorageObjectResponse({ status: 404, parseStatus: 'non_object', expectedBucket: STORAGE_PROBE_BUCKET, expectedPath: path }).classification,
+    STORAGE_RESPONSE_CLASS.MALFORMED_RESPONSE
+  );
+
+  // 2. End-to-end non-admin pre-upload GET returning text/plain HTTP 200 MUST trigger STORAGE_COLLISION_DETECTED (not MALFORMED_RESPONSE)
+  const runId = 'test-run-h3-r3-05-collision';
+  const seedUserId = '11111111-1111-4111-a111-111111111105';
+  const token = createMockJwt({ sub: seedUserId });
+  const inv = new TestRunInventory(runId);
+
+  const collisionTransport = createDeterministicFixtureTransport({
+    routes: [
+      { urlIncludes: '/auth/v1/user', status: 200, ok: true, text: JSON.stringify({ id: seedUserId }) },
+      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', status: 200, ok: true, headers: { 'Content-Type': 'text/plain' }, text: 'existing plain-text object' },
+      { method: 'POST', urlIncludes: '/storage/v1/object/', status: 200, ok: true }
+    ],
+    defaultResponse: { status: 500 }
+  });
+
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      runId,
+      seedUserId,
+      userAccessToken: token,
+      anonKey: validTestAnonKey,
+      ownershipLookupFn: async () => ({ found: true, data: {} }),
+      inventory: inv,
+      fetchFn: collisionTransport
+    }),
+    /STORAGE_COLLISION_DETECTED/
+  );
+  assert.equal(collisionTransport.calls.some(c => c.method === 'POST'), false, 'Upload POST must never run after text/plain 200 collision');
+  assert.equal(inv.getStorageFixture(STORAGE_PROBE_BUCKET, getStorageProbeObjectPath(runId))?.lifecycleState, STORAGE_LIFECYCLE_STATE.CONFLICT_EXISTING_PRESERVED);
+});
+
+test('106. Task 06I-B1-H3-R3 (R3-06): Normalized idempotent Storage DELETE NoSuchKey and independent post-delete absence verification', async () => {
+  const runId = 'test-run-h3-r3-06-delete';
+  const seedUserId = '11111111-1111-4111-a111-111111111106';
+  const path = getStorageProbeObjectPath(runId);
+
+  // 1. DELETE returns structured HTTP 400 NoSuchKey (logical 404) AND GET confirms 400 NoSuchKey -> DELETION_VERIFIED
+  const invIdemp = new TestRunInventory(runId);
+  invIdemp.registerStorageFixture({
+    bucket: STORAGE_PROBE_BUCKET,
+    path,
+    ownerId: seedUserId,
+    lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED,
+    deletionEligible: true,
+    hasCommittedUpload: true
+  });
+  const transportVerified = createDeterministicFixtureTransport({
+    routes: [
+      {
+        method: 'DELETE',
+        urlIncludes: '/storage/v1/object/',
+        status: 400,
+        ok: false,
+        text: JSON.stringify({ statusCode: '404', error: 'Not found', code: 'NoSuchKey', message: 'Object not found' })
+      },
+      {
+        method: 'GET',
+        urlIncludes: '/storage/v1/object/authenticated/',
+        status: 400,
+        ok: false,
+        text: JSON.stringify({ statusCode: '404', error: 'Not found', code: 'NoSuchKey', message: 'Object not found' })
+      }
+    ]
+  });
+  const adminVerified = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: transportVerified });
+  const repVerified = await invIdemp.executeCleanup({ adminClient: adminVerified, failClosed: true });
+  assert.equal(repVerified.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(repVerified.storageObjectsDeleted, 1);
+  assert.equal(invIdemp.getStorageFixture(STORAGE_PROBE_BUCKET, path)?.lifecycleState, STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED);
+  assert.equal(transportVerified.calls.some(c => c.method === 'DELETE'), true);
+  assert.equal(transportVerified.calls.some(c => c.method === 'GET'), true, 'Must still verify absence via GET after DELETE NoSuchKey');
+
+  // 2. DELETE returns 404 NoSuchKey, BUT follow-up GET finds object STILL PRESENT (200 text/plain) -> RESIDUAL_BLOCKED, blocks deleteUser!
+  const invRacePresent = new TestRunInventory(runId);
+  invRacePresent.registerCreatedUser({
+    id: '22222222-2222-4222-b222-222222222106',
+    email: 'created-106@proof.invalid',
+    creationProof: createCreationProof('before_after_check')
+  });
+  invRacePresent.registerStorageFixture({
+    bucket: STORAGE_PROBE_BUCKET,
+    path,
+    ownerId: seedUserId,
+    lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED,
+    deletionEligible: true,
+    hasCommittedUpload: true
+  });
+  const transportStillThere = createDeterministicFixtureTransport({
+    routes: [
+      { method: 'DELETE', urlIncludes: '/storage/v1/object/', status: 404, ok: false, text: JSON.stringify({ code: 'NoSuchKey', message: 'Object not found' }) },
+      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', status: 200, ok: true, text: 'reappeared payload' }
+    ]
+  });
+  const adminStillThere = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: transportStillThere });
+  const repStillThere = await invRacePresent.executeCleanup({ adminClient: adminStillThere, failClosed: false });
+  assert.equal(repStillThere.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(invRacePresent.getStorageFixture(STORAGE_PROBE_BUCKET, path)?.lifecycleState, STORAGE_LIFECYCLE_STATE.RESIDUAL_BLOCKED);
+  assert.equal(transportStillThere.calls.some(c => c.method === 'DELETE' && c.url.includes('/auth/v1/admin/users/')), false, 'User deletion blocked on OBJECT_PRESENT');
+
+  // 3. DELETE NoSuchKey followed by GET 403/500/malformed/timeout stays CLEANUP_INDETERMINATE (never blindly verified)
+  for (const getErr of [
+    { status: 403, ok: false, text: JSON.stringify({ code: 'AccessDenied' }) },
+    { status: 500, ok: false, text: 'internal error' },
+    { throwError: 'ETIMEDOUT: socket timed out' }
+  ]) {
+    const invIndet = new TestRunInventory(runId);
+    invIndet.registerStorageFixture({
+      bucket: STORAGE_PROBE_BUCKET,
+      path,
+      ownerId: seedUserId,
+      lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED,
+      deletionEligible: true,
+      hasCommittedUpload: true
+    });
+    const transportIndet = createDeterministicFixtureTransport({
+      routes: [
+        { method: 'DELETE', urlIncludes: '/storage/v1/object/', status: 400, ok: false, text: JSON.stringify({ statusCode: '404', code: 'NoSuchKey' }) },
+        { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', ...getErr }
+      ]
+    });
+    const adminIndet = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: transportIndet });
+    const repIndet = await invIndet.executeCleanup({ adminClient: adminIndet, failClosed: false });
+    assert.equal(repIndet.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(invIndet.getStorageFixture(STORAGE_PROBE_BUCKET, path)?.lifecycleState, STORAGE_LIFECYCLE_STATE.CLEANUP_INDETERMINATE);
+  }
+
+  // 4. DELETE returning HTTP 403 AccessDenied stays CLEANUP_INDETERMINATE immediately without false verification
+  const invDel403 = new TestRunInventory(runId);
+  invDel403.registerStorageFixture({
+    bucket: STORAGE_PROBE_BUCKET,
+    path,
+    ownerId: seedUserId,
+    lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED,
+    deletionEligible: true,
+    hasCommittedUpload: true
+  });
+  const transportDel403 = createDeterministicFixtureTransport({
+    routes: [
+      { method: 'DELETE', urlIncludes: '/storage/v1/object/', status: 403, ok: false, text: JSON.stringify({ code: 'AccessDenied', message: 'Forbidden' }) }
+    ]
+  });
+  const adminDel403 = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: transportDel403 });
+  const repDel403 = await invDel403.executeCleanup({ adminClient: adminDel403, failClosed: false });
+  assert.equal(repDel403.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(invDel403.getStorageFixture(STORAGE_PROBE_BUCKET, path)?.lifecycleState, STORAGE_LIFECYCLE_STATE.CLEANUP_INDETERMINATE);
+});
+
+test('107. Task 06I-B1-H3-R3 (Sec 8): Consolidated Adversarial Concurrency & Lifecycle Acceptance Matrix', async () => {
+  const runId = 'test-run-h3-r3-matrix-107';
+  const seedUserId = '11111111-1111-4111-a111-111111111107';
+  const objectUuid = '10701111-2222-4333-a444-555555555107';
+  const token = createMockJwt({ sub: seedUserId, session_id: 'sess-matrix-107' });
+  const path = getStorageProbeObjectPath(runId);
+  const fullKey = getStorageProbeObjectKey(runId);
+  const bodyPayload = 'matrix-r3-verified-payload\n';
+
+  // Full matrix combining R3-01 overlapping isolation + R3-02 declarative transport +
+  // R3-03 single-owner atomic reservation + R3-04 quiesce/finalized fences + R3-05 text/plain handling + R3-06 DELETE NoSuchKey absence proof
+  const inv = new TestRunInventory(runId, { seedUserId, seedEmail: 'seed-107@proof.invalid' });
+  const rpcBarrier = createOfflineBarrier('matrix-rpc-pause');
+
+  const matrixTransport = createDeterministicFixtureTransport({
+    initialState: { uploaded: false, deleted: false },
+    routes: [
+      { urlIncludes: '/auth/v1/user', status: 200, ok: true, text: JSON.stringify({ id: seedUserId }) },
+      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: false }, status: 400, ok: false, text: JSON.stringify({ statusCode: '404', code: 'NoSuchKey' }) },
+      { method: 'POST', urlIncludes: '/storage/v1/object/', setsState: { uploaded: true }, status: 200, ok: true, text: JSON.stringify({ Id: objectUuid, Key: fullKey }) },
+      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: true, deleted: false }, status: 200, ok: true, text: bodyPayload },
+      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { deleted: true }, status: 400, ok: false, text: JSON.stringify({ statusCode: '404', code: 'NoSuchKey', resource: fullKey }) },
+      { urlIncludes: '/rest/v1/rpc/task06i_lookup_storage_object_owner', waitForBarrier: rpcBarrier, status: 200, ok: true, text: JSON.stringify([{ id: objectUuid, bucket_id: STORAGE_PROBE_BUCKET, name: path, owner_id: seedUserId }]) },
+      { method: 'DELETE', urlIncludes: '/storage/v1/object/', setsState: { deleted: true }, status: 400, ok: false, text: JSON.stringify({ statusCode: '404', code: 'NoSuchKey' }) }
+    ]
+  });
+
+  const adminClient = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, anonKey: validTestAnonKey, fetchFn: matrixTransport });
+
+  // Overlap an independent blocked fetch lease concurrently with provisioning
+  const baseDepth107 = getFetchIsolationDebugState().activeDepth;
+  const outerLease = runWithBlockedRealFetch(async () => {
+    assert.equal(getFetchIsolationDebugState().activeDepth, baseDepth107 + 1);
+    const provP = provisionStorageProbeFixture({
+      runId,
+      seedUserId,
+      userAccessToken: token,
+      anonKey: validTestAnonKey,
+      serviceRoleKey: validTestServiceRoleKey,
+      adminClient,
+      inventory: inv,
+      probeContent: bodyPayload,
+      fetchFn: matrixTransport
+    });
+
+    await rpcBarrier.waitForArrivals(1);
+    assert.equal(getFetchIsolationDebugState().isTrapped, true);
+
+    // Concurrent duplicate provisioner fails before network
+    await assert.rejects(
+      () => provisionStorageProbeFixture({
+        runId,
+        seedUserId,
+        userAccessToken: token,
+        anonKey: validTestAnonKey,
+        serviceRoleKey: validTestServiceRoleKey,
+        inventory: inv,
+        fetchFn: staticTransport({ status: 200 })
+      }),
+      /STORAGE_FIXTURE_RESERVATION_CONFLICT/
+    );
+
+    rpcBarrier.release();
+    return provP;
+  });
+
+  const provRes = await outerLease;
+  assert.equal(provRes.lifecycleState, STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED);
+  assert.equal(getFetchIsolationDebugState().activeDepth, baseDepth107);
+
+  const report = await inv.executeCleanup({ adminClient, failClosed: true });
+  assert.equal(report.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(report.storageObjectsDeleted, 1);
+  assert.equal(report.usersDeleted, 0);
+  assert.equal(inv.runLifecycleState, INVENTORY_RUN_STATE.FINALIZED);
+  assert.equal(inv.isClean(), true);
+
+  // Post-finalization admission remains permanently closed
+  assert.throws(() => inv.reserveStorageFixture({ path: 'post/probe.txt', ownerId: seedUserId }), /INVENTORY_FINALIZED/);
 });
