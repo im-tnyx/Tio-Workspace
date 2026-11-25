@@ -66,12 +66,66 @@ import {
   validateUuid
 } from './hosted-probe-runner.mjs';
 
-const defaultMockAdminClient = {
-  deleteUser: async (id) => ({ data: { user: { id } }, error: null }),
-  getUserById: async (id) => ({ data: null, error: { status: 404, message: 'User not found' } }),
-  invalidateSession: async (id) => ({ data: { id }, error: null }),
-  signOut: async (id) => ({ data: { id }, error: null })
-};
+// Test setup accepts declarative provider fixtures only. Every executable adapter is
+// built by the real registered factory with the inventory's exact run binding.
+const FIXTURE_SPECS = new WeakSet();
+const FIXTURE_TRANSPORTS = new WeakMap();
+const ADMIN_CONFIGS = new WeakMap();
+function fixtureSpec(spec = {}) { FIXTURE_SPECS.add(spec); return spec; }
+function trackedHostedAdminClient(config) {
+  const client = createHostedAdminClient(config);
+  ADMIN_CONFIGS.set(client, config);
+  return client;
+}
+function fixtureAdmin(inventory, spec = fixtureSpec()) {
+  assert.ok(FIXTURE_SPECS.has(spec), 'Admin fixtures must be declarative specs');
+  const restoration = inventory.seedCredentialRestorations?.[0];
+  const uid = restoration?.userId || inventory.referencedUsers?.keys().next().value || '11111111-1111-4111-a111-111111111111';
+  const email = restoration?.email || inventory.getUserEmail?.(uid) || 'fixture-admin@proof.invalid';
+  const sessionId = 'fixture-verification-session';
+  const login = spec.login || { status: 200, json: { access_token: createMockJwt({ sub: uid, session_id: sessionId }), session_id: sessionId, user: { id: uid, email } } };
+  const transport = createDeterministicFixtureTransport({
+    routes: [
+      ...(spec.routes || []),
+      { method: 'DELETE', urlIncludes: '/auth/v1/admin/users/', ...(spec.userDelete || { status: 200, json: {} }) },
+      { method: 'GET', urlIncludes: '/auth/v1/admin/users/', ...(spec.userGet || { status: 404, json: { message: 'User not found', status: 404 } }) },
+      { method: 'PUT', urlIncludes: '/auth/v1/admin/users/', ...(spec.userUpdate || { status: 200, json: { id: uid } }) },
+      { method: 'POST', urlIncludes: '/auth/v1/token?grant_type=password', ...login },
+      { method: 'POST', urlIncludes: '/auth/v1/logout', ...(spec.logout || { status: 200, json: {} }) },
+      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', ...(spec.storageGet || { status: 404, json: { code: 'NoSuchKey', statusCode: '404' } }) },
+      { method: 'DELETE', urlIncludes: '/storage/v1/object/', ...(spec.storageDelete || { status: 200, json: {} }) },
+      { method: 'DELETE', urlIncludes: '/rest/v1/', status: 200, json: {} }
+    ]
+  });
+  FIXTURE_TRANSPORTS.set(spec, transport);
+  const client = trackedHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, anonKey: validTestAnonKey, runId: inventory.runId, fetchFn: transport });
+  FIXTURE_TRANSPORTS.set(client, transport);
+  return client;
+}
+function bindFixtureAdmin(inventory, fixture) {
+  if (FIXTURE_SPECS.has(fixture)) return fixtureAdmin(inventory, fixture);
+  const config = ADMIN_CONFIGS.get(fixture);
+  if (config) {
+    if (config.runId === inventory.runId) return fixture;
+    return trackedHostedAdminClient({ ...config, runId: inventory.runId });
+  }
+  return fixture;
+}
+function fixtureRunnerOptions(options) {
+  if (!FIXTURE_SPECS.has(options.adminClient) && !ADMIN_CONFIGS.has(options.adminClient)) return options;
+  const inventory = options.inventory || new TestRunInventory(options.runId);
+  return { ...options, inventory, adminClient: bindFixtureAdmin(inventory, options.adminClient) };
+}
+function fixtureOperationCalls(spec, operation) {
+  const routes = { userDelete: ['DELETE', '/auth/v1/admin/users/'], userGet: ['GET', '/auth/v1/admin/users/'], userUpdate: ['PUT', '/auth/v1/admin/users/'], logout: ['POST', '/auth/v1/logout'], login: ['POST', '/auth/v1/token?grant_type=password'], storageDelete: ['DELETE', '/storage/v1/object/'], storageGet: ['GET', '/storage/v1/object/authenticated/'], rowDelete: ['DELETE', '/rest/v1/'] };
+  const [method, path] = routes[operation];
+  return fixtureCalls(spec, method, path);
+}
+function fixtureCalls(spec, method = null, urlPart = '') {
+  return (FIXTURE_TRANSPORTS.get(spec)?.calls || []).filter(c => (!method || c.method === method) && c.url.includes(urlPart));
+}
+
+const defaultAdminFixture = fixtureSpec();
 const validTestAnonKey = createMockProjectKey(HARDCODED_TEMP_REF, 'anon');
 const validTestServiceRoleKey = createMockProjectKey(HARDCODED_TEMP_REF, 'service_role');
 
@@ -108,6 +162,7 @@ function errorTransport(errSpec) {
 }
 
 const VALID_TEMP_REF = HARDCODED_TEMP_REF;
+
 
 // ---------------------------------------------------------------------------
 // R2-01: Immutable Forbidden Project Boundary Tests
@@ -198,26 +253,26 @@ test('2c. LIVE mode runner rejects forbidden targets before any dispatcher call 
   };
 
   await assert.rejects(
-    () => runHostedProbeRunner({
+    () => runHostedProbeRunner(fixtureRunnerOptions({
       projectRef: HARDCODED_REAL_REF,
       tempRef: VALID_TEMP_REF,
       argv: ['--live'],
       env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
       mockDispatcher
-    }),
+    })),
     /CRITICAL_SECURITY_VIOLATION.*protected REAL backend/
   );
 
   await assert.rejects(
-    () => runHostedProbeRunner({
+    () => runHostedProbeRunner(fixtureRunnerOptions({
       projectRef: HARDCODED_TIO_WORLD_REF,
       tempRef: VALID_TEMP_REF,
       argv: ['--live'],
       env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
       mockDispatcher
-    }),
+    })),
     /CRITICAL_SECURITY_VIOLATION.*Tio-world/
   );
 
@@ -367,12 +422,12 @@ test('9b. Serialized JSON string secrets are recursively redacted (PRRT_kwDOVtCm
 // ---------------------------------------------------------------------------
 
 test('10. Dry-run mode produces full probe plan with zero network requests', async () => {
-  const result = await runHostedProbeRunner({
+  const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: VALID_TEMP_REF,
     tempRef: VALID_TEMP_REF,
     argv: [], // dry run
     env: {}
-  });
+  }));
 
   assert.equal(result.status, 'DRY_RUN_COMPLETED');
   assert.equal(result.mode, 'DRY_RUN');
@@ -382,13 +437,13 @@ test('10. Dry-run mode produces full probe plan with zero network requests', asy
 
 test('11. LIVE mode fails closed when no authorized network dispatcher is provided (PRRT_kwDOVtCmZc66ij5y)', async () => {
   await assert.rejects(
-    () => runHostedProbeRunner({
+    () => runHostedProbeRunner(fixtureRunnerOptions({
       projectRef: VALID_TEMP_REF,
       tempRef: VALID_TEMP_REF,
       argv: ['--live'],
       env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }
       // mockDispatcher is intentionally omitted
-    }),
+    })),
     /NO_HOSTED_DISPATCHER.*synthetic placeholder execution prohibited/
   );
 });
@@ -476,15 +531,15 @@ test('12. Throttling interval is enforced between consecutive requests and legit
     return { passed: false, status: 500, reason: 'unrecognized probe case' };
   };
 
-  const result = await runHostedProbeRunner({
+  const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: VALID_TEMP_REF,
     tempRef: VALID_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
     mockDispatcher,
     sleepFn: mockSleep
-  });
+  }));
 
   assert.equal(result.status, 'COMPLETED');
   assert.equal(probeCount, 18);
@@ -518,15 +573,15 @@ test('13. Runner halts immediately on Token Hook failure (HOOK-01) (PRRT_kwDOVtC
     return { passed: true, status: 200, has_token: true, amr_authenticated: true, tokens: { access_token: 'fake.jwt' } };
   };
 
-  const result = await runHostedProbeRunner({
+  const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: VALID_TEMP_REF,
     tempRef: VALID_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
     mockDispatcher,
     sleepFn: async () => {}
-  });
+  }));
 
   assert.equal(result.status, 'HALTED_ON_FAILURE');
   assert.equal(result.aborted, true);
@@ -573,15 +628,15 @@ test('14. Runner halts immediately on Session & Consumer failure (SESSION-03) (P
     return { passed: true, status: 200, session_created: true, session_id: 'sess-default' };
   };
 
-  const result = await runHostedProbeRunner({
+  const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: VALID_TEMP_REF,
     tempRef: VALID_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
     mockDispatcher,
     sleepFn: async () => {}
-  });
+  }));
 
   assert.equal(result.status, 'HALTED_ON_FAILURE');
   assert.equal(result.aborted, true);
@@ -600,15 +655,15 @@ test('15. Outcome without passed boolean fails closed (PRRT_kwDOVtCmZc66i_Kd)', 
   assert.match(validated.reason, /MISSING_OR_NON_BOOLEAN_PASSED/);
 
   // In runner execution, halts immediately and does not complete
-  const result = await runHostedProbeRunner({
+  const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: VALID_TEMP_REF,
     tempRef: VALID_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
     mockDispatcher: async () => ({ status: 500 }),
     sleepFn: async () => {}
-  });
+  }));
 
   assert.equal(result.status, 'HALTED_ON_FAILURE');
   assert.equal(result.aborted, true);
@@ -624,15 +679,15 @@ test('16. False passed:true on BYPASS-01 with status 200 is overridden to FAIL (
   assert.match(validated.reason, /HTTP_STATUS_MISMATCH: BYPASS-01 received HTTP 200/);
 
   // In runner execution, halts immediately
-  const result = await runHostedProbeRunner({
+  const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: VALID_TEMP_REF,
     tempRef: VALID_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
     mockDispatcher: async () => ({ status: 200, passed: true }),
     sleepFn: async () => {}
-  });
+  }));
 
   assert.equal(result.status, 'HALTED_ON_FAILURE');
   assert.equal(result.aborted, true);
@@ -651,15 +706,15 @@ test('18. Dispatcher exceptions and timeouts fail closed immediately (PRRT_kwDOV
     throw new Error('Connection refused / timeout communicating with target');
   };
 
-  const result = await runHostedProbeRunner({
+  const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: VALID_TEMP_REF,
     tempRef: VALID_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
     mockDispatcher,
     sleepFn: async () => {}
-  });
+  }));
 
   assert.equal(result.status, 'HALTED_ON_FAILURE');
   assert.equal(result.aborted, true);
@@ -684,15 +739,15 @@ test('19. Partial execution never returns COMPLETED (PRRT_kwDOVtCmZc66i_Kd)', as
     return { passed: true, status: 500, hook_rejected: true, error: 'hook_error: 42501' };
   };
 
-  const result = await runHostedProbeRunner({
+  const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: VALID_TEMP_REF,
     tempRef: VALID_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
     mockDispatcher,
     sleepFn: async () => {}
-  });
+  }));
 
   assert.notEqual(result.status, 'COMPLETED');
   assert.equal(result.status, 'HALTED_ON_FAILURE');
@@ -729,15 +784,15 @@ test('21. Serialized secrets are absent from final runner evidence (PRRT_kwDOVtC
     };
   };
 
-  const result = await runHostedProbeRunner({
+  const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: VALID_TEMP_REF,
     tempRef: VALID_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
     mockDispatcher,
     sleepFn: async () => {}
-  });
+  }));
 
   const serializedResults = JSON.stringify(result);
   assert.ok(!serializedResults.includes(secretPassword), 'Secret password must not exist in final runner results');
@@ -788,15 +843,15 @@ test('23. Top-level abortReason is sanitized against leaked secrets (PRRT_kwDOVt
     throw new Error(`Dispatch failure with token: Bearer ${secretKey}`);
   };
 
-  const result = await runHostedProbeRunner({
+  const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: VALID_TEMP_REF,
     tempRef: VALID_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
     mockDispatcher,
     sleepFn: async () => {}
-  });
+  }));
 
   assert.equal(result.status, 'HALTED_ON_FAILURE');
   assert.ok(!result.abortReason.includes(secretKey), 'Secret key must be redacted in abortReason');
@@ -814,15 +869,15 @@ test('24. Per-probe timeout halts runner on never-settling Promise and aborts su
     return new Promise(() => {});
   };
 
-  const result = await runHostedProbeRunner({
+  const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: HARDCODED_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
     mockDispatcher: neverSettlingDispatcher,
     probeTimeoutMs: 50, // fast bounded timeout for deterministic unit test
     sleepFn: async () => {}
-  });
+  }));
 
   assert.equal(result.status, 'HALTED_ON_FAILURE');
   assert.equal(result.aborted, true);
@@ -842,26 +897,26 @@ test('25. LIVE mode rejects caller-controlled tempRef spoofing and unapproved ta
 
   // Case A: Caller passes forged target and matching forged tempRef in LIVE mode
   await assert.rejects(
-    () => runHostedProbeRunner({
+    () => runHostedProbeRunner(fixtureRunnerOptions({
       projectRef: 'forged-attacker-project',
       tempRef: 'forged-attacker-project',
       argv: ['--live'],
       env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
       mockDispatcher
-    }),
+    })),
     /CRITICAL_SECURITY_VIOLATION.*tempRef spoofing rejected/
   );
 
   // Case B: Caller passes forged target with default tempRef in LIVE mode
   await assert.rejects(
-    () => runHostedProbeRunner({
+    () => runHostedProbeRunner(fixtureRunnerOptions({
       projectRef: 'forged-attacker-project',
       argv: ['--live'],
       env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
       mockDispatcher
-    }),
+    })),
     /unauthorized_target.*strictly requires approved owner TEMP project/
   );
 
@@ -870,7 +925,7 @@ test('25. LIVE mode rejects caller-controlled tempRef spoofing and unapproved ta
   try {
     process.env.TIO_SUPABASE_TEMP_REF = 'forged-attacker-project';
     await assert.rejects(
-      () => runHostedProbeRunner({
+      () => runHostedProbeRunner(fixtureRunnerOptions({
         projectRef: 'forged-attacker-project',
         argv: ['--live'],
         env: {
@@ -878,7 +933,7 @@ test('25. LIVE mode rejects caller-controlled tempRef spoofing and unapproved ta
           TIO_SUPABASE_TEMP_REF: 'forged-attacker-project'
         },
         mockDispatcher
-      }),
+      })),
       /unauthorized_target.*strictly requires approved owner TEMP project/
     );
   } finally {
@@ -978,15 +1033,15 @@ test('27. Complete returned report is recursively sanitized with zero credential
     throw err;
   };
 
-  const result = await runHostedProbeRunner({
+  const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: HARDCODED_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
+    adminClient: defaultAdminFixture,
     mockDispatcher,
     sleepFn: async () => {}
-  });
+  }));
 
   const serializedReport = JSON.stringify(result);
   assert.ok(!serializedReport.includes(secretPassword), 'Secret password must not exist anywhere in returned report');
@@ -1483,15 +1538,15 @@ test('29. Quoted credentials with whitespace, ampersands, and escaped quotes are
     throw new Error(`request failed password="${secretWithLeadingSpace}" access_token='${singleQuotedToken}'`);
   };
 
-  const result = await runHostedProbeRunner({
+  const result = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: HARDCODED_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
+    adminClient: defaultAdminFixture,
     mockDispatcher,
     sleepFn: async () => {}
-  });
+  }));
 
   const serializedReport = JSON.stringify(result);
   assert.ok(!serializedReport.includes(secretWithLeadingSpace), 'Secret with leading whitespace must not exist in serialized report');
@@ -1505,14 +1560,14 @@ test('29. Quoted credentials with whitespace, ampersands, and escaped quotes are
     throw new Error(`request failed password="unclosed\\"secret`);
   };
 
-  const resultUnclosed = await runHostedProbeRunner({
+  const resultUnclosed = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: HARDCODED_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
     mockDispatcher: mockDispatcherUnclosed,
     sleepFn: async () => {}
-  });
+  }));
 
   const serializedUnclosed = JSON.stringify(resultUnclosed);
   assert.ok(!serializedUnclosed.includes('unclosed\\"secret'), 'Unclosed secret password must not exist in serialized report');
@@ -1528,14 +1583,14 @@ test('29. Quoted credentials with whitespace, ampersands, and escaped quotes are
     throw new Error(`request failed SUPABASE_SERVICE_ROLE_KEY=${syntheticServiceKey} client_secret="${syntheticClientSec}" refreshToken=${syntheticRefreshTok}`);
   };
 
-  const resultCompound = await runHostedProbeRunner({
+  const resultCompound = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: HARDCODED_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
     mockDispatcher: mockDispatcherCompound,
     sleepFn: async () => {}
-  });
+  }));
 
   const serializedCompound = JSON.stringify(resultCompound);
   assert.ok(!serializedCompound.includes(syntheticServiceKey), 'SUPABASE_SERVICE_ROLE_KEY secret must not exist in serialized report');
@@ -1559,12 +1614,12 @@ test('30. Timeout race evaluation confirms zero unhandled rejections and proper 
       projectRef: HARDCODED_TEMP_REF,
       argv: ['--live'],
       env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-      adminClient: defaultMockAdminClient
+      adminClient: defaultAdminFixture
     };
 
     // Case 1: Dispatcher resolves before timeout
     let abortFired1 = false;
-    const res1 = await runHostedProbeRunner({
+    const res1 = await runHostedProbeRunner(fixtureRunnerOptions({
       ...liveOptions,
       probeTimeoutMs: 200,
       mockDispatcher: async (item, { signal }) => {
@@ -1577,19 +1632,19 @@ test('30. Timeout race evaluation confirms zero unhandled rejections and proper 
           evidence: { disabled: true }
         };
       }
-    });
+    }));
     assert.strictEqual(abortFired1, false, 'AbortSignal should not fire when dispatcher resolves first');
     assert.strictEqual(res1.status, 'HALTED_ON_FAILURE'); // Stops after BYPASS-01 because only BYPASS-01 matched
     assert.strictEqual(unhandled.length, 0);
 
     // Case 2: Dispatcher rejects before timeout
-    const res2 = await runHostedProbeRunner({
+    const res2 = await runHostedProbeRunner(fixtureRunnerOptions({
       ...liveOptions,
       probeTimeoutMs: 200,
       mockDispatcher: async () => {
         throw new Error('NETWORK_FAILURE_IMMEDIATE');
       }
-    });
+    }));
     assert.strictEqual(res2.status, 'HALTED_ON_FAILURE');
     assert.strictEqual(res2.results.length, 1);
     assert.ok(res2.abortReason.includes('NETWORK_FAILURE_IMMEDIATE'));
@@ -1597,14 +1652,14 @@ test('30. Timeout race evaluation confirms zero unhandled rejections and proper 
 
     // Case 3: Timeout fires first on non-settling promise
     let abortFired3 = false;
-    const res3 = await runHostedProbeRunner({
+    const res3 = await runHostedProbeRunner(fixtureRunnerOptions({
       ...liveOptions,
       probeTimeoutMs: 50,
       mockDispatcher: (item, { signal }) => {
         signal.addEventListener('abort', () => { abortFired3 = true; });
         return new Promise(() => {}); // never settles
       }
-    });
+    }));
     assert.strictEqual(abortFired3, true, 'AbortSignal must be triggered on timeout');
     assert.strictEqual(res3.status, 'HALTED_ON_FAILURE');
     assert.match(res3.results[0].outcome.reason, /PROBE_TIMEOUT/);
@@ -1615,7 +1670,7 @@ test('30. Timeout race evaluation confirms zero unhandled rejections and proper 
     let abortTriggered4 = false;
     let lateRejectionOccurred4 = false;
 
-    const res4 = await runHostedProbeRunner({
+    const res4 = await runHostedProbeRunner(fixtureRunnerOptions({
       ...liveOptions,
       probeTimeoutMs: 50,
       mockDispatcher: (item, { signal }) => {
@@ -1632,7 +1687,7 @@ test('30. Timeout race evaluation confirms zero unhandled rejections and proper 
           });
         });
       }
-    });
+    }));
 
     assert.strictEqual(abortTriggered4, true, 'Abort was triggered');
     assert.strictEqual(res4.status, 'HALTED_ON_FAILURE');
@@ -1977,14 +2032,14 @@ test('32. Strict positive access token issuance proof for HOOK-01 and HOOK-02 (P
     return { passed: true, status: 200 };
   };
 
-  const resultFpHook01 = await runHostedProbeRunner({
+  const resultFpHook01 = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: HARDCODED_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
     mockDispatcher: mockDispatcherFalsePositive,
     sleepFn: async () => {}
-  });
+  }));
 
   assert.notEqual(resultFpHook01.status, 'COMPLETED', 'Runner must NEVER return COMPLETED on false-positive HOOK-01');
   assert.equal(resultFpHook01.status, 'HALTED_ON_FAILURE', 'Runner must halt immediately on failure');
@@ -2038,9 +2093,9 @@ test('33. Task 06I-B1-H1: Hosted security preflight, Brevo audit baseline, and p
   }
 
   // 4. Default DRY_RUN execution safety contract
-  const dryRunResult = await runHostedProbeRunner({
+  const dryRunResult = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: HARDCODED_TEMP_REF
-  });
+  }));
 
   assert.equal(dryRunResult.status, 'DRY_RUN_COMPLETED');
   assert.equal(dryRunResult.mode, 'DRY_RUN');
@@ -2137,20 +2192,20 @@ test('34. Task 06I-B1-H1-R1 (R1-01): LIVE dispatcher contract, boundary checks, 
   // 4. Runner in LIVE mode without mockDispatcher fails closed
   await assert.rejects(
     async () => {
-      await runHostedProbeRunner({
+      await runHostedProbeRunner(fixtureRunnerOptions({
         projectRef: HARDCODED_TEMP_REF,
         argv: ['--live'],
         env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
         mockDispatcher: null
-      });
+      }));
     },
     /NO_HOSTED_DISPATCHER: live hosted execution requires a configured network dispatcher/
   );
 });
 
 test('35. Task 06I-B1-H1-R1 (R1-03): Run-scoped identity inventory, deterministic cleanup, and residual detection', async () => {
-  const inventory = new TestRunInventory('test-run-123');
+  const { inventory } = await r5ProvisionedFixture('test-run-123');
 
   // 1. Identity registration and tracking
   const user1 = inventory.registerUser({ id: '11111111-2222-3333-4444-555555555555', email: 'user1@proof.invalid', creationProof: createCreationProof('before_after_check') });
@@ -2167,61 +2222,31 @@ test('35. Task 06I-B1-H1-R1 (R1-03): Run-scoped identity inventory, deterministi
 
   // 2. Track table rows and storage objects
   inventory.registerTableRow('task06i_session_probe', 'row-uuid-1');
-  inventory.registerStorageObject('task06i_probe_bucket', 'test.txt');
 
   // 3. Successful deterministic cleanup
-  const deletedUsers = [];
-  const deletedRows = [];
-  const deletedStorage = [];
 
-  const mockAdminClient = {
-    async deleteUser(userId) {
-      deletedUsers.push(userId);
-      return { success: true };
-    },
-    async deleteTableRow(table, id) {
-      deletedRows.push({ table, id });
-      return { success: true };
-    },
-    async deleteStorageObject(bucket, path) {
-      deletedStorage.push({ bucket, path });
-      return { success: true };
-    },
-    async getUserById(userId) {
-      // Affirmative post-cleanup check: user does not exist
-      return { notFound: true };
-    }
-  };
+  const mockAdminClient = fixtureSpec();
 
-  const report = await inventory.executeCleanup({ adminClient: mockAdminClient });
+  const report = await inventory.executeCleanup({ adminClient: bindFixtureAdmin(inventory, mockAdminClient) });
   assert.equal(report.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(report.usersDeleted, 2);
   assert.equal(report.tableRowsDeleted, 1);
   assert.equal(report.storageObjectsDeleted, 1);
   assert.equal(report.residualUsers.length, 0);
 
-  assert.deepEqual(deletedUsers, ['11111111-2222-3333-4444-555555555555', '66666666-7777-8888-9999-000000000000']);
-  assert.deepEqual(deletedRows, [{ table: 'task06i_session_probe', id: 'row-uuid-1' }]);
-  assert.deepEqual(deletedStorage, [{ bucket: 'task06i_probe_bucket', path: 'test.txt' }]);
+  assert.deepEqual((fixtureOperationCalls(mockAdminClient, 'userDelete').map(c => c.pathname.split('/').map(decodeURIComponent).at(-1))), ['11111111-2222-3333-4444-555555555555', '66666666-7777-8888-9999-000000000000']);
+  assert.deepEqual((fixtureOperationCalls(mockAdminClient, 'rowDelete').map(c => ({ table: decodeURIComponent(c.pathname.split('/').at(-1)), id: new URL(c.url).searchParams.get('id').slice(3) }))), [{ table: 'task06i_session_probe', id: 'row-uuid-1' }]);
+  assert.deepEqual((fixtureOperationCalls(mockAdminClient, 'storageDelete').map(c => ({ bucket: decodeURIComponent(c.pathname.split('/')[4]), path: c.pathname.split('/').slice(5).map(decodeURIComponent).join('/') }))), [{ bucket: 'task06i_probe_bucket', path: getStorageProbeObjectPath(inventory.runId) }]);
 
   // 4. Incomplete cleanup fails closed when residual user detected
   const residualInventory = new TestRunInventory('residual-run-456');
   residualInventory.registerUser({ id: 'residual-uuid-99', email: 'residual@proof.invalid', creationProof: createCreationProof('before_after_check') });
 
-  const lingeringAdminClient = {
-    async deleteUser(userId) {
-      // Simulate failed deletion or partial DB write
-      return { success: false };
-    },
-    async getUserById(userId) {
-      // User still found in database!
-      return { id: userId, email: 'residual@proof.invalid', notFound: false };
-    }
-  };
+  const lingeringAdminClient = fixtureSpec({ userGet: { status: 200, json: { id: 'residual-uuid-99', email: 'residual@proof.invalid' } } });
 
   await assert.rejects(
     async () => {
-      await residualInventory.executeCleanup({ adminClient: lingeringAdminClient, failClosed: true });
+      await residualInventory.executeCleanup({ adminClient: bindFixtureAdmin(residualInventory, lingeringAdminClient), failClosed: true });
     },
     /CLEANUP_INCOMPLETE: 1 synthetic user\(s\) remain in database after cleanup/
   );
@@ -2388,10 +2413,9 @@ test('39. Task 06I-B1-H1-R2 (R2-03): Run-scoped refresh token propagation & AMR 
 });
 
 test('40. Task 06I-B1-H1-R2 (R2-04 & R2-05): Inventory integration and robust cleanup failure detection', async () => {
-  const inv = new TestRunInventory('test-run-r2-inv');
+  const { inventory: inv } = await r5ProvisionedFixture('test-run-r2-inv');
   inv.registerUser({ id: 'user-r2-1', email: 'test1@proof.invalid', creationProof: createCreationProof('before_after_check') });
   inv.registerTableRow('task06i_session_probe', 'row-1');
-  inv.registerStorageObject('task06i_probe_bucket', 'file-1.txt');
 
   // 1. Accidental user creation in BYPASS-02 is captured into inventory
   const mockFetchAccidental = staticTransport({ status: 200, json: { user: { id: 'accidental-user-uuid' } } });
@@ -2401,14 +2425,9 @@ test('40. Task 06I-B1-H1-R2 (R2-04 & R2-05): Inventory integration and robust cl
   assert.ok(inv.isUserTracked('accidental-user-uuid'));
 
   // 2. Client returning error on deleteUser fails cleanup closed
-  const failClient = {
-    async deleteUser() { return { data: null, error: { message: 'Database lock timeout' } }; },
-    async deleteTableRow() { return { data: null, error: null }; },
-    async deleteStorageObject() { return { data: null, error: null }; },
-    async getUserById() { return { data: { user: { id: 'user-r2-1' } }, error: null }; }
-  };
+  const failClient = fixtureSpec({ userDelete: { status: 503, json: { message: 'Database lock timeout' } }, userGet: { status: 200, json: { user: { id: 'user-r2-1' } } } });
   await assert.rejects(
-    async () => { await inv.executeCleanup({ adminClient: failClient, failClosed: true }); },
+    async () => { await inv.executeCleanup({ adminClient: bindFixtureAdmin(inv, failClient), failClosed: true }); },
     /CLEANUP_INCOMPLETE/
   );
 
@@ -2419,7 +2438,7 @@ test('40. Task 06I-B1-H1-R2 (R2-04 & R2-05): Inventory integration and robust cl
   };
   await assert.rejects(
     async () => { await inv.executeCleanup({ adminClient: missingMethodsClient, failClosed: true }); },
-    /CLEANUP_INCOMPLETE/
+    /UNTRUSTED_ADMIN_CLIENT/
   );
 
   // 4. Missing adminClient when resources are tracked fails closed
@@ -2670,16 +2689,7 @@ test('50. Task 06I-B1-H1-R3 (R3-07): Cleanup execution lifecycle in try/finally 
     creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
   });
 
-  let deletedUserIds = [];
-  const mockAdminClient = {
-    async deleteUser(userId) {
-      deletedUserIds.push(userId);
-      return { data: { user: { id: userId } }, error: null };
-    },
-    async getUserById() {
-      return { data: null, error: { status: 404, message: 'User not found' } };
-    }
-  };
+  const mockAdminClient = fixtureSpec();
 
   const mockDispatcher = async () => ({
     passed: false,
@@ -2687,22 +2697,22 @@ test('50. Task 06I-B1-H1-R3 (R3-07): Cleanup execution lifecycle in try/finally 
     reason: 'simulated halt'
   });
 
-  const res = await runHostedProbeRunner({
+  const res = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: HARDCODED_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
     inventory,
     adminClient: mockAdminClient,
     mockDispatcher,
     sleepFn: async () => {}
-  });
+  }));
 
   assert.equal(res.status, 'HALTED_ON_FAILURE');
   assert.ok(res.cleanupReport, 'cleanupReport must be included in runner result');
   assert.equal(res.cleanupReport.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(res.cleanupReport.usersDeleted, 1);
-  assert.deepEqual(deletedUserIds, ['user-to-clean']);
+  assert.deepEqual((fixtureOperationCalls(mockAdminClient, 'userDelete').map(c => c.pathname.split('/').map(decodeURIComponent).at(-1))), ['user-to-clean']);
 });
 
 test('51. Task 06I-B1-H1-R3 (R3-08): Strict JWT parsing without bypass; non-JSON or malformed tokens fail closed', () => {
@@ -2754,27 +2764,15 @@ test('52. Task 06I-B1-H1-R3 (R3-09): Pre-existing seed user survives cleanup; on
     creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
   });
 
-  const deletedUsers = [];
-  const mockAdminClient = {
-    async deleteUser(userId) {
-      deletedUsers.push(userId);
-      return { data: { user: { id: userId } }, error: null };
-    },
-    async getUserById(userId) {
-      if (deletedUsers.includes(userId)) {
-        return { data: null, error: { status: 404 } };
-      }
-      return { data: { user: { id: userId } }, error: null };
-    }
-  };
+  const mockAdminClient = fixtureSpec();
 
-  const report = await inventory.executeCleanup({ adminClient: mockAdminClient });
+  const report = await inventory.executeCleanup({ adminClient: bindFixtureAdmin(inventory, mockAdminClient) });
   assert.equal(report.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(report.createdUsersAttempted, 1);
   assert.equal(report.usersDeleted, 1);
   assert.equal(report.referencedUsersPreserved, 1);
-  assert.deepEqual(deletedUsers, ['signup-user-uuid']);
-  assert.ok(!deletedUsers.includes('seed-user-uuid'), 'Seed user must NEVER be deleted');
+  assert.deepEqual((fixtureOperationCalls(mockAdminClient, 'userDelete').map(c => c.pathname.split('/').map(decodeURIComponent).at(-1))), ['signup-user-uuid']);
+  assert.ok(!(fixtureOperationCalls(mockAdminClient, 'userDelete').map(c => c.pathname.split('/').map(decodeURIComponent).at(-1))).includes('seed-user-uuid'), 'Seed user must NEVER be deleted');
 });
 
 test('53. Task 06I-B1-H1-R3 (R3-10): Credential boundary validation rejects generic keys and production keys for TEMP', () => {
@@ -2889,7 +2887,7 @@ test('56. Task 06I-B1-H1-R4 (R4-02): LIVE runner fails preflight if cleanup capa
   let probesExecuted = false;
   await assert.rejects(
     async () => {
-      await runHostedProbeRunner({
+      await runHostedProbeRunner(fixtureRunnerOptions({
         projectRef: HARDCODED_TEMP_REF,
         argv: ['--live'],
         env: liveEnv,
@@ -2898,24 +2896,24 @@ test('56. Task 06I-B1-H1-R4 (R4-02): LIVE runner fails preflight if cleanup capa
           probesExecuted = true;
           return { passed: true, status: 200 };
         }
-      });
+      }));
     },
-    /CLEANUP_CAPABILITY_REQUIRED.*LIVE mode requires verified adminClient/
+    /CLEANUP_CAPABILITY_REQUIRED.*registered run-bound Admin client/
   );
   assert.equal(probesExecuted, false, 'Probes must not be executed when cleanup capability is missing');
 
   // 2. adminClient missing deleteUser method throws CLEANUP_CAPABILITY_REQUIRED
   await assert.rejects(
     async () => {
-      await runHostedProbeRunner({
+      await runHostedProbeRunner(fixtureRunnerOptions({
         projectRef: HARDCODED_TEMP_REF,
         argv: ['--live'],
         env: liveEnv,
         adminClient: { getUserById: async () => ({}) },
         mockDispatcher: dummyDispatcher
-      });
+      }));
     },
-    /CLEANUP_CAPABILITY_REQUIRED.*adminClient must implement deleteUser and getUserById methods/
+    /UNTRUSTED_ADMIN_CLIENT/
   );
 
   // 3. Failed cleanup overrides passing probes and marks overall run HALTED_ON_FAILURE
@@ -2926,14 +2924,9 @@ test('56. Task 06I-B1-H1-R4 (R4-02): LIVE runner fails preflight if cleanup capa
     creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
   });
 
-  const failingCleanupAdmin = {
-    deleteUser: async () => ({ data: null, error: { message: 'Database lock timeout on delete' } }),
-    getUserById: async () => ({ data: { user: { id: 'residual-user-fail' } }, error: null }),
-    invalidateSession: async () => ({ data: null, error: null }),
-    signOut: async () => ({ data: null, error: null })
-  };
+  const failingCleanupAdmin = fixtureSpec({ userDelete: { status: 503, json: { message: 'Database lock timeout on delete' } }, userGet: { status: 200, json: { user: { id: 'residual-user-fail' } } } });
 
-  const resultFailedCleanup = await runHostedProbeRunner({
+  const resultFailedCleanup = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: HARDCODED_TEMP_REF,
     argv: ['--live'],
     env: liveEnv,
@@ -2956,7 +2949,7 @@ test('56. Task 06I-B1-H1-R4 (R4-02): LIVE runner fails preflight if cleanup capa
       return { passed: true, status: 200 };
     },
     sleepFn: async () => {}
-  });
+  }));
 
   assert.equal(resultFailedCleanup.status, 'HALTED_ON_FAILURE');
   assert.equal(resultFailedCleanup.aborted, true);
@@ -3121,7 +3114,7 @@ test('58. Task 06I-B1-H1-R4 (R4-04): SESSION-06 and SESSION-03 reject generic 40
 
 test('59. Task 06I-B1-H1-R4 (R4-05): Session cleanup fails closed when session invalidation method is missing or returns error', async () => {
   const inv = new TestRunInventory('test-run-session-cleanup');
-  inv.registerSession('session-uuid-active-1');
+  inv.registerSession('session-uuid-active-1', { accessToken: createMockJwt({ session_id: 'session-uuid-active-1' }) });
 
   // 1. adminClient lacking invalidateSession and signOut fails cleanup closed
   const clientNoInvalidation = {
@@ -3131,27 +3124,19 @@ test('59. Task 06I-B1-H1-R4 (R4-05): Session cleanup fails closed when session i
 
   const reportNoMethod = await inv.executeCleanup({ adminClient: clientNoInvalidation, failClosed: false });
   assert.equal(reportNoMethod.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
-  assert.ok(reportNoMethod.residualResources.some(r => r.type === 'sessions' && r.error.includes('MISSING_SESSION_INVALIDATION_METHOD')));
+  assert.ok(reportNoMethod.residualResources.some(r => r.type === 'client' && r.error.includes('UNTRUSTED_ADMIN_CLIENT')));
 
   // 2. adminClient returning error on invalidateSession fails cleanup closed
-  const clientErrorInvalidation = {
-    deleteUser: async () => ({ data: null, error: null }),
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    invalidateSession: async (id) => ({ data: null, error: { message: `Gateway timeout invalidating session ${id}` } })
-  };
+  const clientErrorInvalidation = fixtureSpec({ logout: { status: 504, json: { message: 'Gateway timeout invalidating session session-uuid-active-1' } } });
 
-  const reportError = await inv.executeCleanup({ adminClient: clientErrorInvalidation, failClosed: false });
+  const reportError = await inv.executeCleanup({ adminClient: bindFixtureAdmin(inv, clientErrorInvalidation), failClosed: false });
   assert.equal(reportError.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(reportError.residualResources.some(r => r.type === 'session' && r.id === 'session-uuid-active-1'));
 
   // 3. Working session invalidation succeeds
-  const clientSuccess = {
-    deleteUser: async () => ({ data: null, error: null }),
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    invalidateSession: async (id) => ({ data: { id }, error: null })
-  };
+  const clientSuccess = fixtureSpec();
 
-  const reportSuccess = await inv.executeCleanup({ adminClient: clientSuccess, failClosed: false });
+  const reportSuccess = await inv.executeCleanup({ adminClient: bindFixtureAdmin(inv, clientSuccess), failClosed: false });
   assert.equal(reportSuccess.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(reportSuccess.sessionsRevoked, 1);
 });
@@ -3165,12 +3150,9 @@ test('60. Task 06I-B1-H1-R4 (R4-06): User absence verification detects data.id, 
     creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
   });
 
-  const clientShape1 = {
-    deleteUser: async () => ({ data: null, error: null }),
-    getUserById: async () => ({ data: { id: 'user-standard-shape-1', email: 'shape1@proof.invalid' }, error: null })
-  };
+  const clientShape1 = fixtureSpec({ userGet: { status: 200, json: { id: 'user-standard-shape-1', email: 'shape1@proof.invalid' } } });
 
-  const report1 = await inv1.executeCleanup({ adminClient: clientShape1, failClosed: false });
+  const report1 = await inv1.executeCleanup({ adminClient: bindFixtureAdmin(inv1, clientShape1), failClosed: false });
   assert.equal(report1.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(report1.residualUsers.some(u => u.id === 'user-standard-shape-1' && u.reason === 'STILL_EXISTS_IN_DATABASE'));
 
@@ -3182,12 +3164,9 @@ test('60. Task 06I-B1-H1-R4 (R4-06): User absence verification detects data.id, 
     creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
   });
 
-  const clientShape2 = {
-    deleteUser: async () => ({ data: null, error: null }),
-    getUserById: async () => ({ data: { user: { id: 'user-nested-shape-2' } }, error: null })
-  };
+  const clientShape2 = fixtureSpec({ userGet: { status: 200, json: { user: { id: 'user-nested-shape-2' } } } });
 
-  const report2 = await inv2.executeCleanup({ adminClient: clientShape2, failClosed: false });
+  const report2 = await inv2.executeCleanup({ adminClient: bindFixtureAdmin(inv2, clientShape2), failClosed: false });
   assert.equal(report2.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(report2.residualUsers.some(u => u.id === 'user-nested-shape-2' && u.reason === 'STILL_EXISTS_IN_DATABASE'));
 
@@ -3199,12 +3178,9 @@ test('60. Task 06I-B1-H1-R4 (R4-06): User absence verification detects data.id, 
     creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
   });
 
-  const client503 = {
-    deleteUser: async () => ({ data: null, error: null }),
-    getUserById: async () => ({ data: null, error: { status: 503, message: 'Service Unavailable' } })
-  };
+  const client503 = fixtureSpec({ userGet: { status: 503, json: { status: 503, message: 'Service Unavailable' } } });
 
-  const report3 = await inv3.executeCleanup({ adminClient: client503, failClosed: false });
+  const report3 = await inv3.executeCleanup({ adminClient: bindFixtureAdmin(inv3, client503), failClosed: false });
   assert.equal(report3.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(report3.residualUsers.some(u => u.id === 'user-503-fail' && u.error.includes('VERIFY_FAILED: Non-404 error')));
 
@@ -3216,12 +3192,9 @@ test('60. Task 06I-B1-H1-R4 (R4-06): User absence verification detects data.id, 
     creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
   });
 
-  const client404 = {
-    deleteUser: async () => ({ data: null, error: null }),
-    getUserById: async () => ({ data: null, error: { status: 404, message: 'User not found' } })
-  };
+  const client404 = fixtureSpec();
 
-  const report4 = await inv4.executeCleanup({ adminClient: client404, failClosed: false });
+  const report4 = await inv4.executeCleanup({ adminClient: bindFixtureAdmin(inv4, client404), failClosed: false });
   assert.equal(report4.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(report4.usersDeleted, 1);
   assert.equal(report4.residualUsers.length, 0);
@@ -3375,26 +3348,18 @@ test('63. Task 06I-B1-H1-R5 (R5-01): SESSION-02 rejects generic 401/403, bad_jwt
 
 test('64. Task 06I-B1-H1-R5 (R5-02): Session cleanup rejects HTTP 404 from session deletion endpoint; unknown route or missing method fails closed', async () => {
   const inv = new TestRunInventory('test-run-session-404');
-  inv.registerSession('session-to-clean-1');
+  inv.registerSession('session-to-clean-1', { accessToken: createMockJwt({ session_id: 'session-to-clean-1' }) });
 
   // 1. Session deletion returning 404 (e.g. unknown route or missing session) fails cleanup closed
-  const client404 = {
-    deleteUser: async () => ({ data: null, error: null }),
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    invalidateSession: async () => ({ error: { status: 404, message: 'Endpoint or session not found (HTTP 404)' } })
-  };
+  const client404 = fixtureSpec({ logout: { status: 404, json: { code: 'route_not_found', message: 'Unknown route HTTP 404' } } });
 
-  const report404 = await inv.executeCleanup({ adminClient: client404, failClosed: false });
+  const report404 = await inv.executeCleanup({ adminClient: bindFixtureAdmin(inv, client404), failClosed: false });
   assert.equal(report404.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(report404.residualResources.some(r => r.type === 'session' && r.error.includes('404')));
 
   // 2. Session deletion returning 500 error fails cleanup closed
-  const client500 = {
-    deleteUser: async () => ({ data: null, error: null }),
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    invalidateSession: async () => ({ error: { status: 500, message: 'Database connection failed 500' } })
-  };
-  const report500 = await inv.executeCleanup({ adminClient: client500, failClosed: false });
+  const client500 = fixtureSpec({ logout: { status: 500, json: { message: 'Database connection failed 500' } } });
+  const report500 = await inv.executeCleanup({ adminClient: bindFixtureAdmin(inv, client500), failClosed: false });
   assert.equal(report500.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(report500.residualResources.some(r => r.type === 'session' && r.error.includes('500')));
 });
@@ -3408,38 +3373,22 @@ test('65. Task 06I-B1-H1-R5 (R5-03): User absence check requires structured 404;
   });
 
   // 1. 503 error containing 'not found' in message text must NOT be treated as absence
-  const client503 = {
-    deleteUser: async () => ({ data: null, error: null }),
-    getUserById: async () => ({
-      data: null,
-      error: { status: 503, message: 'Upstream gateway service: route not found' }
-    })
-  };
+  const client503 = fixtureSpec({ userGet: { status: 503, json: { status: 503, message: 'Upstream gateway service: route not found' } } });
 
-  const report503 = await inv.executeCleanup({ adminClient: client503, failClosed: false });
+  const report503 = await inv.executeCleanup({ adminClient: bindFixtureAdmin(inv, client503), failClosed: false });
   assert.equal(report503.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(report503.residualUsers.some(u => u.id === 'user-absence-503' && u.error.includes('VERIFY_FAILED')));
 
   // 2. Exception with 503 status must NOT be treated as absence
-  const clientThrow503 = {
-    deleteUser: async () => ({ data: null, error: null }),
-    getUserById: async () => {
-      const err = new Error('Service Unavailable: user resource not found');
-      err.status = 503;
-      throw err;
-    }
-  };
+  const clientThrow503 = fixtureSpec({ userGet: { throwError: { message: 'Service Unavailable: user resource not found', status: 503 } } });
 
-  const reportThrow = await inv.executeCleanup({ adminClient: clientThrow503, failClosed: false });
+  const reportThrow = await inv.executeCleanup({ adminClient: bindFixtureAdmin(inv, clientThrow503), failClosed: false });
   assert.equal(reportThrow.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(reportThrow.residualUsers.some(u => u.id === 'user-absence-503'));
 
   // 3. Structured 404 confirms absence
-  const clientExplicit404 = {
-    deleteUser: async () => ({ data: null, error: null }),
-    getUserById: async () => ({ data: null, error: { status: 404, message: 'User not found' } })
-  };
-  const reportExplicit = await inv.executeCleanup({ adminClient: clientExplicit404, failClosed: false });
+  const clientExplicit404 = fixtureSpec();
+  const reportExplicit = await inv.executeCleanup({ adminClient: bindFixtureAdmin(inv, clientExplicit404), failClosed: false });
   assert.equal(reportExplicit.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(reportExplicit.usersDeleted, 1);
 });
@@ -3486,13 +3435,9 @@ test('66. Task 06I-B1-H1-R5 (R5-04): Successful password grant mints session tha
   assert.equal(runCtx.activeAccessToken, null, 'Unverified JWT must not be stored as active authorized token');
 
   // 4. Cleanup executes and revokes the minted session
-  const mockAdminClient = {
-    deleteUser: async () => ({ data: null, error: null }),
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    invalidateSession: async (id) => ({ data: { id }, error: null })
-  };
+  const mockAdminClient = fixtureSpec();
 
-  const cleanupReport = await inv.executeCleanup({ adminClient: mockAdminClient, failClosed: false });
+  const cleanupReport = await inv.executeCleanup({ adminClient: bindFixtureAdmin(inv, mockAdminClient), failClosed: false });
   assert.equal(cleanupReport.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(cleanupReport.sessionsRevoked, 1);
 });
@@ -3543,17 +3488,7 @@ test('68. Task 06I-B1-H1-R5 (R5-06): Seed credential lifecycle: password reset m
   let providerSeedPassword = DEFAULT_TEST_PASSWORD;
   const originalSeedPassword = providerSeedPassword;
 
-  const mockAdminClient = {
-    deleteUser: async () => ({ data: null, error: null }),
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    invalidateSession: async (id) => ({ data: { id }, error: null }),
-    updateUserById: async (userId, attrs) => {
-      if (attrs.password) {
-        providerSeedPassword = attrs.password;
-      }
-      return { data: { id: userId }, error: null };
-    }
-  };
+  const mockAdminClient = fixtureSpec();
 
   // --- RUN 1: Login, Password Reset, and Cleanup ---
   const inv1 = new TestRunInventory('run-1-seed-lifecycle');
@@ -3583,10 +3518,10 @@ test('68. Task 06I-B1-H1-R5 (R5-06): Seed credential lifecycle: password reset m
   assert.equal(inv1.seedCredentialRestorations.length, 1, 'Inventory tracked password modification');
 
   // Run 1 Cleanup: Must restore original seed password!
-  const cleanupReport1 = await inv1.executeCleanup({ adminClient: mockAdminClient, failClosed: true });
+  const cleanupReport1 = await inv1.executeCleanup({ adminClient: bindFixtureAdmin(inv1, mockAdminClient), failClosed: true });
   assert.equal(cleanupReport1.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(cleanupReport1.seedCredentialsRestored, 1);
-  assert.equal(providerSeedPassword, originalSeedPassword, 'Cleanup must restore original seed password in provider');
+  assert.equal((fixtureOperationCalls(mockAdminClient, 'userUpdate').at(-1)?.bodyJson?.password), originalSeedPassword, 'Cleanup must restore original seed password in provider');
 
   // --- RUN 2: Sequential run authenticates with original seed password ---
   const inv2 = new TestRunInventory('run-2-seed-lifecycle');
@@ -3641,24 +3576,15 @@ test('69. Task 06I-B1-H1-R5 (R5-07): Storage fixture readiness: SESSION-05 disti
   assert.match(out404.error, /STORAGE_FIXTURE_MISSING/);
 
   // 2. Storage object registration in inventory and cleanup
-  const inv = new TestRunInventory('test-run-storage-clean');
-  inv.registerStorageObject('task06i_probe_bucket', 'probe.txt');
-  assert.equal(inv.trackedStorageObjects.get('task06i_probe_bucket').has('probe.txt'), true);
+  const { inventory: inv } = await r5ProvisionedFixture('test-run-storage-clean');
+  assert.equal(inv.trackedStorageObjects.get(STORAGE_PROBE_BUCKET).has(getStorageProbeObjectPath(inv.runId)), true);
 
-  let deletedPath = null;
-  const mockAdminClient = {
-    deleteUser: async () => ({ data: null, error: null }),
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    deleteStorageObject: async (bucket, path) => {
-      deletedPath = `${bucket}/${path}`;
-      return { data: { message: 'Deleted' }, error: null };
-    }
-  };
+  const mockAdminClient = fixtureSpec();
 
-  const report = await inv.executeCleanup({ adminClient: mockAdminClient, failClosed: true });
+  const report = await inv.executeCleanup({ adminClient: bindFixtureAdmin(inv, mockAdminClient), failClosed: true });
   assert.equal(report.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(report.storageObjectsDeleted, 1);
-  assert.equal(deletedPath, 'task06i_probe_bucket/probe.txt');
+  assert.equal((fixtureOperationCalls(mockAdminClient, 'storageDelete').at(-1)?.pathname.slice('/storage/v1/object/'.length).split('/').map(decodeURIComponent).join('/')), getStorageProbeObjectKey(inv.runId));
 });
 
 test('70. Task 06I-B1-H1-R5 (R5-08): Edge Function contract rejects false revocation proof: generic invalid_token or provider error does not synthesize AuthSessionMissingError and fails SESSION-06', async () => {
@@ -3721,85 +3647,31 @@ test('71. Task 06I-B1-H1-R6 (R6-01): Supported session revocation for cleanup pr
   assert.equal(inv.getSessionToken(testSessionId), testToken);
 
   // 2. executeCleanup passes token context to supported signOut method
-  let invokedToken = null;
-  let invokedScope = null;
-  const mockAdminClient = {
-    deleteUser: async () => ({ data: null, error: null }),
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    signOut: async (token, scope) => {
-      invokedToken = token;
-      invokedScope = scope;
-      return { data: { scope }, error: null };
-    }
-  };
+  const mockAdminClient = fixtureSpec();
 
-  const report = await inv.executeCleanup({ adminClient: mockAdminClient, failClosed: true });
+  const report = await inv.executeCleanup({ adminClient: bindFixtureAdmin(inv, mockAdminClient), failClosed: true });
   assert.equal(report.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(report.sessionsRevoked, 1);
-  assert.equal(invokedToken, testToken, 'signOut must receive the exact registered user access token');
-  assert.equal(invokedScope, 'local', 'signOut must request local scope to avoid global invalidation of unrelated sessions');
+  assert.equal((fixtureOperationCalls(mockAdminClient, 'logout').at(-1)?.headers.authorization?.replace(/^Bearer /, '')), testToken, 'signOut must receive the exact registered user access token');
+  assert.equal(new URL(fixtureOperationCalls(mockAdminClient, 'logout').at(-1).url).searchParams.get('scope'), 'local', 'signOut must request local scope to avoid global invalidation of unrelated sessions');
 
   // 3. When session is registered without token, signOut fails closed
   const invNoToken = new TestRunInventory('test-run-no-token');
   invNoToken.registerSession('sess-without-token');
-  const reportNoToken = await invNoToken.executeCleanup({ adminClient: mockAdminClient, failClosed: false });
+  const reportNoToken = await invNoToken.executeCleanup({ adminClient: bindFixtureAdmin(invNoToken, mockAdminClient), failClosed: false });
   assert.equal(reportNoToken.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
-  assert.ok(reportNoToken.residualResources.some(r => r.type === 'session' && r.error.includes('MISSING_TOKEN_CONTEXT')));
+  assert.ok(reportNoToken.residualResources.some(r => r.type === 'session' && r.error.includes('UNSUPPORTED_SESSION_REVOCATION')));
 
   // 4. Standalone CLI adapter session invalidation contract
-  let fetchUrl = null;
-  let fetchMethod = null;
-  let fetchAuthHeader = null;
-  const mockFetch = async (url, opts) => {
-    fetchUrl = url;
-    fetchMethod = opts.method;
-    fetchAuthHeader = opts.headers?.Authorization;
-    return {
-      ok: true,
-      status: 200,
-      json: async () => ({})
-    };
-  };
-
-  // Re-create the CLI adapter signOut logic with mockFetch
-  const testServiceKey = 'test-service-key-r6-01';
-  const cliAdapter = {
-    async signOut(token, scope = 'local') {
-      if (!token || typeof token !== 'string' || !token.trim()) {
-        return { error: { message: 'MISSING_TOKEN: signOut requires non-empty user access token' } };
-      }
-      const res = await mockFetch(`https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/logout?scope=${encodeURIComponent(scope)}`, {
-        method: 'POST',
-        headers: {
-          apikey: testServiceKey,
-          Authorization: `Bearer ${token.trim()}`,
-          'Content-Type': 'application/json'
-        }
-      });
-      if (!res.ok) {
-        return { error: `HTTP_${res.status}` };
-      }
-      return { data: { scope }, error: null };
-    },
-    async invalidateSession(sessionId, token) {
-      if (!token) {
-        return {
-          error: {
-            status: 400,
-            message: `UNSUPPORTED_SESSION_REVOCATION: GoTrue lacks an admin session-by-id deletion endpoint; access token context is required for targeted local sign-out of session '${sessionId}' (R6-01)`
-          }
-        };
-      }
-      return this.signOut(token, 'local');
-    }
-  };
-
+  // Exercise the actual registered adapter with a declarative provider response.
+  const cliTransport = staticTransport({ status: 200, json: {} });
+  const cliAdapter = trackedHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, runId: inv.runId, fetchFn: cliTransport });
   const cliResult = await cliAdapter.invalidateSession(testSessionId, testToken);
   assert.equal(cliResult.error, null);
-  assert.match(fetchUrl, /\/auth\/v1\/logout\?scope=local$/);
-  assert.equal(fetchMethod, 'POST');
-  assert.equal(fetchAuthHeader, `Bearer ${testToken}`);
-  assert.ok(!fetchUrl.includes('/admin/users/sessions'), 'Unsupported admin sessions route must NEVER be called');
+  assert.match(cliTransport.calls[0].url, /\/auth\/v1\/logout\?scope=local$/);
+  assert.equal(cliTransport.calls[0].method, 'POST');
+  assert.equal(cliTransport.calls[0].headers.authorization, `Bearer ${testToken}`);
+  assert.ok(!cliTransport.calls.some(c => c.url.includes('/admin/users/sessions')), 'Unsupported admin sessions route must NEVER be called');
 
   // Without token, CLI adapter fails closed
   const cliNoTokenResult = await cliAdapter.invalidateSession(testSessionId, null);
@@ -3945,15 +3817,15 @@ test('73. Task 06I-B1-H1-R6 (R6-03): SESSION-06 accepts genuine provider-observe
 test('74. Task 06I-B1-H1-R7 (R7-01): createHostedAdminClient adapter implements session revocation, user lifecycle, and resource cleanup without duplicate method shadowing', async () => {
   // 1. Factory security boundaries: strictly permitted only against HARDCODED_TEMP_REF
   assert.throws(
-    () => createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, projectRef: HARDCODED_REAL_REF }),
+    () => trackedHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, projectRef: HARDCODED_REAL_REF }),
     /SECURITY_BOUNDARY_VIOLATION.*bsfwzvgynwriswapxpsp/
   );
   assert.throws(
-    () => createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, projectRef: HARDCODED_TIO_WORLD_REF }),
+    () => trackedHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, projectRef: HARDCODED_TIO_WORLD_REF }),
     /SECURITY_BOUNDARY_VIOLATION/
   );
   assert.throws(
-    () => createHostedAdminClient({ serviceRoleKey: '', projectRef: HARDCODED_TEMP_REF }),
+    () => trackedHostedAdminClient({ serviceRoleKey: '', projectRef: HARDCODED_TEMP_REF }),
     /MISSING_HOSTED_CREDENTIALS/
   );
 
@@ -3980,7 +3852,7 @@ test('74. Task 06I-B1-H1-R7 (R7-01): createHostedAdminClient adapter implements 
     defaultResponse: { status: 500, ok: false, json: { message: 'unexpected URL' } }
   });
 
-  const adminClient = createHostedAdminClient({
+  const adminClient = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: mockFetch
@@ -4038,7 +3910,7 @@ test('74. Task 06I-B1-H1-R7 (R7-01): createHostedAdminClient adapter implements 
 
   // Calling getUserById with 404 response returns clean 404 object without throwing
   const mock404Fetch = staticTransport({ ok: false, status: 404, json: {} });
-  const admin404 = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: mock404Fetch });
+  const admin404 = trackedHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: mock404Fetch });
   const res404 = await admin404.getUserById('u-nonexistent');
   assert.equal(res404.data, null);
   assert.equal(res404.error?.status, 404);
@@ -4058,7 +3930,7 @@ test('74. Task 06I-B1-H1-R7 (R7-01): createHostedAdminClient adapter implements 
     creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
   });
 
-  const cleanupReport = await inv.executeCleanup({ adminClient });
+  const cleanupReport = await inv.executeCleanup({ adminClient: bindFixtureAdmin(inv, adminClient) });
   assert.equal(cleanupReport.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(cleanupReport.sessionsRevoked, 1);
   assert.equal(cleanupReport.usersDeleted, 2);
@@ -4415,13 +4287,13 @@ test('76. Task 06I-B1-H1-R8 (R8-01): Unexpected session tracking captures sessio
   assert.equal(invBypass.createdUsers.size, 0, 'Seed user must NOT be registered as created user');
 
   // Verify cleanup revokes the unexpectedly minted session via logout
-  const adminClientBypass = createHostedAdminClient({
+  const adminClientBypass = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: mockFetchBypass
   });
   const preCleanupCalls = mockFetchBypass.calls.length;
-  const bypassCleanup = await invBypass.executeCleanup({ adminClient: adminClientBypass });
+  const bypassCleanup = await invBypass.executeCleanup({ adminClient: bindFixtureAdmin(invBypass, adminClientBypass) });
   assert.equal(bypassCleanup.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(bypassCleanup.sessionsRevoked, 1);
   const cleanupCalls = mockFetchBypass.calls.slice(preCleanupCalls);
@@ -4450,7 +4322,7 @@ test('76. Task 06I-B1-H1-R8 (R8-01): Unexpected session tracking captures sessio
   // 4. Untracked minted session fails cleanup closed
   const invUntrackedFail = new TestRunInventory('test-run-untracked-fail');
   invUntrackedFail.registerUntrackedSession();
-  const untrackedReport = await invUntrackedFail.executeCleanup({ adminClient: adminClientBypass, failClosed: false });
+  const untrackedReport = await invUntrackedFail.executeCleanup({ adminClient: bindFixtureAdmin(invUntrackedFail, adminClientBypass), failClosed: false });
   assert.equal(untrackedReport.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(untrackedReport.residualResources.some(r => r.type === 'untracked_session' && r.error.includes('UNTRACKED_MINTED_SESSION')));
 });
@@ -4460,7 +4332,7 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
 
   // 1. createHostedAdminClient.signOut provider responses
   // 1a. HTTP 200 normal logout succeeds
-  const client200 = createHostedAdminClient({
+  const client200 = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: staticTransport({ status: 200, ok: true, json: {} })
@@ -4470,7 +4342,7 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
   assert.equal(res200.data.scope, 'local');
 
   // 1b. HTTP 403 session_not_found treated as affirmative absence (succeeds with alreadyRevoked: true)
-  const clientNotFound = createHostedAdminClient({
+  const clientNotFound = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: staticTransport({
@@ -4489,7 +4361,7 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
   assert.equal(resNotFound.data.alreadyRevoked, true);
 
   // 1c. HTTP 400 authsessionmissingerror treated as affirmative absence
-  const clientMissing = createHostedAdminClient({
+  const clientMissing = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: staticTransport({
@@ -4507,7 +4379,7 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
   assert.equal(resMissing.session_not_found, true);
 
   // 1d. False proof: HTTP 401 bad_jwt fails closed
-  const clientBadJwt = createHostedAdminClient({
+  const clientBadJwt = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: staticTransport({
@@ -4521,7 +4393,7 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
   assert.equal(resBadJwt.error.status, 401);
 
   // 1e. False proof: HTTP 401 jwt_expired fails closed
-  const clientExpired = createHostedAdminClient({
+  const clientExpired = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: staticTransport({
@@ -4534,7 +4406,7 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
   assert.ok(resExpired.error);
 
   // 1f. Generic HTTP 403 Forbidden fails closed
-  const clientGeneric403 = createHostedAdminClient({
+  const clientGeneric403 = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: staticTransport({
@@ -4547,7 +4419,7 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
   assert.ok(resGeneric403.error);
 
   // 1g. HTTP 500 fails closed
-  const client500 = createHostedAdminClient({
+  const client500 = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: staticTransport({
@@ -4601,13 +4473,13 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
     ],
     defaultResponse: { status: 200, ok: true, json: {} }
   });
-  const adminClientS02 = createHostedAdminClient({
+  const adminClientS02 = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: adminTransportS02
   });
 
-  const cleanupS02 = await invSession02.executeCleanup({ adminClient: adminClientS02 });
+  const cleanupS02 = await invSession02.executeCleanup({ adminClient: bindFixtureAdmin(invSession02, adminClientS02) });
   assert.equal(cleanupS02.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(cleanupS02.sessionsRevoked, 1);
   // Zero logout fetch calls for s02SessionId/s02Token because session was already marked revoked!
@@ -4620,7 +4492,7 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
   invIdemp.registerSession('sess-run-2', { accessToken: createMockJwt({ session_id: 'sess-run-2' }) });
 
   const idempTransport = staticTransport({ status: 200, ok: true, json: {} });
-  const adminClientIdemp = createHostedAdminClient({
+  const adminClientIdemp = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: idempTransport
@@ -4628,7 +4500,7 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
 
   // First cleanup call
   const preFirstCount = idempTransport.calls.length;
-  const firstCleanup = await invIdemp.executeCleanup({ adminClient: adminClientIdemp });
+  const firstCleanup = await invIdemp.executeCleanup({ adminClient: bindFixtureAdmin(invIdemp, adminClientIdemp) });
   assert.equal(firstCleanup.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(firstCleanup.sessionsRevoked, 2);
   const firstLogoutCount = idempTransport.calls.slice(preFirstCount).filter(c => c.url.includes('/logout')).length;
@@ -4636,7 +4508,7 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
 
   // Second cleanup call on same inventory
   const preSecondCount = idempTransport.calls.length;
-  const secondCleanup = await invIdemp.executeCleanup({ adminClient: adminClientIdemp });
+  const secondCleanup = await invIdemp.executeCleanup({ adminClient: bindFixtureAdmin(invIdemp, adminClientIdemp) });
   assert.equal(secondCleanup.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(secondCleanup.sessionsRevoked, 2);
   assert.equal(secondCleanup.residualResources.length, 0);
@@ -4737,22 +4609,12 @@ test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, stat
   assert.equal(transportErrMock.calls[0].bodyJson?.password, newPassword, 'PUT request carried newPassword before connection drop');
 
   // Cleanup MUST execute restoration and restore original password
-  const mockAdminClient = {
-    deleteUser: async () => ({ data: null, error: null }),
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    invalidateSession: async (id) => ({ data: { id }, error: null }),
-    updateUserById: async (uid, attrs) => {
-      if (attrs.password) {
-        transportProviderPassword = attrs.password;
-      }
-      return { data: { id: uid }, error: null };
-    }
-  };
+  const mockAdminClient = fixtureSpec();
 
-  const cleanupTransport = await invTransport.executeCleanup({ adminClient: mockAdminClient });
+  const cleanupTransport = await invTransport.executeCleanup({ adminClient: bindFixtureAdmin(invTransport, mockAdminClient) });
   assert.equal(cleanupTransport.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(cleanupTransport.seedCredentialsRestored, 1);
-  assert.equal(transportProviderPassword, origPassword, 'Original password MUST be restored in provider after transport drop');
+  assert.equal((fixtureOperationCalls(mockAdminClient, 'userUpdate').at(-1)?.bodyJson?.password), origPassword, 'Original password MUST be restored in provider after transport drop');
 
   // 3. Malformed JSON response retains obligation as indeterminate:
   const invJsonErr = new TestRunInventory('test-run-json-error');
@@ -4785,17 +4647,12 @@ test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, stat
   assert.equal(outJson.restoration_state, 'indeterminate');
   assert.equal(invJsonErr.seedCredentialRestorations[0].state, 'indeterminate');
 
+  const jsonCleanupSpec = fixtureSpec();
   const cleanupJson = await invJsonErr.executeCleanup({
-    adminClient: {
-      ...mockAdminClient,
-      updateUserById: async (uid, attrs) => {
-        if (attrs.password) jsonProviderPassword = attrs.password;
-        return { data: { id: uid }, error: null };
-      }
-    }
+    adminClient: fixtureAdmin(invJsonErr, jsonCleanupSpec)
   });
   assert.equal(cleanupJson.status, 'CLEANUP_VERIFIED_SUCCESS');
-  assert.equal(jsonProviderPassword, origPassword, 'Original password MUST be restored after malformed JSON');
+  assert.equal(fixtureCalls(jsonCleanupSpec, 'PUT', '/auth/v1/admin/users/').at(-1)?.bodyJson?.password, origPassword, 'Original password MUST be restored after malformed JSON');
 
   // 4. HTTP 500 response marks obligation as indeterminate:
   const inv500 = new TestRunInventory('test-run-500');
@@ -4861,33 +4718,18 @@ test('79. Task 06I-B1-H1-R9 (R9-02): Controlled authentication verification, adv
     state: 'confirmed'
   });
 
-  let updateCalled = false;
-  let verifyCalled = false;
-  let signOutCalled = false;
 
-  const adminClientSuccess = {
-    deleteUser: async () => ({ data: null, error: null }),
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    invalidateSession: async (id) => ({ data: { id }, error: null }),
-    updateUserById: async (uid, attrs) => {
-      assert.equal(uid, seedUserId);
-      assert.equal(attrs.password, origPassword);
-      updateCalled = true;
-      return { data: { id: uid }, error: null };
-    },
-    verifyUserCredentials: async (email, password) => {
-      assert.equal(email, seedEmail);
-      assert.equal(password, origPassword);
-      verifyCalled = true;
-      return { data: { verified: true, userId: seedUserId }, error: null };
-    }
-  };
+  const adminClientSuccess = fixtureSpec();
 
-  const reportSuccess = await invSuccess.executeCleanup({ adminClient: adminClientSuccess });
+  const reportSuccess = await invSuccess.executeCleanup({ adminClient: bindFixtureAdmin(invSuccess, adminClientSuccess) });
   assert.equal(reportSuccess.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(reportSuccess.seedCredentialsRestored, 1);
-  assert.equal(updateCalled, true);
-  assert.equal(verifyCalled, true);
+  assert.equal((fixtureOperationCalls(adminClientSuccess, 'userUpdate').length > 0), true);
+  assert.equal((fixtureOperationCalls(adminClientSuccess, 'login').length > 0), true);
+
+  assert.equal(fixtureOperationCalls(adminClientSuccess, 'userUpdate')[0].pathname.split('/').at(-1), seedUserId);
+  assert.deepEqual(fixtureOperationCalls(adminClientSuccess, 'userUpdate')[0].bodyJson, { password: origPassword });
+  assert.deepEqual(fixtureOperationCalls(adminClientSuccess, 'login')[0].bodyJson, { email: seedEmail, password: origPassword });
 
   const restoredItem = invSuccess.seedCredentialRestorations[0];
   assert.equal(restoredItem.state, 'restored');
@@ -4908,14 +4750,9 @@ test('79. Task 06I-B1-H1-R9 (R9-02): Controlled authentication verification, adv
     state: 'confirmed'
   });
 
-  const adminClientVerifyFail = {
-    ...adminClientSuccess,
-    verifyUserCredentials: async () => {
-      return { data: null, error: { message: 'invalid_grant: Invalid login credentials', status: 400 } };
-    }
-  };
+  const adminClientVerifyFail = fixtureSpec({ login: { status: 400, json: { message: 'invalid_grant: Invalid login credentials' } } });
 
-  const reportVerifyFail = await invVerifyFail.executeCleanup({ adminClient: adminClientVerifyFail, failClosed: false });
+  const reportVerifyFail = await invVerifyFail.executeCleanup({ adminClient: bindFixtureAdmin(invVerifyFail, adminClientVerifyFail), failClosed: false });
   assert.equal(reportVerifyFail.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.equal(reportVerifyFail.residualResources.length, 1);
   assert.match(reportVerifyFail.residualResources[0].error, /RESTORE_VERIFICATION_FAILED/);
@@ -4932,14 +4769,9 @@ test('79. Task 06I-B1-H1-R9 (R9-02): Controlled authentication verification, adv
     state: 'confirmed'
   });
 
-  const adminClientUpdateFail = {
-    ...adminClientSuccess,
-    updateUserById: async () => {
-      return { data: null, error: { message: 'Database lock timeout' } };
-    }
-  };
+  const adminClientUpdateFail = fixtureSpec({ userUpdate: { status: 503, json: { message: 'Database lock timeout' } } });
 
-  const reportUpdateFail = await invUpdateFail.executeCleanup({ adminClient: adminClientUpdateFail, failClosed: false });
+  const reportUpdateFail = await invUpdateFail.executeCleanup({ adminClient: bindFixtureAdmin(invUpdateFail, adminClientUpdateFail), failClosed: false });
   assert.equal(reportUpdateFail.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.match(reportUpdateFail.residualResources[0].error, /RESTORE_FAILED/);
   assert.equal(invUpdateFail.seedCredentialRestorations[0].state, 'restoration_failed');
@@ -4967,7 +4799,7 @@ test('79. Task 06I-B1-H1-R9 (R9-02): Controlled authentication verification, adv
     ],
     defaultResponse: { status: 400, ok: false, json: {} }
   });
-  const testClient = createHostedAdminClient({
+  const testClient = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
@@ -5010,13 +4842,7 @@ test('79. Task 06I-B1-H1-R9 (R9-02): Controlled authentication verification, adv
 
   let untrackedUpdateCalled = false;
   const reportUntracked = await invUntracked.executeCleanup({
-    adminClient: {
-      ...adminClientSuccess,
-      updateUserById: async () => {
-        untrackedUpdateCalled = true;
-        return { data: { id: 'untracked-victim-id' }, error: null };
-      }
-    },
+    adminClient: fixtureAdmin(invUntracked, fixtureSpec({})),
     failClosed: false
   });
 
@@ -5036,13 +4862,7 @@ test('79. Task 06I-B1-H1-R9 (R9-02): Controlled authentication verification, adv
   });
 
   const reportPreserve = await invPreserve.executeCleanup({
-    adminClient: {
-      ...adminClientSuccess,
-      deleteUser: async (uid) => {
-        if (uid === seedUserId) deleteCalledForSeed = true;
-        return { data: null, error: null };
-      }
-    }
+    adminClient: fixtureAdmin(invPreserve, fixtureSpec({}))
   });
 
   assert.equal(deleteCalledForSeed, false, 'Seed user MUST NEVER be deleted by cleanup');
@@ -5079,7 +4899,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
 
   // 1. Verification session is registered in inventory immediately upon token issuance
   const invImmediate = new TestRunInventory('test-r10-immediate');
-  const adminClientImmediate = createHostedAdminClient({
+  const adminClientImmediate = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
@@ -5101,7 +4921,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     })
   });
 
-  const resImmediate = await adminClientImmediate.verifyUserCredentials(seedEmail, initialPassword, { inventory: invImmediate });
+  const resImmediate = await bindFixtureAdmin(invImmediate, adminClientImmediate).verifyUserCredentials(seedEmail, initialPassword, { inventory: invImmediate });
   assert.equal(resImmediate.error, null);
   assert.equal(resImmediate.data.verified, true);
   assert.equal(invImmediate.trackedSessions.has(sessId), true, 'Minted verification session must be registered in inventory');
@@ -5112,7 +4932,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
   const s503Id = 'sess-r10-503-fail';
   const token503 = createMockJwt({ sub: seedUserId, session_id: s503Id, email: seedEmail });
 
-  const adminClient503 = createHostedAdminClient({
+  const adminClient503 = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
@@ -5141,7 +4961,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
   });
 
   // verifyUserCredentials returns sessionRevocationFailed: true
-  const res503 = await adminClient503.verifyUserCredentials(seedEmail, initialPassword, { inventory: inv503 });
+  const res503 = await bindFixtureAdmin(inv503, adminClient503).verifyUserCredentials(seedEmail, initialPassword, { inventory: inv503 });
   assert.equal(res503.data, null);
   assert.equal(res503.sessionRevocationFailed, true);
   assert.equal(res503.error.code, 'LOGOUT_FAILED');
@@ -5170,11 +4990,11 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     state: 'confirmed'
   });
   await assert.rejects(
-    () => invReject.executeCleanup({ adminClient: adminClient503, failClosed: true }),
+    () => invReject.executeCleanup({ adminClient: bindFixtureAdmin(invReject, adminClient503), failClosed: true }),
     /CLEANUP_INCOMPLETE/
   );
 
-  const rep503 = await invCleanup503.executeCleanup({ adminClient: adminClient503, failClosed: false });
+  const rep503 = await invCleanup503.executeCleanup({ adminClient: bindFixtureAdmin(invCleanup503, adminClient503), failClosed: false });
   assert.equal(rep503.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   const sessionResidual = rep503.residualResources.find(r => r.type === 'session');
   assert.ok(sessionResidual, 'Residual session resource must be reported on logout failure');
@@ -5192,10 +5012,9 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     state: 'confirmed'
   });
 
-  let logoutAttempt = 0;
   const retrySessId = 'sess-r10-retry-pass';
   const retryToken = createMockJwt({ sub: seedUserId, session_id: retrySessId, email: seedEmail });
-  const adminClientRetry = createHostedAdminClient({
+  const adminClientRetry = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
@@ -5230,7 +5049,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     })
   });
 
-  const repRetry = await invRetry.executeCleanup({ adminClient: adminClientRetry });
+  const repRetry = await invRetry.executeCleanup({ adminClient: bindFixtureAdmin(invRetry, adminClientRetry) });
   assert.equal(repRetry.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(invRetry.isSessionRevoked(retrySessId), true);
   assert.equal(invRetry.seedCredentialRestorations[0].state, 'restored');
@@ -5238,7 +5057,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
   // 4. Logout throws network exception (e.g. timeout / connection reset)
   const invThrows = new TestRunInventory('test-r10-throws');
   const throwToken = createMockJwt({ sub: seedUserId, session_id: 'sess-throws', email: seedEmail });
-  const adminClientThrows = createHostedAdminClient({
+  const adminClientThrows = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
@@ -5260,7 +5079,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     })
   });
 
-  const resThrows = await adminClientThrows.verifyUserCredentials(seedEmail, initialPassword, { inventory: invThrows });
+  const resThrows = await bindFixtureAdmin(invThrows, adminClientThrows).verifyUserCredentials(seedEmail, initialPassword, { inventory: invThrows });
   assert.equal(resThrows.data, null);
   assert.equal(resThrows.sessionRevocationFailed, true);
   assert.equal(resThrows.error.code, 'LOGOUT_EXCEPTION');
@@ -5272,7 +5091,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
   const payloadB64 = Buffer.from(JSON.stringify({ sub: seedUserId, email: seedEmail, exp: Math.floor(Date.now() / 1000) + 300 })).toString('base64url');
   const noSessToken = `${headerB64}.${payloadB64}.fake-sig`;
 
-  const adminClientUntracked = createHostedAdminClient({
+  const adminClientUntracked = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
@@ -5289,7 +5108,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     })
   });
 
-  const resUntracked = await adminClientUntracked.verifyUserCredentials(seedEmail, initialPassword, { inventory: invUntracked });
+  const resUntracked = await bindFixtureAdmin(invUntracked, adminClientUntracked).verifyUserCredentials(seedEmail, initialPassword, { inventory: invUntracked });
   assert.equal(resUntracked.data, null);
   assert.equal(resUntracked.sessionRevocationFailed, true);
   assert.equal(resUntracked.error.code, 'UNTRACKED_SESSION');
@@ -5297,7 +5116,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
 
   // 6. False-proof handling during verification logout:
   // Generic bad_jwt does NOT prove session revocation; affirmative session_not_found DOES prove revocation
-  const adminClientBadJwt = createHostedAdminClient({
+  const adminClientBadJwt = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
@@ -5311,7 +5130,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
   const signOutBad = await adminClientBadJwt.signOut('some-token', 'local');
   assert.ok(signOutBad.error, 'bad_jwt must be rejected as false proof of revocation');
 
-  const adminClientNotFound = createHostedAdminClient({
+  const adminClientNotFound = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
@@ -5336,30 +5155,10 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     targetPassword: 'NewPassword#1',
     state: 'confirmed'
   });
-  let deleteCalledForSeed = false;
 
-  const adminClientLiveFail = {
-    deleteUser: async (uid) => {
-      if (uid === seedUserId) deleteCalledForSeed = true;
-      return { data: { user: { id: uid } }, error: null };
-    },
-    getUserById: async (uid) => {
-      if (uid === seedUserId) return { data: { user: { id: uid } }, error: null };
-      return { data: null, error: { status: 404, message: 'User not found' } };
-    },
-    updateUserById: async (uid, attrs) => ({ data: { user: { id: uid } }, error: null }),
-    signOut: async () => ({
-      data: null,
-      error: { status: 503, message: 'Service Unavailable' }
-    }),
-    verifyUserCredentials: async () => ({
-      data: null,
-      error: { message: 'VERIFICATION_SESSION_REVOCATION_FAILED: 503', sessionId: 'sess-live-fail', token: 'token-live-fail' },
-      sessionRevocationFailed: true
-    })
-  };
+  const adminClientLiveFail = fixtureSpec({ userGet: { status: 200, json: { user: { id: seedUserId } } }, logout: { status: 503, json: { message: 'Service Unavailable' } }, login: { status: 200, json: { access_token: createMockJwt({ sub: seedUserId, session_id: 'sess-live-fail' }), session_id: 'sess-live-fail', user: { id: seedUserId } } } });
 
-  const runnerRes = await runHostedProbeRunner({
+  const runnerRes = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: HARDCODED_TEMP_REF,
     argv: ['node', 'runner.mjs', '--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
@@ -5372,12 +5171,12 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     }),
     inventory: invLive,
     adminClient: adminClientLiveFail
-  });
+  }));
 
   assert.equal(runnerRes.status, 'HALTED_ON_FAILURE', 'Cleanup failure must override probe success');
   assert.equal(runnerRes.aborted, true);
   assert.ok(runnerRes.abortReason.includes('CLEANUP_FAILURE'));
-  assert.equal(deleteCalledForSeed, false, 'Seed user MUST NEVER be deleted');
+  assert.equal((fixtureOperationCalls(adminClientLiveFail, 'userDelete').length > 0), false, 'Seed user MUST NEVER be deleted');
   // Passwords MUST NOT be cleared on failed cleanup so admin can remediate
   assert.notEqual(invLive.seedCredentialRestorations[0]?.originalPassword, '[CLEARED]');
 });
@@ -5525,27 +5324,17 @@ test('81. Task 06I-B1-H1-R10 (R10-02): Exact identity binding, seed user correla
     state: 'confirmed'
   });
 
-  let cleanupResetCalled = false;
-  const adminClientTamper = {
-    getUserById: async () => ({ data: { user: { id: seedUserId } }, error: null }),
-    deleteUser: async () => ({ data: null, error: null }),
-    signOut: async () => ({ data: null, error: null }),
-    updateUserById: async () => ({ data: { user: { id: seedUserId } }, error: null }),
-    verifyUserCredentials: async () => {
-      cleanupResetCalled = true;
-      return { data: { verified: true }, error: null };
-    }
-  };
+  const adminClientTamper = fixtureSpec();
 
   // Verify that failClosed: true throws CLEANUP_INCOMPLETE on identity mismatch
   await assert.rejects(
-    () => invCleanupCheck.executeCleanup({ adminClient: adminClientTamper, failClosed: true }),
+    () => invCleanupCheck.executeCleanup({ adminClient: bindFixtureAdmin(invCleanupCheck, adminClientTamper), failClosed: true }),
     /CLEANUP_INCOMPLETE/
   );
 
-  const repTamper = await invCleanupCheck.executeCleanup({ adminClient: adminClientTamper, failClosed: false });
+  const repTamper = await invCleanupCheck.executeCleanup({ adminClient: bindFixtureAdmin(invCleanupCheck, adminClientTamper), failClosed: false });
   assert.equal(repTamper.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
-  assert.equal(cleanupResetCalled, false, 'Credential verification must not proceed on identity mismatch in cleanup');
+  assert.equal((fixtureOperationCalls(adminClientTamper, 'login').length > 0), false, 'Credential verification must not proceed on identity mismatch in cleanup');
   assert.equal(invCleanupCheck.seedCredentialRestorations[0].state, 'restoration_failed');
   assert.ok(repTamper.residualResources[0].error.includes('IDENTITY_MISMATCH'));
 
@@ -5587,21 +5376,11 @@ test('81. Task 06I-B1-H1-R10 (R10-02): Exact identity binding, seed user correla
   assert.equal(invIndet.seedCredentialRestorations[0].email, customSeedEmail, 'Indeterminate record must retain custom seed identity');
 
   // 8. Controlled credential verification in cleanup uses exact bound email
-  let verifiedEmailUsed = null;
-  const adminClientVerified = {
-    getUserById: async () => ({ data: { user: { id: seedUserId } }, error: null }),
-    deleteUser: async () => ({ data: null, error: null }),
-    signOut: async () => ({ data: null, error: null }),
-    updateUserById: async () => ({ data: { user: { id: seedUserId } }, error: null }),
-    verifyUserCredentials: async (email, pass) => {
-      verifiedEmailUsed = email;
-      return { data: { verified: true }, error: null };
-    }
-  };
+  const adminClientVerified = fixtureSpec();
 
-  const repIndetCleanup = await invIndet.executeCleanup({ adminClient: adminClientVerified });
+  const repIndetCleanup = await invIndet.executeCleanup({ adminClient: bindFixtureAdmin(invIndet, adminClientVerified) });
   assert.equal(repIndetCleanup.status, 'CLEANUP_VERIFIED_SUCCESS');
-  assert.equal(verifiedEmailUsed, customSeedEmail, 'Cleanup credential verification MUST use the exact custom seed identity, not default');
+  assert.equal((fixtureOperationCalls(adminClientVerified, 'login').at(-1)?.bodyJson?.email), customSeedEmail, 'Cleanup credential verification MUST use the exact custom seed identity, not default');
 });
 
 test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty, and indeterminate verification responses', async () => {
@@ -5625,13 +5404,13 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
     ],
     defaultResponse: { status: 200, ok: true, json: {} }
   });
-  const client1 = createHostedAdminClient({
+  const client1 = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: transport1
   });
 
-  const res1 = await client1.verifyUserCredentials(seedEmail, seedPassword, { inventory: inv1 });
+  const res1 = await bindFixtureAdmin(inv1, client1).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv1 });
   assert.equal(res1.error, null);
   assert.equal(res1.data?.verified, true);
   assert.equal(res1.data?.userId, seedUserId);
@@ -5641,7 +5420,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
 
   // 2. HTTP 200 with truncated JSON -> SyntaxError -> UNREADABLE_RESPONSE, indeterminateSession: true
   const inv2 = new TestRunInventory('test-r11-case2');
-  const client2 = createHostedAdminClient({
+  const client2 = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: staticTransport({
@@ -5651,7 +5430,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
     })
   });
 
-  const res2 = await client2.verifyUserCredentials(seedEmail, seedPassword, { inventory: inv2 });
+  const res2 = await bindFixtureAdmin(inv2, client2).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv2 });
   assert.equal(res2.data, null);
   assert.ok(res2.error);
   assert.equal(res2.error.code, 'UNREADABLE_RESPONSE');
@@ -5662,7 +5441,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
 
   // 3. HTTP 200 with unreadable/non-JSON body (e.g. HTML gateway page)
   const inv3 = new TestRunInventory('test-r11-case3');
-  const client3 = createHostedAdminClient({
+  const client3 = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: staticTransport({
@@ -5672,7 +5451,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
     })
   });
 
-  const res3 = await client3.verifyUserCredentials(seedEmail, seedPassword, { inventory: inv3 });
+  const res3 = await bindFixtureAdmin(inv3, client3).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv3 });
   assert.equal(res3.data, null);
   assert.equal(res3.error?.code, 'UNREADABLE_RESPONSE');
   assert.equal(res3.indeterminateSession, true);
@@ -5680,7 +5459,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
 
   // 4. HTTP 200 with empty {} body -> MISSING_ACCESS_TOKEN, indeterminateSession: true
   const inv4 = new TestRunInventory('test-r11-case4');
-  const client4 = createHostedAdminClient({
+  const client4 = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: staticTransport({
@@ -5690,7 +5469,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
     })
   });
 
-  const res4 = await client4.verifyUserCredentials(seedEmail, seedPassword, { inventory: inv4 });
+  const res4 = await bindFixtureAdmin(inv4, client4).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv4 });
   assert.equal(res4.data, null);
   assert.equal(res4.error?.code, 'MISSING_ACCESS_TOKEN');
   assert.equal(res4.sessionRevocationFailed, true);
@@ -5699,7 +5478,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
 
   // 5. HTTP 200 with missing access_token (e.g. { user: { id: ... } })
   const inv5 = new TestRunInventory('test-r11-case5');
-  const client5 = createHostedAdminClient({
+  const client5 = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: staticTransport({
@@ -5709,14 +5488,14 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
     })
   });
 
-  const res5 = await client5.verifyUserCredentials(seedEmail, seedPassword, { inventory: inv5 });
+  const res5 = await bindFixtureAdmin(inv5, client5).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv5 });
   assert.equal(res5.data, null);
   assert.equal(res5.error?.code, 'MISSING_ACCESS_TOKEN');
   assert.equal(res5.indeterminateSession, true);
 
   // 6. HTTP 200 with malformed token (whitespace only or non-string)
   const inv6 = new TestRunInventory('test-r11-case6');
-  const client6 = createHostedAdminClient({
+  const client6 = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: staticTransport({
@@ -5726,7 +5505,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
     })
   });
 
-  const res6 = await client6.verifyUserCredentials(seedEmail, seedPassword, { inventory: inv6 });
+  const res6 = await bindFixtureAdmin(inv6, client6).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv6 });
   assert.equal(res6.data, null);
   assert.equal(res6.error?.code, 'MISSING_ACCESS_TOKEN');
   assert.equal(res6.indeterminateSession, true);
@@ -5734,7 +5513,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   // 7. HTTP 200 with token but no extractable session identity
   const inv7 = new TestRunInventory('test-r11-case7');
   const opaqueToken = 'opaque_provider_token_without_claims_or_periods';
-  const client7 = createHostedAdminClient({
+  const client7 = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: staticTransport({
@@ -5744,7 +5523,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
     })
   });
 
-  const res7 = await client7.verifyUserCredentials(seedEmail, seedPassword, { inventory: inv7 });
+  const res7 = await bindFixtureAdmin(inv7, client7).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv7 });
   assert.equal(res7.data, null);
   assert.equal(res7.error?.code, 'UNTRACKED_SESSION');
   assert.equal(res7.sessionRevocationFailed, true);
@@ -5752,7 +5531,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   assert.equal(inv7.untrackedSessionsCount, 1);
 
   // 8. HTTP 200 where server-side minting occurred but response is lost (network drop / timeout during fetch)
-  const client8 = createHostedAdminClient({
+  const client8 = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: errorTransport('ECONNRESET: Connection reset by peer')
@@ -5763,7 +5542,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   assert.ok(res8.error?.message.includes('VERIFICATION_NETWORK_ERROR'));
 
   // 9. Transport exception after request dispatch fails closed
-  const client9 = createHostedAdminClient({
+  const client9 = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: errorTransport('ETIMEDOUT: Socket connect timeout')
@@ -5774,7 +5553,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   assert.ok(res9.error?.message.includes('ETIMEDOUT'));
 
   // 10. HTTP 500 with uncertain mutation/session state fails closed
-  const client10 = createHostedAdminClient({
+  const client10 = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: staticTransport({
@@ -5794,7 +5573,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   const inv12 = new TestRunInventory('test-r11-case12');
   const sess12 = 'sess-r11-logout-503';
   const token12 = createMockJwt({ sub: seedUserId, session_id: sess12 });
-  const client12 = createHostedAdminClient({
+  const client12 = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: createDeterministicFixtureTransport({
@@ -5806,7 +5585,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
     })
   });
 
-  const res12 = await client12.verifyUserCredentials(seedEmail, seedPassword, { inventory: inv12 });
+  const res12 = await bindFixtureAdmin(inv12, client12).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv12 });
   assert.equal(res12.data, null);
   assert.equal(res12.sessionRevocationFailed, true);
   assert.equal(res12.error?.code, 'LOGOUT_FAILED');
@@ -5817,7 +5596,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   const inv13 = new TestRunInventory('test-r11-case13');
   const sess13 = 'sess-r11-logout-throw';
   const token13 = createMockJwt({ sub: seedUserId, session_id: sess13 });
-  const client13 = createHostedAdminClient({
+  const client13 = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: createDeterministicFixtureTransport({
@@ -5829,7 +5608,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
     })
   });
 
-  const res13 = await client13.verifyUserCredentials(seedEmail, seedPassword, { inventory: inv13 });
+  const res13 = await bindFixtureAdmin(inv13, client13).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv13 });
   assert.equal(res13.data, null);
   assert.equal(res13.sessionRevocationFailed, true);
   assert.equal(res13.error?.code, 'LOGOUT_EXCEPTION');
@@ -5846,32 +5625,9 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
     state: 'confirmed'
   });
 
-  let deleteUserCalls14 = 0;
-  const adminClient14 = {
-    getUserById: async () => ({ data: { user: { id: seedUserId } }, error: null }),
-    deleteUser: async () => {
-      deleteUserCalls14++;
-      return { data: null, error: null };
-    },
-    signOut: async () => ({ data: null, error: null }),
-    updateUserById: async () => ({ data: { user: { id: seedUserId } }, error: null }),
-    // verifyUserCredentials returns indeterminate response (unreadable/truncated JSON simulation)
-    verifyUserCredentials: async (email, pass, opts = {}) => {
-      opts.inventory?.registerUntrackedSession();
-      return {
-        data: null,
-        error: {
-          message: 'INDETERMINATE_VERIFICATION_RESPONSE: Verification login returned HTTP 200 but response body was unreadable or malformed JSON (R11-01)',
-          code: 'UNREADABLE_RESPONSE',
-          status: 200
-        },
-        sessionRevocationFailed: true,
-        indeterminateSession: true
-      };
-    }
-  };
+  const adminClient14 = fixtureSpec({ login: { status: 200, jsonError: 'Unexpected end of JSON', text: '{' } });
 
-  const rep14 = await inv14.executeCleanup({ adminClient: adminClient14, failClosed: false });
+  const rep14 = await inv14.executeCleanup({ adminClient: bindFixtureAdmin(inv14, adminClient14), failClosed: false });
   assert.equal(rep14.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.notEqual(rep14.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(inv14.seedCredentialRestorations[0].state, 'restoration_failed');
@@ -5880,12 +5636,12 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
 
   // failClosed: true throws CLEANUP_INCOMPLETE
   await assert.rejects(
-    inv14.executeCleanup({ adminClient: adminClient14, failClosed: true }),
+    inv14.executeCleanup({ adminClient: bindFixtureAdmin(inv14, adminClient14), failClosed: true }),
     /CLEANUP_INCOMPLETE/
   );
 
   // 15. A verification login never deletes the pre-existing seed user
-  assert.equal(deleteUserCalls14, 0, 'Seed user must NEVER be deleted during cleanup or verification failure');
+  assert.equal((fixtureOperationCalls(adminClient14, 'userDelete').length), 0, 'Seed user must NEVER be deleted during cleanup or verification failure');
   assert.equal(inv14.referencedUsers.has(seedUserId), true, 'Seed user must remain preserved in referencedUsers inventory');
 
   // 16. Sanitized reports never contain raw tokens or passwords
@@ -5916,12 +5672,12 @@ test('83. Task 06I-B1-H1-R11 (R11-02): Secret boundary enforcement, private clea
   ];
 
   for (const shape of failureShapes) {
-    const client = createHostedAdminClient({
+    const client = trackedHostedAdminClient({
       serviceRoleKey: validTestServiceRoleKey,
       projectRef: HARDCODED_TEMP_REF,
       fetchFn: staticTransport(shape)
     });
-    const res = await client.verifyUserCredentials(seedEmail, secretPassword, { inventory: invSec });
+    const res = await bindFixtureAdmin(invSec, client).verifyUserCredentials(seedEmail, secretPassword, { inventory: invSec });
     assert.ok(res.error, 'Must return error object');
     assert.equal(res.error.token, undefined, 'Error object must never contain a token property');
     const errStr = JSON.stringify(res.error);
@@ -5931,7 +5687,7 @@ test('83. Task 06I-B1-H1-R11 (R11-02): Secret boundary enforcement, private clea
   }
 
   // 2. Error objects from signOut never contain a token property or raw secret
-  const clientSignOutFail = createHostedAdminClient({
+  const clientSignOutFail = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
     fetchFn: staticTransport({
@@ -5957,43 +5713,14 @@ test('83. Task 06I-B1-H1-R11 (R11-02): Secret boundary enforcement, private clea
   });
 
   // Verification login succeeds but initial signOut fails
-  let initialSignOutAttempted = false;
-  let retrySignOutAttempted = false;
-  let retryAuthHeader = null;
 
-  const adminClientRetry = {
-    getUserById: async () => ({ data: { user: { id: seedUserId } }, error: null }),
-    deleteUser: async () => ({ data: null, error: null }),
-    updateUserById: async () => ({ data: { user: { id: seedUserId } }, error: null }),
-    verifyUserCredentials: async (email, pass, opts = {}) => {
-      // Register session privately in inventory
-      opts.inventory?.registerSession(secretSessionId, { accessToken: secretUserToken, source: 'verify_credentials' });
-      initialSignOutAttempted = true;
-      // Simulate initial signOut failure
-      return {
-        data: null,
-        error: {
-          message: 'VERIFICATION_SESSION_REVOCATION_FAILED: signOut failed: HTTP 503 Service Unavailable',
-          code: 'LOGOUT_FAILED',
-          sessionId: secretSessionId,
-          status: 503
-          // Notice: NO token in error!
-        },
-        sessionRevocationFailed: true
-      };
-    },
-    signOut: async (token, scope) => {
-      retrySignOutAttempted = true;
-      retryAuthHeader = token;
-      // Successful retry revocation
-      return { data: { scope }, error: null };
-    }
-  };
+  const adminClientRetry = fixtureSpec({ login: { status: 200, json: { access_token: secretUserToken, session_id: secretSessionId, user: { id: seedUserId } } }, routes: [{ urlIncludes: '/auth/v1/logout', times: 1, status: 503, json: { message: 'Service Unavailable' } }] });
 
-  const repRetry = await invRetry.executeCleanup({ adminClient: adminClientRetry, failClosed: false });
-  assert.equal(initialSignOutAttempted, true, 'Initial verification signOut should be attempted');
-  assert.equal(retrySignOutAttempted, true, 'Cleanup fallback retry should use privately retrieved token');
-  assert.equal(retryAuthHeader, secretUserToken, 'Fallback retry must use the privately stored token from inventory');
+  const repRetry = await invRetry.executeCleanup({ adminClient: bindFixtureAdmin(invRetry, adminClientRetry), failClosed: false });
+  assert.equal((fixtureOperationCalls(adminClientRetry, 'login').length > 0), true, 'Initial verification signOut should be attempted');
+  assert.equal((fixtureOperationCalls(adminClientRetry, 'logout').length > 0), true, 'Cleanup fallback retry should use privately retrieved token');
+  assert.equal((fixtureOperationCalls(adminClientRetry, 'logout').at(-1)?.headers.authorization?.replace(/^Bearer /, '')), secretUserToken, 'Fallback retry must use the privately stored token from inventory');
+  assert.equal(fixtureOperationCalls(adminClientRetry, 'logout').length, 2, 'Initial provider logout failure must be followed by a real retry');
   assert.equal(repRetry.status, 'CLEANUP_VERIFIED_SUCCESS', 'Successful retry cleanup must result in CLEANUP_VERIFIED_SUCCESS');
   assert.equal(invRetry.isSessionRevoked(secretSessionId), true, 'Session must be marked revoked after retry');
 
@@ -6007,13 +5734,9 @@ test('83. Task 06I-B1-H1-R11 (R11-02): Secret boundary enforcement, private clea
     state: 'confirmed'
   });
 
-  const adminClientFail = {
-    getUserById: async () => ({ data: { user: { id: seedUserId } }, error: null }),
-    deleteUser: async () => ({ data: null, error: null }),
-    updateUserById: async () => ({ data: null, error: { message: 'Database down' } })
-  };
+  const adminClientFail = fixtureSpec({ userUpdate: { status: 503, json: { message: 'Database down' } } });
 
-  const repFail = await invFail.executeCleanup({ adminClient: adminClientFail, failClosed: false });
+  const repFail = await invFail.executeCleanup({ adminClient: bindFixtureAdmin(invFail, adminClientFail), failClosed: false });
   assert.equal(repFail.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   // Passwords MUST remain preserved for emergency admin recovery
   assert.equal(invFail.seedCredentialRestorations[0].originalPassword, secretPassword, 'Failed cleanup must preserve original password in inventory');
@@ -6034,17 +5757,9 @@ test('83. Task 06I-B1-H1-R11 (R11-02): Secret boundary enforcement, private clea
     state: 'confirmed'
   });
 
-  const adminClientSuccess = {
-    getUserById: async () => ({ data: { user: { id: seedUserId } }, error: null }),
-    deleteUser: async () => ({ data: null, error: null }),
-    updateUserById: async () => ({ data: { user: { id: seedUserId } }, error: null }),
-    verifyUserCredentials: async () => ({
-      data: { verified: true, userId: seedUserId, sessionId: 'sess-succ' },
-      error: null
-    })
-  };
+  const adminClientSuccess = fixtureSpec();
 
-  const repSuccess = await invSuccess.executeCleanup({ adminClient: adminClientSuccess, failClosed: false });
+  const repSuccess = await invSuccess.executeCleanup({ adminClient: bindFixtureAdmin(invSuccess, adminClientSuccess), failClosed: false });
   assert.equal(repSuccess.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(invSuccess.seedCredentialRestorations[0].originalPassword, '[CLEARED]', 'Successful cleanup must clear original password');
   assert.equal(invSuccess.seedCredentialRestorations[0].targetPassword, '[CLEARED]', 'Successful cleanup must clear target password');
@@ -6097,7 +5812,7 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
   assert.equal(inv2.untrackedSessionsCount, 1);
   assert.equal(runCtx2.activeAccessToken, null);
   await assert.rejects(
-    inv2.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: true }),
+    inv2.executeCleanup({ adminClient: bindFixtureAdmin(inv2, defaultAdminFixture), failClosed: true }),
     /CLEANUP_INCOMPLETE/
   );
 
@@ -6295,44 +6010,38 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
     source: 'aborted_test',
     creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
   });
-  const mockAdmin12 = {
-    deleteUser: async () => ({ data: null, error: null }),
-    getUserById: async () => ({ data: null, error: { status: 404 } })
-  };
-  const rep12 = await inv12.executeCleanup({ adminClient: mockAdmin12, failClosed: true });
+  const mockAdmin12 = fixtureSpec();
+  const rep12 = await inv12.executeCleanup({ adminClient: bindFixtureAdmin(inv12, mockAdmin12), failClosed: true });
   assert.equal(rep12.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(rep12.usersDeleted, 1);
 
   // 13. Cleanup after unexpected provider response -> fails closed if indeterminate
   const inv13 = new TestRunInventory('test-r12-case13');
   inv13.registerUntrackedSession();
-  const rep13 = await inv13.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  const rep13 = await inv13.executeCleanup({ adminClient: bindFixtureAdmin(inv13, defaultAdminFixture), failClosed: false });
   assert.equal(rep13.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   await assert.rejects(
-    inv13.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: true }),
+    inv13.executeCleanup({ adminClient: bindFixtureAdmin(inv13, defaultAdminFixture), failClosed: true }),
     /CLEANUP_INCOMPLETE/
   );
 
   // 14. Cleanup with unresolved minted-session risk -> CLEANUP_FAILED_RESIDUAL_RESOURCES, throws CLEANUP_INCOMPLETE
   const inv14 = new TestRunInventory('test-r12-case14');
   inv14.registerUntrackedSession();
-  const rep14 = await inv14.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  const rep14 = await inv14.executeCleanup({ adminClient: bindFixtureAdmin(inv14, defaultAdminFixture), failClosed: false });
   assert.equal(rep14.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(rep14.residualResources.some(r => r.type === 'untracked_session'));
   await assert.rejects(
-    inv14.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: true }),
+    inv14.executeCleanup({ adminClient: bindFixtureAdmin(inv14, defaultAdminFixture), failClosed: true }),
     /CLEANUP_INCOMPLETE/
   );
 
   // 15. Cleanup with real provider-confirmed session revocation -> CLEANUP_VERIFIED_SUCCESS
   const inv15 = new TestRunInventory('test-r12-case15');
   const sess15 = 'sess-revoked-15';
-  inv15.registerSession(sess15, { source: 'test_session' });
-  const mockAdmin15 = {
-    signOut: async () => ({ data: null, error: null }),
-    invalidateSession: async (id) => ({ data: { id }, error: null })
-  };
-  const rep15 = await inv15.executeCleanup({ adminClient: mockAdmin15, failClosed: true });
+  inv15.registerSession(sess15, { accessToken: createMockJwt({ session_id: sess15 }),  source: 'test_session' });
+  const mockAdmin15 = fixtureSpec();
+  const rep15 = await inv15.executeCleanup({ adminClient: bindFixtureAdmin(inv15, mockAdmin15), failClosed: true });
   assert.equal(rep15.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(rep15.sessionsRevoked, 1);
 
@@ -6340,13 +6049,10 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
   const inv16 = new TestRunInventory('test-r12-case16');
   const seedUid16 = 'seed-uid-preserved-16';
   inv16.trackReferencedUser({ id: seedUid16, email: 'seed@proof.invalid', source: 'seed' });
-  let deleteCalls16 = 0;
-  const mockAdmin16 = {
-    deleteUser: async () => { deleteCalls16++; return { data: null, error: null }; }
-  };
-  const rep16 = await inv16.executeCleanup({ adminClient: mockAdmin16, failClosed: true });
+  const mockAdmin16 = fixtureSpec();
+  const rep16 = await inv16.executeCleanup({ adminClient: bindFixtureAdmin(inv16, mockAdmin16), failClosed: true });
   assert.equal(rep16.status, 'CLEANUP_VERIFIED_SUCCESS');
-  assert.equal(deleteCalls16, 0, 'deleteUser must never be called on referenced seed user');
+  assert.equal((fixtureOperationCalls(mockAdmin16, 'userDelete').length), 0, 'deleteUser must never be called on referenced seed user');
   assert.equal(inv16.referencedUsers.has(seedUid16), true);
 
   // 17. Credential and token redaction -> zero secrets in error objects or serialized reports
@@ -6418,11 +6124,8 @@ test('85. Task 06I-B1-H1-R13 (R13-01 & R13-02): Auth endpoint capabilities, in-f
   const res3 = await disp3({ id: 'BYPASS-03' }, { inventory: inv3 });
   assert.equal(res3.passed, false, 'Unexpected tokens on BYPASS-03 must fail probe');
   assert.equal(inv3.trackedSessions.has('sess-verify-3'), true, 'Unexpected session must be tracked for revocation');
-  const mockAdmin3 = {
-    signOut: async () => ({ data: null, error: null }),
-    invalidateSession: async (id) => ({ data: { id }, error: null })
-  };
-  const rep3 = await inv3.executeCleanup({ adminClient: mockAdmin3, failClosed: true });
+  const mockAdmin3 = fixtureSpec();
+  const rep3 = await inv3.executeCleanup({ adminClient: bindFixtureAdmin(inv3, mockAdmin3), failClosed: true });
   assert.equal(rep3.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(rep3.sessionsRevoked, 1);
 
@@ -6439,10 +6142,10 @@ test('85. Task 06I-B1-H1-R13 (R13-01 & R13-02): Auth endpoint capabilities, in-f
   assert.equal(res4.passed, false);
   assert.equal(res4.indeterminate_session, true);
   assert.equal(inv4.untrackedSessionsCount, 1);
-  const rep4 = await inv4.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  const rep4 = await inv4.executeCleanup({ adminClient: bindFixtureAdmin(inv4, defaultAdminFixture), failClosed: false });
   assert.equal(rep4.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   await assert.rejects(
-    inv4.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: true }),
+    inv4.executeCleanup({ adminClient: bindFixtureAdmin(inv4, defaultAdminFixture), failClosed: true }),
     /CLEANUP_INCOMPLETE/
   );
 
@@ -6459,7 +6162,7 @@ test('85. Task 06I-B1-H1-R13 (R13-01 & R13-02): Auth endpoint capabilities, in-f
   assert.equal(res5.passed, false);
   assert.equal(res5.indeterminate_session, true);
   assert.equal(inv5.untrackedSessionsCount, 1);
-  const rep5 = await inv5.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  const rep5 = await inv5.executeCleanup({ adminClient: bindFixtureAdmin(inv5, defaultAdminFixture), failClosed: false });
   assert.equal(rep5.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
 
   // 6. BYPASS-03 connection reset after request dispatch (ECONNRESET) -> indeterminate risk, cleanup fails closed
@@ -6472,7 +6175,7 @@ test('85. Task 06I-B1-H1-R13 (R13-01 & R13-02): Auth endpoint capabilities, in-f
   assert.equal(res6.passed, false);
   assert.equal(res6.indeterminate_session, true);
   assert.equal(inv6.untrackedSessionsCount, 1);
-  const rep6 = await inv6.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  const rep6 = await inv6.executeCleanup({ adminClient: bindFixtureAdmin(inv6, defaultAdminFixture), failClosed: false });
   assert.equal(rep6.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
 
   // 7. Operation registration and state transitions in TestRunInventory (R13-02)
@@ -6536,16 +6239,16 @@ test('85. Task 06I-B1-H1-R13 (R13-01 & R13-02): Auth endpoint capabilities, in-f
     return { passed: false, status: 500 };
   };
 
-  const runnerRes10 = await runHostedProbeRunner({
+  const runnerRes10 = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: HARDCODED_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
     inventory: inv10,
     mockDispatcher: delayedDispatcher10,
     probeTimeoutMs: 5, // 5ms timeout fires while 20ms delay is in flight
     sleepFn: async () => {}
-  });
+  }));
 
   assert.equal(runnerRes10.status, 'HALTED_ON_FAILURE');
   assert.ok(runnerRes10.cleanupReport, 'cleanupReport must be present');
@@ -6579,16 +6282,16 @@ test('85. Task 06I-B1-H1-R13 (R13-01 & R13-02): Auth endpoint capabilities, in-f
     }
     return { passed: false, status: 500 };
   };
-  const runnerRes11 = await runHostedProbeRunner({
+  const runnerRes11 = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: HARDCODED_TEMP_REF,
     argv: ['--live'],
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
-    adminClient: defaultMockAdminClient,
+    adminClient: defaultAdminFixture,
     inventory: inv11,
     mockDispatcher: hangingDispatcher11,
     probeTimeoutMs: 5,
     sleepFn: async () => {}
-  });
+  }));
   assert.equal(runnerRes11.status, 'HALTED_ON_FAILURE');
   assert.equal(runnerRes11.cleanupReport.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(runnerRes11.cleanupReport.residualResources.some(r => r.type === 'unresolved_in_flight_operation' || r.type === 'untracked_session'));
@@ -6606,7 +6309,7 @@ test('85. Task 06I-B1-H1-R13 (R13-01 & R13-02): Auth endpoint capabilities, in-f
   inv13.finalize();
   assert.equal(inv13.finalized, true);
   // Late registration attempts after finalization are recorded in postFinalizationMutations
-  inv13.registerSession('sess-late-13');
+  inv13.registerSession('sess-late-13', { accessToken: createMockJwt({ session_id: 'sess-late-13' }) });
   inv13.registerUntrackedSession();
   assert.equal(inv13.postFinalizationMutations.length, 2);
   assert.equal(inv13.isClean(), false);
@@ -6620,15 +6323,10 @@ test('85. Task 06I-B1-H1-R13 (R13-01 & R13-02): Auth endpoint capabilities, in-f
   const inv15 = new TestRunInventory('test-r13-case15');
   const seedUid15 = 'seed-uid-15';
   inv15.trackReferencedUser({ id: seedUid15, email: 'seed@proof.invalid', source: 'seed' });
-  let deleteCalls15 = 0;
-  const mockAdmin15 = {
-    deleteUser: async () => { deleteCalls15++; return { data: null, error: null }; },
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    signOut: async () => ({ data: null, error: null })
-  };
-  const rep15 = await inv15.executeCleanup({ adminClient: mockAdmin15, failClosed: true });
+  const mockAdmin15 = fixtureSpec();
+  const rep15 = await inv15.executeCleanup({ adminClient: bindFixtureAdmin(inv15, mockAdmin15), failClosed: true });
   assert.equal(rep15.status, 'CLEANUP_VERIFIED_SUCCESS');
-  assert.equal(deleteCalls15, 0, 'Seed user must never be deleted');
+  assert.equal((fixtureOperationCalls(mockAdmin15, 'userDelete').length), 0, 'Seed user must never be deleted');
   assert.equal(inv15.referencedUsers.has(seedUid15), true);
 
   // 16. Secret sanitization invariant -> zero tokens or passwords in sanitized output
@@ -6694,19 +6392,15 @@ test('86. Task 06I-B1-H1-R14 (R14-01 & R14-02): Asynchronous mutation tracking, 
   assert.equal(inv2.hasUnresolvedOperations(), true);
 
   // Attempt cleanup: must fail closed because unresolved mutation exists for seed user
-  let updateCalls2 = 0;
-  const mockAdmin2 = {
-    updateUserById: async () => { updateCalls2++; return { data: null, error: null }; },
-    verifyUserCredentials: async () => ({ data: { id: seedUid2 }, error: null })
-  };
-  const rep2 = await inv2.executeCleanup({ adminClient: mockAdmin2, failClosed: false });
+  const mockAdmin2 = fixtureSpec();
+  const rep2 = await inv2.executeCleanup({ adminClient: bindFixtureAdmin(inv2, mockAdmin2), failClosed: false });
   assert.equal(rep2.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(rep2.residualResources.some(r => r.type === 'unresolved_provider_mutation'));
   assert.ok(rep2.residualResources.some(r => r.error && r.error.includes('CONCURRENT_UNRESOLVED_PASSWORD_MUTATION')));
-  assert.equal(updateCalls2, 0, 'Cannot execute password restoration while concurrent mutation remains unresolved');
+  assert.equal((fixtureOperationCalls(mockAdmin2, 'userUpdate').length), 0, 'Cannot execute password restoration while concurrent mutation remains unresolved');
   assert.equal(inv2.isClean(), false);
   await assert.rejects(
-    inv2.executeCleanup({ adminClient: mockAdmin2, failClosed: true }),
+    inv2.executeCleanup({ adminClient: bindFixtureAdmin(inv2, mockAdmin2), failClosed: true }),
     /CLEANUP_INCOMPLETE/
   );
 
@@ -6734,7 +6428,7 @@ test('86. Task 06I-B1-H1-R14 (R14-01 & R14-02): Asynchronous mutation tracking, 
   assert.equal(res4.passed, false);
   assert.equal(res4.restoration_state, 'indeterminate');
   assert.equal(inv4.hasUnresolvedOperations(), true, 'Aborted password mutation must remain unresolved');
-  const rep4 = await inv4.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  const rep4 = await inv4.executeCleanup({ adminClient: bindFixtureAdmin(inv4, defaultAdminFixture), failClosed: false });
   assert.equal(rep4.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
 
   // 5. R14-02: BYPASS-02 transport reset (ECONNRESET) post-dispatch creates untracked user risk (PRRT_kwDOVtCmZc663HvU)
@@ -6749,11 +6443,11 @@ test('86. Task 06I-B1-H1-R14 (R14-01 & R14-02): Asynchronous mutation tracking, 
   assert.equal(res5.indeterminate_user_creation, true);
   assert.equal(inv5.untrackedUsersCount, 1, 'Transport reset on signup must register untracked user risk');
   assert.equal(inv5.isClean(), false);
-  const rep5 = await inv5.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  const rep5 = await inv5.executeCleanup({ adminClient: bindFixtureAdmin(inv5, defaultAdminFixture), failClosed: false });
   assert.equal(rep5.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(rep5.residualResources.some(r => r.type === 'unresolved_user_creation_risk'));
   await assert.rejects(
-    inv5.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: true }),
+    inv5.executeCleanup({ adminClient: bindFixtureAdmin(inv5, defaultAdminFixture), failClosed: true }),
     /CLEANUP_INCOMPLETE/
   );
 
@@ -6771,7 +6465,7 @@ test('86. Task 06I-B1-H1-R14 (R14-01 & R14-02): Asynchronous mutation tracking, 
   assert.equal(res6.passed, false);
   assert.equal(res6.indeterminate_user_creation, true);
   assert.equal(inv6.untrackedUsersCount, 1);
-  const rep6 = await inv6.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  const rep6 = await inv6.executeCleanup({ adminClient: bindFixtureAdmin(inv6, defaultAdminFixture), failClosed: false });
   assert.equal(rep6.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(rep6.residualResources.some(r => r.type === 'unresolved_user_creation_risk'));
 
@@ -6789,17 +6483,12 @@ test('86. Task 06I-B1-H1-R14 (R14-01 & R14-02): Asynchronous mutation tracking, 
   assert.equal(res7.passed, false);
   assert.equal(res7.indeterminate_user_creation, true);
   assert.equal(inv7.untrackedUsersCount, 1);
-  const rep7 = await inv7.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  const rep7 = await inv7.executeCleanup({ adminClient: bindFixtureAdmin(inv7, defaultAdminFixture), failClosed: false });
   assert.equal(rep7.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
 
   // 8. R14-02: BYPASS-02 unexpected success with concrete user ID -> deletion verified by exact ID
   const inv8 = new TestRunInventory('test-r14-case8');
-  let deletedId8 = null;
-  const mockAdmin8 = {
-    deleteUser: async (id) => { deletedId8 = id; return { data: null, error: null }; },
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    signOut: async () => ({ data: null, error: null })
-  };
+  const mockAdmin8 = fixtureSpec();
   const disp8 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv8,
@@ -6814,25 +6503,20 @@ test('86. Task 06I-B1-H1-R14 (R14-01 & R14-02): Asynchronous mutation tracking, 
   assert.equal(inv8.createdUsers.has('unexpected-user-uid-8'), false, 'Unexpected user without affirmative creation proof must NOT be marked created');
   assert.equal(inv8.unverifiedUsers.has('unexpected-user-uid-8'), true, 'Unexpected user must be tracked in unverifiedUsers');
   assert.equal(inv8.getUserOwnership('unexpected-user-uid-8'), USER_OWNERSHIP.OWNERSHIP_UNKNOWN);
-  const rep8 = await inv8.executeCleanup({ adminClient: mockAdmin8, failClosed: false });
+  const rep8 = await inv8.executeCleanup({ adminClient: bindFixtureAdmin(inv8, mockAdmin8), failClosed: false });
   assert.equal(rep8.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
-  assert.equal(deletedId8, null, 'Unproven user must NEVER be deleted during cleanup');
+  assert.equal((fixtureOperationCalls(mockAdmin8, 'userDelete').at(-1)?.pathname.split('/').map(decodeURIComponent).at(-1) ?? null), null, 'Unproven user must NEVER be deleted during cleanup');
   assert.equal(rep8.usersDeleted, 0);
 
   // 9. R14-02: Anti-deletion security boundary -> referenced/seed users never deleted on email equality
   const inv9 = new TestRunInventory('test-r14-case9');
   const seedEmail9 = 'seed9@proof.invalid';
   inv9.trackReferencedUser({ id: 'seed-uid-9', email: seedEmail9, source: 'seed' });
-  let deleteCalled9 = false;
-  const mockAdmin9 = {
-    deleteUser: async () => { deleteCalled9 = true; return { data: null, error: null }; },
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    signOut: async () => ({ data: null, error: null })
-  };
+  const mockAdmin9 = fixtureSpec();
   // Dispatcher returns indeterminate failure on same email
   inv9.registerUntrackedUser();
-  const rep9 = await inv9.executeCleanup({ adminClient: mockAdmin9, failClosed: false });
-  assert.equal(deleteCalled9, false, 'Referenced user must never be deleted based on email equality');
+  const rep9 = await inv9.executeCleanup({ adminClient: bindFixtureAdmin(inv9, mockAdmin9), failClosed: false });
+  assert.equal((fixtureOperationCalls(mockAdmin9, 'userDelete').length > 0), false, 'Referenced user must never be deleted based on email equality');
   assert.equal(rep9.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
 
   // 10. Multi-operation lifecycle with mixed capabilities: one settles, others unresolved
@@ -6846,7 +6530,7 @@ test('86. Task 06I-B1-H1-R14 (R14-01 & R14-02): Asynchronous mutation tracking, 
   assert.equal(inv10.hasUnresolvedOperations(), true);
   const unresolved10 = inv10.getUnresolvedOperations();
   assert.equal(unresolved10.length, 2);
-  const rep10 = await inv10.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  const rep10 = await inv10.executeCleanup({ adminClient: bindFixtureAdmin(inv10, defaultAdminFixture), failClosed: false });
   assert.equal(rep10.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(rep10.residualResources.some(r => r.type === 'unresolved_user_creation'));
   assert.ok(rep10.residualResources.some(r => r.type === 'unresolved_provider_mutation'));
@@ -6931,7 +6615,7 @@ test('87. Task 06I-B1-H1-R15 (R15-01 & R15-02): OTP user-creation tracking, capa
   assert.equal(inFlightCaptured3[0].canMintSession, false);
   assert.equal(inv3.hasUnresolvedOperations(), false, 'Operation must settle after response');
   assert.equal(inv3.untrackedUsersCount, 0);
-  const rep3 = await inv3.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: true });
+  const rep3 = await inv3.executeCleanup({ adminClient: bindFixtureAdmin(inv3, defaultAdminFixture), failClosed: true });
   assert.equal(rep3.status, 'CLEANUP_VERIFIED_SUCCESS');
 
   // 4. R15-01: BYPASS-01 post-dispatch transport error (ECONNRESET) -> registers untracked user risk, fails cleanup closed
@@ -6945,11 +6629,11 @@ test('87. Task 06I-B1-H1-R15 (R15-01 & R15-02): OTP user-creation tracking, capa
   assert.equal(res4.passed, false, 'Transport failure must fail probe');
   assert.equal(res4.indeterminate_user_creation, true);
   assert.equal(inv4.untrackedUsersCount, 1, 'Untracked user creation risk must be registered');
-  const rep4 = await inv4.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  const rep4 = await inv4.executeCleanup({ adminClient: bindFixtureAdmin(inv4, defaultAdminFixture), failClosed: false });
   assert.equal(rep4.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(rep4.residualResources.some(r => r.type === 'unresolved_user_creation_risk'));
   await assert.rejects(
-    inv4.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: true }),
+    inv4.executeCleanup({ adminClient: bindFixtureAdmin(inv4, defaultAdminFixture), failClosed: true }),
     /CLEANUP_INCOMPLETE/
   );
 
@@ -6966,7 +6650,7 @@ test('87. Task 06I-B1-H1-R15 (R15-01 & R15-02): OTP user-creation tracking, capa
   inv5.markProbeOperationsTimedOut('BYPASS-01', 'PROBE_TIMEOUT: 50ms exceeded');
   assert.equal(op5.state, 'TIMED_OUT_UNRESOLVED');
   assert.equal(inv5.hasUnresolvedOperations(), true);
-  const rep5 = await inv5.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  const rep5 = await inv5.executeCleanup({ adminClient: bindFixtureAdmin(inv5, defaultAdminFixture), failClosed: false });
   assert.equal(rep5.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(rep5.residualResources.some(r => r.type === 'unresolved_user_creation'));
   assert.ok(rep5.residualResources.some(r => r.type === 'unresolved_provider_mutation'));
@@ -6982,7 +6666,7 @@ test('87. Task 06I-B1-H1-R15 (R15-01 & R15-02): OTP user-creation tracking, capa
   assert.equal(res6.passed, false, 'HTTP 200 empty body on user-creation endpoint must fail probe');
   assert.equal(res6.indeterminate_user_creation, true);
   assert.equal(inv6.untrackedUsersCount, 1);
-  const rep6 = await inv6.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  const rep6 = await inv6.executeCleanup({ adminClient: bindFixtureAdmin(inv6, defaultAdminFixture), failClosed: false });
   assert.equal(rep6.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(rep6.residualResources.some(r => r.type === 'unresolved_user_creation_risk'));
 
@@ -7001,18 +6685,13 @@ test('87. Task 06I-B1-H1-R15 (R15-01 & R15-02): OTP user-creation tracking, capa
   assert.equal(res7.passed, false);
   assert.equal(res7.indeterminate_user_creation, true);
   assert.equal(inv7.untrackedUsersCount, 1);
-  const rep7 = await inv7.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  const rep7 = await inv7.executeCleanup({ adminClient: bindFixtureAdmin(inv7, defaultAdminFixture), failClosed: false });
   assert.equal(rep7.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(rep7.residualResources.some(r => r.type === 'unresolved_user_creation_risk'));
 
   // 8. R15-01: BYPASS-01 unexpected concrete user creation -> tracked in createdUsers, deleted on cleanup
   const inv8 = new TestRunInventory('test-r15-case8');
-  let deletedId8 = null;
-  const mockAdmin8 = {
-    deleteUser: async (id) => { deletedId8 = id; return { data: null, error: null }; },
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    signOut: async () => ({ data: null, error: null })
-  };
+  const mockAdmin8 = fixtureSpec();
   const disp8 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv8,
@@ -7032,9 +6711,9 @@ test('87. Task 06I-B1-H1-R15 (R15-01 & R15-02): OTP user-creation tracking, capa
   const outcomeValidation8 = validateProbeOutcome(HOSTED_PROBE_SPECIFICATIONS['BYPASS-01'], res8);
   assert.equal(outcomeValidation8.passed, false);
   assert.match(outcomeValidation8.reason, /SECURITY_INVARIANT_VIOLATION.*created user/);
-  const rep8 = await inv8.executeCleanup({ adminClient: mockAdmin8, failClosed: false });
+  const rep8 = await inv8.executeCleanup({ adminClient: bindFixtureAdmin(inv8, mockAdmin8), failClosed: false });
   assert.equal(rep8.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
-  assert.equal(deletedId8, null, 'Unproven user must NEVER be deleted during cleanup');
+  assert.equal((fixtureOperationCalls(mockAdmin8, 'userDelete').at(-1)?.pathname.split('/').map(decodeURIComponent).at(-1) ?? null), null, 'Unproven user must NEVER be deleted during cleanup');
   assert.ok(rep8.residualResources.some(r => (r.type === 'unresolved_user_ownership' || r.type === 'user') && (r.reason === 'UNRESOLVED_USER_OWNERSHIP' || r.error?.includes('UNRESOLVED_USER_OWNERSHIP'))));
   assert.equal(rep8.usersDeleted, 0);
 
@@ -7042,12 +6721,7 @@ test('87. Task 06I-B1-H1-R15 (R15-01 & R15-02): OTP user-creation tracking, capa
   const inv9 = new TestRunInventory('test-r15-case9');
   const seedEmail9 = 'seed-otp9@proof.invalid';
   inv9.trackReferencedUser({ id: 'seed-otp-uid-9', email: seedEmail9, source: 'seed' });
-  let deleteCalled9 = false;
-  const mockAdmin9 = {
-    deleteUser: async () => { deleteCalled9 = true; return { data: null, error: null }; },
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    signOut: async () => ({ data: null, error: null })
-  };
+  const mockAdmin9 = fixtureSpec();
   // Dispatcher receives same seed user id on unexpected response
   const disp9 = createHostedDispatcher({
     anonKey: validTestAnonKey,
@@ -7062,30 +6736,26 @@ test('87. Task 06I-B1-H1-R15 (R15-01 & R15-02): OTP user-creation tracking, capa
   assert.equal(res9.passed, false);
   assert.equal(inv9.isUserReferenced('seed-otp-uid-9'), true);
   assert.equal(inv9.isUserCreated('seed-otp-uid-9'), false, 'Seed user must NOT be registered in createdUsers');
-  const rep9 = await inv9.executeCleanup({ adminClient: mockAdmin9, failClosed: false });
-  assert.equal(deleteCalled9, false, 'Referenced seed user must NEVER be deleted');
+  const rep9 = await inv9.executeCleanup({ adminClient: bindFixtureAdmin(inv9, mockAdmin9), failClosed: false });
+  assert.equal((fixtureOperationCalls(mockAdmin9, 'userDelete').length > 0), false, 'Referenced seed user must NEVER be deleted');
 
   // 10. R15-01: Admin deletion failure on unexpected user -> fails closed with residual resources
   const inv10 = new TestRunInventory('test-r15-case10');
-  const mockAdmin10 = {
-    deleteUser: async () => ({ error: { message: 'DATABASE_ERROR_500' } }),
-    getUserById: async () => ({ data: { id: 'orphaned-uid-10' }, error: null }),
-    signOut: async () => ({ data: null, error: null })
-  };
+  const mockAdmin10 = fixtureSpec({ userDelete: { status: 500, json: { message: 'DATABASE_ERROR_500' } }, userGet: { status: 200, json: { id: 'orphaned-uid-10' } } });
   inv10.registerCreatedUser({
     id: 'orphaned-uid-10',
     email: 'orphaned10@proof.invalid',
     source: 'BYPASS-01_unexpected_signup',
     creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
   });
-  const rep10 = await inv10.executeCleanup({ adminClient: mockAdmin10, failClosed: false });
+  const rep10 = await inv10.executeCleanup({ adminClient: bindFixtureAdmin(inv10, mockAdmin10), failClosed: false });
   assert.equal(rep10.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(rep10.residualUsers.some(u => u.id === 'orphaned-uid-10'));
 
   // 11. R15-01: Settlement after finalization captured in postFinalizationMutations
   const inv11 = new TestRunInventory('test-r15-case11');
   const op11 = inv11.registerInFlightOperation({ probeId: 'BYPASS-01', canCreateUser: true });
-  await inv11.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  await inv11.executeCleanup({ adminClient: bindFixtureAdmin(inv11, defaultAdminFixture), failClosed: false });
   assert.equal(inv11.finalized, true);
   inv11.settleInFlightOperation(op11.opId, { observed: { classification: 'AUTH_RESPONSE_PROVIDER_FAILURE' } });
   assert.equal(inv11.postFinalizationMutations.length, 1);
@@ -7265,12 +6935,8 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
   const inv8 = new TestRunInventory('test-r16-case8');
   const sess8Token = createMockJwt({ session_id: 'sess-8', sub: 'u8' });
   inv8.registerSession('sess-8', { accessToken: sess8Token });
-  const mockAdmin8 = {
-    signOut: async () => ({ error: { message: 'Internal Server Error 500' } }),
-    deleteUser: async () => ({ data: null, error: null }),
-    getUserById: async () => ({ data: null, error: { status: 404 } })
-  };
-  const rep8 = await inv8.executeCleanup({ adminClient: mockAdmin8, failClosed: false });
+  const mockAdmin8 = fixtureSpec({ logout: { status: 500, json: { message: 'Internal Server Error 500' } } });
+  const rep8 = await inv8.executeCleanup({ adminClient: bindFixtureAdmin(inv8, mockAdmin8), failClosed: false });
   assert.equal(rep8.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(rep8.residualResources.some(r => r.type === 'session' && (r.error?.includes('500') || r.error?.includes('Internal Server Error'))));
 
@@ -7282,14 +6948,9 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
     creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
   });
   inv9.registerUntrackedSession();
-  let user9Deleted = false;
-  const mockAdmin9 = {
-    deleteUser: async () => { user9Deleted = true; return { data: null, error: null }; },
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    signOut: async () => ({ data: null, error: null })
-  };
-  const rep9 = await inv9.executeCleanup({ adminClient: mockAdmin9, failClosed: false });
-  assert.equal(user9Deleted, true, 'Verified created user was deleted');
+  const mockAdmin9 = fixtureSpec();
+  const rep9 = await inv9.executeCleanup({ adminClient: bindFixtureAdmin(inv9, mockAdmin9), failClosed: false });
+  assert.equal((fixtureOperationCalls(mockAdmin9, 'userDelete').length > 0), true, 'Verified created user was deleted');
   assert.equal(rep9.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES', 'Untracked session prevents CLEANUP_VERIFIED_SUCCESS');
   assert.ok(rep9.residualResources.some(r => (r.type === 'session' || r.type === 'untracked_session') && (r.reason === 'UNTRACKED_SESSION_REMAINS' || r.error?.includes('UNTRACKED'))));
 
@@ -7297,7 +6958,7 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
   const inv10 = new TestRunInventory('test-r16-case10');
   inv10.registerUntrackedSession();
   assert.equal(inv10.isClean(), false);
-  const rep10 = await inv10.executeCleanup({ adminClient: defaultMockAdminClient, failClosed: false });
+  const rep10 = await inv10.executeCleanup({ adminClient: bindFixtureAdmin(inv10, defaultAdminFixture), failClosed: false });
   assert.notEqual(rep10.status, 'CLEANUP_VERIFIED_SUCCESS');
 
   // --- Section 4: R16-02 Proven User Ownership Tests ---
@@ -7307,12 +6968,7 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
   const seedUid11 = 'seed-user-uuid-11';
   const seedEmail11 = 'seed-user-11@proof.invalid';
   inv11.protectSeedIdentity({ id: seedUid11, email: seedEmail11 });
-  let delete11Called = false;
-  const mockAdmin11 = {
-    deleteUser: async () => { delete11Called = true; return { data: null, error: null }; },
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    signOut: async () => ({ data: null, error: null })
-  };
+  const mockAdmin11 = fixtureSpec();
   const disp11 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv11,
@@ -7326,20 +6982,15 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
   assert.equal(res11.passed, false);
   assert.equal(inv11.getUserOwnership(seedUid11), USER_OWNERSHIP.PRE_EXISTING_REFERENCED);
   assert.equal(inv11.createdUsers.has(seedUid11), false);
-  await inv11.executeCleanup({ adminClient: mockAdmin11, failClosed: false });
-  assert.equal(delete11Called, false, 'Pre-existing seed user in BYPASS-01 must NEVER be deleted');
+  await inv11.executeCleanup({ adminClient: bindFixtureAdmin(inv11, mockAdmin11), failClosed: false });
+  assert.equal((fixtureOperationCalls(mockAdmin11, 'userDelete').length > 0), false, 'Pre-existing seed user in BYPASS-01 must NEVER be deleted');
 
   // 12. BYPASS-02 returns an existing seed user ID
   const inv12 = new TestRunInventory('test-r16-case12');
   const seedUid12 = 'seed-user-uuid-12';
   const seedEmail12 = 'seed-user-12@proof.invalid';
   inv12.protectSeedIdentity({ id: seedUid12, email: seedEmail12 });
-  let delete12Called = false;
-  const mockAdmin12 = {
-    deleteUser: async () => { delete12Called = true; return { data: null, error: null }; },
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    signOut: async () => ({ data: null, error: null })
-  };
+  const mockAdmin12 = fixtureSpec();
   const disp12 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv12,
@@ -7353,17 +7004,12 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
   assert.equal(res12.passed, false);
   assert.equal(inv12.getUserOwnership(seedUid12), USER_OWNERSHIP.PRE_EXISTING_REFERENCED);
   assert.equal(inv12.createdUsers.has(seedUid12), false);
-  await inv12.executeCleanup({ adminClient: mockAdmin12, failClosed: false });
-  assert.equal(delete12Called, false, 'Pre-existing seed user in BYPASS-02 must NEVER be deleted');
+  await inv12.executeCleanup({ adminClient: bindFixtureAdmin(inv12, mockAdmin12), failClosed: false });
+  assert.equal((fixtureOperationCalls(mockAdmin12, 'userDelete').length > 0), false, 'Pre-existing seed user in BYPASS-02 must NEVER be deleted');
 
   // 13. Seed user is not previously registered in inventory (protected via seed option in dispatcher)
   const inv13 = new TestRunInventory('test-r16-case13');
-  let delete13Called = false;
-  const mockAdmin13 = {
-    deleteUser: async () => { delete13Called = true; return { data: null, error: null }; },
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    signOut: async () => ({ data: null, error: null })
-  };
+  const mockAdmin13 = fixtureSpec();
   const disp13 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv13,
@@ -7378,18 +7024,13 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
   assert.equal(res13.passed, false);
   assert.equal(inv13.getUserOwnership('seed-uid-13'), USER_OWNERSHIP.PRE_EXISTING_REFERENCED);
   assert.equal(inv13.isUserCreated('seed-uid-13'), false);
-  await inv13.executeCleanup({ adminClient: mockAdmin13, failClosed: false });
-  assert.equal(delete13Called, false, 'Seed user known only via dispatcher option must NEVER be deleted');
+  await inv13.executeCleanup({ adminClient: bindFixtureAdmin(inv13, mockAdmin13), failClosed: false });
+  assert.equal((fixtureOperationCalls(mockAdmin13, 'userDelete').length > 0), false, 'Seed user known only via dispatcher option must NEVER be deleted');
 
   // 14. Different email returns same pre-existing user ID
   const inv14 = new TestRunInventory('test-r16-case14');
   inv14.protectSeedIdentity({ id: 'seed-fixed-uid', email: 'original-seed@proof.invalid' });
-  let delete14Called = false;
-  const mockAdmin14 = {
-    deleteUser: async () => { delete14Called = true; return { data: null, error: null }; },
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    signOut: async () => ({ data: null, error: null })
-  };
+  const mockAdmin14 = fixtureSpec();
   const disp14 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv14,
@@ -7403,17 +7044,12 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
   assert.equal(res14.passed, false);
   assert.equal(inv14.isUserReferenced('seed-fixed-uid'), true);
   assert.equal(inv14.isUserCreated('seed-fixed-uid'), false);
-  await inv14.executeCleanup({ adminClient: mockAdmin14, failClosed: false });
-  assert.equal(delete14Called, false, 'Pre-existing seed ID returned with different email must NEVER be deleted');
+  await inv14.executeCleanup({ adminClient: bindFixtureAdmin(inv14, mockAdmin14), failClosed: false });
+  assert.equal((fixtureOperationCalls(mockAdmin14, 'userDelete').length > 0), false, 'Pre-existing seed ID returned with different email must NEVER be deleted');
 
   // 15. Unknown user ID appears in successful signup response -> classified as OWNERSHIP_UNKNOWN
   const inv15 = new TestRunInventory('test-r16-case15');
-  let delete15Called = false;
-  const mockAdmin15 = {
-    deleteUser: async () => { delete15Called = true; return { data: null, error: null }; },
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    signOut: async () => ({ data: null, error: null })
-  };
+  const mockAdmin15 = fixtureSpec();
   const disp15 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv15,
@@ -7427,8 +7063,8 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
   assert.equal(inv15.getUserOwnership('unknown-uid-15'), USER_OWNERSHIP.OWNERSHIP_UNKNOWN);
   assert.equal(inv15.unverifiedUsers.has('unknown-uid-15'), true);
   assert.equal(inv15.createdUsers.has('unknown-uid-15'), false);
-  const rep15 = await inv15.executeCleanup({ adminClient: mockAdmin15, failClosed: false });
-  assert.equal(delete15Called, false, 'Unproven user must NEVER trigger deleteUser');
+  const rep15 = await inv15.executeCleanup({ adminClient: bindFixtureAdmin(inv15, mockAdmin15), failClosed: false });
+  assert.equal((fixtureOperationCalls(mockAdmin15, 'userDelete').length > 0), false, 'Unproven user must NEVER trigger deleteUser');
   assert.equal(rep15.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(rep15.residualResources.some(r => (r.type === 'unresolved_user_ownership' || r.type === 'user') && (r.reason === 'UNRESOLVED_USER_OWNERSHIP' || r.error?.includes('UNRESOLVED_USER_OWNERSHIP'))));
 
@@ -7445,14 +7081,9 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
   assert.equal(inv16.getUserOwnership('user-fake-proof-16'), USER_OWNERSHIP.CREATION_INDETERMINATE);
   assert.equal(inv16.createdUsers.has('user-fake-proof-16'), false);
   assert.equal(inv16.unverifiedUsers.has('user-fake-proof-16'), true);
-  let delete16Called = false;
-  const mockAdmin16 = {
-    deleteUser: async () => { delete16Called = true; return { data: null, error: null }; },
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    signOut: async () => ({ data: null, error: null })
-  };
-  const rep16 = await inv16.executeCleanup({ adminClient: mockAdmin16, failClosed: false });
-  assert.equal(delete16Called, false, 'User with invalid proof must NEVER be deleted');
+  const mockAdmin16 = fixtureSpec();
+  const rep16 = await inv16.executeCleanup({ adminClient: bindFixtureAdmin(inv16, mockAdmin16), failClosed: false });
+  assert.equal((fixtureOperationCalls(mockAdmin16, 'userDelete').length > 0), false, 'User with invalid proof must NEVER be deleted');
   assert.equal(rep16.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
 
   // 17. Trusted creation proof establishes a genuinely new user -> safe deletion & verified success
@@ -7466,14 +7097,9 @@ test('88. Task 06I-B1-H1-R16: Signup session tracking and proven user ownership 
   });
   assert.equal(inv17.getUserOwnership('user-proven-17'), USER_OWNERSHIP.RUN_CREATED_VERIFIED);
   assert.equal(inv17.createdUsers.has('user-proven-17'), true);
-  let delete17CalledWith = null;
-  const mockAdmin17 = {
-    deleteUser: async (id) => { delete17CalledWith = id; return { data: null, error: null }; },
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    signOut: async () => ({ data: null, error: null })
-  };
-  const rep17 = await inv17.executeCleanup({ adminClient: mockAdmin17, failClosed: true });
-  assert.equal(delete17CalledWith, 'user-proven-17', 'Affirmatively verified user must be deleted');
+  const mockAdmin17 = fixtureSpec();
+  const rep17 = await inv17.executeCleanup({ adminClient: bindFixtureAdmin(inv17, mockAdmin17), failClosed: true });
+  assert.equal((fixtureOperationCalls(mockAdmin17, 'userDelete').at(-1)?.pathname.split('/').map(decodeURIComponent).at(-1)), 'user-proven-17', 'Affirmatively verified user must be deleted');
   assert.equal(rep17.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(rep17.usersDeleted, 1);
 });
@@ -7504,12 +7130,8 @@ test('89. Task 06I-B1-H1-R17: Seed identity proof, unexpected token tracking, an
   assert.equal(inv1A.untrackedSessionsCount, 1, 'Untracked session obligation MUST be registered regardless of canMintSession: false');
 
   // Cleanup must fail closed due to untracked session obligation
-  const mockAdmin1A = {
-    deleteUser: async () => ({ data: null, error: null }),
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    signOut: async () => ({ data: null, error: null })
-  };
-  const rep1A = await inv1A.executeCleanup({ adminClient: mockAdmin1A, failClosed: false });
+  const mockAdmin1A = fixtureSpec();
+  const rep1A = await inv1A.executeCleanup({ adminClient: bindFixtureAdmin(inv1A, mockAdmin1A), failClosed: false });
   assert.equal(rep1A.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(rep1A.residualResources.some(r => r.type === 'untracked_session'));
 
@@ -7567,14 +7189,9 @@ test('89. Task 06I-B1-H1-R17: Seed identity proof, unexpected token tracking, an
   assert.equal(res1D.classification, 'AUTH_RESPONSE_UNEXPECTED_TOKEN');
   assert.equal(res1D.sessionId, 'extracted-sess-1d');
   assert.equal(inv1D.trackedSessions.has('extracted-sess-1d'), true, 'Extractable session MUST be registered in inventory');
-  let signOutCalledWith = null;
-  const mockAdmin1D = {
-    deleteUser: async () => ({ data: null, error: null }),
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    signOut: async (id) => { signOutCalledWith = id; return { data: null, error: null }; }
-  };
-  const rep1D = await inv1D.executeCleanup({ adminClient: mockAdmin1D, failClosed: false });
-  assert.equal(signOutCalledWith, validJwt1D, 'Cleanup must attempt signOut with access token for the unexpected session');
+  const mockAdmin1D = fixtureSpec();
+  const rep1D = await inv1D.executeCleanup({ adminClient: bindFixtureAdmin(inv1D, mockAdmin1D), failClosed: false });
+  assert.equal((fixtureOperationCalls(mockAdmin1D, 'logout').at(-1)?.headers.authorization?.replace(/^Bearer /, '')), validJwt1D, 'Cleanup must attempt signOut with access token for the unexpected session');
 
   // 1E. observeAndTrackSessionTokens records untracked session for token without session ID
   const inv1E = new TestRunInventory('test-r17-1e');
@@ -7734,12 +7351,7 @@ test('89. Task 06I-B1-H1-R17: Seed identity proof, unexpected token tracking, an
   // Must NOT classify as seed, must record in unverifiedUsers, must NOT delete, must fail cleanup closed!
   const plannedTestEmail = 'target-user@proof.invalid';
   const inv3D = new TestRunInventory('test-r17-3d');
-  let delete3DCalled = false;
-  const mockAdmin3D = {
-    deleteUser: async () => { delete3DCalled = true; return { data: null, error: null }; },
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    signOut: async () => ({ data: null, error: null })
-  };
+  const mockAdmin3D = fixtureSpec();
 
   const disp3D = createHostedDispatcher({
     anonKey: validTestAnonKey,
@@ -7761,19 +7373,14 @@ test('89. Task 06I-B1-H1-R17: Seed identity proof, unexpected token tracking, an
   assert.equal(inv3D.getUserOwnership('unexpected-new-user-id-89'), USER_OWNERSHIP.OWNERSHIP_UNKNOWN);
 
   // Execute cleanup:
-  const rep3D = await inv3D.executeCleanup({ adminClient: mockAdmin3D, failClosed: false });
-  assert.equal(delete3DCalled, false, 'Unproven user must NEVER be deleted');
+  const rep3D = await inv3D.executeCleanup({ adminClient: bindFixtureAdmin(inv3D, mockAdmin3D), failClosed: false });
+  assert.equal((fixtureOperationCalls(mockAdmin3D, 'userDelete').length > 0), false, 'Unproven user must NEVER be deleted');
   assert.equal(rep3D.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES', 'Cleanup MUST fail closed with residual resources');
   assert.notEqual(rep3D.status, 'CLEANUP_VERIFIED_SUCCESS', 'Cleanup must NEVER return success when unexpected user survives');
 
   // 3E. Same regression on BYPASS-02 (native signup)
   const inv3E = new TestRunInventory('test-r17-3e');
-  let delete3ECalled = false;
-  const mockAdmin3E = {
-    deleteUser: async () => { delete3ECalled = true; return { data: null, error: null }; },
-    getUserById: async () => ({ data: null, error: { status: 404 } }),
-    signOut: async () => ({ data: null, error: null })
-  };
+  const mockAdmin3E = fixtureSpec();
 
   const disp3E = createHostedDispatcher({
     anonKey: validTestAnonKey,
@@ -7788,8 +7395,8 @@ test('89. Task 06I-B1-H1-R17: Seed identity proof, unexpected token tracking, an
   const res3E = await disp3E({ id: 'BYPASS-02', testUser: plannedTestEmail });
   assert.equal(res3E.passed, false);
   assert.equal(inv3E.unverifiedUsers.has('unexpected-signup-user-id-89'), true);
-  const rep3E = await inv3E.executeCleanup({ adminClient: mockAdmin3E, failClosed: false });
-  assert.equal(delete3ECalled, false);
+  const rep3E = await inv3E.executeCleanup({ adminClient: bindFixtureAdmin(inv3E, mockAdmin3E), failClosed: false });
+  assert.equal((fixtureOperationCalls(mockAdmin3E, 'userDelete').length > 0), false);
   assert.equal(rep3E.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
 });
 
@@ -7833,13 +7440,13 @@ test('90. Task 06I-B1-H3 (H3-01): Controlled Subset Runner — Valid 10-probe su
   assert.deepEqual(planSmall.selectedProbeIds, ['HOOK-01', 'HOOK-02']);
 
   // 4. DRY_RUN mode execution with subset
-  const dryRunRes = await runHostedProbeRunner({
+  const dryRunRes = await runHostedProbeRunner(fixtureRunnerOptions({
     projectRef: HARDCODED_TEMP_REF,
     argv: ['--dry-run'],
     env: {},
     selectedProbeIds: SUPPORTED_SUBSET_PROBE_IDS,
     runId: 'run-dryrun-90'
-  });
+  }));
   assert.equal(dryRunRes.status, 'DRY_RUN_COMPLETED');
   assert.equal(dryRunRes.mode, 'DRY_RUN');
   assert.equal(dryRunRes.zeroNetworkRequestsDispatched, true);
@@ -8188,37 +7795,16 @@ test('94. Task 06I-B1-H3 (H3-03): Cleanup Ordering — Storage fixture deletion 
   });
 
   // Register run-scoped storage fixture with verified state and deletion eligibility
-  inv.registerStorageFixture({
-    bucket: STORAGE_PROBE_BUCKET,
-    path: getStorageProbeObjectPath(runId),
-    ownerId: testUserId,
-    bytes: 25,
-    status: 'VERIFIED',
-    lifecycleState: 'RUN_CREATED_VERIFIED',
-    deletionEligible: true
-  });
+  await r5ProvisionedFixture(inv.runId, { inventory: inv, seedUserId: testUserId });
 
   // 1. Successful cleanup: Storage deletion MUST precede User deletion
-  const executionOrder = [];
-  const mockAdminClientSuccess = {
-    deleteStorageObject: async (bucket, path) => {
-      executionOrder.push(`DELETE_STORAGE:${bucket}/${path}`);
-      return { data: { bucket, path }, error: null };
-    },
-    getStorageObject: async (bucket, path) => ({ status: 404, ok: false }),
-    deleteUser: async (id) => {
-      executionOrder.push(`DELETE_USER:${id}`);
-      return { data: { user: { id } }, error: null };
-    },
-    getUserById: async () => ({ notFound: true }),
-    signOut: async () => ({ data: null, error: null })
-  };
+  const mockAdminClientSuccess = fixtureSpec();
 
-  const reportSuccess = await inv.executeCleanup({ adminClient: mockAdminClientSuccess, failClosed: true });
+  const reportSuccess = await inv.executeCleanup({ adminClient: bindFixtureAdmin(inv, mockAdminClientSuccess), failClosed: true });
   assert.equal(reportSuccess.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(reportSuccess.storageObjectsDeleted, 1);
   assert.equal(reportSuccess.usersDeleted, 1);
-  assert.deepEqual(executionOrder, [
+  assert.deepEqual(fixtureCalls(mockAdminClientSuccess).filter(c => c.method === 'DELETE' && (c.url.includes('/storage/v1/object/') || c.url.includes('/auth/v1/admin/users/'))).map(c => c.url.includes('/storage/v1/object/') ? `DELETE_STORAGE:${c.pathname.slice('/storage/v1/object/'.length).split('/').map(decodeURIComponent).join('/')}` : `DELETE_USER:${decodeURIComponent(c.pathname.split('/').at(-1))}`), [
     `DELETE_STORAGE:task06i_probe_bucket/${runId}/probe.txt`,
     `DELETE_USER:${testUserId}`
   ]);
@@ -8232,31 +7818,12 @@ test('94. Task 06I-B1-H3 (H3-03): Cleanup Ordering — Storage fixture deletion 
     email: 'fail-user@proof.invalid',
     creationProof: createCreationProof('before_after_check', { preCheckAbsent: true, postCheckPresent: true })
   });
-  invFail.registerStorageFixture({
-    bucket: STORAGE_PROBE_BUCKET,
-    path: getStorageProbeObjectPath(runId),
-    ownerId: failUserId,
-    status: 'VERIFIED',
-    lifecycleState: 'RUN_CREATED_VERIFIED',
-    deletionEligible: true
-  });
+  await r5ProvisionedFixture(invFail.runId, { inventory: invFail, seedUserId: failUserId });
 
-  let userDeleteAttempted = false;
-  const mockAdminClientStorageFail = {
-    deleteStorageObject: async (bucket, path) => {
-      return { data: null, error: { message: 'Storage service unavailable (HTTP 503)' } };
-    },
-    getStorageObject: async () => ({ status: 200, ok: true }),
-    deleteUser: async () => {
-      userDeleteAttempted = true;
-      return { data: null, error: null };
-    },
-    getUserById: async () => ({ notFound: true }),
-    signOut: async () => ({ data: null, error: null })
-  };
+  const mockAdminClientStorageFail = fixtureSpec({ storageDelete: { status: 503, json: { message: 'Storage service unavailable (HTTP 503)' } }, storageGet: { status: 200, text: 'still present' } });
 
-  const reportFail = await invFail.executeCleanup({ adminClient: mockAdminClientStorageFail, failClosed: false });
-  assert.equal(userDeleteAttempted, false, 'Auth user deletion MUST NEVER be attempted when Storage deletion fails!');
+  const reportFail = await invFail.executeCleanup({ adminClient: bindFixtureAdmin(invFail, mockAdminClientStorageFail), failClosed: false });
+  assert.equal((fixtureOperationCalls(mockAdminClientStorageFail, 'userDelete').length > 0), false, 'Auth user deletion MUST NEVER be attempted when Storage deletion fails!');
   assert.equal(reportFail.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.equal(reportFail.usersDeleted, 0);
   assert.equal(reportFail.storageObjectsDeleted, 0);
@@ -8271,30 +7838,13 @@ test('94. Task 06I-B1-H3 (H3-03): Cleanup Ordering — Storage fixture deletion 
   const seedUid = '33333333-4444-4555-a666-777777777794';
   const seedEmail = 'seed-reusable@proof.invalid';
   invSeed.protectSeedIdentity({ id: seedUid, email: seedEmail });
-  invSeed.registerStorageFixture({
-    bucket: STORAGE_PROBE_BUCKET,
-    path: getStorageProbeObjectPath(runId),
-    ownerId: seedUid,
-    status: 'VERIFIED',
-    lifecycleState: 'RUN_CREATED_VERIFIED',
-    deletionEligible: true
-  });
+  await r5ProvisionedFixture(invSeed.runId, { inventory: invSeed, seedUserId: seedUid });
 
-  let seedDeleted = false;
-  const mockAdminSeed = {
-    deleteStorageObject: async () => ({ data: null, error: null }),
-    getStorageObject: async () => ({ status: 404, ok: false }),
-    deleteUser: async (id) => {
-      if (id === seedUid) seedDeleted = true;
-      return { data: null, error: null };
-    },
-    getUserById: async () => ({ notFound: true }),
-    signOut: async () => ({ data: null, error: null })
-  };
+  const mockAdminSeed = fixtureSpec();
 
-  const reportSeed = await invSeed.executeCleanup({ adminClient: mockAdminSeed, failClosed: true });
+  const reportSeed = await invSeed.executeCleanup({ adminClient: bindFixtureAdmin(invSeed, mockAdminSeed), failClosed: true });
   assert.equal(reportSeed.status, 'CLEANUP_VERIFIED_SUCCESS');
-  assert.equal(seedDeleted, false, 'Pre-existing seed user (Option A) must NEVER be deleted!');
+  assert.equal((fixtureOperationCalls(mockAdminSeed, 'userDelete').length > 0), false, 'Pre-existing seed user (Option A) must NEVER be deleted!');
   assert.equal(reportSeed.referencedUsersPreserved, 1);
 });
 
@@ -8348,14 +7898,14 @@ test('95. Task 06I-B1-H3 (H3-03 & H3-05): SESSION-05 Run-Scoped Dispatch & Durab
   // 3. Real LIVE hosted cloud dispatch attempted with durable recovery gate throws BLOCKED_PENDING_DURABLE_RECOVERY
   await assert.rejects(
     async () => {
-      await runHostedProbeRunner({
+      await runHostedProbeRunner(fixtureRunnerOptions({
         projectRef: HARDCODED_TEMP_REF,
         argv: ['--live'],
         env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
         mockDispatcher: async () => ({ passed: true }),
-        adminClient: defaultMockAdminClient,
+        adminClient: defaultAdminFixture,
         enforceDurableRecoveryGate: true
-      });
+      }));
     },
     /BLOCKED_PENDING_DURABLE_RECOVERY: LIVE hosted execution against Supabase Cloud is blocked pending durable crash recovery/
   );
@@ -8425,42 +7975,42 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
   assert.equal(hostedDispatcher._isHostedNetworkDispatcher, true);
   await assert.rejects(
     async () => {
-      await runHostedProbeRunner({
+      await runHostedProbeRunner(fixtureRunnerOptions({
         projectRef: HARDCODED_TEMP_REF,
         argv: ['--live'],
         env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
         mockDispatcher: hostedDispatcher,
-        adminClient: defaultMockAdminClient
-      });
+        adminClient: defaultAdminFixture
+      }));
     },
     /BLOCKED_PENDING_DURABLE_RECOVERY/
   );
   // 6. Passing enforceDurableRecoveryGate: false cannot bypass real dispatcher detection
   await assert.rejects(
     async () => {
-      await runHostedProbeRunner({
+      await runHostedProbeRunner(fixtureRunnerOptions({
         projectRef: HARDCODED_TEMP_REF,
         argv: ['--live'],
         env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
         mockDispatcher: hostedDispatcher,
-        adminClient: defaultMockAdminClient,
+        adminClient: defaultAdminFixture,
         enforceDurableRecoveryGate: false
-      });
+      }));
     },
     /BLOCKED_PENDING_DURABLE_RECOVERY/
   );
   // 7. LIVE mode with requireSelection: true throws SELECTION_REQUIRED when selectedProbeIds is missing
   await assert.rejects(
     async () => {
-      await runHostedProbeRunner({
+      await runHostedProbeRunner(fixtureRunnerOptions({
         projectRef: HARDCODED_TEMP_REF,
         argv: ['--live'],
         env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
         mockDispatcher: async () => ({ passed: true }),
-        adminClient: defaultMockAdminClient,
+        adminClient: defaultAdminFixture,
         requireSelection: true,
         selectedProbeIds: null
-      });
+      }));
     },
     /SELECTION_REQUIRED/
   );
@@ -8610,19 +8160,9 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
   assert.equal(conflictFixture.deletionEligible, false);
 
   // Cleanup NEVER deletes CONFLICT_EXISTING_PRESERVED object
-  let conflictDeleted = false;
-  const mockAdminClientConflict = {
-    deleteStorageObject: async () => {
-      conflictDeleted = true;
-      return { data: null, error: null };
-    },
-    getStorageObject: async () => ({ status: 404, ok: false }),
-    deleteUser: async () => ({ data: null, error: null }),
-    getUserById: async () => ({ notFound: true }),
-    signOut: async () => ({ data: null, error: null })
-  };
-  const cleanupReportConflict = await invConflict.executeCleanup({ adminClient: mockAdminClientConflict, failClosed: true });
-  assert.equal(conflictDeleted, false, 'Pre-existing conflict fixture must NEVER be deleted during cleanup');
+  const mockAdminClientConflict = fixtureSpec();
+  const cleanupReportConflict = await invConflict.executeCleanup({ adminClient: bindFixtureAdmin(invConflict, mockAdminClientConflict), failClosed: true });
+  assert.equal((fixtureOperationCalls(mockAdminClientConflict, 'storageDelete').length > 0), false, 'Pre-existing conflict fixture must NEVER be deleted during cleanup');
   assert.equal(cleanupReportConflict.storageObjectsDeleted, 0);
 
   // 15. Indeterminate upload timeout is quarantined
@@ -8778,27 +8318,10 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
     email: 'user-absence-fail@proof.invalid',
     creationProof: createCreationProof('before_after_check')
   });
-  invAbsenceFail.registerStorageFixture({
-    bucket: STORAGE_PROBE_BUCKET,
-    path: getStorageProbeObjectPath(runId),
-    ownerId: seedUserId,
-    status: 'VERIFIED',
-    lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED,
-    deletionEligible: true
-  });
-  let userDeleteAttemptedAbsence = false;
-  const mockAdminClientPresent = {
-    deleteStorageObject: async () => ({ data: null, error: null }),
-    getStorageObject: async () => ({ status: 200, ok: true }), // Object still present!
-    deleteUser: async () => {
-      userDeleteAttemptedAbsence = true;
-      return { data: null, error: null };
-    },
-    getUserById: async () => ({ notFound: true }),
-    signOut: async () => ({ data: null, error: null })
-  };
-  const repAbsenceFail = await invAbsenceFail.executeCleanup({ adminClient: mockAdminClientPresent, failClosed: false });
-  assert.equal(userDeleteAttemptedAbsence, false, 'User deletion must be aborted when storage object is still present');
+  await r5ProvisionedFixture(invAbsenceFail.runId, { inventory: invAbsenceFail, seedUserId: seedUserId });
+  const mockAdminClientPresent = fixtureSpec({ storageGet: { status: 200, text: 'still present' } });
+  const repAbsenceFail = await invAbsenceFail.executeCleanup({ adminClient: bindFixtureAdmin(invAbsenceFail, mockAdminClientPresent), failClosed: false });
+  assert.equal((fixtureOperationCalls(mockAdminClientPresent, 'userDelete').length > 0), false, 'User deletion must be aborted when storage object is still present');
   assert.equal(repAbsenceFail.storageObjectsDeleted, 0);
   assert.equal(repAbsenceFail.usersDeleted, 0);
   assert.ok(repAbsenceFail.residualResources.some(r => r.error?.includes('STORAGE_OBJECT_NOT_ABSENT')));
@@ -9233,18 +8756,10 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
       email: 'created-98@proof.invalid',
       creationProof: createCreationProof('before_after_check')
     });
-    let storageDeleted = false;
-    let userDeleted = false;
-    const mockAdmin = {
-      deleteStorageObject: async () => { storageDeleted = true; return { data: null, error: null }; },
-      getStorageObject: async () => ({ status: 404, ok: false }),
-      deleteUser: async () => { userDeleted = true; return { data: null, error: null }; },
-      getUserById: async () => ({ notFound: true }),
-      signOut: async () => ({ data: null, error: null })
-    };
-    const report = await inv.executeCleanup({ adminClient: mockAdmin, failClosed: false });
-    assert.equal(storageDeleted, false, `Must NEVER blind-delete storage for state '${expectedState}'`);
-    assert.equal(userDeleted, false, `Must NEVER delete Auth user while storage state is '${expectedState}'`);
+    const mockAdmin = fixtureSpec();
+    const report = await inv.executeCleanup({ adminClient: bindFixtureAdmin(inv, mockAdmin), failClosed: false });
+    assert.equal((fixtureOperationCalls(mockAdmin, 'storageDelete').length > 0), false, `Must NEVER blind-delete storage for state '${expectedState}'`);
+    assert.equal((fixtureOperationCalls(mockAdmin, 'userDelete').length > 0), false, `Must NEVER delete Auth user while storage state is '${expectedState}'`);
     assert.notEqual(report.status, 'CLEANUP_VERIFIED_SUCCESS');
     assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
     assert.ok(report.residualResources.some(r => r.type === 'storage_object'));
@@ -9375,13 +8890,7 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
   assert.equal(invCollision.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.lifecycleState, STORAGE_LIFECYCLE_STATE.CONFLICT_EXISTING_PRESERVED);
   let collisionDeleteCalled = false;
   const repCol = await invCollision.executeCleanup({
-    adminClient: {
-      deleteStorageObject: async () => { collisionDeleteCalled = true; return { error: null }; },
-      getStorageObject: async () => ({ status: 200, ok: true }),
-      deleteUser: async () => ({ error: null }),
-      getUserById: async () => ({ notFound: true }),
-      signOut: async () => ({ error: null })
-    }
+    adminClient: fixtureAdmin(invCollision, fixtureSpec({}))
   });
   assert.equal(collisionDeleteCalled, false);
   assert.equal(repCol.status, 'CLEANUP_VERIFIED_SUCCESS');
@@ -9400,30 +8909,17 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
 
   // Scenario 13: Monotonicity & late settlement during/after cleanup
   const invMono = new TestRunInventory(runId);
-  invMono.registerStorageFixture({
-    bucket: STORAGE_PROBE_BUCKET,
-    path: expectedPath,
-    ownerId: seedUserId,
-    lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED,
-    deletionEligible: true,
-    hasCommittedUpload: true
-  });
+  await r5ProvisionedFixture(invMono.runId, { inventory: invMono, seedUserId: seedUserId });
   assert.throws(
-    () => invMono.updateStorageFixture(expectedKey, { lifecycleState: STORAGE_LIFECYCLE_STATE.CREATION_FAILED }),
+    () => invMono.updateStorageFixture(expectedKey, { lifecycleState: STORAGE_LIFECYCLE_STATE.CREATION_FAILED, ownerOpId: invMono.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath).reservationOpId }),
     /INVENTORY_STATE_MONOTONICITY_VIOLATION/
   );
 
   // Late operation settlement after cleanup starts must block CLEANUP_VERIFIED_SUCCESS
   const invLate = new TestRunInventory(runId);
   const lateOp = invLate.registerInFlightOperation({ probeId: 'HOOK-01', endpoint: '/auth/v1/token', canMintSession: true });
-  const lateAdmin = {
-    deleteStorageObject: async () => ({ error: null }),
-    getStorageObject: async () => ({ status: 404, ok: false }),
-    deleteUser: async () => ({ error: null }),
-    getUserById: async () => ({ notFound: true }),
-    signOut: async () => ({ error: null })
-  };
-  const cleanupPromise = invLate.executeCleanup({ adminClient: lateAdmin, failClosed: false, settlementTimeoutMs: 40 });
+  const lateAdmin = fixtureSpec();
+  const cleanupPromise = invLate.executeCleanup({ adminClient: bindFixtureAdmin(invLate, lateAdmin), failClosed: false, settlementTimeoutMs: 40 });
   setTimeout(() => {
     invLate.settleInFlightOperation(lateOp.opId, { observed: { status: 200 } });
   }, 10);
@@ -9434,26 +8930,13 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
   // Scenario 14: Verified run-owned object removed & absence confirmed before user deletion
   const invClean = new TestRunInventory(runId);
   invClean.registerCreatedUser({ id: createdUserId, email: 'clean-98@proof.invalid', creationProof: createCreationProof('before_after_check') });
-  invClean.registerStorageFixture({
-    bucket: STORAGE_PROBE_BUCKET,
-    path: expectedPath,
-    ownerId: seedUserId,
-    lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED,
-    deletionEligible: true,
-    hasCommittedUpload: true
-  });
-  const orderLog = [];
+  await r5ProvisionedFixture(invClean.runId, { inventory: invClean, seedUserId: seedUserId });
+  const cleanOrderSpec = fixtureSpec();
   const repClean = await invClean.executeCleanup({
-    adminClient: {
-      deleteStorageObject: async (b, p) => { orderLog.push(`del:${b}/${p}`); return { error: null }; },
-      getStorageObject: async (b, p) => { orderLog.push(`chk:${b}/${p}`); return { status: 404, ok: false }; },
-      deleteUser: async (u) => { orderLog.push(`user:${u}`); return { error: null }; },
-      getUserById: async () => ({ notFound: true }),
-      signOut: async () => ({ error: null })
-    }
+    adminClient: fixtureAdmin(invClean, cleanOrderSpec)
   });
   assert.equal(repClean.status, 'CLEANUP_VERIFIED_SUCCESS');
-  assert.deepEqual(orderLog, [`del:${expectedKey}`, `chk:${expectedKey}`, `user:${createdUserId}`]);
+  assert.deepEqual(fixtureCalls(cleanOrderSpec).filter(c => c.url.includes('/storage/v1/object/') || (c.method === 'DELETE' && c.url.includes('/auth/v1/admin/users/'))).map(c => c.url.includes('/storage/v1/object/') ? `${c.method === 'DELETE' ? 'del' : 'chk'}:${c.pathname.replace(/^\/storage\/v1\/object\/(authenticated\/)?/, '').split('/').map(decodeURIComponent).join('/')}` : `user:${decodeURIComponent(c.pathname.split('/').at(-1))}`), [`del:${expectedKey}`, `chk:${expectedKey}`, `user:${createdUserId}`]);
   assert.equal(invClean.isClean(), true);
 });
 
@@ -9552,7 +9035,8 @@ test('99. Task 06I-B1-H3-R2 (R2-03): Provider-Aware Storage Absence Normalizatio
   );
 
   // 9. Transport timeout -> TRANSPORT_FAILURE
-  const adminTimeoutClient = createHostedAdminClient({
+  const adminTimeoutClient = trackedHostedAdminClient({
+    runId,
     serviceRoleKey: validTestServiceRoleKey,
     fetchFn: errorTransport('ETIMEDOUT: socket timed out')
   });
@@ -9561,7 +9045,7 @@ test('99. Task 06I-B1-H3-R2 (R2-03): Provider-Aware Storage Absence Normalizatio
   assert.equal(detailTimeout.classification, STORAGE_RESPONSE_CLASS.TRANSPORT_FAILURE);
 
   // 10. Admin client preserves error body: HTTP 400 NoSuchKey + logical 404 IS recognized as absent in cleanup!
-  const adminStructuredAbsent = createHostedAdminClient({
+  const adminStructuredAbsent = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     fetchFn: createDeterministicFixtureTransport({
       routes: [
@@ -9577,21 +9061,14 @@ test('99. Task 06I-B1-H3-R2 (R2-03): Provider-Aware Storage Absence Normalizatio
     })
   });
   const invStructuredDel = new TestRunInventory(runId);
-  invStructuredDel.registerStorageFixture({
-    bucket: STORAGE_PROBE_BUCKET,
-    path,
-    ownerId: '11111111-1111-4111-a111-111111111199',
-    lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED,
-    deletionEligible: true,
-    hasCommittedUpload: true
-  });
-  const repStructured = await invStructuredDel.executeCleanup({ adminClient: adminStructuredAbsent });
+  await r5ProvisionedFixture(invStructuredDel.runId, { inventory: invStructuredDel, seedUserId: '11111111-1111-4111-a111-111111111199' });
+  const repStructured = await invStructuredDel.executeCleanup({ adminClient: bindFixtureAdmin(invStructuredDel, adminStructuredAbsent) });
   assert.equal(repStructured.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(repStructured.storageObjectsDeleted, 1);
   assert.equal(invStructuredDel.getStorageFixture(STORAGE_PROBE_BUCKET, path)?.lifecycleState, STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED);
 
   // 11. Object remains present (HTTP 200) -> RESIDUAL_BLOCKED, cleanup fails
-  const adminStillPresent = createHostedAdminClient({
+  const adminStillPresent = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     fetchFn: createDeterministicFixtureTransport({
       routes: [
@@ -9601,15 +9078,8 @@ test('99. Task 06I-B1-H3-R2 (R2-03): Provider-Aware Storage Absence Normalizatio
     })
   });
   const invPresent = new TestRunInventory(runId);
-  invPresent.registerStorageFixture({
-    bucket: STORAGE_PROBE_BUCKET,
-    path,
-    ownerId: '11111111-1111-4111-a111-111111111199',
-    lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED,
-    deletionEligible: true,
-    hasCommittedUpload: true
-  });
-  const repPresent = await invPresent.executeCleanup({ adminClient: adminStillPresent, failClosed: false });
+  await r5ProvisionedFixture(invPresent.runId, { inventory: invPresent, seedUserId: '11111111-1111-4111-a111-111111111199' });
+  const repPresent = await invPresent.executeCleanup({ adminClient: bindFixtureAdmin(invPresent, adminStillPresent), failClosed: false });
   assert.equal(repPresent.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.equal(invPresent.getStorageFixture(STORAGE_PROBE_BUCKET, path)?.lifecycleState, STORAGE_LIFECYCLE_STATE.RESIDUAL_BLOCKED);
 
@@ -9731,7 +9201,7 @@ test('100. Task 06I-B1-H3-R2 (Sec 5 & 6): Unified Storage Lifecycle E2E Regressi
   // 1-2. Context & verified pre-existing seed identity (Option A)
   const ctx = createRunContext({ runId, testEmail: seedEmail });
   const inv = new TestRunInventory(runId, { seedUserId, seedEmail });
-  const adminClient = createHostedAdminClient({
+  const adminClient = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
@@ -9776,7 +9246,7 @@ test('100. Task 06I-B1-H3-R2 (Sec 5 & 6): Unified Storage Lifecycle E2E Regressi
   assert.equal(s05Out.storage_linger_observed, true);
 
   // 11-14. Delete verified run-owned object, confirm absence via NoSuchKey, preserve pre-existing seed, certify CLEANUP_VERIFIED_SUCCESS
-  const finalReport = await inv.executeCleanup({ adminClient, failClosed: true });
+  const finalReport = await inv.executeCleanup({ adminClient: bindFixtureAdmin(inv, adminClient), failClosed: true });
   assert.equal(finalReport.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(finalReport.storageObjectsDeleted, 1);
   assert.equal(finalReport.usersDeleted, 0);
@@ -9799,7 +9269,7 @@ test('100. Task 06I-B1-H3-R2 (Sec 5 & 6): Unified Storage Lifecycle E2E Regressi
   const boundFetch = globalThis.fetch.bind(globalThis);
   assert.throws(() => assertOfflineMockTransport(boundFetch), /BLOCKED_PENDING_DURABLE_RECOVERY/);
   assert.throws(() => createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: boundFetch }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
-  assert.throws(() => createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: boundFetch }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
+  assert.throws(() => trackedHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: boundFetch }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
 
   // 2. Arbitrary arrow / closure-wrapped callbacks rejected immediately at factory boundary (R3-02)
   const savedFetch = globalThis.fetch;
@@ -9807,7 +9277,7 @@ test('100. Task 06I-B1-H3-R2 (Sec 5 & 6): Unified Storage Lifecycle E2E Regressi
   const closureSavedFetch = (...args) => savedFetch(...args);
   assert.throws(() => createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: wrappedGlobalFetch }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
   assert.throws(() => createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: closureSavedFetch }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
-  assert.throws(() => createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: closureSavedFetch }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
+  assert.throws(() => trackedHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: closureSavedFetch }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
   await assert.rejects(
     () => runWithBlockedRealFetch(() => wrappedGlobalFetch('https://wvdabiwbaavfggcmpizd.supabase.co/auth/v1/health')),
     /BLOCKED_PENDING_DURABLE_RECOVERY: Indirect, wrapped, or bound real network fetch invocation is strictly blocked/
@@ -9820,14 +9290,14 @@ test('100. Task 06I-B1-H3-R2 (Sec 5 & 6): Unified Storage Lifecycle E2E Regressi
   // 4. Wrapping hostedDispatcher in an untagged arrow wrapper CANNOT bypass runHostedProbeRunner durable recovery gate!
   const untaggedWrapper = (item, opts) => hostedDisp(item, opts);
   await assert.rejects(
-    () => runHostedProbeRunner({
+    () => runHostedProbeRunner(fixtureRunnerOptions({
       projectRef: HARDCODED_TEMP_REF,
       argv: ['--live'],
       env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
       mockDispatcher: untaggedWrapper,
-      adminClient: defaultMockAdminClient,
+      adminClient: defaultAdminFixture,
       selectedProbeIds: ['BYPASS-01']
-    }),
+    })),
     /BLOCKED_PENDING_DURABLE_RECOVERY/
   );
 });
@@ -9971,7 +9441,7 @@ test('102. Task 06I-B1-H3-R3 (R3-02): Structural elimination of arbitrary transp
   for (const untrusted of [undefined, null, globalThis.fetch, globalThis.fetch.bind(globalThis), wrappedSavedFetch, customLambda, spoofedFn]) {
     assert.throws(() => assertOfflineMockTransport(untrusted), /BLOCKED_PENDING_DURABLE_RECOVERY/);
     assert.throws(() => createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: untrusted }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
-    assert.throws(() => createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: untrusted }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
+    assert.throws(() => trackedHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: untrusted }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
     await assert.rejects(
       () => provisionStorageProbeFixture({
         runId,
@@ -10011,7 +9481,7 @@ test('102. Task 06I-B1-H3-R3 (R3-02): Structural elimination of arbitrary transp
     routes: [{ urlIncludes: '/auth/v1/logout', status: 200, ok: true, json: {} }]
   });
   assert.doesNotThrow(() => assertOfflineMockTransport(trusted));
-  const admin = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: trusted });
+  const admin = trackedHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: trusted });
   const out = await admin.signOut(token, 'local');
   assert.equal(out.error, null);
   assert.equal(trusted.calls.length, 1);
@@ -10019,14 +9489,14 @@ test('102. Task 06I-B1-H3-R3 (R3-02): Structural elimination of arbitrary transp
   // 4. Hosted network dispatcher built with trusted offline transport is STILL blocked inside LIVE runner
   const disp = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: trusted });
   await assert.rejects(
-    () => runHostedProbeRunner({
+    () => runHostedProbeRunner(fixtureRunnerOptions({
       projectRef: HARDCODED_TEMP_REF,
       argv: ['--live'],
       env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
       mockDispatcher: disp,
-      adminClient: defaultMockAdminClient,
+      adminClient: defaultAdminFixture,
       selectedProbeIds: ['BYPASS-01']
-    }),
+    })),
     /BLOCKED_PENDING_DURABLE_RECOVERY/
   );
 });
@@ -10156,22 +9626,15 @@ test('104. Task 06I-B1-H3-R3 (R3-04): Run quiescing, admission closure, concurre
   await pauseAtAuth.waitForArrivals(1);
   assert.equal(invA.runLifecycleState, INVENTORY_RUN_STATE.ACTIVE);
 
-  const deleteCallsA = [];
-  const adminMockA = {
-    deleteStorageObject: async () => ({ error: null }),
-    getStorageObject: async () => ({ status: 404, ok: false }),
-    deleteUser: async (id) => { deleteCallsA.push(id); return { data: { id }, error: null }; },
-    getUserById: async () => ({ notFound: true }),
-    signOut: async () => ({ error: null })
-  };
+  const adminMockA = fixtureSpec();
 
   // Start cleanup (enters QUIESCING immediately!)
-  const cleanupPromise = invA.executeCleanup({ adminClient: adminMockA, failClosed: false, settlementTimeoutMs: 25 });
+  const cleanupPromise = invA.executeCleanup({ adminClient: bindFixtureAdmin(invA, adminMockA), failClosed: false, settlementTimeoutMs: 25 });
   assert.equal(invA.runLifecycleState, INVENTORY_RUN_STATE.QUIESCING);
 
   // Concurrent executeCleanup call rejected immediately
   await assert.rejects(
-    () => invA.executeCleanup({ adminClient: adminMockA, failClosed: false }),
+    () => invA.executeCleanup({ adminClient: bindFixtureAdmin(invA, adminMockA), failClosed: false }),
     /CLEANUP_CONCURRENT_REENTRY_BLOCKED/
   );
 
@@ -10190,7 +9653,7 @@ test('104. Task 06I-B1-H3-R3 (R3-04): Run quiescing, admission closure, concurre
   pauseAtAuth.release();
   await assert.rejects(provPromise, /PROVISIONING_ABORTED_DURING_CLEANUP|STORAGE_FIXTURE/);
   assert.equal(transportA.calls.some(c => c.url.includes('/storage/v1/object/')), false, 'Woken provisioner must NEVER dispatch Storage POST after cleanup');
-  assert.equal(deleteCallsA.length, 0, 'Created Auth user must NEVER be deleted while storage provisioning was in-flight/unresolved');
+  assert.equal((fixtureOperationCalls(adminMockA, 'userDelete').map(c => c.pathname.split('/').map(decodeURIComponent).at(-1))).length, 0, 'Created Auth user must NEVER be deleted while storage provisioning was in-flight/unresolved');
   assert.equal(reportA.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.equal(invA.runLifecycleState, INVENTORY_RUN_STATE.RESIDUAL_BLOCKED);
 
@@ -10220,23 +9683,14 @@ test('104. Task 06I-B1-H3-R3 (R3-04): Run quiescing, admission closure, concurre
   const invMid = new TestRunInventory(runIdB);
   invMid.registerCreatedUser({ id: uid1, email: 'u1-mid@proof.invalid', creationProof: createCreationProof('before_after_check') });
   invMid.registerCreatedUser({ id: uid2, email: 'u2-mid@proof.invalid', creationProof: createCreationProof('before_after_check') });
-  const deletedMid = [];
-  const adminMid = {
-    deleteStorageObject: async () => ({ error: null }),
-    getStorageObject: async () => ({ status: 404, ok: false }),
-    deleteUser: async (id) => {
-      deletedMid.push(id);
-      if (id === uid1) {
-        // Simulate a late storage settlement landing AFTER uid1 was deleted cleanly, right before uid2 check!
-        invMid.lateSettlementsDuringCleanup.push({ action: 'lateStorageCommit', key: getStorageProbeObjectKey(runIdB) });
-      }
-      return { data: { id }, error: null };
-    },
-    getUserById: async () => ({ notFound: true }),
-    signOut: async () => ({ error: null })
-  };
-  const reportMid = await invMid.executeCleanup({ adminClient: adminMid, failClosed: false });
-  assert.deepEqual(deletedMid, [uid1], 'Live pre-deletion predicate must halt BEFORE deleting uid2 once late settlement arrives');
+  const pauseFirstDeletion = createOfflineBarrier('r5-mid-user-delete');
+  const adminMid = fixtureSpec({ routes: [{ method: 'DELETE', urlIncludes: `/auth/v1/admin/users/${uid1}`, waitForBarrier: pauseFirstDeletion, status: 200, json: {} }] });
+  const midCleanup = invMid.executeCleanup({ adminClient: bindFixtureAdmin(invMid, adminMid), failClosed: false });
+  await pauseFirstDeletion.waitForArrivals(1);
+  invMid.lateSettlementsDuringCleanup.push({ action: 'lateStorageCommit', key: getStorageProbeObjectKey(runIdB) });
+  pauseFirstDeletion.release();
+  const reportMid = await midCleanup;
+  assert.deepEqual((fixtureOperationCalls(adminMid, 'userDelete').map(c => c.pathname.split('/').map(decodeURIComponent).at(-1))), [uid1], 'Live pre-deletion predicate must halt BEFORE deleting uid2 once late settlement arrives');
   assert.ok(reportMid.residualUsers.some(u => u.id === uid2 && /STORAGE_CLEANUP_FAILURE_CASCADE_PREVENTED/.test(u.error)));
   assert.equal(reportMid.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
 
@@ -10323,14 +9777,7 @@ test('106. Task 06I-B1-H3-R3 (R3-06): Normalized idempotent Storage DELETE NoSuc
 
   // 1. DELETE returns structured HTTP 400 NoSuchKey (logical 404) AND GET confirms 400 NoSuchKey -> DELETION_VERIFIED
   const invIdemp = new TestRunInventory(runId);
-  invIdemp.registerStorageFixture({
-    bucket: STORAGE_PROBE_BUCKET,
-    path,
-    ownerId: seedUserId,
-    lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED,
-    deletionEligible: true,
-    hasCommittedUpload: true
-  });
+  await r5ProvisionedFixture(invIdemp.runId, { inventory: invIdemp, seedUserId: seedUserId });
   const transportVerified = createDeterministicFixtureTransport({
     routes: [
       {
@@ -10349,8 +9796,8 @@ test('106. Task 06I-B1-H3-R3 (R3-06): Normalized idempotent Storage DELETE NoSuc
       }
     ]
   });
-  const adminVerified = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: transportVerified });
-  const repVerified = await invIdemp.executeCleanup({ adminClient: adminVerified, failClosed: true });
+  const adminVerified = trackedHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: transportVerified });
+  const repVerified = await invIdemp.executeCleanup({ adminClient: bindFixtureAdmin(invIdemp, adminVerified), failClosed: true });
   assert.equal(repVerified.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(repVerified.storageObjectsDeleted, 1);
   assert.equal(invIdemp.getStorageFixture(STORAGE_PROBE_BUCKET, path)?.lifecycleState, STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED);
@@ -10364,22 +9811,15 @@ test('106. Task 06I-B1-H3-R3 (R3-06): Normalized idempotent Storage DELETE NoSuc
     email: 'created-106@proof.invalid',
     creationProof: createCreationProof('before_after_check')
   });
-  invRacePresent.registerStorageFixture({
-    bucket: STORAGE_PROBE_BUCKET,
-    path,
-    ownerId: seedUserId,
-    lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED,
-    deletionEligible: true,
-    hasCommittedUpload: true
-  });
+  await r5ProvisionedFixture(invRacePresent.runId, { inventory: invRacePresent, seedUserId: seedUserId });
   const transportStillThere = createDeterministicFixtureTransport({
     routes: [
       { method: 'DELETE', urlIncludes: '/storage/v1/object/', status: 404, ok: false, text: JSON.stringify({ code: 'NoSuchKey', message: 'Object not found' }) },
       { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', status: 200, ok: true, text: 'reappeared payload' }
     ]
   });
-  const adminStillThere = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: transportStillThere });
-  const repStillThere = await invRacePresent.executeCleanup({ adminClient: adminStillThere, failClosed: false });
+  const adminStillThere = trackedHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: transportStillThere });
+  const repStillThere = await invRacePresent.executeCleanup({ adminClient: bindFixtureAdmin(invRacePresent, adminStillThere), failClosed: false });
   assert.equal(repStillThere.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.equal(invRacePresent.getStorageFixture(STORAGE_PROBE_BUCKET, path)?.lifecycleState, STORAGE_LIFECYCLE_STATE.RESIDUAL_BLOCKED);
   assert.equal(transportStillThere.calls.some(c => c.method === 'DELETE' && c.url.includes('/auth/v1/admin/users/')), false, 'User deletion blocked on OBJECT_PRESENT');
@@ -10391,43 +9831,29 @@ test('106. Task 06I-B1-H3-R3 (R3-06): Normalized idempotent Storage DELETE NoSuc
     { throwError: 'ETIMEDOUT: socket timed out' }
   ]) {
     const invIndet = new TestRunInventory(runId);
-    invIndet.registerStorageFixture({
-      bucket: STORAGE_PROBE_BUCKET,
-      path,
-      ownerId: seedUserId,
-      lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED,
-      deletionEligible: true,
-      hasCommittedUpload: true
-    });
+    await r5ProvisionedFixture(invIndet.runId, { inventory: invIndet, seedUserId: seedUserId });
     const transportIndet = createDeterministicFixtureTransport({
       routes: [
         { method: 'DELETE', urlIncludes: '/storage/v1/object/', status: 400, ok: false, text: JSON.stringify({ statusCode: '404', code: 'NoSuchKey' }) },
         { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', ...getErr }
       ]
     });
-    const adminIndet = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: transportIndet });
-    const repIndet = await invIndet.executeCleanup({ adminClient: adminIndet, failClosed: false });
+    const adminIndet = trackedHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: transportIndet });
+    const repIndet = await invIndet.executeCleanup({ adminClient: bindFixtureAdmin(invIndet, adminIndet), failClosed: false });
     assert.equal(repIndet.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
     assert.equal(invIndet.getStorageFixture(STORAGE_PROBE_BUCKET, path)?.lifecycleState, STORAGE_LIFECYCLE_STATE.CLEANUP_INDETERMINATE);
   }
 
   // 4. DELETE returning HTTP 403 AccessDenied stays CLEANUP_INDETERMINATE immediately without false verification
   const invDel403 = new TestRunInventory(runId);
-  invDel403.registerStorageFixture({
-    bucket: STORAGE_PROBE_BUCKET,
-    path,
-    ownerId: seedUserId,
-    lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED,
-    deletionEligible: true,
-    hasCommittedUpload: true
-  });
+  await r5ProvisionedFixture(invDel403.runId, { inventory: invDel403, seedUserId: seedUserId });
   const transportDel403 = createDeterministicFixtureTransport({
     routes: [
       { method: 'DELETE', urlIncludes: '/storage/v1/object/', status: 403, ok: false, text: JSON.stringify({ code: 'AccessDenied', message: 'Forbidden' }) }
     ]
   });
-  const adminDel403 = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: transportDel403 });
-  const repDel403 = await invDel403.executeCleanup({ adminClient: adminDel403, failClosed: false });
+  const adminDel403 = trackedHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: transportDel403 });
+  const repDel403 = await invDel403.executeCleanup({ adminClient: bindFixtureAdmin(invDel403, adminDel403), failClosed: false });
   assert.equal(repDel403.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.equal(invDel403.getStorageFixture(STORAGE_PROBE_BUCKET, path)?.lifecycleState, STORAGE_LIFECYCLE_STATE.CLEANUP_INDETERMINATE);
 });
@@ -10459,7 +9885,7 @@ test('107. Task 06I-B1-H3-R3 (Sec 8): Consolidated Adversarial Concurrency & Lif
     ]
   });
 
-  const adminClient = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, anonKey: validTestAnonKey, runId, fetchFn: matrixTransport });
+  const adminClient = trackedHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, anonKey: validTestAnonKey, runId, fetchFn: matrixTransport });
 
   // Overlap an independent blocked fetch lease concurrently with provisioning
   const baseDepth107 = getFetchIsolationDebugState().activeDepth;
@@ -10502,7 +9928,7 @@ test('107. Task 06I-B1-H3-R3 (Sec 8): Consolidated Adversarial Concurrency & Lif
   assert.equal(provRes.lifecycleState, STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED);
   assert.equal(getFetchIsolationDebugState().activeDepth, baseDepth107);
 
-  const report = await inv.executeCleanup({ adminClient, failClosed: true });
+  const report = await inv.executeCleanup({ adminClient: bindFixtureAdmin(inv, adminClient), failClosed: true });
   assert.equal(report.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(report.storageObjectsDeleted, 1);
   assert.equal(report.usersDeleted, 0);
@@ -10629,7 +10055,7 @@ test('108. Task 06I-B1-H3-R4 (R4-01): Rejects arbitrary ownershipLookupFn, unreg
 
   // 4. Forged trusted-client markers and shallow clones rejected
   const tTrusted = makeStorageTransport();
-  const trustedAdmin = createHostedAdminClient({
+  const trustedAdmin = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
@@ -10710,7 +10136,7 @@ test('108. Task 06I-B1-H3-R4 (R4-01): Rejects arbitrary ownershipLookupFn, unreg
 
   // 6. Cross-project adapter rejected
   assert.throws(
-    () => createHostedAdminClient({
+    () => trackedHostedAdminClient({
       serviceRoleKey: validTestServiceRoleKey,
       projectRef: HARDCODED_REAL_REF,
       runId,
@@ -10733,7 +10159,7 @@ test('108. Task 06I-B1-H3-R4 (R4-01): Rejects arbitrary ownershipLookupFn, unreg
   assert.equal(tTrusted.calls.length, 0);
 
   // 7. Cross-run adapter rejected (both mismatched runId and unbound runId: null)
-  const adminUnbound = createHostedAdminClient({
+  const adminUnbound = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
@@ -11182,7 +10608,7 @@ test('112. Task 06I-B1-H3-R4 (Sec 6): Unified offline trust boundary & determini
   });
   mutableInput.fill(0x7a);
 
-  const trustedAdmin = createHostedAdminClient({
+  const trustedAdmin = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
@@ -11198,14 +10624,14 @@ test('112. Task 06I-B1-H3-R4 (Sec 6): Unified offline trust boundary & determini
 
   // 1. Real hosted runner remains permanently blocked pending durable recovery
   await assert.rejects(
-    () => runHostedProbeRunner({
+    () => runHostedProbeRunner(fixtureRunnerOptions({
       projectRef: HARDCODED_TEMP_REF,
       runId,
       argv: ['--live'],
       env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
       mockDispatcher: createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: unifiedTransport }),
       adminClient: trustedAdmin
-    }),
+    })),
     /BLOCKED_PENDING_DURABLE_RECOVERY/
   );
 
@@ -11242,4 +10668,342 @@ test('112. Task 06I-B1-H3-R4 (Sec 6): Unified offline trust boundary & determini
   assert.equal(inv.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.lifecycleState, STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED);
   assert.equal(inv.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.deletionEligible, false);
   assert.equal(unifiedTransport.calls.some(c => c.method === 'DELETE' && c.url.includes('/storage/v1/object/')), false);
+});
+
+// ---------------------------------------------------------------------------
+// H3-R5: Mandatory Admin admission, authenticated terminal receipts and failures
+// ---------------------------------------------------------------------------
+
+const R5_SEED_USER = '11111111-1111-4111-a111-111111111113';
+const R5_CREATED_USER = '22222222-2222-4222-b222-222222222113';
+
+function r5OutstandingInventory(runId) {
+  const inventory = new TestRunInventory(runId);
+  inventory.registerCreatedUser({ id: R5_CREATED_USER, email: 'created-r5@proof.invalid', creationProof: createCreationProof('before_after_check') });
+  inventory.registerReferencedUser({ id: R5_SEED_USER, email: 'seed-r5@proof.invalid' });
+  inventory.registerSeedPasswordModification({ userId: R5_SEED_USER, email: 'seed-r5@proof.invalid', originalPassword: 'R5Original#2026!', targetPassword: 'R5Changed#2026!', state: 'confirmed' });
+  inventory.registerSession('r5-obligation-session', { accessToken: createMockJwt({ sub: R5_SEED_USER, session_id: 'r5-obligation-session' }) });
+  inventory.registerStorageFixture({ path: getStorageProbeObjectPath(runId), lifecycleState: STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED, hasCommittedUpload: true });
+  inventory.registerStorageObject('r5-owned-bucket', 'outstanding.txt');
+  inventory.registerTableRow('task06i_session_probe', 'r5-outstanding-row');
+  return inventory;
+}
+
+async function r5ProvisionedFixture(runId, { session = false, logoutFailure = false, storageDeleteFailure = false, inventory: existingInventory = null, seedUserId = R5_SEED_USER } = {}) {
+  const inventory = existingInventory || new TestRunInventory(runId);
+  const path = getStorageProbeObjectPath(runId);
+  const objectId = '33333333-3333-4333-a333-333333333113';
+  const content = 'r5 authentic fixture payload\n';
+  const transport = createDeterministicFixtureTransport({
+    initialState: { uploaded: false, deleted: false },
+    routes: [
+      { method: 'GET', pathEquals: '/auth/v1/user', status: 200, json: { id: seedUserId } },
+      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: false }, status: 404, json: { code: 'NoSuchKey' } },
+      { method: 'POST', urlIncludes: '/storage/v1/object/', setsState: { uploaded: true }, status: 200, json: { Id: objectId } },
+      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: true, deleted: false }, status: 200, text: content },
+      { method: 'POST', urlIncludes: '/rest/v1/rpc/task06i_lookup_storage_object_owner', status: 200, json: [{ id: objectId, bucket_id: STORAGE_PROBE_BUCKET, name: path, owner_id: seedUserId }] },
+      { method: 'DELETE', urlIncludes: '/storage/v1/object/', setsState: storageDeleteFailure ? {} : { deleted: true }, status: storageDeleteFailure ? 503 : 200, json: storageDeleteFailure ? { message: 'r5 offline Storage outage' } : {} },
+      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { deleted: true }, status: 400, json: { code: 'NoSuchKey', statusCode: '404' } },
+      { method: 'POST', urlIncludes: '/auth/v1/logout', status: logoutFailure ? 503 : 200, json: logoutFailure ? { message: 'r5 offline logout outage' } : {} }
+    ]
+  });
+  const adminClient = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, anonKey: validTestAnonKey, runId, fetchFn: transport });
+  await provisionStorageProbeFixture({ runId, seedUserId: seedUserId, userAccessToken: createMockJwt({ sub: seedUserId, session_id: 'r5-provision-session' }), anonKey: validTestAnonKey, adminClient, inventory, fetchFn: transport, probeContent: content });
+  if (session) inventory.registerSession('r5-cleanup-session', { accessToken: createMockJwt({ sub: seedUserId, session_id: 'r5-cleanup-session' }) });
+  return { inventory, adminClient, transport, path };
+}
+
+function r5AssertOutstanding(report, inventory) {
+  assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(report.residualUsers.some(user => user.id === R5_CREATED_USER));
+  for (const type of ['client', 'storage_fixture', 'storage_object', 'session', 'table_row', 'seed_credential_restoration']) {
+    assert.ok(report.residualResources.some(resource => resource.type === type), type + ' obligation must remain visible');
+  }
+  assert.equal(inventory.runLifecycleState, INVENTORY_RUN_STATE.RESIDUAL_BLOCKED);
+  assert.equal(inventory.isClean(), false);
+  assert.equal(inventory.deletedUsers.size, 0);
+  assert.equal(inventory.revokedSessions.size, 0);
+  const serialized = JSON.stringify(report);
+  assert.equal(serialized.includes('R5Original#2026!'), false);
+  assert.equal(serialized.includes(validTestServiceRoleKey), false);
+}
+
+test('113. H3-R5-01/R5-03: every invalid Admin shape fails cleanup without getters, callbacks or transport in either reporting mode', async () => {
+  const runId = 'r5-admin-rejection';
+  let callbacks = 0;
+  let propertyReads = 0;
+  const capturedNativeFetch = globalThis.fetch;
+  const capturedNativeCallback = async () => {
+    callbacks++;
+    return capturedNativeFetch('http://127.0.0.1:1/r5-sentinel', { method: 'DELETE' });
+  };
+  const transport = staticTransport({ status: 404, json: { code: 'NoSuchKey' } });
+  const trusted = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, runId, fetchFn: transport });
+  const wrongRun = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, runId: 'r5-other-run', fetchFn: transport });
+  const unbound = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: transport });
+  const plain = { deleteUser: capturedNativeCallback, getUserById: capturedNativeCallback, deleteStorageObject: capturedNativeCallback, getStorageObject: capturedNativeCallback };
+  const getters = {};
+  for (const property of ['deleteUser', 'getStorageObject', 'verifyStorageObjectAbsence', '_isTrustedAdminClient', '__trustedAdminClient']) {
+    Object.defineProperty(getters, property, { get() { propertyReads++; return capturedNativeCallback; } });
+  }
+  const proxied = new Proxy(trusted, {
+    get() { propertyReads++; throw new Error('Untrusted Proxy property accessed'); },
+    has() { propertyReads++; throw new Error('Untrusted Proxy marker inspected'); },
+    ownKeys() { propertyReads++; throw new Error('Untrusted Proxy enumerated'); }
+  });
+  const customVerifier = { verifyStorageObjectAbsence: async () => { callbacks++; return true; } };
+  const altered = Object.create(trusted, { deleteStorageObject: { value: capturedNativeCallback } });
+  const invalid = [null, {}, plain, getters, customVerifier, { ...plain, _isTrustedAdminClient: true }, { ...trusted }, proxied, altered, wrongRun, unbound];
+  for (const adminClient of invalid) {
+    for (const failClosed of [true, false]) {
+      const inventory = r5OutstandingInventory(runId);
+      if (failClosed) {
+        await assert.rejects(inventory.executeCleanup({ adminClient, failClosed, settlementTimeoutMs: 0 }), error => {
+          assert.equal(error.code, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+          r5AssertOutstanding(error.cleanupReport, inventory);
+          return true;
+        });
+      } else {
+        r5AssertOutstanding(await inventory.executeCleanup({ adminClient, failClosed, settlementTimeoutMs: 0 }), inventory);
+      }
+      assert.equal(callbacks, 0);
+      assert.equal(propertyReads, 0);
+      assert.equal(transport.calls.length, 0);
+    }
+    const inventory = r5OutstandingInventory(runId);
+    r5AssertOutstanding(await inventory._executeCleanupInternal({ adminClient, failClosed: false, settlementTimeoutMs: 0 }), inventory);
+  }
+  assert.throws(() => createHostedAdminClient({ projectRef: HARDCODED_REAL_REF, serviceRoleKey: validTestServiceRoleKey, runId, fetchFn: transport }), /SECURITY_BOUNDARY_VIOLATION/);
+  assert.equal(transport.calls.length, 0);
+});
+
+test('114. H3-R5-01/R5-04: direct detailed and boolean absence reject integrity failures with status zero and no arbitrary verifier', async () => {
+  const runId = 'r5-absence-admission';
+  const path = getStorageProbeObjectPath(runId);
+  let callbacks = 0;
+  const callback = async () => { callbacks++; return true; };
+  const transport = staticTransport({ status: 404, json: { code: 'NoSuchKey' } });
+  const good = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, runId, fetchFn: transport });
+  const unbound = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: transport });
+  const crossRun = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, runId: 'r5-wrong-absence-run', fetchFn: transport });
+  const badGetter = Object.defineProperty({}, 'getStorageObject', { get() { callbacks++; return callback; } });
+  const badClients = [undefined, {}, { getStorageObject: callback }, { verifyStorageObjectAbsence: callback }, { _isTrustedAdminClient: true, getStorageObject: callback }, { ...good }, new Proxy(good, { get() { callbacks++; return callback; } }), badGetter, Object.create(good, { getStorageObject: { value: callback } }), crossRun, unbound];
+  for (const adminClient of badClients) {
+    const detail = await verifyStorageObjectAbsenceDetailed(adminClient, STORAGE_PROBE_BUCKET, path);
+    assert.equal(detail.isAbsent, false);
+    assert.equal(detail.classification, STORAGE_RESPONSE_CLASS.INDETERMINATE);
+    assert.equal(detail.status, 0);
+    assert.equal(detail.providerResponseObtained, false);
+    assert.match(detail.reason, /ADMIN_INTEGRITY_REJECTED/);
+    assert.equal(await verifyStorageObjectAbsence(adminClient, STORAGE_PROBE_BUCKET, path), false);
+  }
+  for (const options of [{ projectRef: HARDCODED_REAL_REF }, { runId: 'r5-other-requested-run' }]) {
+    const detail = await verifyStorageObjectAbsenceDetailed(good, STORAGE_PROBE_BUCKET, path, options);
+    assert.equal(detail.isAbsent, false);
+    assert.equal(detail.status, 0);
+    assert.equal(detail.providerResponseObtained, false);
+    assert.equal(await verifyStorageObjectAbsence(good, STORAGE_PROBE_BUCKET, path, options), false);
+  }
+  assert.equal(callbacks, 0);
+  assert.equal(transport.calls.length, 0);
+  for (const [status, body, expectedClass, isAbsent] of [[404, { code: 'NoSuchKey' }, STORAGE_RESPONSE_CLASS.OBJECT_ABSENT, true], [403, { code: 'AccessDenied' }, STORAGE_RESPONSE_CLASS.UNAUTHORIZED_OR_FORBIDDEN, false], [200, {}, STORAGE_RESPONSE_CLASS.OBJECT_PRESENT, false]]) {
+    const provider = staticTransport({ status, json: body });
+    const client = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, runId, fetchFn: provider });
+    const detail = await verifyStorageObjectAbsenceDetailed(client, STORAGE_PROBE_BUCKET, path);
+    assert.equal(detail.isAbsent, isAbsent);
+    assert.equal(detail.classification, expectedClass);
+    assert.equal(await verifyStorageObjectAbsence(client, STORAGE_PROBE_BUCKET, path), isAbsent);
+    assert.equal(provider.calls.length, 2);
+  }
+});
+
+test('115. H3-R5-01/R5-03: runner admission preserves outstanding cleanup evidence and prevents all probe dispatch', async () => {
+  let callbacks = 0;
+  let probes = 0;
+  const runId = 'r5-runner-admission';
+  const transport = staticTransport({ status: 200, json: {} });
+  const trusted = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, runId, fetchFn: transport });
+  const unbound = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: transport });
+  const invalid = [{}, { deleteUser: async () => { callbacks++; } }, Object.defineProperty({}, 'getUserById', { get() { callbacks++; return () => {}; } }), { ...trusted }, unbound];
+  for (const adminClient of invalid) {
+    const inventory = r5OutstandingInventory(runId);
+    await assert.rejects(runHostedProbeRunner({ projectRef: HARDCODED_TEMP_REF, runId, inventory, adminClient, argv: ['--live'], env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, selectedProbeIds: ['BYPASS-01'], mockDispatcher: async () => { probes++; return { passed: false }; } }), error => {
+      assert.equal(error.code, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+      r5AssertOutstanding(error.cleanupReport, inventory);
+      return true;
+    });
+  }
+  // Matching inventory A and adapter A must not execute when the runner asks for B.
+  const mismatchInventory = r5OutstandingInventory(runId);
+  await assert.rejects(runHostedProbeRunner({ projectRef: HARDCODED_TEMP_REF, runId: 'r5-runner-requested-b', inventory: mismatchInventory, adminClient: trusted, argv: ['--live'], env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, selectedProbeIds: ['BYPASS-01'], mockDispatcher: async () => { probes++; } }), error => {
+    assert.match(error.message, /ADMIN_CLIENT_RUN_MISMATCH/);
+    r5AssertOutstanding(error.cleanupReport, mismatchInventory);
+    return true;
+  });
+  assert.equal(callbacks, 0);
+  assert.equal(probes, 0);
+  assert.equal(transport.calls.length, 0);
+  const dryRun = await runHostedProbeRunner({ projectRef: HARDCODED_TEMP_REF, argv: [], env: {}, adminClient: invalid[2] });
+  assert.equal(dryRun.status, 'DRY_RUN_COMPLETED');
+  assert.equal(callbacks, 0);
+  const residualInventory = new TestRunInventory('r5-runner-cleanup-result');
+  residualInventory.registerSession('r5-no-token-session');
+  const adminClient = fixtureAdmin(residualInventory);
+  const result = await runHostedProbeRunner({ projectRef: HARDCODED_TEMP_REF, inventory: residualInventory, adminClient, argv: ['--live'], env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, selectedProbeIds: ['BYPASS-01'], mockDispatcher: async () => ({ passed: false, status: 500, error: 'offline probe failure' }) });
+  assert.equal(result.status, 'HALTED_ON_FAILURE');
+  assert.equal(result.cleanupReport.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(result.cleanupReport.residualResources.some(resource => resource.type === 'session' && resource.id === 'r5-no-token-session'));
+});
+
+test('116. H3-R5-02: authentic provisioned Storage and session cleanup remains idempotent over three calls in both reporting modes', async () => {
+  for (const failClosed of [true, false]) {
+    for (const session of [true, false]) {
+      const fixture = await r5ProvisionedFixture('r5-repeat-' + failClosed + '-' + session, { session });
+      const { inventory, adminClient, transport, path } = fixture;
+      assert.equal(inventory.getStorageFixture(STORAGE_PROBE_BUCKET, path).lifecycleState, STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED);
+      const first = await inventory.executeCleanup({ adminClient, failClosed });
+      assert.equal(first.status, 'CLEANUP_VERIFIED_SUCCESS');
+      const originalFixture = inventory.getStorageFixture(STORAGE_PROBE_BUCKET, path);
+      const originalEvidence = JSON.stringify(originalFixture);
+      const originalAbsence = originalFixture.absenceEvidence;
+      const deletes = transport.calls.filter(call => call.method === 'DELETE').length;
+      const requestCount = transport.calls.length;
+      assert.equal(deletes, 1);
+      for (let count = 0; count < 2; count++) {
+        const report = await inventory.executeCleanup({ adminClient, failClosed });
+        assert.equal(report.status, 'CLEANUP_VERIFIED_SUCCESS');
+        assert.equal(report.storageObjectsDeleted, 0);
+        assert.deepEqual(report.residualResources, []);
+        assert.equal(inventory.getStorageFixture(STORAGE_PROBE_BUCKET, path), originalFixture);
+        assert.equal(originalFixture.absenceEvidence, originalAbsence);
+        assert.equal(JSON.stringify(originalFixture), originalEvidence);
+        assert.equal(originalFixture.lifecycleState, STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED);
+        assert.equal(inventory.isClean(), true);
+        assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, deletes);
+        assert.equal(transport.calls.length, requestCount);
+      }
+    }
+  }
+});
+
+test('117. H3-R5-02: a prior residual does not erase authentic deletion receipts and late operations still prevent success', async () => {
+  for (const failClosed of [true, false]) {
+    const { inventory, adminClient, transport, path } = await r5ProvisionedFixture('r5-residual-retry-' + failClosed, { session: true, logoutFailure: true });
+    const failed = await inventory.executeCleanup({ adminClient, failClosed: false });
+    assert.equal(failed.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(inventory.getStorageFixture(STORAGE_PROBE_BUCKET, path).lifecycleState, STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED);
+    const originalEvidence = JSON.stringify(inventory.getStorageFixture(STORAGE_PROBE_BUCKET, path));
+    const retryTransport = staticTransport({ status: 200, json: {} });
+    const retryAdmin = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, runId: inventory.runId, fetchFn: retryTransport });
+    const retry = await inventory.executeCleanup({ adminClient: retryAdmin, failClosed });
+    assert.equal(retry.status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(inventory.isClean(), true);
+    assert.equal(retryTransport.calls.some(call => call.method === 'DELETE'), false);
+    assert.equal(JSON.stringify(inventory.getStorageFixture(STORAGE_PROBE_BUCKET, path)), originalEvidence);
+    assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 1);
+    assert.throws(() => inventory.registerInFlightOperation({ probeId: 'LATE-UPLOAD', canModifyProviderState: true, requiresCleanupReconciliation: true }), /INVENTORY_FINALIZED/);
+    assert.equal(inventory.isClean(), false);
+    const lateResult = await inventory.executeCleanup({ adminClient: retryAdmin, failClosed: false });
+    assert.equal(lateResult.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.ok(lateResult.residualResources.some(resource => resource.type === 'post_finalization_mutations'));
+    assert.equal(retryTransport.calls.some(call => call.method === 'DELETE'), false);
+  }
+  const { inventory, adminClient, transport } = await r5ProvisionedFixture('r5-late-settlement');
+  assert.equal((await inventory.executeCleanup({ adminClient })).status, 'CLEANUP_VERIFIED_SUCCESS');
+  const settledProvisionOp = [...inventory.inFlightOperations.keys()][0];
+  inventory.settleInFlightOperation(settledProvisionOp, { observed: { status: 200 } });
+  const late = await inventory.executeCleanup({ adminClient, failClosed: false });
+  assert.equal(late.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(inventory.isClean(), false);
+  assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 1);
+});
+
+test('118. H3-R5-02: forged or altered terminal Storage records cannot claim absence or execute caller serialization', async () => {
+  for (const failClosed of [true, false]) {
+    const runId = 'r5-forged-terminal-' + failClosed;
+    const inventory = new TestRunInventory(runId);
+    inventory.registerStorageFixture({ path: getStorageProbeObjectPath(runId), ownerId: R5_SEED_USER, lifecycleState: STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED, hasCommittedUpload: true });
+    const spec = fixtureSpec();
+    const adminClient = fixtureAdmin(inventory, spec);
+    assert.equal(inventory.isClean(), false);
+    if (failClosed) await assert.rejects(inventory.executeCleanup({ adminClient, failClosed }), /CLEANUP_INCOMPLETE/);
+    else assert.equal((await inventory.executeCleanup({ adminClient, failClosed })).status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(fixtureCalls(spec).length, 0);
+  }
+  for (const alteration of ['owner', 'path', 'clone', 'toJSON']) {
+    const { inventory, adminClient, transport, path } = await r5ProvisionedFixture('r5-terminal-altered-' + alteration);
+    await inventory.executeCleanup({ adminClient });
+    const fixture = inventory.getStorageFixture(STORAGE_PROBE_BUCKET, path);
+    const key = STORAGE_PROBE_BUCKET + '/' + path;
+    let serializationCallbacks = 0;
+    if (alteration === 'owner') fixture.ownerId = R5_CREATED_USER;
+    if (alteration === 'path') fixture.path = 'r5-another-run/probe.txt';
+    if (alteration === 'clone') inventory.storageFixtures.set(key, { ...fixture });
+    if (alteration === 'toJSON') fixture.toJSON = () => { serializationCallbacks++; return { lifecycleState: STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED }; };
+    assert.equal(inventory.isClean(), false);
+    const report = await inventory.executeCleanup({ adminClient, failClosed: false });
+    assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(serializationCallbacks, 0);
+    assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 1);
+  }
+});
+
+test('119. H3-R5-01: immutable Admin capabilities reject altered call methods and borrowed receivers before execution', async () => {
+  let callbacks = 0;
+  const runId = 'r5-frozen-capabilities';
+  const transport = staticTransport({ status: 200, json: {} });
+  const client = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, runId, fetchFn: transport });
+  for (const method of Object.values(client)) {
+    assert.equal(Object.isFrozen(method), true);
+    assert.throws(() => Object.defineProperty(method, 'call', { value: () => { callbacks++; } }), TypeError);
+    assert.throws(() => Object.defineProperty(method, 'apply', { value: () => { callbacks++; } }), TypeError);
+  }
+  const badReceiver = { signOut: async () => { callbacks++; return { error: null }; } };
+  await assert.rejects(client.invalidateSession.call(badReceiver, 'r5-session', 'synthetic-token'), /UNTRUSTED_ADMIN_CLIENT/);
+  await assert.rejects(client.getStorageObject.call(badReceiver, STORAGE_PROBE_BUCKET, getStorageProbeObjectPath(runId)), /UNTRUSTED_ADMIN_CLIENT/);
+  assert.equal(callbacks, 0);
+  assert.equal(transport.calls.length, 0);
+});
+
+test('120. H3-R5 execution audit: raw Storage registrations and forged verified ownership never authorize destructive cleanup', async () => {
+  for (const registration of ['raw', 'forged_verified']) {
+    const runId = 'r5-unverified-ownership-' + registration;
+    const inventory = new TestRunInventory(runId);
+    const path = getStorageProbeObjectPath(runId);
+    inventory.registerCreatedUser({ id: R5_CREATED_USER, email: 'owned-r5@proof.invalid', creationProof: createCreationProof('before_after_check') });
+    if (registration === 'raw') inventory.registerStorageObject(STORAGE_PROBE_BUCKET, path);
+    else inventory.registerStorageFixture({ path, ownerId: R5_SEED_USER, lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED, deletionEligible: true, hasCommittedUpload: true });
+    const spec = fixtureSpec();
+    const adminClient = fixtureAdmin(inventory, spec);
+    const report = await inventory.executeCleanup({ adminClient, failClosed: false });
+    assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.ok(report.residualResources.some(resource => resource.type === 'storage_object'));
+    assert.ok(report.residualUsers.some(user => user.id === R5_CREATED_USER && /STORAGE_CLEANUP_FAILURE_CASCADE_PREVENTED/.test(user.error)));
+    assert.equal(fixtureCalls(spec).length, 0);
+    assert.equal(inventory.isClean(), false);
+    await assert.rejects(inventory.executeCleanup({ adminClient, failClosed: true }), /CLEANUP_INCOMPLETE/);
+    assert.equal(fixtureCalls(spec).length, 0);
+  }
+  const empty = new TestRunInventory('r5-empty-report-only');
+  assert.equal((await empty.executeCleanup()).status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(empty.isClean(), true);
+});
+
+test('121. H3-R5-02: repeated cleanup after failed Storage deletion retains the residual without another DELETE', async () => {
+  for (const failClosed of [true, false]) {
+    const { inventory, adminClient, transport, path } = await r5ProvisionedFixture('r5-storage-residual-' + failClosed, { storageDeleteFailure: true });
+    const first = await inventory.executeCleanup({ adminClient, failClosed: false });
+    assert.equal(first.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(inventory.getStorageFixture(STORAGE_PROBE_BUCKET, path).lifecycleState, STORAGE_LIFECYCLE_STATE.CLEANUP_INDETERMINATE);
+    const destructiveCount = transport.calls.filter(call => call.method === 'DELETE').length;
+    assert.equal(destructiveCount, 1);
+    if (failClosed) await assert.rejects(inventory.executeCleanup({ adminClient, failClosed }), error => {
+      assert.equal(error.cleanupReport.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+      assert.ok(error.cleanupReport.residualResources.some(resource => resource.type === 'storage_object'));
+      return true;
+    });
+    else assert.equal((await inventory.executeCleanup({ adminClient, failClosed })).status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, destructiveCount);
+    assert.equal(inventory.isClean(), false);
+  }
 });

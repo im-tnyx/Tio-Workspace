@@ -27,17 +27,11 @@ const TRUSTED_DETERMINISTIC_TRANSPORTS = new WeakSet();
 const TRUSTED_OFFLINE_BARRIERS = new WeakSet();
 const TARGET_ISOLATION_STATES = new WeakMap();
 const TRUSTED_ADMIN_CLIENTS = new WeakMap();
+// Private receipts cannot be manufactured by setting public inventory lifecycle fields.
+const VERIFIED_STORAGE_DELETIONS = new WeakMap();
+const VERIFIED_STORAGE_CREATIONS = new WeakMap();
 const RUNNER_LIVE_DISPATCH_CONTEXT = new AsyncLocalStorage();
 const DISPATCHER_CALL_CONTEXT = new AsyncLocalStorage();
-
-const FORGED_TRUSTED_ADMIN_MARKER_KEYS = Object.freeze([
-  '_isTrustedAdminClient',
-  '__trustedAdminClient',
-  '_trustedAdmin',
-  'isTrustedAdminClient',
-  'isTrustedAdmin',
-  '_trustedCapabilities'
-]);
 
 const GLOBAL_FETCH_BLOCK_TRAP = function blockedRealFetchTrap() {
   throw new Error(
@@ -692,17 +686,6 @@ export function assertOfflineMockTransport(fetchFn) {
   }
 }
 
-function assertNoForgedAdminMarkers(adminClient) {
-  if (!adminClient || typeof adminClient !== 'object') return;
-  for (const key of FORGED_TRUSTED_ADMIN_MARKER_KEYS) {
-    if (key in adminClient && adminClient[key]) {
-      throw new Error(
-        `BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_ADMIN_CLIENT: Forged trusted Admin client marker '${key}' rejected fail-closed (R4-01)`
-      );
-    }
-  }
-}
-
 /**
  * Verifies that an Admin client adapter was constructed by this module's createHostedAdminClient(),
  * preserves immutable registered capabilities, and matches project/run/transport bindings (R4-01).
@@ -724,7 +707,6 @@ export function assertTrustedAdminClient(
 
   const meta = TRUSTED_ADMIN_CLIENTS.get(adminClient);
   if (!meta) {
-    assertNoForgedAdminMarkers(adminClient);
     throw new Error(
       'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_ADMIN_CLIENT: Unregistered or forged Admin client adapter rejected fail-closed before provider operation (R4-01)'
     );
@@ -759,19 +741,6 @@ export function assertTrustedAdminClient(
   }
 
   return meta;
-}
-
-function verifyAdminClientIntegrityIfTrustedOrMarked(adminClient, expectedRunId = null) {
-  if (!adminClient || typeof adminClient !== 'object') return null;
-  if (TRUSTED_ADMIN_CLIENTS.has(adminClient)) {
-    return assertTrustedAdminClient(adminClient, {
-      projectRef: HARDCODED_TEMP_REF,
-      runId: expectedRunId,
-      requireRunBinding: false
-    });
-  }
-  assertNoForgedAdminMarkers(adminClient);
-  return null;
 }
 
 /**
@@ -3471,87 +3440,41 @@ export function normalizeStorageObjectResponse({
 /**
  * Verifies post-deletion Storage object absence with detailed normalized evidence (R1-06, R2-03).
  */
-export async function verifyStorageObjectAbsenceDetailed(adminClient, bucket, path, { projectRef = HARDCODED_TEMP_REF } = {}) {
-  if (!adminClient || !bucket || !path) {
+export async function verifyStorageObjectAbsenceDetailed(adminClient, bucket, path, { projectRef = HARDCODED_TEMP_REF, runId = null } = {}) {
+  if (!bucket || !path) {
+    return { isAbsent: false, classification: STORAGE_RESPONSE_CLASS.INDETERMINATE, status: 0, reason: 'MISSING_CLIENT_OR_PATH' };
+  }
+  let trustedMeta;
+  try {
+    // The run-owned path is an independent binding constraint, not a trust marker.
+    const pathRunId = bucket === STORAGE_PROBE_BUCKET && typeof path === 'string' && path.includes('/')
+      ? validateRunId(path.split('/')[0]) : null;
+    if (runId && pathRunId && runId !== pathRunId) {
+      throw new Error('ADMIN_CLIENT_RUN_MISMATCH: Absence path and requested run do not match');
+    }
+    trustedMeta = assertTrustedAdminClient(adminClient, {
+      projectRef, runId: runId || pathRunId, requireRunBinding: Boolean(runId || pathRunId)
+    });
+  } catch (err) {
     return {
       isAbsent: false,
       classification: STORAGE_RESPONSE_CLASS.INDETERMINATE,
       status: 0,
-      reason: 'MISSING_CLIENT_OR_PATH'
+      providerResponseObtained: false,
+      reason: `ADMIN_INTEGRITY_REJECTED: ${sanitizeData(err.message)}`
     };
   }
-  const trustedMeta = verifyAdminClientIntegrityIfTrustedOrMarked(adminClient);
-  const getStorageFn = trustedMeta ? trustedMeta.capabilities.getStorageObject : adminClient.getStorageObject;
-  if (typeof getStorageFn === 'function') {
-    try {
-      const res = await runWithBlockedRealFetch(() => getStorageFn.call(adminClient, bucket, path));
-      if (!res) {
-        return {
-          isAbsent: false,
-          classification: STORAGE_RESPONSE_CLASS.INDETERMINATE,
-          status: 0,
-          reason: 'EMPTY_ADMIN_CLIENT_RESPONSE'
-        };
-      }
-      if (res.normalized && typeof res.normalized === 'object') {
-        return res.normalized;
-      }
-      if (res.transportError) {
-        return normalizeStorageObjectResponse({
-          transportError: res.transportError,
-          expectedBucket: bucket,
-          expectedPath: path,
-          projectRef,
-          authorizedContext: res.authorizedContext ?? true
-        });
-      }
-      const parsedBody = res.body ?? null;
-      const inferredParseStatus =
-        res.parseStatus ||
-        (parsedBody && typeof parsedBody === 'object' ? 'parsed' : 'no_body');
-      return normalizeStorageObjectResponse({
-        status: typeof res.status === 'number' ? res.status : 0,
-        parseStatus: inferredParseStatus,
-        body: parsedBody,
-        expectedBucket: bucket,
-        expectedPath: path,
-        projectRef,
-        authorizedContext: res.authorizedContext ?? true
-      });
-    } catch (err) {
-      return normalizeStorageObjectResponse({
-        transportError: err,
-        expectedBucket: bucket,
-        expectedPath: path,
-        projectRef,
-        authorizedContext: true
-      });
+  try {
+    const res = await runWithBlockedRealFetch(() => Reflect.apply(trustedMeta.capabilities.getStorageObject, adminClient, [bucket, path]));
+    if (!res) {
+      return { isAbsent: false, classification: STORAGE_RESPONSE_CLASS.INDETERMINATE, status: 0, reason: 'EMPTY_ADMIN_CLIENT_RESPONSE' };
     }
+    return res.normalized;
+  } catch (err) {
+    return normalizeStorageObjectResponse({
+      transportError: err, expectedBucket: bucket, expectedPath: path, projectRef, authorizedContext: true
+    });
   }
-  if (typeof adminClient.verifyStorageObjectAbsence === 'function') {
-    try {
-      const ok = await adminClient.verifyStorageObjectAbsence(bucket, path);
-      return {
-        isAbsent: ok === true,
-        classification: ok === true ? STORAGE_RESPONSE_CLASS.OBJECT_ABSENT : STORAGE_RESPONSE_CLASS.INDETERMINATE,
-        status: ok === true ? 404 : 0,
-        reason: ok === true ? 'CUSTOM_VERIFIER_TRUE' : 'CUSTOM_VERIFIER_FALSE'
-      };
-    } catch (err) {
-      return {
-        isAbsent: false,
-        classification: STORAGE_RESPONSE_CLASS.TRANSPORT_FAILURE,
-        status: 0,
-        reason: err.message
-      };
-    }
-  }
-  return {
-    isAbsent: false,
-    classification: STORAGE_RESPONSE_CLASS.INDETERMINATE,
-    status: 0,
-    reason: 'MISSING_GET_STORAGE_OBJECT_METHOD'
-  };
 }
 
 /**
@@ -3560,6 +3483,65 @@ export async function verifyStorageObjectAbsenceDetailed(adminClient, bucket, pa
 export async function verifyStorageObjectAbsence(adminClient, bucket, path, options = {}) {
   const res = await verifyStorageObjectAbsenceDetailed(adminClient, bucket, path, options);
   return res?.isAbsent === true;
+}
+
+function storageEvidenceSnapshot(value, seen = new WeakSet()) {
+  if (value === null || typeof value !== 'object') {
+    if (!['undefined', 'string', 'number', 'boolean'].includes(typeof value) && value !== null) {
+      throw new Error('INVALID_STORAGE_EVIDENCE');
+    }
+    return [typeof value, value];
+  }
+  if (seen.has(value) || Object.getOwnPropertySymbols(value).length) throw new Error('INVALID_STORAGE_EVIDENCE');
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== Array.prototype && prototype !== null) throw new Error('INVALID_STORAGE_EVIDENCE');
+  seen.add(value);
+  const entries = [];
+  for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(value))) {
+    if (!Object.hasOwn(descriptor, 'value')) throw new Error('INVALID_STORAGE_EVIDENCE');
+    entries.push([key, storageEvidenceSnapshot(descriptor.value, seen)]);
+  }
+  seen.delete(value);
+  return [Array.isArray(value) ? 'array' : 'object', entries];
+}
+
+function hasVerifiedStorageDeletion(inventory, fixtureKey, fixture) {
+  const receipt = VERIFIED_STORAGE_DELETIONS.get(fixture);
+  if (!receipt || receipt.inventory !== inventory || receipt.runId !== inventory.runId || receipt.fixtureKey !== fixtureKey) return false;
+  try {
+    // Compare descriptor values without invoking getters or caller-supplied toJSON.
+    return receipt.snapshot === JSON.stringify(storageEvidenceSnapshot(fixture));
+  } catch {
+    return false;
+  }
+}
+
+function storageCreationSnapshot(fixture) {
+  const evidence = Object.create(null);
+  for (const key of ['bucket', 'path', 'key', 'runId', 'reservationOpId', 'ownerId', 'verifiedOwnerId',
+    'providerObjectId', 'providerObjectIdLocked', 'bytes', 'sha256', 'hasCommittedUpload', 'proof']) {
+    const descriptor = Object.getOwnPropertyDescriptor(fixture, key);
+    if (!descriptor || !Object.hasOwn(descriptor, 'value')) throw new Error('INVALID_STORAGE_CREATION_EVIDENCE');
+    evidence[key] = descriptor.value;
+  }
+  return JSON.stringify(storageEvidenceSnapshot(evidence));
+}
+
+function hasVerifiedStorageCreation(inventory, fixtureKey, fixture) {
+  const receipt = VERIFIED_STORAGE_CREATIONS.get(fixture);
+  if (!receipt || receipt.inventory !== inventory || receipt.fixtureKey !== fixtureKey || receipt.runId !== inventory.runId) return false;
+  try {
+    return receipt.snapshot === storageCreationSnapshot(fixture);
+  } catch {
+    return false;
+  }
+}
+
+function cleanupFailure(message, report) {
+  const error = new Error(message);
+  error.code = 'CLEANUP_FAILED_RESIDUAL_RESOURCES';
+  error.cleanupReport = sanitizeData(report);
+  return error;
 }
 
 /**
@@ -4655,7 +4637,7 @@ export class TestRunInventory {
 
     for (const [fixtureKey, fixture] of this.storageFixtures.entries()) {
       const cleanlySettled =
-        fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED ||
+        (fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED && hasVerifiedStorageDeletion(this, fixtureKey, fixture)) ||
         (fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.CONFLICT_EXISTING_PRESERVED && !fixture.hasCommittedUpload) ||
         (fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.DEFINITIVE_NON_CREATION &&
           fixture.neverDispatched === true &&
@@ -4718,10 +4700,10 @@ export class TestRunInventory {
     if (this.postFinalizationMutations.length > 0) return false;
     if (this.lateSettlementsDuringCleanup.length > 0) return false;
     if (this.seedCredentialRestorations.some(r => r.state !== 'restored')) return false;
-    for (const fixture of this.storageFixtures.values()) {
+    for (const [fixtureKey, fixture] of this.storageFixtures.entries()) {
       const settledCleanly =
-        fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED ||
-        fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.CONFLICT_EXISTING_PRESERVED ||
+        (fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED && hasVerifiedStorageDeletion(this, fixtureKey, fixture)) ||
+        (fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.CONFLICT_EXISTING_PRESERVED && !fixture.hasCommittedUpload) ||
         (fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.DEFINITIVE_NON_CREATION && fixture.neverDispatched === true && !fixture.hasCommittedUpload);
       if (!settledCleanly) return false;
     }
@@ -4826,32 +4808,54 @@ export class TestRunInventory {
       this.lateSettlementsDuringCleanup.length > 0 ||
       this.postFinalizationMutations.length > 0;
 
-    if (!hasCleanupEligibleItems) {
+    if (!hasCleanupEligibleItems && !adminClient) {
       report.status = 'CLEANUP_VERIFIED_SUCCESS';
       this.runLifecycleState = INVENTORY_RUN_STATE.FINALIZED;
       this.finalize();
       return report;
     }
 
-    if (!adminClient) {
-      report.residualResources.push({ type: 'client', error: 'MISSING_ADMIN_CLIENT' });
-      report.status = 'CLEANUP_FAILED_RESIDUAL_RESOURCES';
-      this.runLifecycleState = INVENTORY_RUN_STATE.RESIDUAL_BLOCKED;
-      this.finalize();
-      if (failClosed) {
-        throw new Error('CLEANUP_CLIENT_REQUIRED: executeCleanup requires authenticated adminClient when resources are tracked');
-      }
-      return report;
-    }
-
     try {
-      verifyAdminClientIntegrityIfTrustedOrMarked(adminClient, this.runId);
+      if (!adminClient) throw new Error('CLEANUP_CLIENT_REQUIRED: MISSING_ADMIN_CLIENT');
+      assertTrustedAdminClient(adminClient, { projectRef: HARDCODED_TEMP_REF, runId: this.runId });
     } catch (integrityErr) {
-      report.residualResources.push({ type: 'client', error: integrityErr.message });
+      // Rejection blocks all execution in both reporting modes. Keep every outstanding obligation visible.
+      report.residualResources.push({ type: 'client', error: sanitizeData(integrityErr.message) });
+      for (const [id] of this.createdUsers) {
+        if (!this.deletedUsers.has(id)) report.residualUsers.push({ id, reason: 'ADMIN_INTEGRITY_REJECTED' });
+      }
+      for (const [id, user] of this.unverifiedUsers) {
+        report.residualResources.push({ type: 'unresolved_user_ownership', userId: id, ownership: user.ownership });
+      }
+      for (const [bucket, paths] of this.trackedStorageObjects) {
+        for (const path of paths) report.residualResources.push({ type: 'storage_object', bucket, path });
+      }
+      for (const [key, fixture] of this.storageFixtures) {
+        if (!hasVerifiedStorageDeletion(this, key, fixture)) {
+          report.residualResources.push({ type: 'storage_fixture', bucket: fixture.bucket, path: fixture.path, lifecycleState: fixture.lifecycleState });
+        }
+      }
+      for (const [table, ids] of this.trackedTableRows) {
+        for (const id of ids) report.residualResources.push({ type: 'table_row', table, id });
+      }
+      for (const id of this.trackedSessions) {
+        if (!this.revokedSessions.has(id)) report.residualResources.push({ type: 'session', id });
+      }
+      for (const item of this.seedCredentialRestorations) {
+        if (item.state !== 'restored') report.residualResources.push({ type: 'seed_credential_restoration', userId: item.userId, state: item.state });
+      }
+      for (const op of unresolvedOps) {
+        report.residualResources.push({ type: 'unresolved_in_flight_operation', opId: op.opId, probeId: op.probeId, state: op.state });
+      }
+      if (this.untrackedSessionsCount) report.residualResources.push({ type: 'untracked_session', count: this.untrackedSessionsCount });
+      if (this.untrackedUsersCount) report.residualResources.push({ type: 'unresolved_user_creation_risk', count: this.untrackedUsersCount });
+      if (this.lateSettlementsDuringCleanup.length) report.residualResources.push({ type: 'late_settlement_during_cleanup', count: this.lateSettlementsDuringCleanup.length });
+      if (this.postFinalizationMutations.length) report.residualResources.push({ type: 'post_finalization_mutations', count: this.postFinalizationMutations.length });
       report.status = 'CLEANUP_FAILED_RESIDUAL_RESOURCES';
       this.runLifecycleState = INVENTORY_RUN_STATE.RESIDUAL_BLOCKED;
       this.finalize();
-      throw integrityErr;
+      if (failClosed) throw cleanupFailure(integrityErr.message, report);
+      return report;
     }
 
     // 0A. Untracked minted sessions blocker (R5-04, R8-01, R13-02)
@@ -4958,6 +4962,11 @@ export class TestRunInventory {
     let storageCleanupFailed = false;
 
     for (const [fixtureKey, fixture] of this.storageFixtures.entries()) {
+      // A terminal label is insufficient: only this inventory's private post-GET receipt is authoritative.
+      if (fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED &&
+          hasVerifiedStorageDeletion(this, fixtureKey, fixture)) {
+        continue;
+      }
       // 1. Definitive non-creation (request NEVER dispatched and no committed upload): no Storage resource created
       if (
         fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.DEFINITIVE_NON_CREATION &&
@@ -4979,7 +4988,8 @@ export class TestRunInventory {
       // Quarantine obligation, block cleanup success & block Auth user deletion, NEVER blind-delete! (R2-02)
       const isVerifiedRunOwned =
         fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED &&
-        fixture.deletionEligible === true;
+        fixture.deletionEligible === true &&
+        hasVerifiedStorageCreation(this, fixtureKey, fixture);
 
       if (!isVerifiedRunOwned) {
         const failureCode = fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED || fixture.hasCommittedUpload
@@ -5069,7 +5079,7 @@ export class TestRunInventory {
           adminClient,
           fixture.bucket,
           fixture.path,
-          { projectRef: fixture.projectRef || HARDCODED_TEMP_REF }
+          { projectRef: fixture.projectRef || HARDCODED_TEMP_REF, runId: this.runId }
         );
         const unresolvedDuringVerify = this.getUnresolvedOperations().filter(
           op => op.canModifyProviderState || op.requiresCleanupReconciliation
@@ -5103,6 +5113,9 @@ export class TestRunInventory {
           fixture.status = 'DELETED';
           fixture.deletionVerifiedAt = new Date().toISOString();
           fixture.absenceEvidence = absenceDetail;
+          VERIFIED_STORAGE_DELETIONS.set(fixture, Object.freeze({
+            inventory: this, runId: this.runId, fixtureKey, snapshot: JSON.stringify(storageEvidenceSnapshot(fixture))
+          }));
           if (this.trackedStorageObjects.has(fixture.bucket)) {
             this.trackedStorageObjects.get(fixture.bucket).delete(fixture.path);
           }
@@ -5122,53 +5135,18 @@ export class TestRunInventory {
       }
     }
 
-    // Also reconcile any tracked storage objects that weren't in storageFixtures
+    // A path-only legacy registration is an obligation, never provider ownership proof.
+    // Keep it visible for recovery and block user deletion instead of blindly deleting it.
     for (const [bucket, paths] of this.trackedStorageObjects.entries()) {
-      for (const path of Array.from(paths)) {
-        const fixtureKey = `${bucket}/${path}`;
-        if (this.storageFixtures.has(fixtureKey)) continue;
-        if (typeof adminClient.deleteStorageObject !== 'function') {
-          report.residualResources.push({ type: 'storage_objects', bucket, count: paths.size, error: 'MISSING_DELETE_STORAGE_OBJECT_METHOD' });
-          storageCleanupFailed = true;
-          break;
-        }
-        try {
-          const res = await adminClient.deleteStorageObject(bucket, path);
-          const delAbsent =
-            res &&
-            res.error &&
-            res.normalized?.classification === STORAGE_RESPONSE_CLASS.OBJECT_ABSENT &&
-            res.normalized?.isAbsent === true;
-          if (res && res.error && !delAbsent) {
-            report.residualResources.push({ type: 'storage_object', bucket, path, error: res.error.message || String(res.error) });
-            storageCleanupFailed = true;
-          } else {
-            const hasVerification = typeof adminClient.getStorageObject === 'function' || typeof adminClient.verifyStorageObjectAbsence === 'function';
-            if (hasVerification) {
-              const absence = await verifyStorageObjectAbsenceDetailed(adminClient, bucket, path);
-              if (!absence.isAbsent) {
-                report.residualResources.push({ type: 'storage_object', bucket, path, error: 'STORAGE_OBJECT_NOT_ABSENT' });
-                storageCleanupFailed = true;
-              } else {
-                report.storageObjectsDeleted++;
-                paths.delete(path);
-              }
-            } else if (delAbsent) {
-              report.residualResources.push({ type: 'storage_object', bucket, path, error: 'MISSING_ABSENCE_VERIFICATION_METHOD' });
-              storageCleanupFailed = true;
-            } else {
-              report.storageObjectsDeleted++;
-              paths.delete(path);
-            }
-          }
-        } catch (err) {
-          report.residualResources.push({ type: 'storage_object', bucket, path, error: err.message });
-          storageCleanupFailed = true;
-        }
+      for (const path of paths) {
+        if (this.storageFixtures.has(`${bucket}/${path}`)) continue;
+        report.residualResources.push({
+          type: 'storage_object', bucket, path, recoverableForDurableRetry: true,
+          error: 'UNVERIFIED_STORAGE_OWNERSHIP: Path-only registration lacks affirmative run-created ownership; object preserved without deletion'
+        });
+        storageCleanupFailed = true;
       }
-      if (paths.size === 0) {
-        this.trackedStorageObjects.delete(bucket);
-      }
+      if (paths.size === 0) this.trackedStorageObjects.delete(bucket);
     }
 
     // 3. Invalidate tracked sessions using supported GoTrue sign-out / session revocation (R4-05, R5-02, R6-01, R8-02)
@@ -5367,9 +5345,7 @@ export class TestRunInventory {
     if (this.seedCredentialRestorations.length > 0) {
       const updateFn = typeof adminClient.updateUserById === 'function'
         ? adminClient.updateUserById.bind(adminClient)
-        : (adminClient.auth && typeof adminClient.auth.admin?.updateUserById === 'function'
-            ? adminClient.auth.admin.updateUserById.bind(adminClient.auth.admin)
-            : null);
+        : null;
 
       if (!updateFn) {
         report.residualResources.push({
@@ -5564,7 +5540,7 @@ export class TestRunInventory {
         const detail = report.residualUsers.length > 0
           ? `${report.residualUsers.length} synthetic user(s) remain in database after cleanup`
           : `${report.residualResources.length} residual resource(s) remain after cleanup`;
-        throw new Error(`CLEANUP_INCOMPLETE: ${detail}`);
+        throw cleanupFailure(`CLEANUP_INCOMPLETE: ${detail}`, report);
       }
     } else {
       report.status = 'CLEANUP_VERIFIED_SUCCESS';
@@ -5707,7 +5683,7 @@ export async function provisionStorageProbeFixture({
       runId: validRunId,
       requireRunBinding: true
     });
-    return trustedAdminMeta.capabilities.getStorageObjectOwnership.call(resolvedAdminClient, b, p, opts);
+    return Reflect.apply(trustedAdminMeta.capabilities.getStorageObjectOwnership, resolvedAdminClient, [b, p, opts]);
   };
 
   const bucket = STORAGE_PROBE_BUCKET;
@@ -6276,6 +6252,12 @@ export async function provisionStorageProbeFixture({
         timestamp: new Date().toISOString()
       }
     });
+
+    // Public lifecycle/owner labels cannot manufacture provider creation provenance.
+    // Issue the capability only after upload, exact payload and provider-owner verification.
+    VERIFIED_STORAGE_CREATIONS.set(fixtureRecord, Object.freeze({
+      inventory, runId: validRunId, fixtureKey: fullKey, snapshot: storageCreationSnapshot(fixtureRecord)
+    }));
 
     settledOutcome = {
       bucket,
@@ -8114,7 +8096,8 @@ export function createHostedDispatcher({
               error: `STORAGE_FIXTURE_RECORD_MISSING: No verified storage fixture found in inventory for '${fullKey}' before dispatch (R1-07)`
             };
           }
-          if (fixture.lifecycleState !== STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED || fixture.deletionEligible !== true) {
+          if (fixture.lifecycleState !== STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED || fixture.deletionEligible !== true ||
+              !hasVerifiedStorageCreation(inv, fullKey, fixture)) {
             return {
               passed: false,
               status: 0,
@@ -8377,18 +8360,24 @@ export async function runHostedProbeRunner(options = {}) {
 
   const adminClient = options.adminClient || null;
 
-  // LIVE mode requires verified adminClient with cleanup capabilities (R4-02)
-  if (isLive) {
-    if (!adminClient) {
-      throw new Error(
-        'CLEANUP_CAPABILITY_REQUIRED: LIVE mode requires verified adminClient with deleteUser, getUserById, and session invalidation capability'
-      );
+  const activeInventory = inventory || new TestRunInventory(runId || plan.runId);
+  // Admission checks private identity before touching any caller-supplied Admin property.
+  try {
+    if (!adminClient) throw new Error('CLEANUP_CAPABILITY_REQUIRED: LIVE mode requires a registered run-bound Admin client');
+    if (runId && runId !== activeInventory.runId) throw new Error('ADMIN_CLIENT_RUN_MISMATCH: Runner and inventory run IDs differ');
+    assertTrustedAdminClient(adminClient, { projectRef: validatedRef, runId: activeInventory.runId });
+  } catch (err) {
+    // Admission rejection is report-only, even if this adapter happens to match
+    // the inventory while the runner requested a different run. Never mutate here.
+    const cleanupReport = await activeInventory.executeCleanup({ adminClient: null, failClosed: false, settlementTimeoutMs: 0 });
+    const clientFailure = cleanupReport.residualResources.find(resource => resource.type === 'client');
+    if (clientFailure) clientFailure.error = sanitizeData(err.message);
+    if (cleanupReport.status === 'CLEANUP_VERIFIED_SUCCESS') {
+      cleanupReport.status = 'CLEANUP_FAILED_RESIDUAL_RESOURCES';
+      cleanupReport.residualResources.push({ type: 'client', error: sanitizeData(err.message) });
+      activeInventory.runLifecycleState = INVENTORY_RUN_STATE.RESIDUAL_BLOCKED;
     }
-    if (typeof adminClient.deleteUser !== 'function' || typeof adminClient.getUserById !== 'function') {
-      throw new Error(
-        'CLEANUP_CAPABILITY_REQUIRED: LIVE adminClient must implement deleteUser and getUserById methods'
-      );
-    }
+    throw cleanupFailure(err.message, cleanupReport);
   }
 
   // Real LIVE hosted cloud dispatch is permanently gated pending durable crash recovery (H3-05, R1-01, R2 Sec 6)
@@ -8411,7 +8400,6 @@ export async function runHostedProbeRunner(options = {}) {
     );
   }
 
-  const activeInventory = inventory || new TestRunInventory(runId);
   const verifiedSeedId = options.seedUserId || options.targetUserId || null;
   if (verifiedSeedId) {
     activeInventory.protectSeedIdentity({ email: options.seedEmail || testEmail || null, id: verifiedSeedId });
@@ -8428,9 +8416,11 @@ export async function runHostedProbeRunner(options = {}) {
         await activeInventory.awaitInFlightSettlement(Math.min(probeTimeoutMs, 100));
         cleanupReport = await activeInventory.executeCleanup({ adminClient, failClosed: false, settlementTimeoutMs: 50 });
       } catch (err) {
-        cleanupReport = {
-          status: 'CLEANUP_FAILED',
-          error: err.message
+        cleanupReport = err.cleanupReport || {
+          status: 'CLEANUP_FAILED_RESIDUAL_RESOURCES',
+          error: sanitizeData(err.message),
+          inventory: activeInventory.getSummary(),
+          residualResources: [{ type: 'cleanup_exception', error: sanitizeData(err.message) }]
         };
       }
     }
@@ -9267,6 +9257,27 @@ export function createHostedAdminClient({
     }
   };
 
+  // Guard direct capability calls as well as the orchestration helpers. A borrowed method
+  // must never execute methods on a caller-controlled receiver (notably this.signOut).
+  for (const [name, implementation] of Object.entries(client)) {
+    client[name] = async function guardedAdminCapability(...args) {
+      if (this !== client) {
+        throw new Error('UNTRUSTED_ADMIN_CLIENT: Admin capability receiver does not match its registered adapter');
+      }
+      let operationRunId = null;
+      if (name === 'verifyUserCredentials' && args[2]?.inventory) operationRunId = args[2].inventory.runId;
+      if (['getStorageObject', 'getStorageObjectOwnership', 'deleteStorageObject'].includes(name) &&
+          args[0] === STORAGE_PROBE_BUCKET && typeof args[1] === 'string' && args[1].includes('/')) {
+        operationRunId = validateRunId(args[1].split('/')[0]);
+      }
+      assertTrustedAdminClient(client, {
+        projectRef, runId: operationRunId || boundRunId,
+        requireRunBinding: Boolean(operationRunId || boundRunId)
+      });
+      return Reflect.apply(implementation, client, args);
+    };
+  }
+
   const capabilities = Object.freeze({
     verifyUserCredentials: client.verifyUserCredentials,
     deleteUser: client.deleteUser,
@@ -9280,6 +9291,7 @@ export function createHostedAdminClient({
     deleteStorageObject: client.deleteStorageObject
   });
 
+  for (const capability of Object.values(capabilities)) Object.freeze(capability);
   Object.freeze(client);
   TRUSTED_ADMIN_CLIENTS.set(
     client,
