@@ -140,6 +140,11 @@ const INTRINSIC_DATA_VIEW_BYTE_LENGTH_GET = Object.getOwnPropertyDescriptor(Data
 const INTRINSIC_UINT8_ARRAY_SLICE = Uint8Array.prototype.slice;
 const INTRINSIC_ARRAY_BUFFER_BYTE_LENGTH_GET = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength')?.get;
 
+const INTRINSIC_HEADERS_PROTO = typeof Headers === 'function' ? Headers.prototype : null;
+const INTRINSIC_HEADERS_ENTRIES = INTRINSIC_HEADERS_PROTO ? INTRINSIC_HEADERS_PROTO.entries : null;
+const INTRINSIC_URL_PROTO = typeof URL === 'function' ? URL.prototype : null;
+const INTRINSIC_URL_HREF_GET = INTRINSIC_URL_PROTO ? Object.getOwnPropertyDescriptor(INTRINSIC_URL_PROTO, 'href')?.get : null;
+
 function validateTrustedAbortSignal(signal, label = 'signal') {
   if (utilTypes.isProxy(signal)) {
     throw new Error(`INVALID_ADMISSION_TYPE: Proxy AbortSignal rejected at '${label}' (R11-02A)`);
@@ -197,6 +202,72 @@ function removeTrustedSignalAbortListener(signal, listener) {
     throw new Error('INVALID_ADMISSION_TYPE: Expected genuine AbortSignal on listener cleanup (R11-02A)');
   }
   INTRINSIC_ABORT_SIGNAL_REMOVE_EVENT_LISTENER.call(signal, 'abort', listener);
+}
+
+function waitWithTrustedSignal(delayMs, signal, { onAbort = null, ignoreAbort = false } = {}) {
+  if (typeof delayMs !== 'number' || !Number.isFinite(delayMs) || delayMs < 0) {
+    return Promise.reject(new Error(`INVALID_ADMISSION_RANGE: Expected finite non-negative delayMs, received ${String(delayMs)} (R12-02)`));
+  }
+  if (signal !== null && signal !== undefined) {
+    validateTrustedAbortSignal(signal, 'signal');
+  }
+  if (isTrustedSignalAborted(signal)) {
+    if (onAbort) onAbort();
+    if (!ignoreAbort) {
+      const abortErr = new Error('The operation was aborted');
+      abortErr.name = 'AbortError';
+      return Promise.reject(abortErr);
+    }
+  }
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    let abortHandled = false;
+    let timer = null;
+    let listenerAttached = false;
+
+    const cleanup = () => {
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      if (listenerAttached && signal !== null && signal !== undefined) {
+        listenerAttached = false;
+        removeTrustedSignalAbortListener(signal, handleAbort);
+      }
+    };
+
+    const handleAbort = () => {
+      if (settled || abortHandled) return;
+      abortHandled = true;
+      if (onAbort) onAbort();
+      if (ignoreAbort) {
+        listenerAttached = false;
+        return;
+      }
+      settled = true;
+      cleanup();
+      const abortErr = new Error('The operation was aborted');
+      abortErr.name = 'AbortError';
+      reject(abortErr);
+    };
+
+    try {
+      if (signal !== null && signal !== undefined && !abortHandled) {
+        addTrustedSignalAbortListener(signal, handleAbort);
+        listenerAttached = true;
+      }
+      timer = setTimeout(() => {
+        if (settled) return;
+        settled = true;
+        cleanup();
+        resolve();
+      }, delayMs);
+    } catch (setupErr) {
+      settled = true;
+      cleanup();
+      reject(setupErr);
+    }
+  });
 }
 
 /**
@@ -886,6 +957,18 @@ const INTERNAL_ADMISSION_SCHEMAS = deepFreezeNullProto({
   verifyStorageObjectAbsenceOptions: {
     projectRef: { type: 'string', required: false, nullable: false, kind: 'inert_data', binding: 'project' },
     runId: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'run' }
+  },
+  transportRequestOptions: {
+    method: { type: 'string', required: false, nullable: false, kind: 'inert_data', binding: 'none' },
+    headers: { type: 'headers_record', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    body: { type: 'string_or_binary', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    signal: { type: 'abort_signal', required: false, nullable: true, kind: 'trusted_internal_object', binding: 'none' }
+  },
+  getStorageObjectOwnershipOptions: {
+    projectRef: { type: 'string', required: false, nullable: false, kind: 'inert_data', binding: 'project' },
+    expectedObjectId: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    timeoutMs: { type: 'number', required: false, nullable: false, integer: true, min: 1, max: 60000, kind: 'inert_data', binding: 'none' },
+    signal: { type: 'abort_signal', required: false, nullable: true, kind: 'trusted_internal_object', binding: 'none' }
   }
 });
 
@@ -1006,6 +1089,33 @@ function admitValidatedInput(rawInput, schemaName, { allowNullUndefined = true }
       }
       case 'env_record': {
         setNullProtoField(admitted, key, snapshotRunnerEnv(val));
+        break;
+      }
+      case 'headers_record': {
+        const cleanHeaders = Object.create(null);
+        if (INTRINSIC_HEADERS_PROTO && !utilTypes.isProxy(val) && Object.getPrototypeOf(val) === INTRINSIC_HEADERS_PROTO) {
+          if (Object.getOwnPropertyNames(val).length > 0 || Object.getOwnPropertySymbols(val).length > 0) {
+            throw new Error(`INVALID_ADMISSION_TYPE: Own overrides on Headers rejected at '${schemaName}.${key}' (R12-01)`);
+          }
+          for (const [hk, hv] of INTRINSIC_HEADERS_ENTRIES.call(val)) {
+            setNullProtoField(cleanHeaders, String(hk).toLowerCase(), String(hv));
+          }
+        } else {
+          const plainHdrs = extractValidatedPlainOptions(val, `${schemaName}.${key}`, { allowNullUndefined: false });
+          for (const hk of Object.getOwnPropertyNames(plainHdrs)) {
+            const hv = plainHdrs[hk];
+            if (typeof hv !== 'string' && typeof hv !== 'number' && typeof hv !== 'boolean') {
+              throw new Error(
+                `INVALID_ADMISSION_TYPE: Expected primitive header value at '${schemaName}.${key}.${hk}', received ${typeof hv} (R12-01)`
+              );
+            }
+            if (typeof hv === 'number' && !Number.isFinite(hv)) {
+              throw new Error(`INVALID_ADMISSION_TYPE: Non-finite header value at '${schemaName}.${key}.${hk}' (R12-01)`);
+            }
+            setNullProtoField(cleanHeaders, hk.toLowerCase(), String(hv));
+          }
+        }
+        setNullProtoField(admitted, key, cleanHeaders);
         break;
       }
       case 'declarative_record': {
@@ -1205,16 +1315,33 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
     return true;
   }
 
-  const transport = async function deterministicFixtureTransport(url, opts = {}) {
-    return runWithBlockedRealFetch(async () => {
-      const signal = opts?.signal || null;
-      if (signal && signal.aborted) {
-        const abortErr = new Error('The operation was aborted');
-        abortErr.name = 'AbortError';
-        throw abortErr;
-      }
+  const transport = async function deterministicFixtureTransport(rawUrl, rawOpts = {}) {
+    // R12-01: Descriptor-first typed admission BEFORE reading signal, converting URL/method/headers/body, recording calls, or mutating state/barriers
+    let urlStr;
+    if (typeof rawUrl === 'string') {
+      urlStr = rawUrl;
+    } else if (
+      INTRINSIC_URL_PROTO
+      && rawUrl
+      && typeof rawUrl === 'object'
+      && !utilTypes.isProxy(rawUrl)
+      && Object.getPrototypeOf(rawUrl) === INTRINSIC_URL_PROTO
+      && Object.getOwnPropertyNames(rawUrl).length === 0
+      && Object.getOwnPropertySymbols(rawUrl).length === 0
+    ) {
+      urlStr = INTRINSIC_URL_HREF_GET.call(rawUrl);
+    } else {
+      throw new Error(`INVALID_ADMISSION_TYPE: Expected primitive URL string or genuine URL at 'transport.url' (R12-01)`);
+    }
+    const opts = admitValidatedInput(rawOpts, 'transportRequestOptions');
+    const signal = ownSchemaMeta(opts, 'signal', null);
+    if (isTrustedSignalAborted(signal)) {
+      const abortErr = new Error('The operation was aborted');
+      abortErr.name = 'AbortError';
+      throw abortErr;
+    }
 
-      const urlStr = String(url || '');
+    return runWithBlockedRealFetch(async () => {
       let pathname = urlStr;
       try {
         pathname = new URL(urlStr, 'https://localhost').pathname;
@@ -1222,31 +1349,22 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
         pathname = urlStr;
       }
 
-      const method = String(opts?.method || 'GET').toUpperCase();
-      const lowerHeaders = {};
-      if (opts?.headers && typeof opts.headers === 'object') {
-        if (typeof opts.headers.forEach === 'function') {
-          opts.headers.forEach((v, k) => { lowerHeaders[String(k).toLowerCase()] = String(v); });
-        } else {
-          for (const [k, v] of Object.entries(opts.headers)) {
-            lowerHeaders[String(k).toLowerCase()] = String(v);
-          }
-        }
-      }
+      const rawMethod = ownSchemaMeta(opts, 'method', 'GET');
+      const method = rawMethod.toUpperCase();
+      const lowerHeaders = ownSchemaMeta(opts, 'headers', Object.create(null));
+      const admittedBody = ownSchemaMeta(opts, 'body', undefined);
 
       let rawBody = null;
       let bodyJson = null;
-      if (typeof opts?.body === 'string') {
-        rawBody = opts.body;
+      if (typeof admittedBody === 'string') {
+        rawBody = admittedBody;
         try {
-          bodyJson = JSON.parse(opts.body);
+          bodyJson = JSON.parse(admittedBody);
         } catch {
           bodyJson = null;
         }
-      } else if (Buffer.isBuffer(opts?.body) || ArrayBuffer.isView(opts?.body)) {
-        rawBody = Buffer.from(opts.body).toString('utf8');
-      } else if (opts?.body !== undefined && opts?.body !== null) {
-        bodyJson = opts.body;
+      } else if (admittedBody !== undefined && admittedBody !== null) {
+        rawBody = admittedBody.toString('utf8');
       }
 
       const req = { url: urlStr, pathname, method, headers: lowerHeaders, rawBody, bodyJson };
@@ -1294,29 +1412,7 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
       }
 
       if (typeof selected.delayMs === 'number' && selected.delayMs > 0) {
-        await new Promise((resolve, reject) => {
-          let timer = null;
-          const onAbort = () => {
-            if (timer) clearTimeout(timer);
-            const abortErr = new Error('The operation was aborted');
-            abortErr.name = 'AbortError';
-            reject(abortErr);
-          };
-          timer = setTimeout(() => {
-            if (signal !== null && signal !== undefined) {
-              removeTrustedSignalAbortListener(signal, onAbort);
-            }
-            resolve();
-          }, selected.delayMs);
-          if (signal !== null && signal !== undefined) {
-            if (isTrustedSignalAborted(signal)) {
-              clearTimeout(timer);
-              onAbort();
-              return;
-            }
-            addTrustedSignalAbortListener(signal, onAbort);
-          }
-        });
+        await waitWithTrustedSignal(selected.delayMs, signal);
       }
 
       return buildDeterministicResponse(selected);
@@ -1613,30 +1709,11 @@ export function createTrustedOfflineDispatcher(rawSpec = {}) {
       }
 
       if (typeof descriptor.delayMs === 'number' && descriptor.delayMs > 0) {
-        await new Promise((resolve, reject) => {
-          let timer = null;
-          const onAbort = () => {
+        await waitWithTrustedSignal(descriptor.delayMs, signal, {
+          ignoreAbort: descriptor.ignoreAbort === true,
+          onAbort: () => {
             if (descriptor.onAbortInventoryEffects) {
               applyDeclarativeInventoryEffects(inv, descriptor.onAbortInventoryEffects);
-            }
-            if (descriptor.ignoreAbort === true) return;
-            if (timer) clearTimeout(timer);
-            const abortErr = new Error('The operation was aborted');
-            abortErr.name = 'AbortError';
-            reject(abortErr);
-          };
-          timer = setTimeout(() => {
-            if (signal !== null && signal !== undefined) {
-              removeTrustedSignalAbortListener(signal, onAbort);
-            }
-            resolve();
-          }, descriptor.delayMs);
-          if (signal !== null && signal !== undefined) {
-            if (isTrustedSignalAborted(signal)) {
-              onAbort();
-              if (descriptor.ignoreAbort !== true) return;
-            } else {
-              addTrustedSignalAbortListener(signal, onAbort);
             }
           }
         });
@@ -10442,8 +10519,8 @@ export function createHostedAdminClient(rawOptions = {}) {
      * Narrowly-scoped server-side lookup of authoritative storage.objects.owner_id metadata (R2-01).
      * Calls PostgreSQL SECURITY DEFINER RPC executable ONLY by service_role; keeps storage schema unexposed.
      */
-    async getStorageObjectOwnership(bucket, path, { timeoutMs = DEFAULT_PROBE_TIMEOUT_MS, signal = null } = {}) {
-      if (!bucket || !path || bucket !== STORAGE_PROBE_BUCKET) {
+    async getStorageObjectOwnership(bucket, path, rawOptions = {}) {
+      if (typeof bucket !== 'string' || typeof path !== 'string' || !path.trim() || bucket !== STORAGE_PROBE_BUCKET) {
         return {
           found: false,
           source: 'storage.objects.owner_id',
@@ -10452,29 +10529,44 @@ export function createHostedAdminClient(rawOptions = {}) {
         };
       }
 
+      const opts = admitValidatedInput(rawOptions, 'getStorageObjectOwnershipOptions');
+      const reqProjectRef = ownSchemaMeta(opts, 'projectRef', projectRef);
+      if (reqProjectRef.trim().toLowerCase() !== projectRef) {
+        return {
+          found: false,
+          source: 'storage.objects.owner_id',
+          data: null,
+          error: { code: 'INVALID_SCOPE', message: `OWNERSHIP_LOOKUP_PROJECT_MISMATCH: Expected '${projectRef}'` }
+        };
+      }
+      const timeoutMs = ownSchemaMeta(opts, 'timeoutMs', DEFAULT_PROBE_TIMEOUT_MS);
+      const signal = ownSchemaMeta(opts, 'signal', null);
+
+      if (isTrustedSignalAborted(signal)) {
+        return {
+          found: false,
+          source: 'storage.objects.owner_id',
+          data: null,
+          error: { code: 'OWNERSHIP_LOOKUP_ABORTED', message: 'Ownership lookup signal aborted' }
+        };
+      }
+
       const controller = new AbortController();
       let timedOut = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        controller.abort();
-      }, timeoutMs);
-
+      let timer = null;
+      let listenerAttached = false;
       const onExternalAbort = () => controller.abort();
-      if (signal !== null && signal !== undefined) {
-        if (isTrustedSignalAborted(signal)) {
-          clearTimeout(timer);
-          return {
-            found: false,
-            source: 'storage.objects.owner_id',
-            data: null,
-            error: { code: 'OWNERSHIP_LOOKUP_ABORTED', message: 'Ownership lookup signal aborted' }
-          };
-        }
-        addTrustedSignalAbortListener(signal, onExternalAbort);
-      }
 
       let res;
       try {
+        if (signal !== null && signal !== undefined) {
+          addTrustedSignalAbortListener(signal, onExternalAbort);
+          listenerAttached = true;
+        }
+        timer = setTimeout(() => {
+          timedOut = true;
+          controller.abort();
+        }, timeoutMs);
         res = await fetchFn(`${baseUrl}/rest/v1/rpc/task06i_lookup_storage_object_owner`, {
           method: 'POST',
           headers: {
@@ -10500,8 +10592,12 @@ export function createHostedAdminClient(rawOptions = {}) {
           }
         };
       } finally {
-        clearTimeout(timer);
-        if (signal !== null && signal !== undefined) {
+        if (timer !== null) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        if (listenerAttached && signal !== null && signal !== undefined) {
+          listenerAttached = false;
           removeTrustedSignalAbortListener(signal, onExternalAbort);
         }
       }

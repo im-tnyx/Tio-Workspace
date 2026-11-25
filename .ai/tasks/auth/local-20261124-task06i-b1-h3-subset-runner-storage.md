@@ -743,3 +743,53 @@ Offline verification and independent diff review are complete for implementation
 - **Hosted Mutations:** `0`
 - **Cost:** `$0`
 - **Merge:** `NOT AUTHORIZED`
+
+---
+
+## 16. Revision R12 — Direct Transport Admission & Exception-Safe Cancellation Lifecycle
+
+**Bootstrap baseline:** Local/remote HEAD `c5c701defa454a1ef6dbbc9ea8c01502a3c1b245`, `main` `4569479e8fe2caa6659fe1cc6c7a484596a01bbc`, clean worktree, 48 review threads (46 resolved, 2 unresolved: `PRRT_kwDOVtCmZc674CAf` P1, `PRRT_kwDOVtCmZc674CAt` P2), 6 successful checks (Cursor Security Reviewer PASS, Cursor Bugbot NEUTRAL), and independent `im-tio` review `CHANGES_REQUESTED` (`2026-11-25T11:47:45Z`).
+
+### R12 Security Contracts
+
+1. **Direct Transport Request Admission Contract (`PRRT_kwDOVtCmZc674CAf` P1):**
+   - `deterministicFixtureTransport(rawUrl, rawOpts)` validates `rawUrl` (primitive string or non-Proxy genuine `URL` via `INTRINSIC_URL_HREF_GET`) and admits `rawOpts` via `admitValidatedInput(rawOpts, 'transportRequestOptions')` (`method`, `headers` via `headers_record`, `body` via `string_or_binary`, `signal` via `abort_signal`) BEFORE reading signal state, recording `calls`, consuming routes, mutating `state`, releasing/arriving at barriers, or arming timers.
+2. **Exception-Safe Cancellation Lifecycle Contract (`PRRT_kwDOVtCmZc674CAt` P2):**
+   - Unified `waitWithTrustedSignal(delayMs, signal, { onAbort, ignoreAbort })` validates `delayMs` (finite `>= 0`) and `signal` (`validateTrustedAbortSignal`), resolves already-aborted state before arming timers, and wraps listener registration + `setTimeout` inside `try/catch` with idempotent `settled` / `abortHandled` guards and guaranteed `cleanup()` on abort, completion, and setup error.
+   - `getStorageObjectOwnership(bucket, path, rawOptions)` validates `bucket`/`path` primitives + `admitValidatedInput(rawOptions, 'getStorageObjectOwnershipOptions')` (`projectRef`, `expectedObjectId`, integer `timeoutMs` `1..60000`, `signal`) and resolves `isTrustedSignalAborted(signal)` BEFORE creating `AbortController` or arming `setTimeout`, releasing both inside `finally`.
+
+### Corrected Source-Backed Signal & Timer Consumer Matrix (R12)
+
+| Entry point | Validation before setup | Timer ownership | Listener ownership | Guaranteed cleanup | Regression test |
+|---|---|---|---|---|---|
+| `deterministicFixtureTransport` (`hosted-probe-runner.mjs`) | `rawUrl` + `admitValidatedInput(..., 'transportRequestOptions')` + `isTrustedSignalAborted` | `waitWithTrustedSignal()` | `addTrustedSignalAbortListener` / `removeTrustedSignalAbortListener` | `cleanup()` on abort/complete/setup-error | Tests 141, 142 |
+| `trustedOfflineDispatcher` (`hosted-probe-runner.mjs`) | `admitValidatedInput(..., 'offlineDispatcherCallOptions')` + `validateTrustedAbortSignal` | `waitWithTrustedSignal()` | `addTrustedSignalAbortListener` / `removeTrustedSignalAbortListener` | `cleanup()` + single-shot `abortHandled` (`onAbortInventoryEffects`) | Tests 139, 142 |
+| `createHostedAdminClient.getStorageObjectOwnership` (`hosted-probe-runner.mjs`) | `bucket`/`path` + `admitValidatedInput(..., 'getStorageObjectOwnershipOptions')` + `isTrustedSignalAborted` | `try { timer = setTimeout(...) } finally { clearTimeout }` | `listenerAttached` flag in `try/finally` | `finally` clears timer & detaches listener | Test 142 |
+| `createOfflineBarrier` (`wait` / `waitForArrivals`) | `isTrustedSignalAborted` + `addTrustedSignalAbortListener` | None (barrier-only) | `detachAbort()` via `removeTrustedSignalAbortListener` | Detached on resolve/reject/abort/release | Tests 110, 139 |
+| `provisionStorageProbeFixture` ownership deadline (`hosted-probe-runner.mjs`) | `admitValidatedInput` + `ownershipTimeoutMs` (`1..60000`) | `try/finally { clearTimeout(timer) }` | Internal `AbortController` passed to `effectiveOwnershipLookup` | `finally` clears deadline timer | Tests 97, 108 |
+| `_runHostedProbeRunnerInternal` probe loop (`hosted-probe-runner.mjs`) | `admitValidatedInput(..., 'runnerOptions')` + `probeTimeoutMs` (`1..60000`) | `try/finally { clearTimeout(timeoutTimer) }` | Internal `AbortController` passed to dispatcher | `finally` clears probe timer | Tests 24, 30, 135 |
+
+### R12 Verification Matrix
+
+| Check Executed | Result / Exit Code |
+|---|---|
+| `node --test experiments/task06i/hosted-probe-runner.test.mjs` | **146/146 PASS**, exit 0 (includes Tests 141–142) |
+| Docker `node:24-bookworm --network none --pull never` runner suite | **146/146 PASS**, exit 0 |
+| `node --test experiments/task06i/*.test.mjs` | **214/214 PASS**, exit 0 |
+| `node experiments/task06i/sql-contract-parity.mjs` | **POSTGRES_VERIFIED** on PostgreSQL 17.11, exit 0 |
+| `node --test experiments/task06h/*.test.mjs` | **115/115 PASS**, exit 0 |
+| `npm run verify` | Tokens guard, `tsc --noEmit`, `eslint --max-warnings=0`, **22/22 shell tests PASS**, exit 0 |
+| `git diff --check` & `git diff --check origin/main...HEAD` | **CLEAN**, exit 0 |
+
+### Final R12 Decisions
+
+- **H3 Subset Runner:** `IMPLEMENTED_OFFLINE_TESTED / BLOCKED`
+- **H3 Storage Lifecycle:** `IMPLEMENTED_OFFLINE_TESTED / BLOCKED`
+- **Durable Recovery:** `NOT IMPLEMENTED`
+- **Run-Created Seed Support:** `NOT IMPLEMENTED`
+- **Hosted Verification:** `0/18`
+- **Hosted LIVE:** `NOT AUTHORIZED`
+- **Production Real Auth:** `STRICT NO-GO`
+- **Hosted Mutations:** `0`
+- **Cost:** `$0`
+- **Merge:** `NOT AUTHORIZED`

@@ -12744,3 +12744,273 @@ test('140. H3-R11-02B: Binary payload admission rejects coercion overrides, acce
     /STORAGE_PROVISIONING_INTEGRITY_MISMATCH|STORAGE_OWNERSHIP_VERIFICATION_FAILED|sha256|mismatch/i
   );
 });
+
+test('141. H3-R12-01: Direct deterministicFixtureTransport enforces descriptor-first typed admission with zero getter, coercion, trap, state, or barrier side effects', async () => {
+  let getterCalls = 0;
+  let callbackCalls = 0;
+  let trapCalls = 0;
+  const barrier = createOfflineBarrier('r12-01-barrier');
+
+  const transport = createDeterministicFixtureTransport({
+    initialState: { mutated: false },
+    routes: [
+      {
+        method: 'POST',
+        urlIncludes: '/ok',
+        status: 200,
+        body: { ok: true },
+        setsState: { mutated: true },
+        releaseBarrier: barrier
+      },
+      {
+        method: 'GET',
+        urlIncludes: '/ok',
+        status: 200,
+        body: { ok: true }
+      }
+    ]
+  });
+
+  // 1. Signal getter on request options
+  const getterOpts = {};
+  Object.defineProperty(getterOpts, 'signal', {
+    enumerable: true,
+    get() {
+      getterCalls++;
+      return new AbortController().signal;
+    }
+  });
+  await assert.rejects(() => transport('https://example.test/ok', getterOpts), /Accessor property rejected/);
+
+  // 2. Genuine signal with own aborted getter
+  const sigOwnAborted = new AbortController().signal;
+  Object.defineProperty(sigOwnAborted, 'aborted', {
+    get() {
+      getterCalls++;
+      return false;
+    }
+  });
+  await assert.rejects(() => transport('https://example.test/ok', { signal: sigOwnAborted }), /INVALID_ADMISSION_TYPE/);
+
+  // 3. Genuine signal with overridden event methods
+  const sigOverriddenAdd = new AbortController().signal;
+  sigOverriddenAdd.addEventListener = () => { callbackCalls++; };
+  await assert.rejects(() => transport('https://example.test/ok', { signal: sigOverriddenAdd }), /INVALID_ADMISSION_TYPE/);
+
+  // 4. Proxy signal & forged signal prototype
+  const sigProxy = new Proxy(new AbortController().signal, {
+    get(t, p, r) { trapCalls++; return Reflect.get(t, p, r); }
+  });
+  await assert.rejects(() => transport('https://example.test/ok', { signal: sigProxy }), /INVALID_ADMISSION_TYPE/);
+  const sigForged = Object.create(AbortSignal.prototype);
+  await assert.rejects(() => transport('https://example.test/ok', { signal: sigForged }), /INVALID_ADMISSION_TYPE/);
+
+  // 5. Proxy request options
+  const optsProxy = new Proxy({}, {
+    get(t, p, r) { trapCalls++; return Reflect.get(t, p, r); },
+    getOwnPropertyDescriptor(t, p) { trapCalls++; return Reflect.getOwnPropertyDescriptor(t, p); }
+  });
+  await assert.rejects(() => transport('https://example.test/ok', optsProxy), /Proxy object rejected/);
+
+  // 6. Coercive method and URL objects
+  await assert.rejects(
+    () => transport('https://example.test/ok', { method: { toString() { callbackCalls++; return 'GET'; } } }),
+    /INVALID_ADMISSION_TYPE/
+  );
+  await assert.rejects(
+    () => transport({ toString() { callbackCalls++; return 'https://example.test/ok'; } }, { method: 'GET' }),
+    /INVALID_ADMISSION_TYPE/
+  );
+
+  // 7. Header record with executable method / coercive value / accessor
+  await assert.rejects(
+    () => transport('https://example.test/ok', { headers: { forEach() { callbackCalls++; } } }),
+    /UNTRUSTED_EXECUTABLE_INPUT|INVALID_ADMISSION_TYPE/
+  );
+  await assert.rejects(
+    () => transport('https://example.test/ok', { headers: { 'x-test': { toString() { callbackCalls++; return '1'; } } } }),
+    /INVALID_ADMISSION_TYPE/
+  );
+  const hdrAccessor = {};
+  Object.defineProperty(hdrAccessor, 'x-test', { enumerable: true, get() { getterCalls++; return '1'; } });
+  await assert.rejects(() => transport('https://example.test/ok', { headers: hdrAccessor }), /Accessor property rejected/);
+
+  // 8. Unsupported body object
+  await assert.rejects(() => transport('https://example.test/ok', { method: 'POST', body: { raw: 1 } }), /INVALID_ADMISSION_TYPE/);
+
+  // Assert zero side effects across all rejections
+  assert.equal(getterCalls, 0);
+  assert.equal(callbackCalls, 0);
+  assert.equal(trapCalls, 0);
+  assert.equal(transport.calls.length, 0);
+  assert.deepEqual(transport.getState(), { mutated: false });
+  assert.equal(barrier.isReleased(), false);
+
+  // 9. Valid already-aborted signal aborts BEFORE recording call or mutating state
+  const abortedCtrl = new AbortController();
+  abortedCtrl.abort();
+  await assert.rejects(() => transport('https://example.test/ok', { method: 'POST', signal: abortedCtrl.signal }), { name: 'AbortError' });
+  assert.equal(transport.calls.length, 0);
+  assert.deepEqual(transport.getState(), { mutated: false });
+  assert.equal(barrier.isReleased(), false);
+
+  // 10. Valid primitive + binary + non-aborted signal succeed
+  const okCtrl = new AbortController();
+  const res1 = await transport('https://example.test/ok', { method: 'GET', headers: { 'X-Ok': 'yes' }, signal: okCtrl.signal });
+  assert.equal(res1.status, 200);
+  const res2 = await transport('https://example.test/ok', { method: 'POST', body: Buffer.from('abc'), signal: okCtrl.signal });
+  assert.equal(res2.status, 200);
+  assert.equal(transport.calls.length, 2);
+  assert.deepEqual(transport.getState(), { mutated: true });
+  assert.equal(barrier.isReleased(), true);
+});
+
+test('142. H3-R12-02: Exception-safe timer and listener lifecycle prevents leaked timers, duplicate abort effects, and unvalidated ownership timeouts', async () => {
+  const origSetTimeout = globalThis.setTimeout;
+  const origClearTimeout = globalThis.clearTimeout;
+  const activeTimers = new Set();
+  let timerIdSeq = 0;
+
+  globalThis.setTimeout = (fn, ms, ...args) => {
+    const token = { seq: ++timerIdSeq, raw: null };
+    activeTimers.add(token);
+    token.raw = origSetTimeout(() => {
+      activeTimers.delete(token);
+      fn(...args);
+    }, ms);
+    return token;
+  };
+  globalThis.clearTimeout = (token) => {
+    if (token && typeof token === 'object' && 'raw' in token) {
+      activeTimers.delete(token);
+      return origClearTimeout(token.raw);
+    }
+    return origClearTimeout(token);
+  };
+
+  try {
+    let sentinelCalls = 0;
+    const runId = 'r12-02-run';
+    const inv = new TestRunInventory(runId);
+
+    // 1. Deterministic transport delay + barrier + signal mutation after await
+    const barrier = createOfflineBarrier('r12-02-b');
+    const delayTransport = createDeterministicFixtureTransport({
+      routes: [
+        { method: 'GET', urlIncludes: '/delay', status: 200, delayMs: 25, body: { ok: true } },
+        { method: 'GET', urlIncludes: '/barrier-delay', status: 200, waitForBarrier: barrier, delayMs: 25, body: { ok: true } }
+      ]
+    });
+
+    const badSig = new AbortController().signal;
+    badSig.addEventListener = () => { sentinelCalls++; };
+    await assert.rejects(() => delayTransport('https://example.test/delay', { signal: badSig }), /INVALID_ADMISSION_TYPE/);
+    assert.equal(activeTimers.size, 0, 'No timer may be armed for rejected transport signal');
+
+    // Normal completion detaches listener and clears timer
+    const okCtrl = new AbortController();
+    const okRes = await delayTransport('https://example.test/delay', { signal: okCtrl.signal });
+    assert.equal(okRes.status, 200);
+    assert.equal(activeTimers.size, 0);
+    assert.equal(getEventListeners(okCtrl.signal, 'abort').length, 0);
+
+    // Abort during delay clears timer and listener
+    const abortCtrl = new AbortController();
+    const pAbort = delayTransport('https://example.test/delay', { signal: abortCtrl.signal });
+    origSetTimeout(() => abortCtrl.abort(), 5);
+    await assert.rejects(() => pAbort, { name: 'AbortError' });
+    assert.equal(activeTimers.size, 0);
+    assert.equal(getEventListeners(abortCtrl.signal, 'abort').length, 0);
+
+    // Signal mutated during an earlier barrier await is rejected before delay setup without executing override or leaking timer
+    const mutCtrl = new AbortController();
+    const pBarrierDelay = delayTransport('https://example.test/barrier-delay', { signal: mutCtrl.signal });
+    mutCtrl.signal.addEventListener = () => { sentinelCalls++; };
+    mutCtrl.signal.removeEventListener = () => { sentinelCalls++; };
+    barrier.release();
+    await assert.rejects(() => pBarrierDelay, /INVALID_ADMISSION_TYPE/);
+    assert.equal(sentinelCalls, 0);
+    assert.equal(activeTimers.size, 0);
+    assert.equal(getEventListeners(mutCtrl.signal, 'abort').length, 0);
+
+    // 2. Offline dispatcher delay: ignoreAbort + onAbortInventoryEffects executes once & cleans timer
+    const offlineDisp = createTrustedOfflineDispatcher({
+      projectRef: HARDCODED_TEMP_REF,
+      runId,
+      outcomes: {
+        'BYPASS-01': {
+          status: 422,
+          passed: true,
+          delayMs: 25,
+          ignoreAbort: true,
+          onAbortInventoryEffects: { registerUntrackedUser: true }
+        }
+      }
+    });
+    const igCtrl = new AbortController();
+    const igPromise = offlineDisp({ id: 'BYPASS-01' }, { projectRef: HARDCODED_TEMP_REF, runId, inventory: inv, signal: igCtrl.signal });
+    origSetTimeout(() => igCtrl.abort(), 5);
+    const igOut = await igPromise;
+    assert.equal(igOut.status, 422);
+    assert.equal(inv.untrackedUsersCount, 1, 'onAbortInventoryEffects must run exactly once');
+    assert.equal(activeTimers.size, 0);
+    assert.equal(getEventListeners(igCtrl.signal, 'abort').length, 0);
+
+    // 3. Direct Admin getStorageObjectOwnership typed admission & timeout/signal cleanup
+    const rpcTransport = createDeterministicFixtureTransport({
+      routes: [
+        {
+          method: 'POST',
+          urlIncludes: '/rest/v1/rpc/task06i_lookup_storage_object_owner',
+          status: 200,
+          delayMs: 25,
+          body: [{ id: '22222222-2222-4222-a222-222222222222', owner_id: '11111111-1111-4111-a111-111111111111', bucket_id: STORAGE_PROBE_BUCKET, name: `${runId}/p.txt` }]
+        }
+      ]
+    });
+    const admin = createHostedAdminClient({
+      projectRef: HARDCODED_TEMP_REF,
+      serviceRoleKey: validTestServiceRoleKey,
+      runId,
+      fetchFn: rpcTransport
+    });
+
+    for (const badTimeout of [NaN, Infinity, -1, 0, 60001, '100', { valueOf() { sentinelCalls++; return 10; } }]) {
+      await assert.rejects(
+        () => admin.getStorageObjectOwnership(STORAGE_PROBE_BUCKET, `${runId}/p.txt`, { timeoutMs: badTimeout }),
+        /INVALID_ADMISSION_TYPE|INVALID_ADMISSION_RANGE/
+      );
+    }
+    await assert.rejects(
+      () => admin.getStorageObjectOwnership(STORAGE_PROBE_BUCKET, `${runId}/p.txt`, { signal: badSig }),
+      /INVALID_ADMISSION_TYPE/
+    );
+    assert.equal(sentinelCalls, 0);
+    assert.equal(rpcTransport.calls.length, 0);
+    assert.equal(activeTimers.size, 0);
+
+    // Valid aborted signal on ownership lookup leaves 0 timers and 0 transport calls
+    const ownAborted = new AbortController();
+    ownAborted.abort();
+    const ownAbortedRes = await admin.getStorageObjectOwnership(STORAGE_PROBE_BUCKET, `${runId}/p.txt`, { signal: ownAborted.signal });
+    assert.equal(ownAbortedRes.error.code, 'OWNERSHIP_LOOKUP_ABORTED');
+    assert.equal(rpcTransport.calls.length, 0);
+    assert.equal(activeTimers.size, 0);
+
+    // Valid concurrent ownership lookups clear all timers and listeners
+    const c1 = new AbortController();
+    const c2 = new AbortController();
+    const [r1, r2] = await Promise.all([
+      admin.getStorageObjectOwnership(STORAGE_PROBE_BUCKET, `${runId}/p.txt`, { timeoutMs: 200, signal: c1.signal }),
+      admin.getStorageObjectOwnership(STORAGE_PROBE_BUCKET, `${runId}/p.txt`, { timeoutMs: 5, signal: c2.signal })
+    ]);
+    assert.equal(r1.found, true);
+    assert.equal(r2.error.code, 'OWNERSHIP_LOOKUP_TIMEOUT');
+    assert.equal(activeTimers.size, 0);
+    assert.equal(getEventListeners(c1.signal, 'abort').length, 0);
+    assert.equal(getEventListeners(c2.signal, 'abort').length, 0);
+  } finally {
+    globalThis.setTimeout = origSetTimeout;
+    globalThis.clearTimeout = origClearTimeout;
+  }
+});
