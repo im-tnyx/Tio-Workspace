@@ -1,3 +1,4 @@
+import { getConditionalStorageFixtureProvider } from './conditional-storage-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -82,7 +83,9 @@ const OFFLINE_DISPATCHER_SPECS = new WeakSet();
 const OFFLINE_DISPATCHER_INSTANCES = new WeakMap();
 function fixtureSpec(spec = {}) { FIXTURE_SPECS.add(spec); return spec; }
 function offlineDispatcherSpec(spec = {}) { OFFLINE_DISPATCHER_SPECS.add(spec); return spec; }
+let standaloneAdminSequence = 0;
 function trackedHostedAdminClient(config) {
+  config = { runId: `unit-admin-${++standaloneAdminSequence}`, ...config };
   const client = createHostedAdminClient(config);
   ADMIN_CONFIGS.set(client, config);
   return client;
@@ -94,7 +97,9 @@ function fixtureAdmin(inventory, spec = fixtureSpec()) {
   const email = restoration?.email || inventory.getUserEmail?.(uid) || 'fixture-admin@proof.invalid';
   const sessionId = 'fixture-verification-session';
   const login = spec.login || { status: 200, json: { access_token: createMockJwt({ sub: uid, session_id: sessionId }), session_id: sessionId, user: { id: uid, email } } };
-  const transport = createDeterministicFixtureTransport({
+  const transport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
+    conditionalStorage: { projectRef: HARDCODED_TEMP_REF, runId: inventory.runId,
+      objects: [...inventory.storageFixtures.values()].filter(item => item.providerObjectId && item.verifiedOwnerId).map(item => ({ projectRef: HARDCODED_TEMP_REF, runId: inventory.runId, bucket: item.bucket, path: item.path, objectId: item.providerObjectId, ownerId: item.verifiedOwnerId })) },
     routes: [
       ...(spec.routes || []),
       { method: 'DELETE', urlIncludes: '/auth/v1/admin/users/', ...(spec.userDelete || { status: 200, json: {} }) },
@@ -176,11 +181,11 @@ function createMockJwt(claims = {}) {
 }
 
 function staticTransport(descriptor) {
-  return createDeterministicFixtureTransport({ defaultResponse: descriptor });
+  return createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait', defaultResponse: descriptor });
 }
 
 function errorTransport(errSpec) {
-  return createDeterministicFixtureTransport({
+  return createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     defaultResponse: { throwError: typeof errSpec === 'string' ? { message: errSpec } : errSpec }
   });
 }
@@ -556,9 +561,10 @@ test('12. Throttling interval is enforced between consecutive requests and legit
   assert.equal(OFFLINE_DISPATCHER_INSTANCES.get(mockDispatcher).calls.length, 18);
   assert.equal(result.totalExecuted, 18);
   assert.equal(result.aborted, false);
-  // For 18 requests, interval throttling must be recorded 17 times with 1000ms
-  assert.equal(result.throttleIntervalsMs.length, 17);
-  assert.ok(result.throttleIntervalsMs.every(ms => ms === 1000));
+  // Outcome-only probes issue no transport calls; pacing is verified at the shared actual-request boundary.
+  assert.equal(result.attemptedProbeCount, 18);
+  assert.equal(result.requestCount, 0);
+  assert.deepEqual(result.throttleIntervalsMs, []);
 });
 
 test('13. Runner halts immediately on Token Hook failure (HOOK-01) (PRRT_kwDOVtCmZc66iotG)', async () => {
@@ -2052,31 +2058,31 @@ test('33. Task 06I-B1-H1: Hosted security preflight, Brevo audit baseline, and p
 test('34. Task 06I-B1-H1-R1 (R1-01): LIVE dispatcher contract, boundary checks, and error handling', async () => {
   // 1. Rejects forbidden projects
   assert.throws(
-    () => createHostedDispatcher({ projectRef: HARDCODED_REAL_REF, anonKey: 'test-anon-key' }),
+    () => createHostedDispatcher({ inventory: new TestRunInventory(), projectRef: HARDCODED_REAL_REF, anonKey: 'test-anon-key' }),
     /CRITICAL_SECURITY_VIOLATION.*strictly rejected target/
   );
   assert.throws(
-    () => createHostedDispatcher({ projectRef: HARDCODED_TIO_WORLD_REF, anonKey: 'test-anon-key' }),
+    () => createHostedDispatcher({ inventory: new TestRunInventory(), projectRef: HARDCODED_TIO_WORLD_REF, anonKey: 'test-anon-key' }),
     /CRITICAL_SECURITY_VIOLATION.*strictly rejected target/
   );
   assert.throws(
-    () => createHostedDispatcher({ projectRef: 'unknown-target-ref', anonKey: 'test-anon-key' }),
+    () => createHostedDispatcher({ inventory: new TestRunInventory(), projectRef: 'unknown-target-ref', anonKey: 'test-anon-key' }),
     /CRITICAL_SECURITY_VIOLATION.*strictly rejected target/
   );
 
   // 2. Rejects missing or empty anonKey
   assert.throws(
-    () => createHostedDispatcher({ projectRef: HARDCODED_TEMP_REF, anonKey: '' }),
+    () => createHostedDispatcher({ inventory: new TestRunInventory(), projectRef: HARDCODED_TEMP_REF, anonKey: '' }),
     /MISSING_HOSTED_CREDENTIALS.*requires non-empty anonKey/
   );
   assert.throws(
-    () => createHostedDispatcher({ projectRef: HARDCODED_TEMP_REF, anonKey: null }),
+    () => createHostedDispatcher({ inventory: new TestRunInventory(), projectRef: HARDCODED_TEMP_REF, anonKey: null }),
     /MISSING_HOSTED_CREDENTIALS.*requires non-empty anonKey/
   );
 
   // 3. Dispatches HTTP requests to approved TEMP project with AbortSignal and headers
   const mockLiveJwt = createMockJwt();
-  const mockFetch = createDeterministicFixtureTransport({
+  const mockFetch = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       {
         urlRegex: /\/auth\/v1\/otp$/,
@@ -2100,7 +2106,7 @@ test('34. Task 06I-B1-H1-R1 (R1-01): LIVE dispatcher contract, boundary checks, 
     defaultResponse: { status: 400, json: { message: 'Mock bad request' } }
   });
 
-  const dispatcher = createHostedDispatcher({
+  const dispatcher = createHostedDispatcher({ inventory: new TestRunInventory(),
     projectRef: HARDCODED_TEMP_REF,
     anonKey: validTestAnonKey,
     fetchFn: mockFetch
@@ -2211,48 +2217,48 @@ test('36. Task 06I-B1-H1-R1 (R1-04): Evidence classification audit distinguishes
 test('37. Task 06I-B1-H1-R2 (R2-01): False-positive bypass probe prevention', async () => {
   // 1. Generic 400 on OTP rejected, route_disabled must be false
   const fetchOtp400 = staticTransport({ status: 400, json: { message: 'Bad request' } });
-  const dispOtp400 = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: fetchOtp400 });
+  const dispOtp400 = createHostedDispatcher({ inventory: new TestRunInventory(), anonKey: validTestAnonKey, fetchFn: fetchOtp400 });
   const outOtp400 = await dispOtp400({ id: 'BYPASS-01', testUser: 'test@proof.invalid' });
   assert.equal(outOtp400.passed, false);
   assert.equal(outOtp400.route_disabled, false);
 
   // 2. 422 on OTP with email_provider_disabled passes
   const fetchOtpDisabled = staticTransport({ status: 422, json: { error_code: 'email_provider_disabled', message: 'Email provider is disabled' } });
-  const dispOtpDisabled = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: fetchOtpDisabled });
+  const dispOtpDisabled = createHostedDispatcher({ inventory: new TestRunInventory(), anonKey: validTestAnonKey, fetchFn: fetchOtpDisabled });
   const outOtpDisabled = await dispOtpDisabled({ id: 'BYPASS-01', testUser: 'test@proof.invalid' });
   assert.equal(outOtpDisabled.passed, true);
   assert.equal(outOtpDisabled.route_disabled, true);
 
   // 3. 200 on /signup fails closed
   const fetchSignup200 = staticTransport({ status: 200, json: { id: 'usr-123' } });
-  const dispSignup200 = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: fetchSignup200 });
+  const dispSignup200 = createHostedDispatcher({ inventory: new TestRunInventory(), anonKey: validTestAnonKey, fetchFn: fetchSignup200 });
   const outSignup200 = await dispSignup200({ id: 'BYPASS-02', testUser: 'test@proof.invalid' });
   assert.equal(outSignup200.passed, false);
 
   // 4. Generic 400 password too short on /signup does NOT fabricate signup_disabled
   const fetchSignup400 = staticTransport({ status: 400, json: { message: 'Password is too short' } });
-  const dispSignup400 = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: fetchSignup400 });
+  const dispSignup400 = createHostedDispatcher({ inventory: new TestRunInventory(), anonKey: validTestAnonKey, fetchFn: fetchSignup400 });
   const outSignup400 = await dispSignup400({ id: 'BYPASS-02', testUser: 'test@proof.invalid' });
   assert.equal(outSignup400.passed, false);
   assert.equal(outSignup400.signup_disabled, false);
 
   // 5. 422 on /signup with signup_disabled passes
   const fetchSignupDisabled = staticTransport({ status: 422, json: { error_code: 'signup_disabled', message: 'Signups not allowed' } });
-  const dispSignupDisabled = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: fetchSignupDisabled });
+  const dispSignupDisabled = createHostedDispatcher({ inventory: new TestRunInventory(), anonKey: validTestAnonKey, fetchFn: fetchSignupDisabled });
   const outSignupDisabled = await dispSignupDisabled({ id: 'BYPASS-02', testUser: 'test@proof.invalid' });
   assert.equal(outSignupDisabled.passed, true);
   assert.equal(outSignupDisabled.signup_disabled, true);
 
   // 6. 200 on /recover fails (cannot prove email suppression due to anti-enumeration)
   const fetchRecover200 = staticTransport({ status: 200, json: {} });
-  const dispRecover200 = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: fetchRecover200 });
+  const dispRecover200 = createHostedDispatcher({ inventory: new TestRunInventory(), anonKey: validTestAnonKey, fetchFn: fetchRecover200 });
   const outRecover200 = await dispRecover200({ id: 'BYPASS-05', testUser: 'test@proof.invalid' });
   assert.equal(outRecover200.passed, false);
   assert.equal(outRecover200.recovery_suppressed, false);
 
   // 7. 500 on /recover with 42501 / send_email_hook passes
   const fetchRecover500 = staticTransport({ status: 500, json: { message: 'send_email_hook: native recovery email dispatch suppressed (SQLSTATE 42501)' } });
-  const dispRecover500 = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: fetchRecover500 });
+  const dispRecover500 = createHostedDispatcher({ inventory: new TestRunInventory(), anonKey: validTestAnonKey, fetchFn: fetchRecover500 });
   const outRecover500 = await dispRecover500({ id: 'BYPASS-05', testUser: 'test@proof.invalid' });
   assert.equal(outRecover500.passed, true);
   assert.equal(outRecover500.recovery_suppressed, true);
@@ -2297,7 +2303,7 @@ test('38. Task 06I-B1-H1-R2 (R2-02): JWT claim extraction & AMR verification', (
 
 test('39. Task 06I-B1-H1-R2 (R2-03): Run-scoped refresh token propagation & AMR preservation in HOOK-02', async () => {
   const runCtx = createRunContext();
-  const mockFetchRefresh = createDeterministicFixtureTransport({
+  const mockFetchRefresh = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       {
         urlIncludes: 'grant_type=password',
@@ -2420,7 +2426,7 @@ test('43. Task 06I-B1-H1-R2 (R2-08): All 18 LIVE probes dispatchers implemented 
     'SESSION-01', 'SESSION-02', 'SESSION-03', 'SESSION-04', 'SESSION-05', 'SESSION-06'
   ];
 
-  const mockAllFetch = createDeterministicFixtureTransport({
+  const mockAllFetch = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       { urlIncludes: 'grant_type=password', status: 200, json: { access_token: createMockJwt(), refresh_token: 'r-1', user: { id: 'u-1' }, session_id: 's-1' } },
       { urlIncludes: 'grant_type=refresh_token', status: 200, json: { access_token: createMockJwt(), refresh_token: 'r-2' } },
@@ -2937,7 +2943,7 @@ test('57. Task 06I-B1-H1-R4 (R4-03): Password reset in SESSION-02 requires affir
   runCtx.activeUserId = 'user-test-reset-123';
   runCtx.activeAccessToken = createMockJwt();
 
-  const mockFetchSurviving = createDeterministicFixtureTransport({
+  const mockFetchSurviving = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       { urlIncludes: '/auth/v1/admin/users/', status: 200, json: { id: 'user-test-reset-123' } },
       { urlIncludes: '/auth/v1/user', status: 200, json: { id: 'user-test-reset-123' } }
@@ -2959,7 +2965,7 @@ test('57. Task 06I-B1-H1-R4 (R4-03): Password reset in SESSION-02 requires affir
   assert.match(outSurviving.error, /SECURITY_REGRESSION.*session was not revoked/);
 
   // 4. When /auth/v1/user returns generic 401 (e.g. 'Invalid token') without session_not_found, fails closed (R5-01)
-  const mockFetchGenericInvalidToken = createDeterministicFixtureTransport({
+  const mockFetchGenericInvalidToken = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       { urlIncludes: '/auth/v1/admin/users/', status: 200, json: { id: 'user-test-reset-123' } },
       { urlIncludes: '/auth/v1/user', status: 401, json: { message: 'Invalid token' } }
@@ -2980,7 +2986,7 @@ test('57. Task 06I-B1-H1-R4 (R4-03): Password reset in SESSION-02 requires affir
   assert.match(outGeneric.error, /FALSE_PROOF_REJECTED/);
 
   // 5. When /auth/v1/user returns affirmative session_not_found provider error, session revocation is verified
-  const mockFetchRevoked = createDeterministicFixtureTransport({
+  const mockFetchRevoked = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       { urlIncludes: '/auth/v1/admin/users/', status: 200, json: { id: 'user-test-reset-123' } },
       { urlIncludes: '/auth/v1/user', status: 401, json: { error_code: 'session_not_found', message: 'Session not found' } }
@@ -3014,7 +3020,7 @@ test('58. Task 06I-B1-H1-R4 (R4-04): SESSION-06 and SESSION-03 reject generic 40
   runCtx.preInvalidationSessionValid = true;
   runCtx.passwordResetCompleted = true;
 
-  const mockFetchGenericForbidden = createDeterministicFixtureTransport({
+  const mockFetchGenericForbidden = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       { urlIncludes: '/functions/v1/auth-user-probe', status: 403, json: { message: 'Forbidden' } },
       { urlIncludes: '/auth/v1/user', status: 403, json: { message: 'Forbidden' } }
@@ -3041,7 +3047,7 @@ test('58. Task 06I-B1-H1-R4 (R4-04): SESSION-06 and SESSION-03 reject generic 40
   assert.notEqual(out03.error_code, 'session_not_found', 'Must not synthesize session_not_found');
 
   // 3. Genuine AuthSessionMissingError in SESSION-06 passes
-  const mockFetchGenuineError = createDeterministicFixtureTransport({
+  const mockFetchGenuineError = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       { urlIncludes: '/functions/v1/auth-user-probe', status: 401, json: { error_code: 'AuthSessionMissingError', message: 'Session is revoked or missing' } }
     ],
@@ -3224,7 +3230,7 @@ test('63. Task 06I-B1-H1-R5 (R5-01): SESSION-02 rejects generic 401/403, bad_jwt
     anonKey: validTestAnonKey,
     serviceRoleKey: validTestServiceRoleKey,
     runContext: runCtx,
-    fetchFn: createDeterministicFixtureTransport({
+    fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [
         { urlIncludes: '/auth/v1/admin/users/', status: 200, json: { id: 'user-r5-01' } },
         { urlIncludes: '/auth/v1/user', status: 401, json: { error_code: 'bad_jwt', message: 'Token signature is invalid' } }
@@ -3241,7 +3247,7 @@ test('63. Task 06I-B1-H1-R5 (R5-01): SESSION-02 rejects generic 401/403, bad_jwt
     anonKey: validTestAnonKey,
     serviceRoleKey: validTestServiceRoleKey,
     runContext: runCtx,
-    fetchFn: createDeterministicFixtureTransport({
+    fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [
         { urlIncludes: '/auth/v1/admin/users/', status: 200, json: { id: 'user-r5-01' } },
         { urlIncludes: '/auth/v1/user', status: 403, json: { message: 'Forbidden' } }
@@ -3445,7 +3451,7 @@ test('68. Task 06I-B1-H1-R5 (R5-06): Seed credential lifecycle: password reset m
   runCtx1.activeSessionId = 'sess-run-1';
   runCtx1.activeAccessToken = createMockJwt({ sub: 'seed-user-uuid-1', session_id: 'sess-run-1' });
 
-  const disp1Transport = createDeterministicFixtureTransport({
+  const disp1Transport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       { urlIncludes: '/auth/v1/admin/users/', status: 200, json: { id: 'seed-user-uuid-1' } },
       { urlIncludes: '/auth/v1/user', status: 401, json: { error_code: 'session_not_found', message: 'Session not found' } }
@@ -3480,7 +3486,7 @@ test('68. Task 06I-B1-H1-R5 (R5-06): Seed credential lifecycle: password reset m
     anonKey: validTestAnonKey,
     inventory: inv2,
     runContext: runCtx2,
-    fetchFn: createDeterministicFixtureTransport({
+    fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [
         {
           urlIncludes: '/auth/v1/token',
@@ -3778,7 +3784,7 @@ test('74. Task 06I-B1-H1-R7 (R7-01): createHostedAdminClient adapter implements 
   );
 
   // 2. Inspect method definitions: verify NO duplicate signOut method exists
-  const mockFetch = createDeterministicFixtureTransport({
+  const mockFetch = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     initialState: {
       del_u_test_123: false,
       del_u_created_01: false,
@@ -4199,7 +4205,7 @@ test('76. Task 06I-B1-H1-R8 (R8-01): Unexpected session tracking captures sessio
   const invBypass = new TestRunInventory('test-run-bypass03-unexpected');
   const unexpectedSessionId = 'sess-bypass03-minted';
   const unexpectedToken = createMockJwt({ session_id: unexpectedSessionId, sub: 'u-seed-bypass03' });
-  const mockFetchBypass = createDeterministicFixtureTransport({
+  const mockFetchBypass = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       {
         urlIncludes: '/auth/v1/verify',
@@ -4395,7 +4401,7 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
     serviceRoleKey: validTestServiceRoleKey,
     inventory: invSession02,
     runContext: runCtxS02,
-    fetchFn: createDeterministicFixtureTransport({
+    fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [
         { urlIncludes: '/auth/v1/admin/users/', status: 200, ok: true, json: { id: 'u-s02-test' } },
         { urlIncludes: '/auth/v1/user', status: 403, ok: false, json: { error_code: 'session_not_found', msg: 'Session not found' } }
@@ -4410,7 +4416,7 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
 
   // When cleanup runs on invSession02, it skips calling logout for already-revoked session
   const verifyTokenS02 = createMockJwt({ sub: 'u-s02-test', session_id: 'sess-s02-v' });
-  const adminTransportS02 = createDeterministicFixtureTransport({
+  const adminTransportS02 = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       {
         urlIncludes: '/auth/v1/token?grant_type=password',
@@ -4481,7 +4487,7 @@ test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, stat
   runCtxPre.activeSessionId = 'sess-pre-1';
   runCtxPre.activeAccessToken = createMockJwt({ sub: seedUserId, session_id: 'sess-pre-1' });
 
-  const preTransport = createDeterministicFixtureTransport({
+  const preTransport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       { urlIncludes: '/auth/v1/admin/users/', waitForBarrier: preDispatchBarrier, status: 200, json: { id: seedUserId } },
       { urlIncludes: '/auth/v1/user', status: 401, json: { error_code: 'session_not_found', message: 'Session not found' } }
@@ -4525,7 +4531,7 @@ test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, stat
   runCtxTransport.activeAccessToken = createMockJwt({ sub: seedUserId, session_id: 'sess-trans-1' });
 
   let transportProviderPassword = origPassword;
-  const transportErrMock = createDeterministicFixtureTransport({
+  const transportErrMock = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       { urlIncludes: '/auth/v1/admin/users/', throwError: { message: 'ECONNRESET: socket hang up', code: 'ECONNRESET' } }
     ],
@@ -4577,7 +4583,7 @@ test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, stat
     inventory: invJsonErr,
     runContext: runCtxJsonErr,
     testEmail: seedEmail,
-    fetchFn: createDeterministicFixtureTransport({
+    fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [
         {
           urlIncludes: '/auth/v1/admin/users/',
@@ -4614,7 +4620,7 @@ test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, stat
     inventory: inv500,
     runContext: runCtx500,
     testEmail: seedEmail,
-    fetchFn: createDeterministicFixtureTransport({
+    fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [
         { urlIncludes: '/auth/v1/admin/users/', status: 500, json: { msg: 'Internal server error', error_code: 'internal_error' } }
       ],
@@ -4725,7 +4731,7 @@ test('79. Task 06I-B1-H1-R9 (R9-02): Controlled authentication verification, adv
   assert.equal(invUpdateFail.seedCredentialRestorations[0].state, 'restoration_failed');
 
   // 2. createHostedAdminClient.verifyUserCredentials unit behavior:
-  const testClientTransport = createDeterministicFixtureTransport({
+  const testClientTransport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       {
         urlIncludes: '/auth/v1/token?grant_type=password',
@@ -4851,7 +4857,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: createDeterministicFixtureTransport({
+    fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [
         {
           urlIncludes: '/auth/v1/token?grant_type=password',
@@ -4884,7 +4890,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: createDeterministicFixtureTransport({
+    fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [
         {
           urlIncludes: '/auth/v1/token?grant_type=password',
@@ -4966,7 +4972,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: createDeterministicFixtureTransport({
+    fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [
         {
           urlIncludes: '/auth/v1/token?grant_type=password',
@@ -5009,7 +5015,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: createDeterministicFixtureTransport({
+    fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [
         {
           urlIncludes: '/auth/v1/token?grant_type=password',
@@ -5043,7 +5049,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: createDeterministicFixtureTransport({
+    fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [
         {
           urlIncludes: '/auth/v1/token?grant_type=password',
@@ -5068,7 +5074,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: createDeterministicFixtureTransport({
+    fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [
         { urlIncludes: '/auth/v1/logout', status: 401, ok: false, json: { msg: 'bad_jwt: signature verification failed', error_code: 'bad_jwt' } }
       ],
@@ -5082,7 +5088,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: createDeterministicFixtureTransport({
+    fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [
         { urlIncludes: '/auth/v1/logout', status: 404, ok: false, json: { msg: 'session not found', error_code: 'session_not_found' } }
       ],
@@ -5151,7 +5157,7 @@ test('81. Task 06I-B1-H1-R10 (R10-02): Exact identity binding, seed user correla
     email: customSeedEmail
   });
 
-  const dispCustomTransport = createDeterministicFixtureTransport({
+  const dispCustomTransport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       { urlIncludes: '/auth/v1/admin/users/', status: 200, ok: true, json: { id: seedUserId } },
       { urlIncludes: '/auth/v1/user', status: 403, ok: false, json: { error_code: 'session_not_found', msg: 'Session not found' } }
@@ -5311,7 +5317,7 @@ test('81. Task 06I-B1-H1-R10 (R10-02): Exact identity binding, seed user correla
     serviceRoleKey: validTestServiceRoleKey,
     inventory: invIndet,
     runContext: runCtxIndet,
-    fetchFn: createDeterministicFixtureTransport({
+    fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [
         { method: 'PUT', throwError: { message: 'ETIMEDOUT: Connection dropped' } }
       ],
@@ -5342,7 +5348,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
 
   // 1. HTTP 200 with valid JSON, real access token, and session ID -> verified: true, session revoked
   const inv1 = new TestRunInventory('test-r11-case1');
-  const transport1 = createDeterministicFixtureTransport({
+  const transport1 = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       {
         urlIncludes: '/auth/v1/token?grant_type=password',
@@ -5526,7 +5532,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   const client12 = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: createDeterministicFixtureTransport({
+    fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [
         { urlIncludes: '/auth/v1/token?grant_type=password', status: 200, ok: true, json: { access_token: token12, session_id: sess12 } },
         { urlIncludes: '/auth/v1/logout', status: 503, ok: false, json: { code: 'service_unavailable', message: 'Service Unavailable' } }
@@ -5549,7 +5555,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   const client13 = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
     projectRef: HARDCODED_TEMP_REF,
-    fetchFn: createDeterministicFixtureTransport({
+    fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [
         { urlIncludes: '/auth/v1/token?grant_type=password', status: 200, ok: true, json: { access_token: token13, session_id: sess13 } },
         { urlIncludes: '/auth/v1/logout', throwError: { message: 'ETIMEDOUT: Sign-out gateway timeout' } }
@@ -6532,7 +6538,7 @@ test('87. Task 06I-B1-H1-R15 (R15-01 & R15-02): OTP user-creation tracking, capa
   const disp3 = createHostedDispatcher({
     anonKey: validTestAnonKey,
     inventory: inv3,
-    fetchFn: createDeterministicFixtureTransport({
+    fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [
         {
           urlIncludes: '/auth/v1/otp',
@@ -7329,7 +7335,7 @@ test('89. Task 06I-B1-H1-R17: Seed identity proof, unexpected token tracking, an
   assert.equal(rep3E.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
 });
 
-test('90. Task 06I-B1-H3 (H3-01): Controlled Subset Runner — Valid 10-probe subset, dependency completeness & DRY_RUN evidence reporting', async () => {
+test('90. Task 06I-B1-H3 (H3-01): Controlled Subset Runner â€” Valid 10-probe subset, dependency completeness & DRY_RUN evidence reporting', async () => {
   // 1. planProbeExecution with 10-probe subset
   const plan10 = planProbeExecution(HARDCODED_TEMP_REF, {
     selectedProbeIds: SUPPORTED_SUBSET_PROBE_IDS,
@@ -7390,7 +7396,7 @@ test('90. Task 06I-B1-H3 (H3-01): Controlled Subset Runner — Valid 10-probe su
   assert.equal(dryRunRes.executionEvidence.unsupported.length, 3);
 });
 
-test('91. Task 06I-B1-H3 (H3-01): Controlled Subset Runner — Strict validation and rejection of invalid, duplicate, unsupported, or incomplete selections', () => {
+test('91. Task 06I-B1-H3 (H3-01): Controlled Subset Runner â€” Strict validation and rejection of invalid, duplicate, unsupported, or incomplete selections', () => {
   // 1. Rejection of empty array
   assert.throws(
     () => validateSelectedProbeIds([]),
@@ -7505,7 +7511,7 @@ test('91. Task 06I-B1-H3 (H3-01): Controlled Subset Runner — Strict validation
   );
 });
 
-test('92. Task 06I-B1-H3 (H3-02): Run-Scoped Storage Fixture Contract — runId validation, entropy generation, and path formatting', () => {
+test('92. Task 06I-B1-H3 (H3-02): Run-Scoped Storage Fixture Contract â€” runId validation, entropy generation, and path formatting', () => {
   // 1. validateRunId accepts standard alphanumeric formats
   assert.equal(validateRunId('run-20261124-abc'), 'run-20261124-abc');
   assert.equal(validateRunId('test_run_123'), 'test_run_123');
@@ -7557,7 +7563,7 @@ test('92. Task 06I-B1-H3 (H3-02): Run-Scoped Storage Fixture Contract — runId 
   assert.throws(() => new TestRunInventory('../invalid'), /INVALID_RUN_ID/);
 });
 
-test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — collision detection, upload verification, and ownership tracking', async () => {
+test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract â€” collision detection, upload verification, and ownership tracking', async () => {
   const runId = 'test-run-storage-provision-93';
   const seedUserId = '11111111-1111-4111-a111-111111111193';
   const uploadedObjectId = '99999999-1111-4111-a111-111111111193';
@@ -7589,7 +7595,7 @@ test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — col
         anonKey: validTestAnonKey,
         serviceRoleKey: validTestServiceRoleKey,
         inventory: inv,
-        fetchFn: createDeterministicFixtureTransport({
+        fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
           routes: [
             { urlIncludes: '/auth/v1/user', status: 200, ok: true, json: { id: seedUserId, aud: 'authenticated' } },
             { method: 'GET', status: 200, ok: true }
@@ -7612,7 +7618,7 @@ test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — col
         anonKey: validTestAnonKey,
         serviceRoleKey: validTestServiceRoleKey,
         inventory: invFail,
-        fetchFn: createDeterministicFixtureTransport({
+        fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
           routes: [
             { urlIncludes: '/auth/v1/user', status: 200, ok: true, json: { id: seedUserId, aud: 'authenticated' } },
             { method: 'GET', status: 404, ok: false },
@@ -7631,7 +7637,7 @@ test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — col
 
   // 4. Successful provisioning: /auth/v1/user + pre-check 404 + upload 200 + realistic download (NO custom owner headers) + authoritative owner_id RPC
   const invSuccess = new TestRunInventory(runId);
-  const prov93Transport = createDeterministicFixtureTransport({
+  const prov93Transport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     initialState: { uploaded: false },
     routes: [
       { urlIncludes: '/auth/v1/user', status: 200, ok: true, text: JSON.stringify({ id: seedUserId, aud: 'authenticated' }) },
@@ -7710,7 +7716,7 @@ test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — col
   assert.equal(invSuccess.trackedStorageObjects.get('task06i_probe_bucket').has(`${runId}/probe.txt`), true);
 });
 
-test('94. Task 06I-B1-H3 (H3-03): Cleanup Ordering — Storage fixture deletion strictly precedes Auth user deletion & failure cascade prevention', async () => {
+test('94. Task 06I-B1-H3 (H3-03): Cleanup Ordering â€” Storage fixture deletion strictly precedes Auth user deletion & failure cascade prevention', async () => {
   const runId = 'test-run-cleanup-ordering-94';
   const inv = new TestRunInventory(runId);
   const testUserId = '11111111-2222-4333-a444-555555555594';
@@ -7851,7 +7857,9 @@ test('95. Task 06I-B1-H3 (H3-03 & H3-05): SESSION-05 Run-Scoped Dispatch & Durab
 });
 
 test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage Ownership Closure', async () => {
-  const runId = 'test-run-h3-r1-96';
+  let runId = 'test-run-h3-r1-96';
+  const baseScenarioRun = runId; let scenarioNumber = 0;
+  const nextScenarioRun = () => { runId = baseScenarioRun + '-case-' + (++scenarioNumber); return runId; };
   const seedUserId = '11111111-1111-4111-a111-111111111196';
   const otherUserId = '22222222-2222-4222-b222-222222222296';
   const testToken = createMockJwt({ sub: seedUserId });
@@ -7871,7 +7879,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
     /BLOCKED_PENDING_DURABLE_RECOVERY/
   );
   // 3. Direct provisionStorageProbeFixture without fetchFn throws BLOCKED_PENDING_DURABLE_RECOVERY
-  const invR1 = new TestRunInventory(runId);
+  const invR1 = new TestRunInventory(nextScenarioRun());
   await assert.rejects(
     async () => {
       await provisionStorageProbeFixture({
@@ -8036,7 +8044,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
   // (PRRT_kwDOVtCmZc67gqOz & PRRT_kwDOVtCmZc67grUX)
   // ==========================================
   // 13. Pre-upload collision check returning 403 or 500 fails closed without proceeding to upload
-  const transport13 = createDeterministicFixtureTransport({
+  const transport13 = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       { urlIncludes: '/auth/v1/user', status: 200, ok: true, json: { id: seedUserId } },
       { method: 'GET', status: 403, ok: false },
@@ -8061,7 +8069,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
   assert.equal(transport13.calls.some(c => c.method === 'POST'), false, 'Upload POST must never be attempted when collision check returns non-404');
 
   // 14. Affirmative 404 followed by 409 Conflict preserves existing object without deletion eligibility
-  const invConflict = new TestRunInventory(runId);
+  const invConflict = new TestRunInventory(nextScenarioRun());
   await assert.rejects(
     async () => {
       await provisionStorageProbeFixture({
@@ -8071,7 +8079,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
         anonKey: validTestAnonKey,
         serviceRoleKey: validTestServiceRoleKey,
         inventory: invConflict,
-        fetchFn: createDeterministicFixtureTransport({
+        fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
           routes: [
             { urlIncludes: '/auth/v1/user', status: 200, ok: true, json: { id: seedUserId } },
             { method: 'GET', status: 404, ok: false },
@@ -8095,7 +8103,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
   assert.equal(cleanupReportConflict.storageObjectsDeleted, 0);
 
   // 15. Indeterminate upload timeout is quarantined
-  const invIndet = new TestRunInventory(runId);
+  const invIndet = new TestRunInventory(nextScenarioRun());
   await assert.rejects(
     async () => {
       await provisionStorageProbeFixture({
@@ -8105,7 +8113,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
         anonKey: validTestAnonKey,
         serviceRoleKey: validTestServiceRoleKey,
         inventory: invIndet,
-        fetchFn: createDeterministicFixtureTransport({
+        fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
           routes: [
             { urlIncludes: '/auth/v1/user', status: 200, ok: true, json: { id: seedUserId } },
             { method: 'GET', status: 404, ok: false },
@@ -8127,7 +8135,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
   // ==========================================
   const objId16 = '88888888-1111-4111-a111-111111111196';
   // 16. Verification GET with corrupted/wrong bytes throws STORAGE_PAYLOAD_INTEGRITY_MISMATCH and retains RESIDUAL_OWNERSHIP_BLOCKED
-  const invMismatch16 = new TestRunInventory(runId);
+  const invMismatch16 = new TestRunInventory(nextScenarioRun());
   await assert.rejects(
     async () => {
       await provisionStorageProbeFixture({
@@ -8138,7 +8146,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
         serviceRoleKey: validTestServiceRoleKey,
         inventory: invMismatch16,
         probeContent: 'expected-bytes\n',
-        fetchFn: createDeterministicFixtureTransport({
+        fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
           initialState: { uploaded: false },
           routes: [
             { urlIncludes: '/auth/v1/user', status: 200, ok: true, json: { id: seedUserId } },
@@ -8158,7 +8166,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
   );
 
   // 17. Missing owner metadata in authoritative lookup throws STORAGE_OWNER_VERIFICATION_FAILED and preserves RESIDUAL_OWNERSHIP_BLOCKED
-  const invMissing17 = new TestRunInventory(runId);
+  const invMissing17 = new TestRunInventory(nextScenarioRun());
   await assert.rejects(
     async () => {
       await provisionStorageProbeFixture({
@@ -8169,7 +8177,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
         serviceRoleKey: validTestServiceRoleKey,
         inventory: invMissing17,
         probeContent: 'valid-bytes\n',
-        fetchFn: createDeterministicFixtureTransport({
+        fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
           initialState: { uploaded: false },
           routes: [
             { urlIncludes: '/auth/v1/user', status: 200, ok: true, json: { id: seedUserId } },
@@ -8190,7 +8198,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
   );
 
   // 18. Mismatched owner_id in authoritative lookup throws STORAGE_OWNER_VERIFICATION_FAILED and preserves RESIDUAL_OWNERSHIP_BLOCKED
-  const invOwnerMismatch18 = new TestRunInventory(runId);
+  const invOwnerMismatch18 = new TestRunInventory(nextScenarioRun());
   await assert.rejects(
     async () => {
       await provisionStorageProbeFixture({
@@ -8201,7 +8209,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
         serviceRoleKey: validTestServiceRoleKey,
         inventory: invOwnerMismatch18,
         probeContent: 'valid-bytes\n',
-        fetchFn: createDeterministicFixtureTransport({
+        fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
           initialState: { uploaded: false },
           routes: [
             { urlIncludes: '/auth/v1/user', status: 200, ok: true, json: { id: seedUserId } },
@@ -8241,7 +8249,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
   // (PRRT_kwDOVtCmZc67grUj)
   // ==========================================
   // 21. Object still present (HTTP 200 on absence GET) marks deletion failed and halts user deletion
-  const invAbsenceFail = new TestRunInventory(runId);
+  const invAbsenceFail = new TestRunInventory(nextScenarioRun());
   invAbsenceFail.registerCreatedUser({
     id: seedUserId,
     email: 'user-absence-fail@proof.invalid',
@@ -8267,7 +8275,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
   assert.equal(runCtxNoRunId.runId, 'valid-temp-id');
 
   // 23. SESSION-05 requires fixture in inventory when inventory provided
-  const invEmpty = new TestRunInventory(runId);
+  const invEmpty = new TestRunInventory(nextScenarioRun());
   const runCtxWithRunId = createRunContext({ runId });
   runCtxWithRunId.activeAccessToken = testToken;
   runCtxWithRunId.preInvalidationSessionValid = true;
@@ -8303,7 +8311,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
   );
 
   // 25. provisionStorageProbeFixture with finalized inventory throws INVENTORY_FINALIZED
-  const invFinalized = new TestRunInventory(runId);
+  const invFinalized = new TestRunInventory(nextScenarioRun());
   invFinalized.finalize();
   await assert.rejects(
     async () => {
@@ -8336,14 +8344,16 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
 
 
 test('97. Task 06I-B1-H3-R2 (R2-01): Authoritative storage.objects.owner_id Metadata Verification & Realistic Provider Responses', async () => {
-  const runId = 'test-run-h3-r2-owner-97';
+  let runId = 'test-run-h3-r2-owner-97';
+  const baseScenarioRun = runId; let scenarioNumber = 0;
+  const nextScenarioRun = () => { runId = baseScenarioRun + '-case-' + (++scenarioNumber); expectedPath = getStorageProbeObjectPath(runId); expectedKey = getStorageProbeObjectKey(runId); return runId; };
   const seedUserId = '11111111-1111-4111-a111-111111111197';
   const otherUserId = '22222222-2222-4222-b222-222222222297';
   const objectUuid = 'aaaa1111-2222-4333-a444-555555555597';
   const otherObjectUuid = 'bbbb1111-2222-4333-a444-555555555597';
   const token = createMockJwt({ sub: seedUserId });
-  const expectedPath = getStorageProbeObjectPath(runId);
-  const expectedKey = getStorageProbeObjectKey(runId);
+  let expectedPath = getStorageProbeObjectPath(runId);
+  let expectedKey = getStorageProbeObjectKey(runId);
 
   // Static SQL contract verification: narrowly scoped SECURITY DEFINER RPC, no storage schema exposure
   const sqlContent = fs.readFileSync('experiments/task06i/sql/testbed-fixtures.sql', 'utf8');
@@ -8379,7 +8389,7 @@ test('97. Task 06I-B1-H3-R2 (R2-01): Authoritative storage.objects.owner_id Meta
     ownershipRpcDelayMs = 0,
     ownershipRpcMalformed = false
   } = {}) {
-    return createDeterministicFixtureTransport({
+    return createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       initialState: { uploaded: false },
       routes: [
         {
@@ -8433,7 +8443,7 @@ test('97. Task 06I-B1-H3-R2 (R2-01): Authoritative storage.objects.owner_id Meta
   }
 
   // 1 & 2. Realistic authenticated download WITHOUT custom owner headers + authoritative owner_id lookup + exact byte match
-  const invPass = new TestRunInventory(runId);
+  const invPass = new TestRunInventory(nextScenarioRun());
   const resPass = await provisionStorageProbeFixture({
     runId,
     seedUserId,
@@ -8452,7 +8462,7 @@ test('97. Task 06I-B1-H3-R2 (R2-01): Authoritative storage.objects.owner_id Meta
   assert.equal(resPass.fixtureRecord.proof.seedIdentityEndpoint, '/auth/v1/user');
 
   // 3. Wrong object owner -> RESIDUAL_OWNERSHIP_BLOCKED (no deletion eligibility)
-  const invWrongOwner = new TestRunInventory(runId);
+  const invWrongOwner = new TestRunInventory(nextScenarioRun());
   await assert.rejects(
     () => provisionStorageProbeFixture({
       runId,
@@ -8471,7 +8481,7 @@ test('97. Task 06I-B1-H3-R2 (R2-01): Authoritative storage.objects.owner_id Meta
   assert.equal(invWrongOwner.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.deletionEligible, false);
 
   // 4. Missing owner metadata (empty result / RPC 404 PGRST202 / missing ownership interface)
-  const invMissingMeta = new TestRunInventory(runId);
+  const invMissingMeta = new TestRunInventory(nextScenarioRun());
   await assert.rejects(
     () => provisionStorageProbeFixture({
       runId,
@@ -8501,7 +8511,7 @@ test('97. Task 06I-B1-H3-R2 (R2-01): Authoritative storage.objects.owner_id Meta
   );
 
   // 5. Wrong bucket or wrong object key in authoritative lookup
-  const invWrongBucket = new TestRunInventory(runId);
+  const invWrongBucket = new TestRunInventory(nextScenarioRun());
   await assert.rejects(
     () => provisionStorageProbeFixture({
       runId,
@@ -8518,7 +8528,7 @@ test('97. Task 06I-B1-H3-R2 (R2-01): Authoritative storage.objects.owner_id Meta
   );
   assert.equal(invWrongBucket.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.deletionEligible, false);
 
-  const invWrongKey = new TestRunInventory(runId);
+  const invWrongKey = new TestRunInventory(nextScenarioRun());
   await assert.rejects(
     () => provisionStorageProbeFixture({
       runId,
@@ -8536,7 +8546,7 @@ test('97. Task 06I-B1-H3-R2 (R2-01): Authoritative storage.objects.owner_id Meta
   assert.equal(invWrongKey.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.deletionEligible, false);
 
   // 6. Different provider object identity (POST Id !== storage.objects.id)
-  const invDiffId = new TestRunInventory(runId);
+  const invDiffId = new TestRunInventory(nextScenarioRun());
   await assert.rejects(
     () => provisionStorageProbeFixture({
       runId,
@@ -8555,7 +8565,7 @@ test('97. Task 06I-B1-H3-R2 (R2-01): Authoritative storage.objects.owner_id Meta
   assert.equal(invDiffId.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.deletionEligible, false);
 
   // 7. Unverified or mismatched seed identity (/auth/v1/user rejects forged JWT even when decoded sub matches)
-  const badIdentityTransport = createDeterministicFixtureTransport({
+  const badIdentityTransport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       { urlIncludes: '/auth/v1/user', status: 401, ok: false, text: JSON.stringify({ error: 'invalid_jwt' }) }
     ],
@@ -8587,7 +8597,7 @@ test('97. Task 06I-B1-H3-R2 (R2-01): Authoritative storage.objects.owner_id Meta
   );
 
   // 8 & 9. Same-length but different downloaded bytes ('abce...' vs 'abcd...')
-  const invSameLenDiff = new TestRunInventory(runId);
+  const invSameLenDiff = new TestRunInventory(nextScenarioRun());
   await assert.rejects(
     () => provisionStorageProbeFixture({
       runId,
@@ -8606,7 +8616,7 @@ test('97. Task 06I-B1-H3-R2 (R2-01): Authoritative storage.objects.owner_id Meta
   assert.equal(invSameLenDiff.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.deletionEligible, false);
 
   // 10. Malformed or unreadable download/metadata responses
-  const invUnreadable = new TestRunInventory(runId);
+  const invUnreadable = new TestRunInventory(nextScenarioRun());
   await assert.rejects(
     () => provisionStorageProbeFixture({
       runId,
@@ -8623,7 +8633,7 @@ test('97. Task 06I-B1-H3-R2 (R2-01): Authoritative storage.objects.owner_id Meta
   );
   assert.equal(invUnreadable.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.deletionEligible, false);
 
-  const invMalformedMeta = new TestRunInventory(runId);
+  const invMalformedMeta = new TestRunInventory(nextScenarioRun());
   await assert.rejects(
     () => provisionStorageProbeFixture({
       runId,
@@ -8639,7 +8649,7 @@ test('97. Task 06I-B1-H3-R2 (R2-01): Authoritative storage.objects.owner_id Meta
   assert.equal(invMalformedMeta.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.deletionEligible, false);
 
   // 11. Ownership lookup timeout -> RESIDUAL_OWNERSHIP_BLOCKED, deletionEligible: false
-  const invTimeout = new TestRunInventory(runId);
+  const invTimeout = new TestRunInventory(nextScenarioRun());
   await assert.rejects(
     () => provisionStorageProbeFixture({
       runId,
@@ -8658,14 +8668,16 @@ test('97. Task 06I-B1-H3-R2 (R2-01): Authoritative storage.objects.owner_id Meta
 });
 
 test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monotonicity & Cascade Prevention', async () => {
-  const runId = 'test-run-h3-r2-residual-98';
+  let runId = 'test-run-h3-r2-residual-98';
+  const baseScenarioRun = runId; let scenarioNumber = 0;
+  const nextScenarioRun = () => { runId = baseScenarioRun + '-case-' + (++scenarioNumber); expectedPath = getStorageProbeObjectPath(runId); expectedKey = getStorageProbeObjectKey(runId); return runId; };
   const seedUserId = '11111111-1111-4111-a111-111111111198';
   const createdUserId = '22222222-2222-4222-b222-222222222298';
   const objectUuid = 'cccc1111-2222-4333-a444-555555555598';
   const otherUserId = '33333333-3333-4333-b333-333333333398';
   const token = createMockJwt({ sub: seedUserId });
-  const expectedPath = getStorageProbeObjectPath(runId);
-  const expectedKey = getStorageProbeObjectKey(runId);
+  let expectedPath = getStorageProbeObjectPath(runId);
+  let expectedKey = getStorageProbeObjectKey(runId);
 
   async function assertUnresolvedCleanupBlocked(inv, expectedState) {
     // Associate a verified run-created Auth user to assert Storage-before-user cascade block
@@ -8687,7 +8699,7 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
 
   // Scenarios 1, 2, 3: Successful POST followed by verification GET 403, 404, or 500
   for (const getErrStatus of [403, 404, 500]) {
-    const inv = new TestRunInventory(runId);
+    const inv = new TestRunInventory(nextScenarioRun());
     await assert.rejects(
       () => provisionStorageProbeFixture({
         runId,
@@ -8695,7 +8707,7 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
         userAccessToken: token,
         serviceRoleKey: validTestServiceRoleKey,
         inventory: inv,
-        fetchFn: createDeterministicFixtureTransport({
+        fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
           initialState: { posted: false },
           routes: [
             { urlIncludes: '/auth/v1/user', status: 200, ok: true, text: JSON.stringify({ id: seedUserId }) },
@@ -8724,7 +8736,7 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
   ];
 
   for (const variant of post200FailureVariants) {
-    const inv = new TestRunInventory(runId);
+    const inv = new TestRunInventory(nextScenarioRun());
     const lookupStatus = variant.lookupStatus || 200;
     await assert.rejects(
       () => provisionStorageProbeFixture({
@@ -8734,7 +8746,7 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
         serviceRoleKey: validTestServiceRoleKey,
         inventory: inv,
         probeContent: 'expected-98\n',
-        fetchFn: createDeterministicFixtureTransport({
+        fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
           initialState: { posted: false },
           routes: [
             { urlIncludes: '/auth/v1/user', status: 200, ok: true, text: JSON.stringify({ id: seedUserId }) },
@@ -8742,7 +8754,7 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
               urlIncludes: '/rest/v1/rpc/task06i_lookup_storage_object_owner',
               status: lookupStatus,
               ok: lookupStatus === 200,
-              text: JSON.stringify(variant.lookupRes || { message: 'db error' })
+              text: JSON.stringify(variant.lookupRes ? variant.lookupRes.map(row => ({ ...row, name: expectedPath })) : { message: 'db error' })
             },
             { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { posted: false }, status: 404, ok: false },
             variant.bodyRejects
@@ -8761,7 +8773,7 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
 
   // Scenario 8 & 9: Upload HTTP 500 after possible commit & Upload timeout/transport reset -> CREATION_INDETERMINATE
   for (const uploadFail of ['http_500', 'transport_reset']) {
-    const inv = new TestRunInventory(runId);
+    const inv = new TestRunInventory(nextScenarioRun());
     await assert.rejects(
       () => provisionStorageProbeFixture({
         runId,
@@ -8769,7 +8781,7 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
         userAccessToken: token,
         serviceRoleKey: validTestServiceRoleKey,
         inventory: inv,
-        fetchFn: createDeterministicFixtureTransport({
+        fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
           routes: [
             { urlIncludes: '/auth/v1/user', status: 200, ok: true, text: JSON.stringify({ id: seedUserId }) },
             { method: 'GET', status: 404, ok: false },
@@ -8786,7 +8798,7 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
   }
 
   // Scenario 10: Definitive collision (HTTP 400 statusCode 409 KeyAlreadyExists) preserves existing object
-  const invCollision = new TestRunInventory(runId);
+  const invCollision = new TestRunInventory(nextScenarioRun());
   await assert.rejects(
     () => provisionStorageProbeFixture({
       runId,
@@ -8794,7 +8806,7 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
       userAccessToken: token,
       serviceRoleKey: validTestServiceRoleKey,
       inventory: invCollision,
-      fetchFn: createDeterministicFixtureTransport({
+      fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
         routes: [
           { urlIncludes: '/auth/v1/user', status: 200, ok: true, text: JSON.stringify({ id: seedUserId }) },
           { method: 'GET', status: 404, ok: false },
@@ -8814,7 +8826,7 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
   assert.equal(repCol.status, 'CLEANUP_VERIFIED_SUCCESS');
 
   // Scenario 11: Unknown ownership / ambiguous CREATION_FAILED does NOT skip silently
-  const invUnknown = new TestRunInventory(runId);
+  const invUnknown = new TestRunInventory(nextScenarioRun());
   invUnknown.registerStorageFixture({
     bucket: STORAGE_PROBE_BUCKET,
     path: expectedPath,
@@ -8826,7 +8838,7 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
   await assertUnresolvedCleanupBlocked(invUnknown, 'unknown_ownership');
 
   // Scenario 13: Monotonicity & late settlement during/after cleanup
-  const invMono = new TestRunInventory(runId);
+  const invMono = new TestRunInventory(nextScenarioRun());
   await r5ProvisionedFixture(invMono.runId, { inventory: invMono, seedUserId: seedUserId });
   assert.throws(
     () => invMono.updateStorageFixture(expectedKey, { lifecycleState: STORAGE_LIFECYCLE_STATE.CREATION_FAILED, ownerOpId: invMono.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath).reservationOpId }),
@@ -8834,7 +8846,7 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
   );
 
   // Late operation settlement after cleanup starts must block CLEANUP_VERIFIED_SUCCESS
-  const invLate = new TestRunInventory(runId);
+  const invLate = new TestRunInventory(nextScenarioRun());
   const lateOp = invLate.registerInFlightOperation({ probeId: 'HOOK-01', endpoint: '/auth/v1/token', canMintSession: true });
   const lateAdmin = fixtureSpec();
   const cleanupPromise = invLate.executeCleanup({ adminClient: bindFixtureAdmin(invLate, lateAdmin), failClosed: false, settlementTimeoutMs: 40 });
@@ -8846,7 +8858,7 @@ test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monoton
   assert.ok(lateReport.residualResources.some(r => r.type === 'late_settlement_during_cleanup'));
 
   // Scenario 14: Verified run-owned object removed & absence confirmed before user deletion
-  const invClean = new TestRunInventory(runId);
+  const invClean = new TestRunInventory(nextScenarioRun());
   invClean.registerCreatedUser({ id: createdUserId, email: 'clean-98@proof.invalid', creationProof: createCreationProof('before_after_check') });
   await r5ProvisionedFixture(invClean.runId, { inventory: invClean, seedUserId: seedUserId });
   const cleanOrderSpec = fixtureSpec();
@@ -8965,7 +8977,7 @@ test('99. Task 06I-B1-H3-R2 (R2-03): Provider-Aware Storage Absence Normalizatio
   // 10. Admin client preserves error body: HTTP 400 NoSuchKey + logical 404 IS recognized as absent in cleanup!
   const adminStructuredAbsent = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
-    fetchFn: createDeterministicFixtureTransport({
+    fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait', conditionalStorage: { projectRef: HARDCODED_TEMP_REF, runId, objects: [] },
       routes: [
         {
           method: 'GET',
@@ -8988,7 +9000,7 @@ test('99. Task 06I-B1-H3-R2 (R2-03): Provider-Aware Storage Absence Normalizatio
   // 11. Object remains present (HTTP 200) -> RESIDUAL_BLOCKED, cleanup fails
   const adminStillPresent = trackedHostedAdminClient({
     serviceRoleKey: validTestServiceRoleKey,
-    fetchFn: createDeterministicFixtureTransport({
+    fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait', conditionalStorage: { projectRef: HARDCODED_TEMP_REF, runId, objects: [] },
       routes: [
         { method: 'DELETE', status: 200, ok: true, text: '{}' }
       ],
@@ -9041,7 +9053,7 @@ test('100. Task 06I-B1-H3-R2 (Sec 5 & 6): Unified Storage Lifecycle E2E Regressi
   });
 
   // Part A: End-to-End 14-step Unified Lifecycle using deterministic fixture transport
-  const mockProviderFetch = createDeterministicFixtureTransport({
+  const mockProviderFetch = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait', conditionalStorage: { projectRef: HARDCODED_TEMP_REF, runId, objects: [] },
     initialState: { storageExists: false },
     routes: [
       {
@@ -9375,11 +9387,11 @@ test('102. Task 06I-B1-H3-R3 (R3-02): Structural elimination of arbitrary transp
 
   // 2. createDeterministicFixtureTransport rejects any arbitrary executable callback/getter inside spec
   assert.throws(
-    () => createDeterministicFixtureTransport({ routes: [{ status: 200, json: () => ({}) }] }),
+    () => createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait', routes: [{ status: 200, json: () => ({}) }] }),
     /INVALID_DETERMINISTIC_FIXTURE_SPEC.*Arbitrary executable callback rejected/
   );
   assert.throws(
-    () => createDeterministicFixtureTransport({
+    () => createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [{
         urlIncludes: '/auth/v1/user',
         get status() { return 200; }
@@ -9388,14 +9400,14 @@ test('102. Task 06I-B1-H3-R3 (R3-02): Structural elimination of arbitrary transp
     /INVALID_DETERMINISTIC_FIXTURE_SPEC.*Accessor property rejected/
   );
   assert.throws(
-    () => createDeterministicFixtureTransport({
+    () => createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [{ urlIncludes: '/auth/v1/user', waitForBarrier: { wait: async () => {}, release() {} } }]
     }),
     /INVALID_DETERMINISTIC_FIXTURE_SPEC/
   );
 
   // 3. Trusted deterministic transport succeeds strictly offline without calling real fetch
-  const trusted = createDeterministicFixtureTransport({
+  const trusted = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [{ urlIncludes: '/auth/v1/logout', status: 200, ok: true, json: {} }]
   });
   assert.doesNotThrow(() => assertOfflineMockTransport(trusted));
@@ -9432,7 +9444,7 @@ test('103. Task 06I-B1-H3-R3 (R3-03): Atomic Storage fixture reservation, single
   // First provisioner reserves slot BEFORE first await; second rejects with STORAGE_FIXTURE_RESERVATION_CONFLICT and ZERO HTTP calls!
   const inv = new TestRunInventory(runId);
   const authBarrier = createOfflineBarrier('r3-03-auth-pause');
-  const transportA = createDeterministicFixtureTransport({
+  const transportA = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     initialState: { uploaded: false },
     routes: [
       { urlIncludes: '/auth/v1/user', waitForBarrier: authBarrier, status: 200, text: JSON.stringify({ id: seedUserId }) },
@@ -9525,7 +9537,7 @@ test('104. Task 06I-B1-H3-R3 (R3-04): Run quiescing, admission closure, concurre
   });
 
   const pauseAtAuth = createOfflineBarrier('r3-04-pause-auth');
-  const transportA = createDeterministicFixtureTransport({
+  const transportA = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       { urlIncludes: '/auth/v1/user', waitForBarrier: pauseAtAuth, status: 200, text: JSON.stringify({ id: seedUserId }) },
       { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', status: 400, ok: false, text: JSON.stringify({ statusCode: '404', code: 'NoSuchKey' }) },
@@ -9585,7 +9597,7 @@ test('104. Task 06I-B1-H3-R3 (R3-04): Run quiescing, admission closure, concurre
 
   const pausePost = createOfflineBarrier('r3-04-post-pause');
   const midDeleteArrival = createOfflineBarrier('r3-04-mid-delete');
-  const transportB = createDeterministicFixtureTransport({
+  const transportB = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     initialState: { uploaded: false },
     routes: [
       { urlIncludes: '/auth/v1/user', status: 200, text: JSON.stringify({ id: seedUserId }) },
@@ -9663,7 +9675,7 @@ test('105. Task 06I-B1-H3-R3 (R3-05): Successful text/plain, binary, and HTTP 20
   const token = createMockJwt({ sub: seedUserId });
   const inv = new TestRunInventory(runId);
 
-  const collisionTransport = createDeterministicFixtureTransport({
+  const collisionTransport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       { urlIncludes: '/auth/v1/user', status: 200, ok: true, text: JSON.stringify({ id: seedUserId }) },
       { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', status: 200, ok: true, headers: { 'Content-Type': 'text/plain' }, text: 'existing plain-text object' },
@@ -9689,14 +9701,16 @@ test('105. Task 06I-B1-H3-R3 (R3-05): Successful text/plain, binary, and HTTP 20
 });
 
 test('106. Task 06I-B1-H3-R3 (R3-06): Normalized idempotent Storage DELETE NoSuchKey and independent post-delete absence verification', async () => {
-  const runId = 'test-run-h3-r3-06-delete';
+  let runId = 'test-run-h3-r3-06-delete';
+  let scenarioNumber = 0;
+  const nextScenarioRun = () => (runId = 'test-run-h3-r3-06-delete-case-' + (++scenarioNumber));
   const seedUserId = '11111111-1111-4111-a111-111111111106';
-  const path = getStorageProbeObjectPath(runId);
+  const path = getStorageProbeObjectPath(nextScenarioRun());
 
   // 1. DELETE returns structured HTTP 400 NoSuchKey (logical 404) AND GET confirms 400 NoSuchKey -> DELETION_VERIFIED
   const invIdemp = new TestRunInventory(runId);
   await r5ProvisionedFixture(invIdemp.runId, { inventory: invIdemp, seedUserId: seedUserId });
-  const transportVerified = createDeterministicFixtureTransport({
+  const transportVerified = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait', conditionalStorage: { projectRef: HARDCODED_TEMP_REF, runId, objects: [] },
     routes: [
       {
         method: 'DELETE',
@@ -9723,14 +9737,14 @@ test('106. Task 06I-B1-H3-R3 (R3-06): Normalized idempotent Storage DELETE NoSuc
   assert.equal(transportVerified.calls.some(c => c.method === 'GET'), true, 'Must still verify absence via GET after DELETE NoSuchKey');
 
   // 2. DELETE returns 404 NoSuchKey, BUT follow-up GET finds object STILL PRESENT (200 text/plain) -> RESIDUAL_BLOCKED, blocks deleteUser!
-  const invRacePresent = new TestRunInventory(runId);
+  const invRacePresent = new TestRunInventory(nextScenarioRun());
   invRacePresent.registerCreatedUser({
     id: '22222222-2222-4222-b222-222222222106',
     email: 'created-106@proof.invalid',
     creationProof: createCreationProof('before_after_check')
   });
   await r5ProvisionedFixture(invRacePresent.runId, { inventory: invRacePresent, seedUserId: seedUserId });
-  const transportStillThere = createDeterministicFixtureTransport({
+  const transportStillThere = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait', conditionalStorage: { projectRef: HARDCODED_TEMP_REF, runId, objects: [] },
     routes: [
       { method: 'DELETE', urlIncludes: '/storage/v1/object/', status: 404, ok: false, text: JSON.stringify({ code: 'NoSuchKey', message: 'Object not found' }) },
       { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', status: 200, ok: true, text: 'reappeared payload' }
@@ -9739,7 +9753,7 @@ test('106. Task 06I-B1-H3-R3 (R3-06): Normalized idempotent Storage DELETE NoSuc
   const adminStillThere = trackedHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: transportStillThere });
   const repStillThere = await invRacePresent.executeCleanup({ adminClient: bindFixtureAdmin(invRacePresent, adminStillThere), failClosed: false });
   assert.equal(repStillThere.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
-  assert.equal(invRacePresent.getStorageFixture(STORAGE_PROBE_BUCKET, path)?.lifecycleState, STORAGE_LIFECYCLE_STATE.RESIDUAL_BLOCKED);
+  assert.equal(invRacePresent.getStorageFixture(STORAGE_PROBE_BUCKET, getStorageProbeObjectPath(invRacePresent.runId))?.lifecycleState, STORAGE_LIFECYCLE_STATE.RESIDUAL_BLOCKED);
   assert.equal(transportStillThere.calls.some(c => c.method === 'DELETE' && c.url.includes('/auth/v1/admin/users/')), false, 'User deletion blocked on OBJECT_PRESENT');
 
   // 3. DELETE NoSuchKey followed by GET 403/500/malformed/timeout stays CLEANUP_INDETERMINATE (never blindly verified)
@@ -9748,9 +9762,9 @@ test('106. Task 06I-B1-H3-R3 (R3-06): Normalized idempotent Storage DELETE NoSuc
     { status: 500, ok: false, text: 'internal error' },
     { throwError: 'ETIMEDOUT: socket timed out' }
   ]) {
-    const invIndet = new TestRunInventory(runId);
+    const invIndet = new TestRunInventory(nextScenarioRun());
     await r5ProvisionedFixture(invIndet.runId, { inventory: invIndet, seedUserId: seedUserId });
-    const transportIndet = createDeterministicFixtureTransport({
+    const transportIndet = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait', conditionalStorage: { projectRef: HARDCODED_TEMP_REF, runId, objects: [] },
       routes: [
         { method: 'DELETE', urlIncludes: '/storage/v1/object/', status: 400, ok: false, text: JSON.stringify({ statusCode: '404', code: 'NoSuchKey' }) },
         { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', ...getErr }
@@ -9759,13 +9773,13 @@ test('106. Task 06I-B1-H3-R3 (R3-06): Normalized idempotent Storage DELETE NoSuc
     const adminIndet = trackedHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: transportIndet });
     const repIndet = await invIndet.executeCleanup({ adminClient: bindFixtureAdmin(invIndet, adminIndet), failClosed: false });
     assert.equal(repIndet.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
-    assert.equal(invIndet.getStorageFixture(STORAGE_PROBE_BUCKET, path)?.lifecycleState, STORAGE_LIFECYCLE_STATE.CLEANUP_INDETERMINATE);
+    assert.equal(invIndet.getStorageFixture(STORAGE_PROBE_BUCKET, getStorageProbeObjectPath(invIndet.runId))?.lifecycleState, STORAGE_LIFECYCLE_STATE.CLEANUP_INDETERMINATE);
   }
 
   // 4. DELETE returning HTTP 403 AccessDenied stays CLEANUP_INDETERMINATE immediately without false verification
-  const invDel403 = new TestRunInventory(runId);
+  const invDel403 = new TestRunInventory(nextScenarioRun());
   await r5ProvisionedFixture(invDel403.runId, { inventory: invDel403, seedUserId: seedUserId });
-  const transportDel403 = createDeterministicFixtureTransport({
+  const transportDel403 = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait', conditionalStorage: { projectRef: HARDCODED_TEMP_REF, runId, objects: [] },
     routes: [
       { method: 'DELETE', urlIncludes: '/storage/v1/object/', status: 403, ok: false, text: JSON.stringify({ code: 'AccessDenied', message: 'Forbidden' }) }
     ]
@@ -9773,7 +9787,7 @@ test('106. Task 06I-B1-H3-R3 (R3-06): Normalized idempotent Storage DELETE NoSuc
   const adminDel403 = trackedHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: transportDel403 });
   const repDel403 = await invDel403.executeCleanup({ adminClient: bindFixtureAdmin(invDel403, adminDel403), failClosed: false });
   assert.equal(repDel403.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
-  assert.equal(invDel403.getStorageFixture(STORAGE_PROBE_BUCKET, path)?.lifecycleState, STORAGE_LIFECYCLE_STATE.CLEANUP_INDETERMINATE);
+  assert.equal(invDel403.getStorageFixture(STORAGE_PROBE_BUCKET, getStorageProbeObjectPath(invDel403.runId))?.lifecycleState, STORAGE_LIFECYCLE_STATE.CLEANUP_INDETERMINATE);
 });
 
 test('107. Task 06I-B1-H3-R3 (Sec 8): Consolidated Adversarial Concurrency & Lifecycle Acceptance Matrix', async () => {
@@ -9790,7 +9804,7 @@ test('107. Task 06I-B1-H3-R3 (Sec 8): Consolidated Adversarial Concurrency & Lif
   const inv = new TestRunInventory(runId, { seedUserId, seedEmail: 'seed-107@proof.invalid' });
   const rpcBarrier = createOfflineBarrier('matrix-rpc-pause');
 
-  const matrixTransport = createDeterministicFixtureTransport({
+  const matrixTransport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait', conditionalStorage: { projectRef: HARDCODED_TEMP_REF, runId, objects: [] },
     initialState: { uploaded: false, deleted: false },
     routes: [
       { urlIncludes: '/auth/v1/user', status: 200, ok: true, text: JSON.stringify({ id: seedUserId }) },
@@ -9846,6 +9860,7 @@ test('107. Task 06I-B1-H3-R3 (Sec 8): Consolidated Adversarial Concurrency & Lif
   assert.equal(provRes.lifecycleState, STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED);
   assert.equal(getFetchIsolationDebugState().activeDepth, baseDepth107);
 
+  getConditionalStorageFixtureProvider(matrixTransport).removeFixtureObject({ bucket: STORAGE_PROBE_BUCKET, path });
   const report = await inv.executeCleanup({ adminClient: bindFixtureAdmin(inv, adminClient), failClosed: true });
   assert.equal(report.status, 'CLEANUP_VERIFIED_SUCCESS');
   assert.equal(report.storageObjectsDeleted, 1);
@@ -9878,7 +9893,7 @@ test('108. Task 06I-B1-H3-R4 (R4-01): Rejects arbitrary ownershipLookupFn, unreg
   };
 
   function makeStorageTransport() {
-    return createDeterministicFixtureTransport({
+    return createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       initialState: { uploaded: false },
       routes: [
         { method: 'GET', urlIncludes: '/auth/v1/user', status: 200, ok: true, json: { id: seedUserId }, tag: 'auth_user' },
@@ -10358,7 +10373,7 @@ test('111. Task 06I-B1-H3-R4 (R4-04): Immutable independent binary fixture snaps
   const origBufText = 'immutable-buffer-snapshot-01';
   const expectedBufSha = crypto.createHash('sha256').update(Buffer.from(origBufText, 'utf8')).digest('hex');
   const srcBuf = Buffer.from(origBufText, 'utf8');
-  const tBuf = createDeterministicFixtureTransport({
+  const tBuf = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [{ urlIncludes: '/buf', status: 200, rawBytes: srcBuf }]
   });
   srcBuf.fill(0x58); // Mutate original source memory completely
@@ -10371,7 +10386,7 @@ test('111. Task 06I-B1-H3-R4 (R4-04): Immutable independent binary fixture snaps
 
   // 2. Uint8Array source mutation
   const srcU8 = new Uint8Array([10, 20, 30, 40, 50]);
-  const tU8 = createDeterministicFixtureTransport({
+  const tU8 = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [{ urlIncludes: '/u8', status: 200, rawBytes: srcU8 }]
   });
   srcU8.fill(0);
@@ -10380,7 +10395,7 @@ test('111. Task 06I-B1-H3-R4 (R4-04): Immutable independent binary fixture snaps
 
   // 3. ArrayBuffer source mutation
   const srcAB = Uint8Array.from([5, 6, 7, 8]).buffer;
-  const tAB = createDeterministicFixtureTransport({
+  const tAB = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [{ urlIncludes: '/ab', status: 200, rawBytes: srcAB }]
   });
   new Uint8Array(srcAB).fill(0xff);
@@ -10390,7 +10405,7 @@ test('111. Task 06I-B1-H3-R4 (R4-04): Immutable independent binary fixture snaps
   // 4. DataView with nonzero byteOffset and sub-range byteLength
   const dvBacking = Uint8Array.from([1, 2, 11, 22, 33, 44, 98, 99]);
   const srcDV = new DataView(dvBacking.buffer, 2, 4);
-  const tDV = createDeterministicFixtureTransport({
+  const tDV = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [{ urlIncludes: '/dv', status: 200, rawBytes: srcDV }]
   });
   dvBacking.fill(0xee);
@@ -10402,7 +10417,7 @@ test('111. Task 06I-B1-H3-R4 (R4-04): Immutable independent binary fixture snaps
   const expectedSlice = Buffer.from('slice-secret-payload');
   expectedSlice.copy(largeSlab, 16);
   const slicedView = largeSlab.subarray(16, 16 + expectedSlice.length);
-  const tSliced = createDeterministicFixtureTransport({
+  const tSliced = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [{ urlIncludes: '/slice', status: 200, rawBytes: slicedView }]
   });
   largeSlab.fill(0xaa);
@@ -10427,7 +10442,7 @@ test('111. Task 06I-B1-H3-R4 (R4-04): Immutable independent binary fixture snaps
     }
   });
   assert.throws(
-    () => createDeterministicFixtureTransport({ routes: accessorArr }),
+    () => createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait', routes: accessorArr }),
     /INVALID_DETERMINISTIC_FIXTURE_SPEC/
   );
   const symHookSpec = { routes: [{ urlIncludes: '/x', status: 200 }], [Symbol('exec')]: () => {} };
@@ -10438,7 +10453,7 @@ test('111. Task 06I-B1-H3-R4 (R4-04): Immutable independent binary fixture snaps
   const cyclic = { urlIncludes: '/cycle', status: 200 };
   cyclic.self = cyclic;
   assert.throws(
-    () => createDeterministicFixtureTransport({ routes: [cyclic] }),
+    () => createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait', routes: [cyclic] }),
     /INVALID_DETERMINISTIC_FIXTURE_SPEC.*Circular/
   );
 
@@ -10451,7 +10466,7 @@ test('111. Task 06I-B1-H3-R4 (R4-04): Immutable independent binary fixture snaps
   const expectedPayload = Buffer.from([0, 1, 2, 3, 250, 251, 252, 253, 254, 255]);
   const mutableSource = Buffer.from(expectedPayload);
 
-  const storageTransport = createDeterministicFixtureTransport({
+  const storageTransport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     initialState: { uploaded: false },
     routes: [
       { method: 'GET', urlIncludes: '/auth/v1/user', status: 200, ok: true, json: { id: seedUserId } },
@@ -10490,7 +10505,7 @@ test('112. Task 06I-B1-H3-R4 (Sec 6): Unified offline trust boundary & determini
   const mutableInput = Buffer.from(rawFixture);
   const rpcBarrier = createOfflineBarrier('r4-unified-rpc');
 
-  const unifiedTransport = createDeterministicFixtureTransport({
+  const unifiedTransport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     initialState: { uploaded: false, deleted: false },
     routes: [
       { method: 'GET', urlIncludes: '/auth/v1/user', status: 200, ok: true, json: { id: seedUserId } },
@@ -10593,7 +10608,7 @@ async function r5ProvisionedFixture(runId, { session = false, logoutFailure = fa
   const path = getStorageProbeObjectPath(runId);
   const objectId = '33333333-3333-4333-a333-333333333113';
   const content = 'r5 authentic fixture payload\n';
-  const transport = createDeterministicFixtureTransport({
+  const transport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait', conditionalStorage: { projectRef: HARDCODED_TEMP_REF, runId, objects: [] },
     initialState: { uploaded: false, deleted: false },
     routes: [
       { method: 'GET', pathEquals: '/auth/v1/user', status: 200, json: { id: seedUserId } },
@@ -11095,7 +11110,7 @@ test('123. H3-R6-01: runHostedProbeRunner admission rejects all untrusted, forge
 test('124. H3-R6-01: Valid declarative offline simulation, dependency-complete subset, DRY_RUN, and blocked LIVE CLI', async () => {
   // Case 14 & 15: Valid registered declarative dispatcher & dependency-complete subset via explicit offline simulation
   const runId = 'r6-valid-offline-sim';
-  const simTransport = createDeterministicFixtureTransport({
+  const simTransport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       { urlIncludes: '/auth/v1/otp', status: 422, json: { error_code: 'email_provider_disabled' } },
       { urlIncludes: '/auth/v1/token', status: 200, json: { access_token: createMockJwt() } }
@@ -11350,10 +11365,11 @@ test('125. H3-R7-01: sleepFn callbacks/getters/inherited overrides and invalid t
 
   // 6. Valid multi-probe subset using internal timer (intervalMs: 1) + recorded_zero_wait
   for (const timing of [{ intervalMs: 1 }, { mode: 'recorded_zero_wait' }]) {
+    const simRunId = runId + '-' + (timing.mode || 'standard');
     const simTransport = staticTransport({ status: 200, json: {} });
-    const simAdmin = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, anonKey: validTestAnonKey, runId, fetchFn: simTransport });
+    const simAdmin = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, anonKey: validTestAnonKey, runId: simRunId, fetchFn: simTransport });
     const simDisp = createTrustedOfflineDispatcher({
-      runId,
+      runId: simRunId,
       fetchFn: simTransport,
       outcomes: {
         'BYPASS-01': { passed: true, status: 422, route_disabled: true, error_code: 'email_provider_disabled' },
@@ -11362,14 +11378,16 @@ test('125. H3-R7-01: sleepFn callbacks/getters/inherited overrides and invalid t
     });
     const simRes = await runOfflineProbeSimulation({
       projectRef: HARDCODED_TEMP_REF,
-      runId,
+      runId: simRunId,
       adminClient: simAdmin,
       offlineDispatcher: simDisp,
       selectedProbeIds: ['BYPASS-01', 'HOOK-01'],
       timing
     });
     assert.equal(simRes.status, 'COMPLETED');
-    assert.deepEqual(simRes.throttleIntervalsMs, [1000]);
+    assert.deepEqual(simRes.throttleIntervalsMs, []);
+    assert.equal(simRes.attemptedProbeCount, 2);
+    assert.equal(simRes.requestCount, 0);
   }
 
   assert.equal(timingCalls, 0);
@@ -11782,7 +11800,7 @@ test('130. H3-R8-02/R8-03: Nested RegExp fixtures reject accessors, subclasses, 
 
   for (const badRx of [rxSourceGetter, rxFlagsGetter, rxNonEnumGetter, rxSubclass, rxCustomProto, rxExec, rxTest, rxSym, rxProxy]) {
     assert.throws(
-      () => createDeterministicFixtureTransport({ routes: [{ urlRegex: badRx, status: 200, json: {} }] }),
+      () => createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait', routes: [{ urlRegex: badRx, status: 200, json: {} }] }),
       /INVALID_DETERMINISTIC_FIXTURE_SPEC/
     );
     assert.throws(
@@ -11792,7 +11810,7 @@ test('130. H3-R8-02/R8-03: Nested RegExp fixtures reject accessors, subclasses, 
   }
 
   // Valid ordinary pattern + supported flags + deterministic matching without calling tampered RegExp.prototype.test
-  const transport = createDeterministicFixtureTransport({
+  const transport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       { urlRegex: /\/auth\/v1\/otp$/i, status: 422, json: { error_code: 'email_provider_disabled' } }
     ]
@@ -12108,7 +12126,7 @@ test('134. H3-R9-04: createHostedDispatcher and per-call overrides enforce trust
 
 test('135. H3-R10-01: Enforced typed admission rejects coercive objects (valueOf/trim), unknown keys, numeric bounds, and schema tampering', async () => {
   let sentinelCalls = 0;
-  const transport = createDeterministicFixtureTransport({
+  const transport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [{ method: 'POST', urlIncludes: '/auth/v1/otp', status: 422, body: { error: 'blocked' } }]
   });
   const adminClient = createHostedAdminClient({
@@ -12226,7 +12244,7 @@ test('135. H3-R10-01: Enforced typed admission rejects coercive objects (valueOf
 });
 
 test('136. H3-R10-02: Effective dispatcher capability correlation enforces one immutable run across factory defaults, overrides, cleared contexts, and finalized inventories', async () => {
-  const transport = createDeterministicFixtureTransport({
+  const transport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [{ method: 'POST', urlIncludes: '/auth/v1/otp', status: 422, body: { error: 'blocked' } }]
   });
   const anonKey = validTestAnonKey;
@@ -12338,7 +12356,7 @@ test('138. H3-R11-01: Prototype-safe admitted options and null-prototype schema 
 
   let sentinelCalls = 0;
   const runId = 'r11-01-run';
-  const transport = createDeterministicFixtureTransport({
+  const transport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [{ method: 'POST', urlIncludes: '/auth/v1/otp', status: 422, body: { error: 'blocked' } }]
   });
   const adminClient = createHostedAdminClient({
@@ -12400,7 +12418,7 @@ test('138. H3-R11-01: Prototype-safe admitted options and null-prototype schema 
     );
 
     // Unbound dispatcher must NOT inherit Object.prototype.inventory or Object.prototype.runContext
-    const dispUnbound = createHostedDispatcher({
+    const dispUnbound = createHostedDispatcher({ inventory: new TestRunInventory(),
       projectRef: HARDCODED_TEMP_REF,
       anonKey: validTestAnonKey,
       fetchFn: transport
@@ -12447,7 +12465,7 @@ test('138. H3-R11-01: Prototype-safe admitted options and null-prototype schema 
       /Prototype-sensitive key '__proto__' rejected/
     );
     assert.throws(
-      () => createDeterministicFixtureTransport({ routes: [JSON.parse('{"__proto__": {"x": 1}, "status": 200}')] }),
+      () => createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait', routes: [JSON.parse('{"__proto__": {"x": 1}, "status": 200}')] }),
       /Prototype-sensitive key '__proto__' rejected/
     );
 
@@ -12462,7 +12480,7 @@ test('138. H3-R11-01: Prototype-safe admitted options and null-prototype schema 
 test('139. H3-R11-02A: Trusted AbortSignal handling rejects own overrides, accessors, Proxies, and subclasses with zero invocations and preserves cancellation/cleanup', async () => {
   let sentinelCalls = 0;
   const runId = 'r11-02a-run';
-  const transport = createDeterministicFixtureTransport({
+  const transport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [{ method: 'POST', urlIncludes: '/auth/v1/otp', status: 422, delayMs: 40, body: { error: 'blocked' } }]
   });
   const offlineDisp = createTrustedOfflineDispatcher({
@@ -12566,7 +12584,7 @@ test('140. H3-R11-02B: Binary payload admission rejects coercion overrides, acce
 
   const uploadedBodies = [];
   let downloadOverride = null;
-  const transport = createDeterministicFixtureTransport({
+  const transport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       { method: 'HEAD', urlIncludes: '/storage/v1/object/', status: 404, body: { error: 'not_found' } },
       {
@@ -12642,7 +12660,7 @@ test('140. H3-R11-02B: Binary payload admission rejects coercion overrides, acce
   const expectedSliceCopy = Buffer.from([0x00, 0xff, 0x0a, 0x7f, 0x80]);
   const expectedSha = crypto.createHash('sha256').update(expectedSliceCopy).digest('hex');
 
-  const exactTransport = createDeterministicFixtureTransport({
+  const exactTransport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       { method: 'GET', urlIncludes: '/auth/v1/user', status: 200, body: { id: seedUserId, email: seedEmail } },
       { method: 'GET', urlIncludes: '/auth/v1/admin/users/', status: 200, body: { id: seedUserId, email: seedEmail } },
@@ -12686,7 +12704,7 @@ test('140. H3-R11-02B: Binary payload admission rejects coercion overrides, acce
     probeContent: slicedInput
   });
 
-  // Mutate original backing buffer AFTER provisioning — must not affect fixture metadata or uploaded bytes
+  // Mutate original backing buffer AFTER provisioning â€” must not affect fixture metadata or uploaded bytes
   rawBacking.fill(0x55);
   assert.equal(fixture.bytes, 5);
   assert.equal(fixture.sha256, expectedSha);
@@ -12697,7 +12715,7 @@ test('140. H3-R11-02B: Binary payload admission rejects coercion overrides, acce
   // 3. Same-length mismatched downloaded bytes must fail integrity verification
   const runIdBad = 'r11-02b-mismatch';
   const invBad = new TestRunInventory(runIdBad, { seedUserId, seedEmail });
-  const badDownloadTransport = createDeterministicFixtureTransport({
+  const badDownloadTransport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
       { method: 'GET', urlIncludes: '/auth/v1/user', status: 200, body: { id: seedUserId, email: seedEmail } },
       { method: 'GET', urlIncludes: '/auth/v1/admin/users/', status: 200, body: { id: seedUserId, email: seedEmail } },
@@ -12751,7 +12769,7 @@ test('141. H3-R12-01: Direct deterministicFixtureTransport enforces descriptor-f
   let trapCalls = 0;
   const barrier = createOfflineBarrier('r12-01-barrier');
 
-  const transport = createDeterministicFixtureTransport({
+  const transport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     initialState: { mutated: false },
     routes: [
       {
@@ -12895,7 +12913,7 @@ test('142. H3-R12-02: Exception-safe timer and listener lifecycle prevents leake
 
     // 1. Deterministic transport delay + barrier + signal mutation after await
     const barrier = createOfflineBarrier('r12-02-b');
-    const delayTransport = createDeterministicFixtureTransport({
+    const delayTransport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [
         { method: 'GET', urlIncludes: '/delay', status: 200, delayMs: 25, body: { ok: true } },
         { method: 'GET', urlIncludes: '/barrier-delay', status: 200, waitForBarrier: barrier, delayMs: 25, body: { ok: true } }
@@ -12957,7 +12975,7 @@ test('142. H3-R12-02: Exception-safe timer and listener lifecycle prevents leake
     assert.equal(getEventListeners(igCtrl.signal, 'abort').length, 0);
 
     // 3. Direct Admin getStorageObjectOwnership typed admission & timeout/signal cleanup
-    const rpcTransport = createDeterministicFixtureTransport({
+    const rpcTransport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [
         {
           method: 'POST',
@@ -13072,7 +13090,7 @@ test('143. H3-R13-01: direct delayed transport ignores inherited abort options a
     try {
       for (const descriptors of scenarios) {
         await withR13PrototypeProperties(descriptors, async () => {
-          const transport = createDeterministicFixtureTransport({ routes: [{ pathEquals: '/delayed', delayMs: 30, status: 200, json: {} }] });
+          const transport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait', routes: [{ pathEquals: '/delayed', delayMs: 30, status: 200, json: {} }] });
           for (const alreadyAborted of [false, true]) {
             const controller = new AbortController();
             if (alreadyAborted) controller.abort();
@@ -13097,7 +13115,7 @@ test('143. H3-R13-01: direct delayed transport ignores inherited abort options a
 
 test('144. H3-R13-01: delay races, overlapping cancellation, explicit ignore-abort and invalid timing preserve resource ownership', { concurrency: false }, async () => {
   await withR13DelayResources(async (active, sleep) => {
-    const transport = createDeterministicFixtureTransport({ defaultResponse: { delayMs: 8, status: 200, json: {} } });
+    const transport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait', defaultResponse: { delayMs: 8, status: 200, json: {} } });
     const controllers = Array.from({ length: 4 }, () => new AbortController());
     const pending = controllers.map(controller => transport('https://offline.invalid/delay', { signal: controller.signal }));
     const settled = Promise.allSettled(pending);
@@ -13139,14 +13157,13 @@ test('144. H3-R13-01: delay races, overlapping cancellation, explicit ignore-abo
     let coercions = 0;
     for (const delayMs of [-1, NaN, Infinity, 2147483648, '10', null, { toString() { coercions++; return '1'; } }]) {
       await assert.rejects(async () => {
-        const invalid = createDeterministicFixtureTransport({ defaultResponse: { delayMs, status: 200 } });
+        const invalid = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait', defaultResponse: { delayMs, status: 200 } });
         await invalid('https://offline.invalid/bad-delay');
       }, /INVALID_ADMISSION_RANGE|INVALID_DETERMINISTIC_FIXTURE_SPEC/);
       assert.equal(active.size, 0);
     }
     for (const ignoreAbort of [1, 'true', null]) {
-      const dispatcher = createTrustedOfflineDispatcher({ runId: 'r13-invalid-ignore', defaultOutcome: { delayMs: 2, ignoreAbort, status: 422 } });
-      await assert.rejects(dispatcher({ id: 'BYPASS-01' }), /INVALID_INTERNAL_DELAY_OPTIONS/);
+      assert.throws(() => createTrustedOfflineDispatcher({ runId: 'r13-invalid-ignore', defaultOutcome: { delayMs: 2, ignoreAbort, status: 422 } }), /INVALID_INTERNAL_DELAY_OPTIONS/);
       assert.equal(active.size, 0);
     }
     assert.equal(coercions, 0);
@@ -13164,11 +13181,12 @@ test('145. H3-R13-01: internal abort-effect exceptions reject structurally after
           for (const alreadyAborted of [false, true]) {
             const runId = 'r13-effect-' + neverSettle + '-' + ignoreAbort + '-' + alreadyAborted;
             const inventory = new TestRunInventory(runId);
+            inventory.registerReferencedUser({ id: 'seed', email: 'seed@proof.invalid' });
             const op = inventory.registerInFlightOperation({ probeId: 'R13-PENDING', canModifyProviderState: true, requiresCleanupReconciliation: true });
             const descriptor = {
               ...(neverSettle ? { neverSettle: true, rejectAfterAbortMs: 5 } : { delayMs: 30 }),
               ignoreAbort,
-              onAbortInventoryEffects: { registerUntrackedUser: true, registerSeedPasswordModification: {} },
+              onAbortInventoryEffects: { registerUntrackedUser: true, registerSeedPasswordModification: { userId: 'seed', email: 'other@proof.invalid', originalPassword: 'synthetic-original' } },
               outcome: { passed: true, status: 422 }
             };
             const dispatcher = createTrustedOfflineDispatcher({ runId, defaultOutcome: descriptor });
@@ -13233,7 +13251,7 @@ test('146. H3-R13-02: nullable and omitted headers normalize without inherited m
 test('147. H3-R13 audit: route body and state matching ignore inherited properties and state setters', { concurrency: false }, async () => {
   let getterReads = 0;
   await withR13PrototypeProperties({ r13BodySentinel: { get() { getterReads++; return 'yes'; } } }, async () => {
-    const transport = createDeterministicFixtureTransport({ routes: [{ bodyMatch: { r13BodySentinel: 'yes' }, status: 201 }], fallback: { status: 409 } });
+    const transport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait', routes: [{ bodyMatch: { r13BodySentinel: 'yes' }, status: 201 }], fallback: { status: 409 } });
     assert.equal((await transport('https://offline.invalid/body', { body: '{}' })).status, 409);
     assert.equal((await transport('https://offline.invalid/body', { body: '{"r13BodySentinel":"yes"}' })).status, 201);
     assert.equal((await transport('https://offline.invalid/body', { body: '{"r13BodySentinel":"no"}' })).status, 409);
@@ -13245,7 +13263,7 @@ test('147. H3-R13 audit: route body and state matching ignore inherited properti
     get() { stateGetters++; return 'yes'; },
     set() { stateSetters++; }
   } }, async () => {
-    const transport = createDeterministicFixtureTransport({
+    const transport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       initialState: {}, routes: [{ whenState: { r13StateSentinel: 'yes' }, status: 201 }],
       fallback: { status: 409, setsState: { r13StateSentinel: 'yes' } }
     });

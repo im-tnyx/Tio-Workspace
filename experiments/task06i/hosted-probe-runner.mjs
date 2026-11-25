@@ -1,3 +1,5 @@
+import { registerConditionalStorageFixtureTransport, getConditionalStorageFixtureProvider, observeConditionalStorageUpload } from './conditional-storage-fixture.mjs';
+import { admitInventoryEffects, snapshotInventoryEffectData, snapshotDirectInventoryInput } from './inventory-effect-admission.mjs';
 // Hosted Probe Runner Specification & Harness for Task 06I-B1-H0-R2
 // Prepares the opt-in, fail-closed hosted test runner for future authorized testing.
 // Enforces strict safety gates:
@@ -10,7 +12,7 @@
 // 5. Serialized JSON secret redaction: structured JSON strings are parsed and recursively sanitized;
 //    Bearer headers, JWTs, query params, passwords, refresh/access tokens, service_role keys, and credentials are redacted.
 // 6. Test-only identities: restricted to reserved *.invalid / *.test domains.
-// 7. Rate limiter: budget max 25 requests, 1000ms minimum interval throttling enforced via injectable scheduler.
+// 7. Shared actual-request budget: max25 including cleanup, minimum1000ms pacing; recorded-zero-wait is explicitly simulated.
 // 8. Strict probe outcome validation: independent requirement-specific expectation validation,
 //    dispatcher exception/timeout handling, fail-closed on non-boolean/missing passed, status mismatch rejection,
 //    immediate halt on any failure, and COMPLETED never returned on partial/failed execution.
@@ -19,8 +21,41 @@
 
 import crypto from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { getRunRequestBudget } from './run-request-budget.mjs';
 import { types as utilTypes } from 'node:util';
 import { PREFLIGHT_REQUIREMENTS, EXPECTED_REQUIREMENT_IDS } from './preflight-evaluator.mjs';
+
+const RUN_REQUEST_BUDGET_CONTEXT = new AsyncLocalStorage();
+const TRANSPORT_REQUEST_BUDGET_MODES = new WeakMap();
+function withRunRequestBudget(runId, category, operation, mode = undefined) {
+  const existing = RUN_REQUEST_BUDGET_CONTEXT.getStore();
+  if (!runId) throw new Error('REQUEST_BUDGET_BINDING_REQUIRED: Executing run operations require exact run ID');
+  if (existing) {
+    if (existing.runId !== runId) throw new Error('REQUEST_BUDGET_BINDING_MISMATCH');
+    return operation();
+  }
+  return RUN_REQUEST_BUDGET_CONTEXT.run({ runId, category, mode }, operation);
+}
+async function executeBudgetedRequest(runId, category, operation, signal = null, mode = undefined) {
+  const existing = RUN_REQUEST_BUDGET_CONTEXT.getStore();
+  const effectiveRun = existing?.runId || runId;
+  if (!effectiveRun || (runId && runId !== effectiveRun)) throw new Error('REQUEST_BUDGET_BINDING_MISMATCH');
+  const budget = getRunRequestBudget({ projectRef: 'wvdabiwbaavfggcmpizd', runId: effectiveRun, mode: existing?.mode ?? mode });
+  const ticket = await budget.beginRequest({ category: existing?.category || category, signal });
+  try {
+    const result = await operation();
+    budget.completeRequest(ticket, result?.ok === false ? 'failed' : 'success');
+    return result;
+  } catch (error) {
+    budget.completeRequest(ticket, error?.name === 'AbortError' ? 'cancelled_after_dispatch' : 'failed');
+    throw error;
+  }
+}
+function executeCurrentTransportRequest(transport, signal, operation) {
+  const context = RUN_REQUEST_BUDGET_CONTEXT.getStore();
+  if (!context) return operation(); // Standalone fixture routing has no run/resource authority.
+  return executeBudgetedRequest(context.runId, context.category, operation, signal, TRANSPORT_REQUEST_BUDGET_MODES.get(transport));
+}
 
 const REAL_GLOBAL_FETCH = globalThis.fetch;
 const HOSTED_NETWORK_DISPATCHERS = new WeakSet();
@@ -38,6 +73,8 @@ const INTRINSIC_REGEXP_TEST = INTRINSIC_REGEXP_PROTO.test;
 // Private receipts cannot be manufactured by setting public inventory lifecycle fields.
 const VERIFIED_STORAGE_DELETIONS = new WeakMap();
 const VERIFIED_STORAGE_CREATIONS = new WeakMap();
+const CONDITIONAL_DELETE_CONTEXT = new AsyncLocalStorage();
+const STORAGE_DELETE_AUTHORIZATIONS = new WeakMap();
 const RUNNER_LIVE_DISPATCH_CONTEXT = new AsyncLocalStorage();
 const DISPATCHER_CALL_CONTEXT = new AsyncLocalStorage();
 
@@ -1253,6 +1290,38 @@ function validateDeclarativeTimingConfig(rawTiming, isOfflineAllowed = false) {
   return { mode, intervalMs };
 }
 
+function validateFixtureTiming(record, label) {
+  const config = extractValidatedPlainOptions(record, label, false);
+  for (const effect of ['inventoryEffects', 'onAbortInventoryEffects']) {
+    if (config[effect] !== undefined) admitInventoryEffects(config[effect]);
+  }
+  for (const key of ['delayMs', 'rejectAfterAbortMs']) {
+    if (!Object.hasOwn(config, key) || config[key] === undefined) continue;
+    const value = config[key];
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 2147483647) {
+      throw new Error('INVALID_ADMISSION_RANGE: Fixture timing must be a finite primitive in timer range');
+    }
+  }
+  if (Object.hasOwn(config, 'ignoreAbort') && typeof config.ignoreAbort !== 'boolean') {
+    throw new Error('INVALID_INTERNAL_DELAY_OPTIONS: Fixture cancellation flag must be boolean');
+  }
+}
+
+function validateTransportFixtureTiming(spec) {
+  for (const route of spec.routes || []) validateFixtureTiming(route, 'transportRoute');
+  if (spec.defaultResponse != null) validateFixtureTiming(spec.defaultResponse, 'transportDefaultResponse');
+  if (spec.fallback != null) validateFixtureTiming(spec.fallback, 'transportFallback');
+}
+
+function validateDispatcherFixtureTiming(spec) {
+  const outcomes = spec.outcomes ? extractValidatedPlainOptions(spec.outcomes, 'outcomes', false) : Object.create(null);
+  for (const value of Object.values(outcomes)) {
+    for (const outcome of Array.isArray(value) ? value : [value]) if (outcome != null) validateFixtureTiming(outcome, 'offlineOutcome');
+  }
+  for (const outcome of spec.sequence || []) if (outcome != null) validateFixtureTiming(outcome, 'offlineSequence');
+  if (spec.defaultOutcome != null) validateFixtureTiming(spec.defaultOutcome, 'offlineDefaultOutcome');
+}
+
 /**
  * Factory for trusted, purely declarative offline fixture transports (R3-02).
  * Only transports produced by this module factory are trusted in offline simulation.
@@ -1266,7 +1335,10 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
     ? extractValidatedPlainOptions(rawSpec, 'transportSpec')
     : Object.assign(Object.create(null), { routes: Array.isArray(rawSpec) ? rawSpec : [] });
   validateDeclarativeFixtureValue(normalizedSpec, 'transportSpec');
+  validateTransportFixtureTiming(normalizedSpec);
 
+  const requestBudgetMode = normalizedSpec.requestBudgetMode;
+  if (requestBudgetMode !== undefined && requestBudgetMode !== 'standard' && requestBudgetMode !== 'recorded_zero_wait') throw new Error('INVALID_REQUEST_BUDGET_MODE');
   const state = clonePlainData(normalizedSpec.initialState || {});
   const rawRoutes = Array.isArray(normalizedSpec.routes) ? normalizedSpec.routes : [];
   const defaultResponse = normalizedSpec.defaultResponse !== undefined
@@ -1355,10 +1427,13 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
     if (isTrustedSignalAborted(signal)) {
       const abortErr = new Error('The operation was aborted');
       abortErr.name = 'AbortError';
+      if (RUN_REQUEST_BUDGET_CONTEXT.getStore()) {
+        return executeCurrentTransportRequest(transport, signal, () => { throw abortErr; });
+      }
       throw abortErr;
     }
 
-    return runWithBlockedRealFetch(async () => {
+    return executeCurrentTransportRequest(transport, signal, () => runWithBlockedRealFetch(async () => {
       let pathname = urlStr;
       try {
         pathname = new URL(urlStr, 'https://localhost').pathname;
@@ -1396,6 +1471,27 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
         throw new Error(`DETERMINISTIC_TRANSPORT_UNMATCHED_ROUTE: No matching route for ${method} ${urlStr}`);
       }
 
+      let conditionalDeletion = null;
+      if (method === 'DELETE' && pathname.startsWith('/storage/v1/object/')) {
+        const context = CONDITIONAL_DELETE_CONTEXT.getStore();
+        const provider = getConditionalStorageFixtureProvider(transport);
+        const expectedPath = context ? `/storage/v1/object/${context.expected.bucket}/${context.expected.path}` : null;
+        if (!context || context.transport !== transport || pathname !== expectedPath || !provider) {
+          conditionalDeletion = { status: 'CONDITIONAL_DELETE_UNAVAILABLE', deleted: false };
+        } else if (selected.throwError || (typeof selected.status === 'number' && (selected.status < 200 || selected.status >= 300))) {
+          const current = provider.getObjectState({ bucket: context.expected.bucket, path: context.expected.path });
+          let body = selected.json || selected.body;
+          if (!body && typeof selected.text === 'string') {
+            try { body = JSON.parse(selected.text); } catch { body = null; }
+          }
+          const knownAbsentResponse = !selected.throwError && [400, 404].includes(selected.status) && body && typeof body === 'object' && Object.getOwnPropertyDescriptor(body, 'code')?.value === 'NoSuchKey';
+          conditionalDeletion = knownAbsentResponse && !current.current && !current.indeterminate
+            ? provider.conditionalDelete(context.expected)
+            : { status: 'CONDITIONAL_DELETE_INDETERMINATE', deleted: false };
+        } else {
+          conditionalDeletion = provider.conditionalDelete(context.expected);
+        }
+      }
       calls.push(Object.freeze({
         url: urlStr,
         pathname,
@@ -1408,6 +1504,9 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
         timestamp: new Date().toISOString()
       }));
 
+      if (conditionalDeletion && !['EXPECTED_OBJECT_DELETED', 'EXPECTED_OBJECT_ABSENT'].includes(conditionalDeletion.status)) {
+        return Object.assign(buildDeterministicResponse({ status: 409, json: { code: conditionalDeletion.status } }), { conditionalDeletion });
+      }
       if (selected.setsState && typeof selected.setsState === 'object') {
         for (const [sk, sv] of Object.entries(selected.setsState)) {
           setNullProtoField(state, sk, clonePlainData(sv));
@@ -1433,10 +1532,25 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
         await waitWithTrustedSignal(selected.delayMs, signal);
       }
 
-      return buildDeterministicResponse(selected);
-    });
+      observeConditionalStorageUpload(transport, req, selected);
+      let response = buildDeterministicResponse(selected);
+      // A declarative absent route cannot override authoritative current provider state.
+      // Re-read after awaits so a replacement during DELETE/GET delay is preserved.
+      const provider = getConditionalStorageFixtureProvider(transport);
+      const storagePrefix = '/storage/v1/object/authenticated/';
+      if (provider && method === 'GET' && pathname.startsWith(storagePrefix) && [400, 404].includes(response.status)) {
+        const parts = pathname.slice(storagePrefix.length).split('/').map(decodeURIComponent);
+        const bucket = parts.shift();
+        const current = provider.getObjectState({ bucket, path: parts.join('/') });
+        if (current.indeterminate) response = buildDeterministicResponse({ status: 503, json: { code: 'CONDITIONAL_IDENTITY_INDETERMINATE' } });
+        else if (current.current) response = buildDeterministicResponse({ status: 200, json: { conditionalObjectPresent: true } });
+      }
+      if (conditionalDeletion) response.conditionalDeletion = conditionalDeletion;
+      return response;
+    }));
   };
 
+  TRANSPORT_REQUEST_BUDGET_MODES.set(transport, requestBudgetMode);
   Object.defineProperty(transport, 'calls', {
     get() {
       return calls.slice();
@@ -1451,6 +1565,7 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
     configurable: false
   });
 
+  registerConditionalStorageFixtureTransport(transport, normalizedSpec.conditionalStorage);
   TRUSTED_DETERMINISTIC_TRANSPORTS.add(transport);
   return transport;
 }
@@ -1490,7 +1605,7 @@ function assertNoForgedDispatcherMarkers(candidate) {
 
 function applyDeclarativeInventoryEffects(inv, effects) {
   if (!inv || !effects || typeof effects !== 'object') return;
-  effects = extractValidatedPlainOptions(effects, 'inventoryEffects', false);
+  effects = admitInventoryEffects(effects);
   if (effects.protectSeedIdentity) {
     inv.protectSeedIdentity(effects.protectSeedIdentity);
   }
@@ -1498,7 +1613,7 @@ function applyDeclarativeInventoryEffects(inv, effects) {
     inv.registerCreatedUser(effects.registerCreatedUser);
   }
   if (effects.registerUnverifiedUser) {
-    inv.registerUnverifiedUser(effects.registerUnverifiedUser);
+    inv.registerObservedUser(effects.registerUnverifiedUser);
   }
   if (effects.registerSession) {
     const s = extractValidatedPlainOptions(effects.registerSession, 'sessionEffect', false);
@@ -1578,6 +1693,7 @@ export function createTrustedOfflineDispatcher(rawSpec = {}) {
 
   // Validate nested declarative fixture data BEFORE reading/validating projectRef, runId, or transportSpec.
   validateDeclarativeFixtureValue(declarativeSpec, 'offlineDispatcherSpec');
+  validateDispatcherFixtureTiming(declarativeSpec);
 
   if (hasFetchFn && candidateFetchFn !== undefined && candidateFetchFn !== null) {
     if (utilTypes.isProxy(candidateFetchFn)) {
@@ -1639,7 +1755,7 @@ export function createTrustedOfflineDispatcher(rawSpec = {}) {
       assertTrustedRunContext(options.runContext, { projectRef: normRef, expectedRunId: boundRunId });
     }
 
-    return runWithBlockedRealFetch(async () => {
+    return withRunRequestBudget(boundRunId, 'probe', () => runWithBlockedRealFetch(async () => {
       const probeId = item?.id || 'UNKNOWN';
       calls.push(Object.freeze({ probeId, timestamp: new Date().toISOString() }));
 
@@ -1765,7 +1881,7 @@ export function createTrustedOfflineDispatcher(rawSpec = {}) {
       }
 
       return extractDeclarativeOutcome(descriptor);
-    });
+    }));
   };
 
   Object.defineProperty(dispatcher, 'calls', {
@@ -4991,7 +5107,8 @@ export class TestRunInventory {
     return new Map([...this.referencedUsers, ...this.createdUsers, ...this.unverifiedUsers]);
   }
 
-  protectSeedIdentity({ id, email, proof = null } = {}) {
+  protectSeedIdentity(raw = {}) {
+    const { id, email, proof = null } = snapshotDirectInventoryInput(raw, 'protectSeedIdentity');
     if (!id || typeof id !== 'string' || id.trim().length === 0) {
       // R17-03: A bare email string alone without an affirmative user ID cannot prove account pre-existence!
       return false;
@@ -5050,7 +5167,8 @@ export class TestRunInventory {
    * Registers a user created during this run with affirmative proof (R16-02).
    * Deletion eligible upon cleanup ONLY if RUN_CREATED_VERIFIED.
    */
-  registerCreatedUser({ id, email, source = 'test_signup', creationProof = null } = {}) {
+  registerCreatedUser(raw = {}) {
+    const { id, email, source = 'test_signup', creationProof = null } = snapshotDirectInventoryInput(raw, 'registerCreatedUser');
     if (this.finalized) {
       this.postFinalizationMutations.push({
         action: 'registerCreatedUser',
@@ -5116,7 +5234,8 @@ export class TestRunInventory {
    * Registers a user observed in a response without verified run-created ownership (R16-02).
    * User is preserved and NEVER deleted during cleanup.
    */
-  registerObservedUser({ id, email, source = 'observed_response', ownership = USER_OWNERSHIP.OWNERSHIP_UNKNOWN, creationProof = null } = {}) {
+  registerObservedUser(raw = {}) {
+    const { id, email, source = 'observed_response', ownership = USER_OWNERSHIP.OWNERSHIP_UNKNOWN, creationProof = null } = snapshotDirectInventoryInput(raw, 'registerObservedUser');
     if (this.finalized) {
       this.postFinalizationMutations.push({
         action: 'registerObservedUser',
@@ -5166,7 +5285,8 @@ export class TestRunInventory {
    * Registers a pre-existing fixture or seed user referenced during login (e.g. HOOK-01).
    * Tracked for audit and correlation, but NEVER deleted during cleanup (R3-09).
    */
-  registerReferencedUser({ id, email, source = 'test_login' } = {}) {
+  registerReferencedUser(raw = {}) {
+    const { id, email, source = 'test_login' } = snapshotDirectInventoryInput(raw, 'registerReferencedUser');
     if (this.finalized) {
       this.postFinalizationMutations.push({
         action: 'registerReferencedUser',
@@ -5215,6 +5335,8 @@ export class TestRunInventory {
   }
 
   registerSession(sessionOrId, optionsOrToken = {}) {
+    if (sessionOrId && typeof sessionOrId === 'object') sessionOrId = snapshotDirectInventoryInput(sessionOrId, 'registerSession');
+    if (optionsOrToken && typeof optionsOrToken === 'object') optionsOrToken = snapshotDirectInventoryInput(optionsOrToken, 'registerSession.options');
     let sessionId = null;
     let accessToken = null;
 
@@ -5646,7 +5768,8 @@ export class TestRunInventory {
     return null;
   }
 
-  registerSeedPasswordModification({ userId, email, originalPassword, newPassword, targetPassword, state = 'pending' } = {}) {
+  registerSeedPasswordModification(raw = {}) {
+    const { userId, email, originalPassword, newPassword, targetPassword, state = 'pending' } = snapshotDirectInventoryInput(raw, 'registerSeedPasswordModification');
     if (this.finalized) {
       this.postFinalizationMutations.push({
         action: 'registerSeedPasswordModification',
@@ -5790,7 +5913,8 @@ export class TestRunInventory {
    * Registers an in-flight operation before network dispatch begins (R13-02, R14-01, R14-02).
    * Lifecycle states: REGISTERED -> IN_FLIGHT -> SETTLED | TIMED_OUT_UNRESOLVED -> CLEANUP_REQUIRED -> CLEANUP_VERIFIED
    */
-  registerInFlightOperation({
+  registerInFlightOperation(raw = {}) {
+    const {
     probeId = 'unknown',
     endpoint = null,
     canMintSession = false,
@@ -5801,7 +5925,7 @@ export class TestRunInventory {
     description = null,
     metadata = {},
     _internalCleanupOperation = false
-  } = {}) {
+    } = snapshotDirectInventoryInput(raw, 'registerInFlightOperation');
     if (this.finalized) {
       const mutation = {
         action: 'registerInFlightOperation',
@@ -5856,7 +5980,8 @@ export class TestRunInventory {
    * Settles an in-flight operation upon resolution or rejection (R13-02).
    * If operation was previously marked TIMED_OUT_UNRESOLVED, transitions to SETTLED_AFTER_TIMEOUT.
    */
-  settleInFlightOperation(opId, { observed = null, error = null, outcome = null } = {}) {
+  settleInFlightOperation(opId, raw = {}) {
+    const { observed = null, error = null, outcome = null } = snapshotDirectInventoryInput(raw, 'settleInFlightOperation', true);
     if (!opId || typeof opId !== 'string') return null;
     const op = this.inFlightOperations.get(opId.trim());
     if (!op) return null;
@@ -6137,7 +6262,7 @@ export class TestRunInventory {
       );
     }
     this._cleanupInProgress = true;
-    const cleanupRun = this._executeCleanupInternal(options);
+    const cleanupRun = withRunRequestBudget(this.runId, 'cleanup', () => this._executeCleanupInternal(options));
     this._activeCleanupPromise = cleanupRun;
     try {
       return await cleanupRun;
@@ -6387,6 +6512,8 @@ export class TestRunInventory {
           path: fixture.path,
           lifecycleState: fixture.lifecycleState,
           hasCommittedUpload: Boolean(fixture.hasCommittedUpload),
+          conditionalDeletion: fixture.conditionalDeletionEvidence || null,
+          deleteClassification: fixture.conditionalDeletionEvidence?.status || null,
           recoverableForDurableRetry: true,
           error: reason
         });
@@ -6409,7 +6536,7 @@ export class TestRunInventory {
       }
 
       // 4. Affirmative run-created fixture: authorized for deletion
-      if (typeof adminClient.deleteStorageObject !== 'function') {
+      if (typeof adminClient.conditionalDeleteStorageObject !== 'function') {
         report.residualResources.push({
           type: 'storage_object',
           bucket: fixture.bucket,
@@ -6427,7 +6554,13 @@ export class TestRunInventory {
       try {
         fixture.lifecycleState = STORAGE_LIFECYCLE_STATE.CLEANUP_PENDING;
         fixture.deletionEligible = false;
-        const delRes = await adminClient.deleteStorageObject(fixture.bucket, fixture.path);
+        const authorization = Object.freeze(Object.create(null));
+        STORAGE_DELETE_AUTHORIZATIONS.set(authorization, Object.freeze({
+          projectRef: HARDCODED_TEMP_REF, runId: this.runId, bucket: fixture.bucket, path: fixture.path,
+          objectId: fixture.providerObjectId, ownerId: fixture.verifiedOwnerId
+        }));
+        const delRes = await adminClient.conditionalDeleteStorageObject(authorization);
+        fixture.conditionalDeletionEvidence = delRes?.conditionalDeletion || { status: 'CONDITIONAL_DELETE_INDETERMINATE' };
         const delIsProviderAbsent =
           delRes &&
           delRes.error &&
@@ -6441,7 +6574,8 @@ export class TestRunInventory {
             bucket: fixture.bucket,
             path: fixture.path,
             lifecycleState: STORAGE_LIFECYCLE_STATE.CLEANUP_INDETERMINATE,
-            deleteClassification: delRes.normalized?.classification || null,
+            deleteClassification: delRes.conditionalDeletion?.status || delRes.normalized?.classification || null,
+            conditionalDeletion: fixture.conditionalDeletionEvidence,
             recoverableForDurableRetry: true,
             error: delRes.error.message || String(delRes.error)
           });
@@ -7022,7 +7156,7 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
 
   const safeFetch = (url, opts) => {
     assertOfflineMockTransport(fetchFn);
-    return runWithBlockedRealFetch(() => fetchFn(url, opts));
+    return withRunRequestBudget(validRunId, 'auxiliary', () => runWithBlockedRealFetch(() => fetchFn(url, opts)));
   };
 
   // 6. Require narrowly-scoped, registered, run-bound authoritative ownership lookup interface before any Storage mutation (R2-01, R4-01)
@@ -8233,7 +8367,7 @@ export function createHostedDispatcher(rawOptions = {}) {
   fetchFn = async (url, opts) => {
     try {
       assertOfflineMockTransport(transportFetch);
-      return await runWithBlockedRealFetch(() => transportFetch(url, opts));
+      return await withRunRequestBudget(DISPATCHER_CALL_CONTEXT.getStore()?.runId || factoryBoundRunId, 'probe', () => runWithBlockedRealFetch(() => transportFetch(url, opts)));
     } catch (err) {
       if (typeof err?.message === 'string' && err.message.includes('BLOCKED_PENDING_DURABLE_RECOVERY')) {
         const callCtx = DISPATCHER_CALL_CONTEXT.getStore();
@@ -8283,7 +8417,7 @@ export function createHostedDispatcher(rawOptions = {}) {
         );
       }
     }
-    const callCtx = { trappedRecoveryError: null };
+    const callCtx = { trappedRecoveryError: null, runId: effInv?.runId || effCtx?.runId || expectedCallRunId };
     const outcome = await DISPATCHER_CALL_CONTEXT.run(callCtx, async () => {
       const signal = options.signal;
       const probeId = item.id;
@@ -9815,10 +9949,9 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
     allowIsolatedTestRef: options.allowIsolatedTestRef && !isExecuting
   });
   const results = [];
-  const throttleIntervalsMs = [];
   let aborted = false;
   let abortReason = null;
-  let requestCount = 0;
+  let attemptedProbeCount = 0;
 
   if (mode === 'DRY_RUN') {
     if (hasOwnSleepFn || hasProtoSleepFn) {
@@ -9834,6 +9967,7 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
     }
     return sanitizeData({
       status: 'DRY_RUN_COMPLETED',
+      requestCount: 0, attemptedProbeCount: 0, simulatedTransportRequests: 0, actualHostedRequests: 0,
       mode: 'DRY_RUN',
       projectRef: validatedRef,
       runId: plan.runId,
@@ -9876,6 +10010,7 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
       );
     }
     timingConfig = validateDeclarativeTimingConfig(options.timing, true);
+    getRunRequestBudget({ projectRef: validatedRef, runId: activeInventory.runId, mode: timingConfig.mode });
     if (runId && runId !== activeInventory.runId) {
       throw new Error('ADMIN_CLIENT_RUN_MISMATCH: Runner and inventory run IDs differ');
     }
@@ -9945,22 +10080,7 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
       const item = plan.plannedCases[i];
       if (aborted) break;
 
-      // Budget enforcement
-      if (requestCount >= RATE_LIMIT_CONFIG.maxTotalRequests) {
-        aborted = true;
-        abortReason = `Rate limit budget exceeded (${RATE_LIMIT_CONFIG.maxTotalRequests} requests)`;
-        break;
-      }
-
-      // Interval throttling enforcement (PRRT_kwDOVtCmZc66ij56, R7-01)
-      if (i > 0 && RATE_LIMIT_CONFIG.minIntervalMs > 0) {
-        throttleIntervalsMs.push(RATE_LIMIT_CONFIG.minIntervalMs);
-        if (timingConfig.intervalMs > 0) {
-          await internalThrottleWait(timingConfig.intervalMs);
-        }
-      }
-
-      requestCount++;
+      attemptedProbeCount++; // Provider requests are independently admitted and counted at transport dispatch.
 
       // Register runner-level in-flight operation for probe (R13-02, R14-01, R14-02, R15-02)
       const cap = getEndpointCapabilities(item.id) || null;
@@ -10002,7 +10122,7 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
       try {
         const dispatchPromise = RUNNER_LIVE_DISPATCH_CONTEXT.run(
           { durableRecoveryVerified: false },
-          () => runWithBlockedRealFetch(() =>
+          () => withRunRequestBudget(activeInventory.runId, 'probe', () => runWithBlockedRealFetch(() =>
             Promise.resolve(
               candidateDispatcher(item, {
                 signal: controller.signal,
@@ -10015,7 +10135,7 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
                 activeRefreshToken: activeRunContext.activeRefreshToken
               })
             )
-          )
+          ), timingConfig.mode)
         );
         // Attach no-op rejection handler so late rejection after timeout/abort never leaks unhandledRejection (PRRT_kwDOVtCmZc66jd3O)
         dispatchPromise.catch(() => {});
@@ -10101,8 +10221,12 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
       runId: activeInventory.runId,
       totalExecuted: results.length,
       totalExpected: plan.plannedCases.length,
-      requestCount,
-      throttleIntervalsMs,
+      requestCount: getRunRequestBudget({ projectRef: validatedRef, runId: activeInventory.runId }).report().simulatedTransportRequests,
+      attemptedProbeCount,
+      requestBudget: getRunRequestBudget({ projectRef: validatedRef, runId: activeInventory.runId }).report(),
+      simulatedTransportRequests: getRunRequestBudget({ projectRef: validatedRef, runId: activeInventory.runId }).report().simulatedTransportRequests,
+      actualHostedRequests: 0,
+      throttleIntervalsMs: getRunRequestBudget({ projectRef: validatedRef, runId: activeInventory.runId }).report().intervalsMs,
       aborted,
       abortReason: abortReason,
       cleanupReport: cleanupReport,
@@ -10700,6 +10824,33 @@ export function createHostedAdminClient(rawOptions = {}) {
       };
     },
 
+    async conditionalDeleteStorageObject(authorization) {
+      const expected = STORAGE_DELETE_AUTHORIZATIONS.get(authorization);
+      if (!expected || expected.projectRef !== projectRef || expected.runId !== boundRunId) {
+        return { data: null, error: { message: 'UNAUTHORIZED_CONDITIONAL_STORAGE_DELETE' } };
+      }
+      STORAGE_DELETE_AUTHORIZATIONS.delete(authorization);
+      if (!getConditionalStorageFixtureProvider(rawTransportFetch)) {
+        return { data: null, error: { message: 'CONDITIONAL_DELETE_UNAVAILABLE: Atomic hosted conditional deletion is unverified' }, conditionalDeletion: { status: 'CONDITIONAL_DELETE_UNAVAILABLE' } };
+      }
+      const url = `${baseUrl}/storage/v1/object/${encodeURIComponent(expected.bucket)}/${expected.path.split('/').map(encodeURIComponent).join('/')}`;
+      try {
+        const response = await CONDITIONAL_DELETE_CONTEXT.run({ transport: rawTransportFetch, expected }, () => fetchFn(url, { method: 'DELETE' }));
+        const evidence = response.conditionalDeletion;
+        if (!evidence || !['EXPECTED_OBJECT_DELETED', 'EXPECTED_OBJECT_ABSENT'].includes(evidence.status)) {
+          return { data: null, error: { message: evidence?.status || 'CONDITIONAL_DELETE_INDETERMINATE' }, conditionalDeletion: evidence || null };
+        }
+        return { data: { bucket: expected.bucket, path: expected.path }, error: null, conditionalDeletion: evidence };
+      } catch (error) {
+        if (error?.code === 'REQUEST_BUDGET_EXHAUSTED') {
+          return { data: null, error: { code: error.code, message: error.message }, recoveryRequired: true,
+            conditionalDeletion: { status: 'CONDITIONAL_DELETE_BUDGET_EXHAUSTED', expected }, budgetReport: error.budgetReport };
+        }
+        return { data: null, error: { message: 'CONDITIONAL_DELETE_INDETERMINATE: No authoritative conditional deletion response' },
+          conditionalDeletion: { status: 'CONDITIONAL_DELETE_INDETERMINATE', expected } };
+      }
+    },
+
     async deleteStorageObject(bucket, path) {
       if (!bucket || !path) {
         return {
@@ -10814,7 +10965,7 @@ export function createHostedAdminClient(rawOptions = {}) {
         projectRef, runId: operationRunId || boundRunId,
         requireRunBinding: Boolean(operationRunId || boundRunId)
       });
-      return Reflect.apply(implementation, client, args);
+      return withRunRequestBudget(operationRunId || boundRunId, 'auxiliary', () => Reflect.apply(implementation, client, args));
     };
   }
 
@@ -10828,7 +10979,8 @@ export function createHostedAdminClient(rawOptions = {}) {
     deleteTableRow: client.deleteTableRow,
     getStorageObject: client.getStorageObject,
     getStorageObjectOwnership: client.getStorageObjectOwnership,
-    deleteStorageObject: client.deleteStorageObject
+    deleteStorageObject: client.deleteStorageObject,
+    conditionalDeleteStorageObject: client.conditionalDeleteStorageObject
   });
 
   for (const capability of Object.values(capabilities)) Object.freeze(capability);
