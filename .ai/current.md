@@ -57,7 +57,7 @@ Phase 1.2 Task 06I-B1-H3-R5 is active on existing PR #44. Bootstrap verified loc
 
 R5 addresses threads `PRRT_kwDOVtCmZc67wd2J`, `PRRT_kwDOVtCmZc67wd2O`, `PRRT_kwDOVtCmZc67wbbE`, and `PRRT_kwDOVtCmZc67wbbN`. Current contracts, execution-boundary audit, verification and review state are recorded in the [H3 task](tasks/auth/local-20261124-task06i-b1-h3-subset-runner-storage.md). Prior R4 evidence is historical and does not establish R5 acceptance.
 
-Implementation commit `3542e23777bceb3461959fa708a588ef9adf7d11` is locally verified. Next authorized action: commit the continuity evidence, push to PR #44, reply to each corrected finding, and request exact-HEAD re-review after checking remote HEAD/CI. Stop before merge.
+Implementation commit `3542e23777bceb3461959fa708a588ef9adf7d11` is locally verified. Publication checkpoint: remote HEAD `d79dece4a3752207ad5533cc5b89494b94b2e53b` verified; all 31 threads resolved after individual R5 replies; Codex/Bugbot and `im-tio` re-review requested. Required attribution and four other CI checks PASS; supplemental reviews pending at that checkpoint. This continuity follow-up changes documentation only. Next authorized action: inspect requested reviews/current CI on PR #44 and address only bounded R5 findings. Stop before merge.
 
 ### Hard STOP Gate & Invariants Honored
 - Hosted LIVE probe execution: **NOT AUTHORIZED** (Zero network calls; `0/18` hosted verification).
