@@ -467,11 +467,6 @@ test('11. LIVE mode fails closed when no authorized network dispatcher is provid
 });
 
 test('12. Throttling interval is enforced between consecutive requests and legitimate passing run completes (PRRT_kwDOVtCmZc66ij56 & PRRT_kwDOVtCmZc66i_Kd)', async () => {
-  const sleepCalls = [];
-  const mockSleep = async (ms) => {
-    sleepCalls.push(ms);
-  };
-
   // Dispatcher returns legitimate statuses and affirmative observations for each respective requirement (PRRT_kwDOVtCmZc66jLk1 & PRRT_kwDOVtCmZc66jNbH)
   const mockDispatcher = offlineDispatcherSpec({
     outcomes: {
@@ -550,16 +545,16 @@ test('12. Throttling interval is enforced between consecutive requests and legit
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
     adminClient: defaultAdminFixture,
     mockDispatcher,
-    sleepFn: mockSleep
+    timing: { mode: 'recorded_zero_wait' }
   }));
 
   assert.equal(result.status, 'COMPLETED');
   assert.equal(OFFLINE_DISPATCHER_INSTANCES.get(mockDispatcher).calls.length, 18);
   assert.equal(result.totalExecuted, 18);
   assert.equal(result.aborted, false);
-  // For 18 requests, interval throttling must be invoked 17 times with 1000ms
-  assert.equal(sleepCalls.length, 17);
-  assert.ok(sleepCalls.every(ms => ms === 1000));
+  // For 18 requests, interval throttling must be recorded 17 times with 1000ms
+  assert.equal(result.throttleIntervalsMs.length, 17);
+  assert.ok(result.throttleIntervalsMs.every(ms => ms === 1000));
 });
 
 test('13. Runner halts immediately on Token Hook failure (HOOK-01) (PRRT_kwDOVtCmZc66iotG)', async () => {
@@ -582,7 +577,7 @@ test('13. Runner halts immediately on Token Hook failure (HOOK-01) (PRRT_kwDOVtC
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
     adminClient: defaultAdminFixture,
     mockDispatcher,
-    sleepFn: async () => {}
+    timing: { mode: 'recorded_zero_wait' }
   }));
 
   assert.equal(result.status, 'HALTED_ON_FAILURE');
@@ -621,7 +616,7 @@ test('14. Runner halts immediately on Session & Consumer failure (SESSION-03) (P
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
     adminClient: defaultAdminFixture,
     mockDispatcher,
-    sleepFn: async () => {}
+    timing: { mode: 'recorded_zero_wait' }
   }));
 
   assert.equal(result.status, 'HALTED_ON_FAILURE');
@@ -648,7 +643,7 @@ test('15. Outcome without passed boolean fails closed (PRRT_kwDOVtCmZc66i_Kd)', 
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
     adminClient: defaultAdminFixture,
     mockDispatcher: offlineDispatcherSpec({ defaultOutcome: { status: 500 } }),
-    sleepFn: async () => {}
+    timing: { mode: 'recorded_zero_wait' }
   }));
 
   assert.equal(result.status, 'HALTED_ON_FAILURE');
@@ -672,7 +667,7 @@ test('16. False passed:true on BYPASS-01 with status 200 is overridden to FAIL (
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
     adminClient: defaultAdminFixture,
     mockDispatcher: offlineDispatcherSpec({ defaultOutcome: { status: 200, passed: true } }),
-    sleepFn: async () => {}
+    timing: { mode: 'recorded_zero_wait' }
   }));
 
   assert.equal(result.status, 'HALTED_ON_FAILURE');
@@ -699,7 +694,7 @@ test('18. Dispatcher exceptions and timeouts fail closed immediately (PRRT_kwDOV
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
     adminClient: defaultAdminFixture,
     mockDispatcher,
-    sleepFn: async () => {}
+    timing: { mode: 'recorded_zero_wait' }
   }));
 
   assert.equal(result.status, 'HALTED_ON_FAILURE');
@@ -724,7 +719,7 @@ test('19. Partial execution never returns COMPLETED (PRRT_kwDOVtCmZc66i_Kd)', as
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
     adminClient: defaultAdminFixture,
     mockDispatcher,
-    sleepFn: async () => {}
+    timing: { mode: 'recorded_zero_wait' }
   }));
 
   assert.notEqual(result.status, 'COMPLETED');
@@ -769,7 +764,7 @@ test('21. Serialized secrets are absent from final runner evidence (PRRT_kwDOVtC
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
     adminClient: defaultAdminFixture,
     mockDispatcher,
-    sleepFn: async () => {}
+    timing: { mode: 'recorded_zero_wait' }
   }));
 
   const serializedResults = JSON.stringify(result);
@@ -828,7 +823,7 @@ test('23. Top-level abortReason is sanitized against leaked secrets (PRRT_kwDOVt
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
     adminClient: defaultAdminFixture,
     mockDispatcher,
-    sleepFn: async () => {}
+    timing: { mode: 'recorded_zero_wait' }
   }));
 
   assert.equal(result.status, 'HALTED_ON_FAILURE');
@@ -848,7 +843,7 @@ test('24. Per-probe timeout halts runner on never-settling Promise and aborts su
     adminClient: defaultAdminFixture,
     mockDispatcher: neverSettlingDispatcher,
     probeTimeoutMs: 50, // fast bounded timeout for deterministic unit test
-    sleepFn: async () => {}
+    timing: { mode: 'recorded_zero_wait' }
   }));
 
   assert.equal(result.status, 'HALTED_ON_FAILURE');
@@ -1009,7 +1004,7 @@ test('27. Complete returned report is recursively sanitized with zero credential
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
     adminClient: defaultAdminFixture,
     mockDispatcher,
-    sleepFn: async () => {}
+    timing: { mode: 'recorded_zero_wait' }
   }));
 
   const serializedReport = JSON.stringify(result);
@@ -1513,7 +1508,7 @@ test('29. Quoted credentials with whitespace, ampersands, and escaped quotes are
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
     adminClient: defaultAdminFixture,
     mockDispatcher,
-    sleepFn: async () => {}
+    timing: { mode: 'recorded_zero_wait' }
   }));
 
   const serializedReport = JSON.stringify(result);
@@ -1534,7 +1529,7 @@ test('29. Quoted credentials with whitespace, ampersands, and escaped quotes are
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
     adminClient: defaultAdminFixture,
     mockDispatcher: mockDispatcherUnclosed,
-    sleepFn: async () => {}
+    timing: { mode: 'recorded_zero_wait' }
   }));
 
   const serializedUnclosed = JSON.stringify(resultUnclosed);
@@ -1557,7 +1552,7 @@ test('29. Quoted credentials with whitespace, ampersands, and escaped quotes are
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
     adminClient: defaultAdminFixture,
     mockDispatcher: mockDispatcherCompound,
-    sleepFn: async () => {}
+    timing: { mode: 'recorded_zero_wait' }
   }));
 
   const serializedCompound = JSON.stringify(resultCompound);
@@ -1980,7 +1975,7 @@ test('32. Strict positive access token issuance proof for HOOK-01 and HOOK-02 (P
     env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
     adminClient: defaultAdminFixture,
     mockDispatcher: mockDispatcherFalsePositive,
-    sleepFn: async () => {}
+    timing: { mode: 'recorded_zero_wait' }
   }));
 
   assert.notEqual(resultFpHook01.status, 'COMPLETED', 'Runner must NEVER return COMPLETED on false-positive HOOK-01');
@@ -2648,7 +2643,7 @@ test('50. Task 06I-B1-H1-R3 (R3-07): Cleanup execution lifecycle in try/finally 
     inventory,
     adminClient: mockAdminClient,
     mockDispatcher,
-    sleepFn: async () => {}
+    timing: { mode: 'recorded_zero_wait' }
   }));
 
   assert.equal(res.status, 'HALTED_ON_FAILURE');
@@ -2897,7 +2892,7 @@ test('56. Task 06I-B1-H1-R4 (R4-02): LIVE runner fails preflight if cleanup capa
       },
       defaultOutcome: { passed: true, status: 200 }
     }),
-    sleepFn: async () => {}
+    timing: { mode: 'recorded_zero_wait' }
   }));
 
   assert.equal(resultFailedCleanup.status, 'HALTED_ON_FAILURE');
@@ -6196,7 +6191,7 @@ test('85. Task 06I-B1-H1-R13 (R13-01 & R13-02): Auth endpoint capabilities, in-f
     inventory: inv10,
     mockDispatcher: delayedDispatcher10,
     probeTimeoutMs: 5, // 5ms timeout fires while 20ms delay is in flight
-    sleepFn: async () => {}
+    timing: { mode: 'recorded_zero_wait' }
   }));
 
   assert.equal(runnerRes10.status, 'HALTED_ON_FAILURE');
@@ -6235,7 +6230,7 @@ test('85. Task 06I-B1-H1-R13 (R13-01 & R13-02): Auth endpoint capabilities, in-f
     inventory: inv11,
     mockDispatcher: hangingDispatcher11,
     probeTimeoutMs: 5,
-    sleepFn: async () => {}
+    timing: { mode: 'recorded_zero_wait' }
   }));
   assert.equal(runnerRes11.status, 'HALTED_ON_FAILURE');
   assert.equal(runnerRes11.cleanupReport.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
@@ -11189,7 +11184,7 @@ test('124. H3-R6-01: Valid declarative offline simulation, dependency-complete s
     adminClient: simAdmin,
     offlineDispatcher: simDispatcher,
     selectedProbeIds: ['BYPASS-01', 'HOOK-01', 'HOOK-02'],
-    sleepFn: async () => {}
+    timing: { mode: 'recorded_zero_wait' }
   });
   assert.equal(simResult.status, 'COMPLETED');
   assert.equal(simResult.mode, 'OFFLINE_SIMULATION');
@@ -11218,4 +11213,350 @@ test('124. H3-R6-01: Valid declarative offline simulation, dependency-complete s
   });
   assert.equal(cliRes.status, 1);
   assert.match(cliRes.stderr, /BLOCKED_PENDING_DURABLE_RECOVERY/);
+});
+
+// ===========================================================================
+// Task 06I-B1-H3-R7: Declarative Timing & Descriptor-First Admission Security Closure
+// ===========================================================================
+
+test('125. H3-R7-01: sleepFn callbacks/getters/inherited overrides and invalid timing configs are rejected with zero invocations', async () => {
+  const runId = 'r7-01-timing-boundary';
+  const capturedFetch = globalThis.fetch;
+  let timingCalls = 0;
+  let getterCalls = 0;
+  let unauthorizedTransportCalls = 0;
+  const unauthorizedSentinel = () => {
+    unauthorizedTransportCalls++;
+    return { status: 200 };
+  };
+
+  function setupRun() {
+    const inv = r5OutstandingInventory(runId);
+    const transport = staticTransport({ status: 200, json: {} });
+    const adminClient = createHostedAdminClient({
+      serviceRoleKey: validTestServiceRoleKey,
+      anonKey: validTestAnonKey,
+      runId,
+      fetchFn: transport
+    });
+    const dispatcher = createTrustedOfflineDispatcher({
+      runId,
+      fetchFn: transport,
+      outcomes: {
+        'BYPASS-01': { passed: true, status: 422, route_disabled: true, error_code: 'email_provider_disabled' },
+        'HOOK-01': { passed: true, status: 200, has_token: true, amr_authenticated: true, session_id: 'session-uuid-5678', tokens: { access_token: createMockJwt() } }
+      }
+    });
+    return { inv, transport, adminClient, dispatcher };
+  }
+
+  // 1. Arbitrary sleepFn callback & captured-fetch sleepFn callback on both entry points
+  for (const sleepFn of [
+    async () => { timingCalls++; },
+    async () => { timingCalls++; void capturedFetch; return unauthorizedSentinel(); }
+  ]) {
+    for (const entry of ['runner', 'sim']) {
+      const { inv, transport, adminClient, dispatcher } = setupRun();
+      const opts = {
+        projectRef: HARDCODED_TEMP_REF,
+        runId,
+        inventory: inv,
+        adminClient,
+        mockDispatcher: dispatcher,
+        selectedProbeIds: ['BYPASS-01', 'HOOK-01'],
+        sleepFn,
+        ...(entry === 'runner' ? { argv: ['--live'], env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' } } : {})
+      };
+      await assert.rejects(
+        () => (entry === 'runner' ? runHostedProbeRunner(opts) : runOfflineProbeSimulation(opts)),
+        error => {
+          assert.match(error.message, /UNTRUSTED_TIMING_OVERRIDE/);
+          r5AssertOutstanding(error.cleanupReport, inv);
+          return true;
+        }
+      );
+      assert.equal(dispatcher.calls.length, 0);
+      assert.equal(transport.calls.length, 0);
+    }
+  }
+
+  // 2. Timing getter on options (must reject with 0 getter invocations)
+  {
+    const { inv, transport, adminClient, dispatcher } = setupRun();
+    const getterOpts = {
+      projectRef: HARDCODED_TEMP_REF,
+      runId,
+      inventory: inv,
+      adminClient,
+      mockDispatcher: dispatcher,
+      selectedProbeIds: ['BYPASS-01', 'HOOK-01'],
+      argv: ['--live'],
+      env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }
+    };
+    Object.defineProperty(getterOpts, 'sleepFn', {
+      enumerable: true,
+      get() {
+        getterCalls++;
+        return async () => { timingCalls++; };
+      }
+    });
+    await assert.rejects(() => runHostedProbeRunner(getterOpts), /Accessor property rejected at 'runnerOptions\.sleepFn'/);
+    await assert.rejects(() => runOfflineProbeSimulation(getterOpts), /Accessor property rejected at 'runnerOptions\.sleepFn'/);
+    assert.equal(getterCalls, 0);
+    assert.equal(dispatcher.calls.length, 0);
+    assert.equal(transport.calls.length, 0);
+  }
+
+  // 3. Inherited sleepFn override (custom prototype & Object.prototype)
+  {
+    const { inv, transport, adminClient, dispatcher } = setupRun();
+    const protoWithSleep = { sleepFn: async () => { timingCalls++; } };
+    const inheritedOpts = Object.create(protoWithSleep);
+    inheritedOpts.projectRef = HARDCODED_TEMP_REF;
+    inheritedOpts.runId = runId;
+    inheritedOpts.inventory = inv;
+    inheritedOpts.adminClient = adminClient;
+    inheritedOpts.mockDispatcher = dispatcher;
+    inheritedOpts.argv = ['--live'];
+    inheritedOpts.env = { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' };
+    await assert.rejects(() => runHostedProbeRunner(inheritedOpts), /Unsupported prototype rejected/);
+    assert.equal(dispatcher.calls.length, 0);
+    assert.equal(transport.calls.length, 0);
+
+    Object.defineProperty(Object.prototype, 'sleepFn', {
+      configurable: true,
+      get() { getterCalls++; return async () => { timingCalls++; }; }
+    });
+    try {
+      const { inv: inv2, transport: tr2, adminClient: adm2, dispatcher: disp2 } = setupRun();
+      await assert.rejects(
+        () => runHostedProbeRunner({
+          projectRef: HARDCODED_TEMP_REF,
+          runId,
+          inventory: inv2,
+          adminClient: adm2,
+          mockDispatcher: disp2,
+          argv: ['--live'],
+          env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }
+        }),
+        /UNTRUSTED_TIMING_OVERRIDE/
+      );
+      assert.equal(getterCalls, 0);
+      assert.equal(disp2.calls.length, 0);
+      assert.equal(tr2.calls.length, 0);
+    } finally {
+      delete Object.prototype.sleepFn;
+    }
+  }
+
+  // 4. Invalid declarative timing configs
+  const timingWithGetter = {};
+  Object.defineProperty(timingWithGetter, 'intervalMs', { enumerable: true, get() { getterCalls++; return 0; } });
+  for (const badTiming of [
+    { intervalMs: -1 },
+    { intervalMs: 'fast' },
+    { mode: 'bypass_all' },
+    { sleepFn: async () => { timingCalls++; } },
+    async () => { timingCalls++; },
+    timingWithGetter
+  ]) {
+    const { inv, transport, adminClient, dispatcher } = setupRun();
+    await assert.rejects(
+      () => runOfflineProbeSimulation({
+        projectRef: HARDCODED_TEMP_REF,
+        runId,
+        inventory: inv,
+        adminClient,
+        mockDispatcher: dispatcher,
+        selectedProbeIds: ['BYPASS-01', 'HOOK-01'],
+        timing: badTiming
+      }),
+      error => {
+        assert.match(error.message, /INVALID_TIMING_CONFIG|INVALID_DETERMINISTIC_FIXTURE_SPEC/);
+        r5AssertOutstanding(error.cleanupReport, inv);
+        return true;
+      }
+    );
+    assert.equal(dispatcher.calls.length, 0);
+    assert.equal(transport.calls.length, 0);
+  }
+
+  // 5. DRY_RUN with sleepFn rejected; DRY_RUN without sleepFn succeeds
+  await assert.rejects(
+    () => runHostedProbeRunner({ projectRef: HARDCODED_TEMP_REF, argv: [], env: {}, sleepFn: async () => { timingCalls++; } }),
+    /UNTRUSTED_TIMING_OVERRIDE/
+  );
+  const dryOk = await runHostedProbeRunner({ projectRef: HARDCODED_TEMP_REF, argv: [], env: {} });
+  assert.equal(dryOk.status, 'DRY_RUN_COMPLETED');
+
+  // 6. Valid multi-probe subset using internal timer (intervalMs: 1) + recorded_zero_wait
+  for (const timing of [{ intervalMs: 1 }, { mode: 'recorded_zero_wait' }]) {
+    const simTransport = staticTransport({ status: 200, json: {} });
+    const simAdmin = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, anonKey: validTestAnonKey, runId, fetchFn: simTransport });
+    const simDisp = createTrustedOfflineDispatcher({
+      runId,
+      fetchFn: simTransport,
+      outcomes: {
+        'BYPASS-01': { passed: true, status: 422, route_disabled: true, error_code: 'email_provider_disabled' },
+        'HOOK-01': { passed: true, status: 200, has_token: true, amr_authenticated: true, session_id: 'session-uuid-5678', tokens: { access_token: createMockJwt() } }
+      }
+    });
+    const simRes = await runOfflineProbeSimulation({
+      projectRef: HARDCODED_TEMP_REF,
+      runId,
+      adminClient: simAdmin,
+      offlineDispatcher: simDisp,
+      selectedProbeIds: ['BYPASS-01', 'HOOK-01'],
+      timing
+    });
+    assert.equal(simRes.status, 'COMPLETED');
+    assert.deepEqual(simRes.throttleIntervalsMs, [1000]);
+  }
+
+  assert.equal(timingCalls, 0);
+  assert.equal(getterCalls, 0);
+  assert.equal(unauthorizedTransportCalls, 0);
+});
+
+test('126. H3-R7-02: createTrustedOfflineDispatcher validates descriptors, prototypes, symbols, and Proxies before reading any field', () => {
+  const runId = 'r7-02-descriptor-first';
+  let getterCalls = 0;
+  let callbackCalls = 0;
+  let trapCalls = 0;
+
+  // 1. Zero-execution sentinels on every early-read & declarative field
+  for (const field of ['projectRef', 'runId', 'fetchFn', 'transportSpec', 'outcomes', 'defaultOutcome', 'sequence']) {
+    const spec = field === 'runId' ? {} : { runId };
+    Object.defineProperty(spec, field, {
+      enumerable: true,
+      get() {
+        getterCalls++;
+        return field === 'projectRef' ? HARDCODED_TEMP_REF : (field === 'runId' ? runId : {});
+      }
+    });
+    assert.throws(() => createTrustedOfflineDispatcher(spec), /Accessor property rejected/);
+  }
+
+  // 2. Non-enumerable accessor
+  const nonEnumSpec = { runId };
+  Object.defineProperty(nonEnumSpec, 'hiddenTrap', {
+    enumerable: false,
+    get() { getterCalls++; return 1; }
+  });
+  assert.throws(() => createTrustedOfflineDispatcher(nonEnumSpec), /Accessor property rejected/);
+
+  // 3. Inherited accessor
+  const protoWithGetter = {};
+  Object.defineProperty(protoWithGetter, 'projectRef', {
+    enumerable: true,
+    get() { getterCalls++; return HARDCODED_TEMP_REF; }
+  });
+  const inheritedSpec = Object.create(protoWithGetter);
+  inheritedSpec.runId = runId;
+  assert.throws(() => createTrustedOfflineDispatcher(inheritedSpec), /Unsupported prototype rejected/);
+
+  // 4. Symbol-keyed accessor
+  const symKey = Symbol('trap');
+  const symSpec = { runId };
+  Object.defineProperty(symSpec, symKey, {
+    enumerable: true,
+    get() { getterCalls++; return 1; }
+  });
+  assert.throws(() => createTrustedOfflineDispatcher(symSpec), /Symbol property/);
+
+  // 5. Nested object accessor & array index accessor
+  const nestedObj = {};
+  Object.defineProperty(nestedObj, 'status', { enumerable: true, get() { getterCalls++; return 200; } });
+  assert.throws(() => createTrustedOfflineDispatcher({ runId, outcomes: { 'BYPASS-01': nestedObj } }), /Accessor property rejected/);
+
+  const arrWithGetter = [];
+  Object.defineProperty(arrWithGetter, 0, { enumerable: true, get() { getterCalls++; return { passed: true }; } });
+  assert.throws(() => createTrustedOfflineDispatcher({ runId, sequence: arrWithGetter }), /Accessor property rejected/);
+
+  // 6. Proxy specification with observable traps
+  const proxySpec = new Proxy({ runId, defaultOutcome: { passed: true } }, {
+    get(t, p, r) { trapCalls++; return Reflect.get(t, p, r); },
+    has(t, p) { trapCalls++; return Reflect.has(t, p); },
+    ownKeys(t) { trapCalls++; return Reflect.ownKeys(t); },
+    getOwnPropertyDescriptor(t, p) { trapCalls++; return Reflect.getOwnPropertyDescriptor(t, p); },
+    getPrototypeOf(t) { trapCalls++; return Reflect.getPrototypeOf(t); }
+  });
+  assert.throws(() => createTrustedOfflineDispatcher(proxySpec), /Proxy object rejected/);
+
+  // 7. Unexpected function-valued property & forged deterministic transport
+  assert.throws(() => createTrustedOfflineDispatcher({ runId, extraFn: () => { callbackCalls++; } }), /Arbitrary executable callback rejected/);
+  const forgedTransport = Object.assign(() => { callbackCalls++; return { status: 200 }; }, { _isDeterministicTransport: true });
+  assert.throws(() => createTrustedOfflineDispatcher({ runId, fetchFn: forgedTransport }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
+
+  // 8. Valid registered transport accepted without invoking transport during construction
+  const validTransport = staticTransport({ status: 200, json: {} });
+  const validDisp = createTrustedOfflineDispatcher({ runId, fetchFn: validTransport, defaultOutcome: { passed: true, status: 200 } });
+  assert.equal(typeof validDisp, 'function');
+  assert.equal(validTransport.calls.length, 0);
+
+  assert.equal(getterCalls, 0, 'Zero getters may execute on rejected dispatcher specs');
+  assert.equal(callbackCalls, 0, 'Zero callbacks may execute on rejected dispatcher specs');
+  assert.equal(trapCalls, 0, 'Zero Proxy traps may execute on rejected Proxy specs');
+});
+
+test('127. H3-R7-03: All public factories and runner/cleanup/absence wrappers reject getters and Proxies before reading properties', async () => {
+  let getterCalls = 0;
+  let trapCalls = 0;
+
+  function makeTrappedObj(base = {}) {
+    const obj = { ...base };
+    Object.defineProperty(obj, 'projectRef', {
+      enumerable: true,
+      get() { getterCalls++; return HARDCODED_TEMP_REF; }
+    });
+    return obj;
+  }
+
+  function makeProxyObj(base = {}) {
+    return new Proxy(base, {
+      get(t, p, r) { trapCalls++; return Reflect.get(t, p, r); },
+      ownKeys(t) { trapCalls++; return Reflect.ownKeys(t); },
+      getOwnPropertyDescriptor(t, p) { trapCalls++; return Reflect.getOwnPropertyDescriptor(t, p); },
+      getPrototypeOf(t) { trapCalls++; return Reflect.getPrototypeOf(t); }
+    });
+  }
+
+  // Sync factories
+  for (const fn of [
+    o => createDeterministicFixtureTransport(o),
+    o => createHostedDispatcher(o),
+    o => createHostedAdminClient(o)
+  ]) {
+    assert.throws(() => fn(makeTrappedObj()), /Accessor property rejected/);
+    assert.throws(() => fn(makeProxyObj()), /Proxy object rejected/);
+  }
+
+  // Async entry points
+  const inv = new TestRunInventory('r7-03-audit');
+  const transport = staticTransport({ status: 200, json: {} });
+  const admin = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, anonKey: validTestAnonKey, runId: inv.runId, fetchFn: transport });
+  for (const asyncFn of [
+    o => runHostedProbeRunner(o),
+    o => runOfflineProbeSimulation(o),
+    o => provisionStorageProbeFixture(o),
+    o => inv.executeCleanup(o)
+  ]) {
+    await assert.rejects(() => asyncFn(makeTrappedObj()), /Accessor property rejected/);
+    await assert.rejects(() => asyncFn(makeProxyObj()), /Proxy object rejected/);
+  }
+
+  // Detailed absence returns structured INDETERMINATE without invoking getters/traps
+  const absGetter = await verifyStorageObjectAbsenceDetailed(admin, STORAGE_PROBE_BUCKET, `${inv.runId}/probe.txt`, makeTrappedObj());
+  assert.equal(absGetter.isAbsent, false);
+  assert.equal(absGetter.classification, STORAGE_RESPONSE_CLASS.INDETERMINATE);
+  assert.match(absGetter.reason, /Accessor property rejected/);
+
+  const absProxy = await verifyStorageObjectAbsenceDetailed(admin, STORAGE_PROBE_BUCKET, `${inv.runId}/probe.txt`, makeProxyObj());
+  assert.equal(absProxy.isAbsent, false);
+  assert.equal(absProxy.classification, STORAGE_RESPONSE_CLASS.INDETERMINATE);
+  assert.match(absProxy.reason, /Proxy object rejected/);
+
+  assert.equal(getterCalls, 0);
+  assert.equal(trapCalls, 0);
+  assert.equal(transport.calls.length, 0);
 });

@@ -1,6 +1,6 @@
 # Task 06I-B1-H3 — Controlled Subset Dispatch & Run-Scoped Storage Implementation
 
-**Task ID:** `06I-B1-H3` (Revision `R6`)<br>
+**Task ID:** `06I-B1-H3` (Revision `R7`)<br>
 **Creation Date:** 2026-11-24<br>
 **Revision Date:** 2026-11-25<br>
 **Author:** Santosh Jangid (`im-tnyx`)<br>
@@ -8,7 +8,7 @@
 **Branch:** `feat/task06i-b1-h3-subset-runner-storage`<br>
 **Base:** `main` at `4569479e8fe2caa6659fe1cc6c7a484596a01bbc` (PR #43 merge commit)<br>
 **PR Reference:** https://github.com/im-tnyx/Tio-Workspace/pull/44<br>
-**Prior Audited HEAD:** `6c54ab2f2a0c72e479bbc686c067e0c0d9c8c43f`<br>
+**Prior Audited HEAD:** `7c4efa70c442236cfb7d635afefa4dddacf2f0a7`<br>
 **Cost Ceiling:** $0.00 (Free-Tier Only)<br>
 **Mode:** Local Implementation, Mocked Transport Tests & Offline Verification ONLY<br>
 **Hosted LIVE Dispatch:** **NOT AUTHORIZED**<br>
@@ -470,6 +470,58 @@ Offline verification and independent diff review are complete for implementation
 *Preserved R5/Environment Limitations:* Synthetic local metadata verification is not full Supabase Storage integration; pinned Supabase CLI telemetry-write denial remains an environment limitation; actual hosted verification remains `0/18`; H4 durable recovery and Option B run-created seed support remain `NOT IMPLEMENTED`.
 
 ### Final R6 Decisions
+
+- **H3 Subset Runner:** `IMPLEMENTED_OFFLINE_TESTED / BLOCKED`
+- **H3 Storage Lifecycle:** `IMPLEMENTED_OFFLINE_TESTED / BLOCKED`
+- **Durable Recovery:** `NOT IMPLEMENTED`
+- **Run-Created Seed Support:** `NOT IMPLEMENTED`
+- **Hosted Verification:** `0/18`
+- **Hosted LIVE:** `NOT AUTHORIZED`
+- **Production Real Auth:** `STRICT NO-GO`
+- **Hosted Mutations:** `0`
+- **Cost:** `$0`
+- **Merge:** `NOT AUTHORIZED`
+
+---
+
+## 11. Revision R7 — Declarative Timing & Descriptor-First Admission Security Closure
+
+**Bootstrap baseline:** Local/remote HEAD `7c4efa70c442236cfb7d635afefa4dddacf2f0a7`, `main` `4569479e8fe2caa6659fe1cc6c7a484596a01bbc`, clean worktree, 34 review threads (32 resolved, 2 unresolved P1s `PRRT_kwDOVtCmZc671ZZU` and `PRRT_kwDOVtCmZc671ZZe`), 7/7 CI checks PASS (Cursor Bugbot PASS, Cursor Security Reviewer PASS), and independent `im-tio` review `CHANGES_REQUESTED` (`2026-11-25T10:04:34Z`).
+
+### R7-01: Declarative Timing & Removal of Executable `sleepFn` (`PRRT_kwDOVtCmZc671ZZU`)
+
+1. Removed `sleepFn` parameter from `_runHostedProbeRunnerInternal()` / `runHostedProbeRunner()` / `runOfflineProbeSimulation()`.
+2. Replaced with internal module-owned `internalThrottleWait(ms)` and validated declarative `timing` configuration (`validateDeclarativeTimingConfig`: `{ mode: 'standard' | 'recorded_zero_wait', intervalMs }`).
+3. Any own or inherited (`Object.prototype` / custom prototype) `sleepFn` override, timing getter, or invalid `timing` config is rejected fail-closed at admission (`UNTRUSTED_TIMING_OVERRIDE` / `INVALID_TIMING_CONFIG` / `Accessor property rejected`) before any probe, provisioning, or cleanup dispatch, preserving existing residual obligations in `error.cleanupReport`.
+4. `throttleIntervalsMs` records canonical `RATE_LIMIT_CONFIG.minIntervalMs` (1000ms) across multi-probe runs. Declarative timing overrides are prohibited for real hosted execution.
+5. Migrated all 20 `sleepFn` usages in `hosted-probe-runner.test.mjs` to `timing: { mode: 'recorded_zero_wait' }`.
+
+### R7-02 & R7-03: Descriptor-First Input Admission Across All Public Entry Points (`PRRT_kwDOVtCmZc671ZZe`)
+
+1. Added `extractValidatedPlainOptions(rawInput, label)` using `node:util` `types.isProxy()` before reflection, prototype validation (`null` or `Object.prototype` only), symbol rejection (`Object.getOwnPropertySymbols`), and own property descriptor scanning (`Object.getOwnPropertyNames` + `Object.getOwnPropertyDescriptor` rejecting getters/setters) into a clean `Object.create(null)` snapshot before reading any property.
+2. Updated `createTrustedOfflineDispatcher(rawSpec)` to extract descriptors (including `fetchFn`), run `validateDeclarativeFixtureValue()` (with nested `utilTypes.isProxy` check) BEFORE reading `projectRef`, `runId`, `fetchFn`, or `transportSpec`, and validate `fetchFn` only via `assertOfflineMockTransport`.
+3. Audited and updated all public entry points to enforce descriptor-first admission before destructuring/spreading:
+   - `runHostedProbeRunner(rawOptions)` & `runOfflineProbeSimulation(rawOptions)` (eliminated pre-validation `{ ...options }` spread)
+   - `createDeterministicFixtureTransport(rawSpec)`
+   - `createHostedDispatcher(rawOptions)`
+   - `createHostedAdminClient(rawOptions)`
+   - `provisionStorageProbeFixture(rawOptions)`
+   - `TestRunInventory.executeCleanup(rawOptions)`
+   - `verifyStorageObjectAbsenceDetailed(adminClient, bucket, path, rawOptions)` (returns structured `INDETERMINATE` without invoking getters/traps)
+
+### R7 Verification Matrix
+
+| Check Executed | Result / Exit Code |
+|---|---|
+| `node --test experiments/task06i/hosted-probe-runner.test.mjs` | **131/131 PASS**, exit 0 (includes Tests 125–127) |
+| `node --test experiments/task06i/*.test.mjs` | **199/199 PASS**, exit 0 |
+| Docker `node:24-bookworm --network none --pull never` runner suite | **131/131 PASS**, exit 0 |
+| `node experiments/task06i/sql-contract-parity.mjs` | **POSTGRES_VERIFIED 18/18** on PostgreSQL 17.11, exit 0 |
+| `node --test experiments/task06h/*.test.mjs` | **115/115 PASS**, exit 0 |
+| `npm run verify` | Tokens guard, `tsc --noEmit`, `eslint --max-warnings=0`, **22/22 shell tests PASS**, exit 0 |
+| `git diff --check` & `git diff --check origin/main...HEAD` | **CLEAN**, exit 0 |
+
+### Final R7 Decisions
 
 - **H3 Subset Runner:** `IMPLEMENTED_OFFLINE_TESTED / BLOCKED`
 - **H3 Storage Lifecycle:** `IMPLEMENTED_OFFLINE_TESTED / BLOCKED`

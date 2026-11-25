@@ -19,6 +19,7 @@
 
 import crypto from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { types as utilTypes } from 'node:util';
 import { PREFLIGHT_REQUIREMENTS, EXPECTED_REQUIREMENT_IDS } from './preflight-evaluator.mjs';
 
 const REAL_GLOBAL_FETCH = globalThis.fetch;
@@ -281,6 +282,9 @@ function validateDeclarativeFixtureValue(val, pathLabel = 'spec', seen = new Wea
   if (t !== 'object') {
     throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Unsupported type '${t}' at '${pathLabel}'`);
   }
+  if (utilTypes.isProxy(val)) {
+    throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Proxy object rejected at '${pathLabel}' (R7-02)`);
+  }
   if (TRUSTED_OFFLINE_BARRIERS.has(val)) return;
   if (seen.has(val)) {
     throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Circular object reference rejected at '${pathLabel}' (R4-04)`);
@@ -468,15 +472,81 @@ function buildDeterministicResponse(descriptor) {
   return res;
 }
 
+function extractValidatedPlainOptions(rawInput, label, { allowNullUndefined = true } = {}) {
+  if (rawInput === undefined || rawInput === null) {
+    if (allowNullUndefined) return Object.create(null);
+    throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: ${label} requires a plain object (R7-02)`);
+  }
+  if (utilTypes.isProxy(rawInput)) {
+    throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Proxy object rejected at '${label}' (R7-02)`);
+  }
+  if (typeof rawInput !== 'object' || Array.isArray(rawInput)) {
+    throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: ${label} requires a plain object (R7-02)`);
+  }
+  const proto = Object.getPrototypeOf(rawInput);
+  if (proto !== null && proto !== Object.prototype) {
+    throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Unsupported prototype rejected at '${label}' (R7-02)`);
+  }
+  const syms = Object.getOwnPropertySymbols(rawInput);
+  if (syms.length > 0) {
+    throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Symbol property '${String(syms[0])}' rejected at '${label}' (R7-02)`);
+  }
+  const snapshot = Object.create(null);
+  for (const key of Object.getOwnPropertyNames(rawInput)) {
+    const desc = Object.getOwnPropertyDescriptor(rawInput, key);
+    if (!desc || typeof desc.get === 'function' || typeof desc.set === 'function') {
+      throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Accessor property rejected at '${label}.${key}' (R7-02)`);
+    }
+    Object.defineProperty(snapshot, key, {
+      value: desc.value,
+      enumerable: true,
+      writable: true,
+      configurable: true
+    });
+  }
+  return snapshot;
+}
+
+function internalThrottleWait(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function validateDeclarativeTimingConfig(rawTiming, isOfflineAllowed = false) {
+  if (rawTiming === undefined || rawTiming === null) {
+    return { mode: 'standard', intervalMs: RATE_LIMIT_CONFIG.minIntervalMs };
+  }
+  const timing = extractValidatedPlainOptions(rawTiming, 'runnerOptions.timing', { allowNullUndefined: false });
+  validateDeclarativeFixtureValue(timing, 'runnerOptions.timing');
+  if (!isOfflineAllowed) {
+    throw new Error('BLOCKED_PENDING_DURABLE_RECOVERY: Declarative timing overrides are prohibited for real hosted execution (R7-01)');
+  }
+  const mode = timing.mode !== undefined ? timing.mode : 'standard';
+  if (mode !== 'standard' && mode !== 'recorded_zero_wait') {
+    throw new Error(`INVALID_TIMING_CONFIG: Unsupported timing mode '${String(mode)}' (R7-01)`);
+  }
+  if (timing.intervalMs !== undefined) {
+    if (typeof timing.intervalMs !== 'number' || !Number.isFinite(timing.intervalMs) || timing.intervalMs < 0 || timing.intervalMs > RATE_LIMIT_CONFIG.minIntervalMs) {
+      throw new Error(`INVALID_TIMING_CONFIG: timing.intervalMs must be a finite number between 0 and ${RATE_LIMIT_CONFIG.minIntervalMs} (R7-01)`);
+    }
+  }
+  const intervalMs = mode === 'recorded_zero_wait'
+    ? 0
+    : (timing.intervalMs !== undefined ? timing.intervalMs : RATE_LIMIT_CONFIG.minIntervalMs);
+  return { mode, intervalMs };
+}
+
 /**
  * Factory for trusted, purely declarative offline fixture transports (R3-02).
  * Only transports produced by this module factory are trusted in offline simulation.
  * Accepts zero arbitrary user callbacks and executes inside runWithBlockedRealFetch.
  */
-export function createDeterministicFixtureTransport(spec = {}) {
-  const normalizedSpec = spec && typeof spec === 'object' && !Array.isArray(spec)
-    ? spec
-    : { routes: Array.isArray(spec) ? spec : [] };
+export function createDeterministicFixtureTransport(rawSpec = {}) {
+  if (rawSpec !== undefined && rawSpec !== null && utilTypes.isProxy(rawSpec)) {
+    throw new Error('INVALID_DETERMINISTIC_FIXTURE_SPEC: Proxy object rejected at \'transportSpec\' (R7-02)');
+  }
+  const normalizedSpec = rawSpec && typeof rawSpec === 'object' && !Array.isArray(rawSpec)
+    ? extractValidatedPlainOptions(rawSpec, 'transportSpec')
+    : { routes: Array.isArray(rawSpec) ? rawSpec : [] };
   validateDeclarativeFixtureValue(normalizedSpec, 'transportSpec');
 
   const state = clonePlainData(normalizedSpec.initialState || {});
@@ -774,36 +844,56 @@ function extractDeclarativeOutcome(descriptor) {
  * Only dispatchers produced by this module factory are permitted by runHostedProbeRunner().
  * Enforces projectRef, runId, deterministic fixture transport, and zero arbitrary callbacks.
  */
-export function createTrustedOfflineDispatcher(spec = {}) {
-  if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
-    throw new Error('INVALID_DETERMINISTIC_FIXTURE_SPEC: createTrustedOfflineDispatcher requires a plain specification object (R6-01)');
+export function createTrustedOfflineDispatcher(rawSpec = {}) {
+  const snapshot = extractValidatedPlainOptions(rawSpec, 'offlineDispatcherSpec', { allowNullUndefined: false });
+  const declarativeSpec = Object.create(null);
+  let candidateFetchFn = null;
+  let hasFetchFn = false;
+
+  for (const key of Object.getOwnPropertyNames(snapshot)) {
+    const val = snapshot[key];
+    if (key === 'fetchFn') {
+      hasFetchFn = true;
+      candidateFetchFn = val;
+      continue;
+    }
+    Object.defineProperty(declarativeSpec, key, {
+      value: val,
+      enumerable: true,
+      writable: true,
+      configurable: true
+    });
   }
-  const normRef = (spec.projectRef || HARDCODED_TEMP_REF).trim().toLowerCase();
+
+  // Validate nested declarative fixture data BEFORE reading/validating projectRef, runId, or transportSpec.
+  validateDeclarativeFixtureValue(declarativeSpec, 'offlineDispatcherSpec');
+
+  if (hasFetchFn && candidateFetchFn !== undefined && candidateFetchFn !== null) {
+    if (utilTypes.isProxy(candidateFetchFn)) {
+      throw new Error('BLOCKED_PENDING_DURABLE_RECOVERY: Proxied transport rejected at \'offlineDispatcherSpec.fetchFn\' (R7-02)');
+    }
+    assertOfflineMockTransport(candidateFetchFn);
+  }
+
+  const rawProjectRef = declarativeSpec.projectRef !== undefined ? declarativeSpec.projectRef : HARDCODED_TEMP_REF;
+  if (typeof rawProjectRef !== 'string') {
+    throw new Error('CRITICAL_SECURITY_VIOLATION: createTrustedOfflineDispatcher requires string projectRef (R7-02)');
+  }
+  const normRef = rawProjectRef.trim().toLowerCase();
   if (normRef !== HARDCODED_TEMP_REF || isForbiddenProject(normRef)) {
     throw new Error(
       `CRITICAL_SECURITY_VIOLATION: createTrustedOfflineDispatcher strictly rejected target '${normRef}'. Only approved TEMP project '${HARDCODED_TEMP_REF}' is authorized.`
     );
   }
-  if (!spec.runId || typeof spec.runId !== 'string') {
+  if (!declarativeSpec.runId || typeof declarativeSpec.runId !== 'string') {
     throw new Error('OFFLINE_DISPATCHER_RUN_REQUIRED: createTrustedOfflineDispatcher requires an explicit runId (R6-01)');
   }
-  const boundRunId = validateRunId(spec.runId);
+  const boundRunId = validateRunId(declarativeSpec.runId);
 
-  const rawTransportFetch = spec.fetchFn !== undefined && spec.fetchFn !== null
-    ? spec.fetchFn
-    : createDeterministicFixtureTransport(spec.transportSpec || { defaultResponse: { status: 200, ok: true, json: {} } });
+  const rawTransportFetch = hasFetchFn && candidateFetchFn !== undefined && candidateFetchFn !== null
+    ? candidateFetchFn
+    : createDeterministicFixtureTransport(declarativeSpec.transportSpec || { defaultResponse: { status: 200, ok: true, json: {} } });
   assertOfflineMockTransport(rawTransportFetch);
-
-  const declarativeSpec = {};
-  for (const key of Object.getOwnPropertyNames(spec)) {
-    if (key === 'fetchFn') continue;
-    const desc = Object.getOwnPropertyDescriptor(spec, key);
-    if (!desc || typeof desc.get === 'function' || typeof desc.set === 'function') {
-      throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Accessor property rejected at 'offlineDispatcherSpec.${key}' (R6-01)`);
-    }
-    declarativeSpec[key] = desc.value;
-  }
-  validateDeclarativeFixtureValue(declarativeSpec, 'offlineDispatcherSpec');
 
   const outcomes = clonePlainData(declarativeSpec.outcomes || {});
   const defaultOutcome = declarativeSpec.defaultOutcome !== undefined
@@ -3781,7 +3871,22 @@ export function normalizeStorageObjectResponse({
 /**
  * Verifies post-deletion Storage object absence with detailed normalized evidence (R1-06, R2-03).
  */
-export async function verifyStorageObjectAbsenceDetailed(adminClient, bucket, path, { projectRef = HARDCODED_TEMP_REF, runId = null } = {}) {
+export async function verifyStorageObjectAbsenceDetailed(adminClient, bucket, path, rawOptions = {}) {
+  let projectRef = HARDCODED_TEMP_REF;
+  let runId = null;
+  try {
+    const opts = extractValidatedPlainOptions(rawOptions, 'verifyStorageObjectAbsenceOptions');
+    if (opts.projectRef !== undefined) projectRef = opts.projectRef;
+    if (opts.runId !== undefined) runId = opts.runId;
+  } catch (optErr) {
+    return {
+      isAbsent: false,
+      classification: STORAGE_RESPONSE_CLASS.INDETERMINATE,
+      status: 0,
+      providerResponseObtained: false,
+      reason: sanitizeData(optErr.message)
+    };
+  }
   if (!bucket || !path) {
     return { isAbsent: false, classification: STORAGE_RESPONSE_CLASS.INDETERMINATE, status: 0, reason: 'MISSING_CLIENT_OR_PATH' };
   }
@@ -5089,7 +5194,8 @@ export class TestRunInventory {
    * Verifies absence of residual resources and fails closed if residual resources remain.
    * Resolves PRRT_kwDOVtCmZc66lOOU, PRRT_kwDOVtCmZc66lo-q, PRRT_kwDOVtCmZc66lq3S, PRRT_kwDOVtCmZc66mPVg (R5-02), PRRT_kwDOVtCmZc66mPVn (R5-03), PRRT_kwDOVtCmZc66mP9a (R5-06), PRRT_kwDOVtCmZc66vvky (R13-02), and PRRT_kwDOVtCmZc66_0zI (R16-02).
    */
-  async executeCleanup(options = {}) {
+  async executeCleanup(rawOptions = {}) {
+    const options = extractValidatedPlainOptions(rawOptions, 'executeCleanupOptions');
     if (this._cleanupInProgress || this._activeCleanupPromise) {
       throw new Error(
         'CLEANUP_CONCURRENT_REENTRY_BLOCKED: Concurrent executeCleanup() invocation rejected while cleanup is already executing (R3-04)'
@@ -5908,20 +6014,22 @@ export class TestRunInventory {
  * 9. Verify authoritative storage.objects.owner_id correlation (projectRef, bucket_id, name, provider id, owner_id)
  * 10. Grant RUN_CREATED_VERIFIED + deletionEligible: true ONLY after full verification passes
  */
-export async function provisionStorageProbeFixture({
-  projectRef = HARDCODED_TEMP_REF,
-  runId,
-  seedUserId,
-  userAccessToken,
-  anonKey = null,
-  serviceRoleKey = null,
-  adminClient = null,
-  ownershipLookupFn = null,
-  fetchFn = null,
-  inventory = null,
-  probeContent = 'task06i probe test fixture\n',
-  ownershipTimeoutMs = DEFAULT_PROBE_TIMEOUT_MS
-} = {}) {
+export async function provisionStorageProbeFixture(rawOptions = {}) {
+  const opts = extractValidatedPlainOptions(rawOptions, 'provisionStorageProbeFixtureOptions');
+  const {
+    projectRef = HARDCODED_TEMP_REF,
+    runId,
+    seedUserId,
+    userAccessToken,
+    anonKey = null,
+    serviceRoleKey = null,
+    adminClient = null,
+    ownershipLookupFn = null,
+    fetchFn = null,
+    inventory = null,
+    probeContent = 'task06i probe test fixture\n',
+    ownershipTimeoutMs = DEFAULT_PROBE_TIMEOUT_MS
+  } = opts;
   // 1. Target project validation (R1-02)
   const normRef = (projectRef || '').trim().toLowerCase();
   if (!normRef || normRef !== HARDCODED_TEMP_REF || isForbiddenProject(normRef)) {
@@ -7100,17 +7208,19 @@ export const HOSTED_PROBE_SPECIFICATIONS = Object.freeze({
  * PRRT_kwDOVtCmZc66lo-a, PRRT_kwDOVtCmZc66lo-f, PRRT_kwDOVtCmZc66lo-i, PRRT_kwDOVtCmZc66lo-m,
  * PRRT_kwDOVtCmZc66lo-o, PRRT_kwDOVtCmZc66lo-t, PRRT_kwDOVtCmZc66lq3S, and PRRT_kwDOVtCmZc66lq3W.
  */
-export function createHostedDispatcher({
-  projectRef = HARDCODED_TEMP_REF,
-  anonKey,
-  serviceRoleKey,
-  inventory = null,
-  runContext = null,
-  fetchFn = null,
-  testEmail = null,
-  seedEmail = null,
-  seedUserId = null
-} = {}) {
+export function createHostedDispatcher(rawOptions = {}) {
+  const opts = extractValidatedPlainOptions(rawOptions, 'createHostedDispatcherOptions');
+  let {
+    projectRef = HARDCODED_TEMP_REF,
+    anonKey,
+    serviceRoleKey,
+    inventory = null,
+    runContext = null,
+    fetchFn = null,
+    testEmail = null,
+    seedEmail = null,
+    seedUserId = null
+  } = opts;
   // 1. Strict Target Enforcement: Must be approved TEMP project ref
   const normRef = (projectRef || '').trim().toLowerCase();
   if (normRef !== HARDCODED_TEMP_REF) {
@@ -8635,14 +8745,16 @@ export function createHostedDispatcher({
  * Resolves PRRT_kwDOVtCmZc66ij5y, PRRT_kwDOVtCmZc66ij56, PRRT_kwDOVtCmZc66iotG, PRRT_kwDOVtCmZc66i_Kb,
  * PRRT_kwDOVtCmZc66i_Kd, PRRT_kwDOVtCmZc66i_Kf, PRRT_kwDOVtCmZc66lOOS, and PRRT_kwDOVtCmZc66lOOP.
  */
-export async function runOfflineProbeSimulation(options = {}) {
-  return runHostedProbeRunner({
-    ...options,
-    executionMode: 'OFFLINE_SIMULATION'
-  });
+export async function runOfflineProbeSimulation(rawOptions = {}) {
+  return _runHostedProbeRunnerInternal(rawOptions, 'OFFLINE_SIMULATION');
 }
 
-export async function runHostedProbeRunner(options = {}) {
+export async function runHostedProbeRunner(rawOptions = {}) {
+  return _runHostedProbeRunnerInternal(rawOptions, null);
+}
+
+async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMode = null) {
+  const options = extractValidatedPlainOptions(rawOptions, 'runnerOptions');
   const {
     projectRef,
     tempRef = HARDCODED_TEMP_REF,
@@ -8653,11 +8765,14 @@ export async function runHostedProbeRunner(options = {}) {
     offlineDispatcher = null,
     inventory = null,
     runContext = null,
-    sleepFn = (ms) => new Promise(r => setTimeout(r, ms)),
     probeTimeoutMs = DEFAULT_PROBE_TIMEOUT_MS
   } = options;
 
-  const explicitOfflineSimulation = options.executionMode === 'OFFLINE_SIMULATION';
+  const hasOwnSleepFn = Object.prototype.hasOwnProperty.call(options, 'sleepFn') && options.sleepFn !== undefined;
+  const protoSleepDesc = Object.getOwnPropertyDescriptor(Object.prototype, 'sleepFn');
+  const hasProtoSleepFn = protoSleepDesc !== undefined;
+
+  const explicitOfflineSimulation = forcedExecutionMode === 'OFFLINE_SIMULATION' || options.executionMode === 'OFFLINE_SIMULATION';
   const mode = explicitOfflineSimulation ? 'OFFLINE_SIMULATION' : determineRunnerMode(argv, env);
   const isExecuting = mode === 'LIVE' || mode === 'OFFLINE_SIMULATION';
   const validatedRef = validateTargetProject(projectRef, tempRef, isExecuting, {
@@ -8676,11 +8791,20 @@ export async function runHostedProbeRunner(options = {}) {
     allowIsolatedTestRef: options.allowIsolatedTestRef && !isExecuting
   });
   const results = [];
+  const throttleIntervalsMs = [];
   let aborted = false;
   let abortReason = null;
   let requestCount = 0;
 
   if (mode === 'DRY_RUN') {
+    if (hasOwnSleepFn || hasProtoSleepFn) {
+      throw new Error(
+        'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_TIMING_OVERRIDE: Caller-supplied sleepFn is prohibited; use declarative timing or internal module timer (R7-01)'
+      );
+    }
+    if (options.timing !== undefined && options.timing !== null) {
+      validateDeclarativeTimingConfig(options.timing, true);
+    }
     return sanitizeData({
       status: 'DRY_RUN_COMPLETED',
       mode: 'DRY_RUN',
@@ -8705,10 +8829,16 @@ export async function runHostedProbeRunner(options = {}) {
   const adminClient = options.adminClient || null;
   const candidateDispatcher = offlineDispatcher ?? mockDispatcher;
   const activeInventory = inventory || new TestRunInventory(runId || plan.runId);
+  let timingConfig;
 
-  // Admission checks private identities and durable-recovery boundaries BEFORE any probe,
-  // provisioning, or destructive cleanup execution (R5-01, R6-01).
+  // Admission checks private identities, timing contract, and durable-recovery boundaries
+  // BEFORE any probe, provisioning, or destructive cleanup execution (R5-01, R6-01, R7-01).
   try {
+    if (hasOwnSleepFn || hasProtoSleepFn) {
+      throw new Error(
+        'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_TIMING_OVERRIDE: Caller-supplied sleepFn is prohibited; use declarative timing or internal module timer (R7-01)'
+      );
+    }
     if (
       options.liveHostedDispatch === true ||
       options.enforceDurableRecoveryGate === true ||
@@ -8718,6 +8848,7 @@ export async function runHostedProbeRunner(options = {}) {
         'BLOCKED_PENDING_DURABLE_RECOVERY: LIVE hosted execution against Supabase Cloud is blocked pending durable crash recovery and journaled inventory implementation'
       );
     }
+    timingConfig = validateDeclarativeTimingConfig(options.timing, true);
     if (runId && runId !== activeInventory.runId) {
       throw new Error('ADMIN_CLIENT_RUN_MISMATCH: Runner and inventory run IDs differ');
     }
@@ -8784,9 +8915,12 @@ export async function runHostedProbeRunner(options = {}) {
         break;
       }
 
-      // Interval throttling enforcement (PRRT_kwDOVtCmZc66ij56)
+      // Interval throttling enforcement (PRRT_kwDOVtCmZc66ij56, R7-01)
       if (i > 0 && RATE_LIMIT_CONFIG.minIntervalMs > 0) {
-        await sleepFn(RATE_LIMIT_CONFIG.minIntervalMs);
+        throttleIntervalsMs.push(RATE_LIMIT_CONFIG.minIntervalMs);
+        if (timingConfig.intervalMs > 0) {
+          await internalThrottleWait(timingConfig.intervalMs);
+        }
       }
 
       requestCount++;
@@ -8931,6 +9065,7 @@ export async function runHostedProbeRunner(options = {}) {
       totalExecuted: results.length,
       totalExpected: plan.plannedCases.length,
       requestCount,
+      throttleIntervalsMs,
       aborted,
       abortReason: abortReason,
       cleanupReport: cleanupReport,
@@ -8964,13 +9099,15 @@ export async function runHostedProbeRunner(options = {}) {
  * Strictly binds to HARDCODED_TEMP_REF; rejects real and tio-world projects.
  * Resolves PRRT_kwDOVtCmZc66sBa5 (R7-01).
  */
-export function createHostedAdminClient({
-  serviceRoleKey,
-  anonKey,
-  projectRef = HARDCODED_TEMP_REF,
-  runId = null,
-  fetchFn = null
-} = {}) {
+export function createHostedAdminClient(rawOptions = {}) {
+  const opts = extractValidatedPlainOptions(rawOptions, 'createHostedAdminClientOptions');
+  let {
+    serviceRoleKey,
+    anonKey,
+    projectRef = HARDCODED_TEMP_REF,
+    runId = null,
+    fetchFn = null
+  } = opts;
   if (projectRef !== HARDCODED_TEMP_REF) {
     throw new Error(`SECURITY_BOUNDARY_VIOLATION: createHostedAdminClient strictly permitted only against TEMP project '${HARDCODED_TEMP_REF}', attempted '${projectRef}'`);
   }
