@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
+import { getEventListeners } from 'node:events';
 import {
   validateTargetProject,
   validateTestIdentity,
@@ -10276,29 +10277,10 @@ test('109. Task 06I-B1-H3-R4 (R4-02): Shared WeakMap isolation coordinator per t
 test('110. Task 06I-B1-H3-R4 (R4-03): Barrier release settles all arrival waiters cleanly without hanging or leaking abort listeners', async () => {
   function createSpiedAbortController() {
     const controller = new AbortController();
-    let activeListeners = 0;
-    const origAdd = controller.signal.addEventListener.bind(controller.signal);
-    const origRemove = controller.signal.removeEventListener.bind(controller.signal);
-    controller.signal.addEventListener = (type, fn, opts) => {
-      activeListeners += 1;
-      const wrapped = (...args) => {
-        activeListeners = Math.max(0, activeListeners - 1);
-        return fn(...args);
-      };
-      controller._map = controller._map || new Map();
-      controller._map.set(fn, wrapped);
-      return origAdd(type, wrapped, opts);
+    return {
+      controller,
+      getActiveListeners: () => getEventListeners(controller.signal, 'abort').length
     };
-    controller.signal.removeEventListener = (type, fn, opts) => {
-      const mapped = controller._map?.get(fn);
-      if (mapped) {
-        activeListeners = Math.max(0, activeListeners - 1);
-        controller._map.delete(fn);
-        return origRemove(type, mapped, opts);
-      }
-      return origRemove(type, fn, opts);
-    };
-    return { controller, getActiveListeners: () => activeListeners };
   }
 
   // 1. Release BEFORE any arrival settles pending waitForArrivals immediately with explicit error
@@ -12346,4 +12328,419 @@ test('137. H3-R10-03: Schema completeness covers all public option contracts and
   const absRes = await verifyStorageObjectAbsenceDetailed(null, 'bucket', 'path', { unexpectedFlag: true });
   assert.equal(absRes.isAbsent, false);
   assert.match(absRes.reason, /UNTRUSTED_ADMISSION_KEY/);
+});
+
+test('138. H3-R11-01: Prototype-safe admitted options and null-prototype schema metadata ignore Object.prototype pollution with zero sentinel execution', async () => {
+  // 1. Verify null-prototype deep-frozen schema registry & field descriptors
+  assert.equal(Object.getPrototypeOf(UNIFIED_ADMISSION_SCHEMAS), null);
+  assert.equal(Object.getPrototypeOf(UNIFIED_ADMISSION_SCHEMAS.runnerOptions), null);
+  assert.equal(Object.getPrototypeOf(UNIFIED_ADMISSION_SCHEMAS.runnerOptions.probeTimeoutMs), null);
+
+  let sentinelCalls = 0;
+  const runId = 'r11-01-run';
+  const transport = createDeterministicFixtureTransport({
+    routes: [{ method: 'POST', urlIncludes: '/auth/v1/otp', status: 422, body: { error: 'blocked' } }]
+  });
+  const adminClient = createHostedAdminClient({
+    projectRef: HARDCODED_TEMP_REF,
+    serviceRoleKey: validTestServiceRoleKey,
+    runId,
+    fetchFn: transport
+  });
+  const inv = new TestRunInventory(runId);
+  const ctx = createRunContext({ runId, testEmail: 'r11-01@proof.invalid' });
+
+  const protoKeys = [
+    'probeTimeoutMs',
+    'settlementTimeoutMs',
+    'inventory',
+    'runContext',
+    'adminClient',
+    'timing',
+    'nullable',
+    'min',
+    'max',
+    'required',
+    'deferRunnerRejection',
+    'extraEvilFn'
+  ];
+
+  try {
+    // Coercive & getter descriptors on Object.prototype
+    Object.defineProperty(Object.prototype, 'probeTimeoutMs', {
+      configurable: true,
+      get() {
+        sentinelCalls++;
+        return { valueOf() { sentinelCalls++; return 1; } };
+      }
+    });
+    Object.defineProperty(Object.prototype, 'settlementTimeoutMs', {
+      configurable: true,
+      value: { valueOf() { sentinelCalls++; return 5; } }
+    });
+    Object.defineProperty(Object.prototype, 'inventory', { configurable: true, value: inv });
+    Object.defineProperty(Object.prototype, 'runContext', { configurable: true, value: ctx });
+    Object.defineProperty(Object.prototype, 'adminClient', { configurable: true, value: adminClient });
+    Object.defineProperty(Object.prototype, 'timing', { configurable: true, value: { intervalMs: 999 } });
+    Object.defineProperty(Object.prototype, 'nullable', { configurable: true, value: true });
+    Object.defineProperty(Object.prototype, 'min', { configurable: true, value: -100 });
+    Object.defineProperty(Object.prototype, 'max', { configurable: true, value: 999999 });
+    Object.defineProperty(Object.prototype, 'required', { configurable: true, value: true });
+    Object.defineProperty(Object.prototype, 'deferRunnerRejection', { configurable: true, value: true });
+    Object.defineProperty(Object.prototype, 'extraEvilFn', { configurable: true, value: () => { sentinelCalls++; } });
+
+    // Inherited schema metadata flags must not override own schema rules
+    await assert.rejects(
+      () => runOfflineProbeSimulation({ projectRef: HARDCODED_TEMP_REF, probeTimeoutMs: null }),
+      /INVALID_ADMISSION_TYPE/
+    );
+    await assert.rejects(
+      () => runOfflineProbeSimulation({ projectRef: HARDCODED_TEMP_REF, probeTimeoutMs: -1 }),
+      /INVALID_ADMISSION_RANGE/
+    );
+
+    // Unbound dispatcher must NOT inherit Object.prototype.inventory or Object.prototype.runContext
+    const dispUnbound = createHostedDispatcher({
+      projectRef: HARDCODED_TEMP_REF,
+      anonKey: validTestAnonKey,
+      fetchFn: transport
+    });
+    const out = await dispUnbound({ id: 'BYPASS-01', testUser: 'r11-01@proof.invalid' });
+    assert.equal(out.status, 422);
+    assert.equal(inv.protectedSeedIdentities.size, 0);
+
+    // executeCleanup with omitted options must NOT inherit Object.prototype.adminClient or settlementTimeoutMs
+    const inv2 = new TestRunInventory('r11-01-inv2');
+    const report2 = await inv2.executeCleanup({ adminClient: null, failClosed: false });
+    assert.equal(report2.status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(transport.calls.length, 1);
+
+    // Offline simulation with valid omitted probeTimeoutMs / timing must NOT invoke Object.prototype.probeTimeoutMs or timing
+    const offlineDisp = createTrustedOfflineDispatcher({
+      projectRef: HARDCODED_TEMP_REF,
+      runId: 'r11-01-sim',
+      defaultOutcome: { status: 422, passed: true, error_code: 'email_provider_disabled' }
+    });
+    const simAdmin = createHostedAdminClient({
+      projectRef: HARDCODED_TEMP_REF,
+      serviceRoleKey: validTestServiceRoleKey,
+      runId: 'r11-01-sim',
+      fetchFn: transport
+    });
+    const simInv = new TestRunInventory('r11-01-sim');
+    const simCtx = createRunContext({ runId: 'r11-01-sim', testEmail: 'r11-01-sim@proof.invalid' });
+    const simRes = await runOfflineProbeSimulation({
+      projectRef: HARDCODED_TEMP_REF,
+      runId: 'r11-01-sim',
+      selectedProbeIds: ['BYPASS-01'],
+      offlineDispatcher: offlineDisp,
+      adminClient: simAdmin,
+      inventory: simInv,
+      runContext: simCtx
+    });
+    assert.equal(simRes.status, 'COMPLETED');
+
+    // Prototype-sensitive __proto__ own key in options / nested declarative fixtures must be rejected
+    const protoHostile = JSON.parse('{"__proto__": {"polluted": true}}');
+    await assert.rejects(
+      () => runOfflineProbeSimulation(protoHostile),
+      /Prototype-sensitive key '__proto__' rejected/
+    );
+    assert.throws(
+      () => createDeterministicFixtureTransport({ routes: [JSON.parse('{"__proto__": {"x": 1}, "status": 200}')] }),
+      /Prototype-sensitive key '__proto__' rejected/
+    );
+
+    assert.equal(sentinelCalls, 0);
+  } finally {
+    for (const key of protoKeys) {
+      delete Object.prototype[key];
+    }
+  }
+});
+
+test('139. H3-R11-02A: Trusted AbortSignal handling rejects own overrides, accessors, Proxies, and subclasses with zero invocations and preserves cancellation/cleanup', async () => {
+  let sentinelCalls = 0;
+  const runId = 'r11-02a-run';
+  const transport = createDeterministicFixtureTransport({
+    routes: [{ method: 'POST', urlIncludes: '/auth/v1/otp', status: 422, delayMs: 40, body: { error: 'blocked' } }]
+  });
+  const offlineDisp = createTrustedOfflineDispatcher({
+    projectRef: HARDCODED_TEMP_REF,
+    runId,
+    outcomes: {
+      'BYPASS-01': { status: 422, passed: true, delayMs: 50 }
+    }
+  });
+  const inv = new TestRunInventory(runId);
+  const ctx = createRunContext({ runId, testEmail: 'r11-02a@proof.invalid' });
+  const hostedDisp = createHostedDispatcher({
+    projectRef: HARDCODED_TEMP_REF,
+    anonKey: validTestAnonKey,
+    fetchFn: transport,
+    inventory: inv,
+    runContext: ctx
+  });
+
+  // 1. Genuine signal with own addEventListener / removeEventListener / aborted / reason overrides
+  const sAdd = new AbortController().signal;
+  sAdd.addEventListener = () => { sentinelCalls++; };
+
+  const sRemove = new AbortController().signal;
+  sRemove.removeEventListener = () => { sentinelCalls++; };
+
+  const sAborted = new AbortController().signal;
+  Object.defineProperty(sAborted, 'aborted', { get() { sentinelCalls++; return false; } });
+
+  const sReason = new AbortController().signal;
+  Object.defineProperty(sReason, 'reason', { get() { sentinelCalls++; return 'evil'; } });
+
+  const sProxy = new Proxy(new AbortController().signal, {
+    get(t, p, r) { sentinelCalls++; return Reflect.get(t, p, r); }
+  });
+
+  const sForgedProto = Object.create(AbortSignal.prototype);
+  class CustomSignal extends AbortSignal {}
+  const sSubclass = Object.setPrototypeOf(new AbortController().signal, CustomSignal.prototype);
+
+  for (const badSignal of [sAdd, sRemove, sAborted, sReason, sProxy, sForgedProto, sSubclass]) {
+    await assert.rejects(
+      () => offlineDisp({ id: 'BYPASS-01' }, { signal: badSignal, projectRef: HARDCODED_TEMP_REF, runId }),
+      /INVALID_ADMISSION_TYPE/
+    );
+    await assert.rejects(
+      () => hostedDisp({ id: 'BYPASS-01' }, { signal: badSignal }),
+      /INVALID_ADMISSION_TYPE/
+    );
+    const barrier = createOfflineBarrier('r11-02a-bad');
+    await assert.rejects(async () => await barrier.wait(badSignal), /INVALID_ADMISSION_TYPE/);
+  }
+  assert.equal(sentinelCalls, 0);
+
+  // 2. Already-aborted valid signal cancels immediately without leaving listeners
+  const abortedCtrl = new AbortController();
+  abortedCtrl.abort();
+  await assert.rejects(
+    () => offlineDisp({ id: 'BYPASS-01' }, { signal: abortedCtrl.signal, projectRef: HARDCODED_TEMP_REF, runId }),
+    { name: 'AbortError' }
+  );
+  assert.equal(getEventListeners(abortedCtrl.signal, 'abort').length, 0);
+
+  // 3. Abort during declarative delay + post-completion listener cleanup
+  const delayCtrl = new AbortController();
+  const pendingDelay = offlineDisp({ id: 'BYPASS-01' }, { signal: delayCtrl.signal, projectRef: HARDCODED_TEMP_REF, runId });
+  setTimeout(() => delayCtrl.abort(), 10);
+  await assert.rejects(() => pendingDelay, { name: 'AbortError' });
+  assert.equal(getEventListeners(delayCtrl.signal, 'abort').length, 0);
+
+  const okCtrl = new AbortController();
+  const okOut = await offlineDisp({ id: 'BYPASS-01' }, { signal: okCtrl.signal, projectRef: HARDCODED_TEMP_REF, runId });
+  assert.equal(okOut.status, 422);
+  assert.equal(getEventListeners(okCtrl.signal, 'abort').length, 0);
+
+  // 4. Signal mutated AFTER admission/barrier registration still uses intrinsic operations (zero override execution)
+  const mutCtrl = new AbortController();
+  const bMut = createOfflineBarrier('r11-02a-mut');
+  const waitP = bMut.wait(mutCtrl.signal);
+  mutCtrl.signal.addEventListener = () => { sentinelCalls++; };
+  mutCtrl.signal.removeEventListener = () => { sentinelCalls++; };
+  mutCtrl.abort();
+  await assert.rejects(() => waitP, { name: 'AbortError' });
+  assert.equal(sentinelCalls, 0);
+});
+
+test('140. H3-R11-02B: Binary payload admission rejects coercion overrides, accessors, Proxies, and subclasses while preserving exact independent bytes and SHA-256 integrity', async () => {
+  let sentinelCalls = 0;
+  const runId = 'r11-02b-run';
+  const seedUserId = '11111111-1111-4111-a111-111111111111';
+  const seedEmail = 'r11-02b-seed@proof.invalid';
+  const seedToken = createMockJwt({
+    iss: `https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1`,
+    ref: HARDCODED_TEMP_REF,
+    sub: seedUserId,
+    email: seedEmail,
+    role: 'authenticated'
+  });
+  const serviceRoleKey = validTestServiceRoleKey;
+  const inv = new TestRunInventory(runId, { seedUserId, seedEmail });
+
+  const uploadedBodies = [];
+  let downloadOverride = null;
+  const transport = createDeterministicFixtureTransport({
+    routes: [
+      { method: 'HEAD', urlIncludes: '/storage/v1/object/', status: 404, body: { error: 'not_found' } },
+      {
+        method: 'POST',
+        urlIncludes: '/storage/v1/object/',
+        status: 200,
+        body: { Key: `${STORAGE_PROBE_BUCKET}/${runId}/probe-fixture.txt` }
+      },
+      { method: 'POST', urlIncludes: '/rest/v1/rpc/task06i_lookup_storage_object_owner', status: 200, body: [{ owner_id: seedUserId }] }
+    ]
+  });
+
+  // Intercept via a registered deterministic transport wrapper? No, createDeterministicFixtureTransport already captures rawBytes/body!
+  // Let's use two separate transports: one for invalid inputs (0 calls) and one with dynamic download via separate route for exact vs mismatched bytes.
+  const adminClient = createHostedAdminClient({
+    projectRef: HARDCODED_TEMP_REF,
+    serviceRoleKey,
+    runId,
+    fetchFn: transport
+  });
+
+  // 1. Hostile binary inputs must all reject with 0 sentinel invocations and 0 transport calls
+  const u8ToString = new Uint8Array([1, 2, 3]);
+  u8ToString.toString = () => { sentinelCalls++; return 'evil'; };
+
+  const u8ValueOf = new Uint8Array([1, 2, 3]);
+  u8ValueOf.valueOf = () => { sentinelCalls++; return 'evil'; };
+
+  const u8ToPrim = new Uint8Array([1, 2, 3]);
+  Object.defineProperty(u8ToPrim, Symbol.toPrimitive, { value() { sentinelCalls++; return 'evil'; } });
+
+  const u8BufAccessor = new Uint8Array([1, 2, 3]);
+  Object.defineProperty(u8BufAccessor, 'buffer', { get() { sentinelCalls++; return new ArrayBuffer(3); } });
+
+  const u8OffsetAccessor = new Uint8Array([1, 2, 3]);
+  Object.defineProperty(u8OffsetAccessor, 'byteOffset', { get() { sentinelCalls++; return 0; } });
+
+  const u8LenAccessor = new Uint8Array([1, 2, 3]);
+  Object.defineProperty(u8LenAccessor, 'byteLength', { get() { sentinelCalls++; return 3; } });
+
+  const u8Proxy = new Proxy(new Uint8Array([1, 2, 3]), {
+    get(t, p, r) { sentinelCalls++; return Reflect.get(t, p, r); }
+  });
+
+  const forgedProto = Object.setPrototypeOf(new Uint8Array([1, 2, 3]), Object.create(Uint8Array.prototype));
+  class SubU8 extends Uint8Array {}
+  const subU8 = new SubU8([1, 2, 3]);
+  const int32 = new Int32Array([1, 2, 3]);
+
+  for (const badPayload of [u8ToString, u8ValueOf, u8ToPrim, u8BufAccessor, u8OffsetAccessor, u8LenAccessor, u8Proxy, forgedProto, subU8, int32]) {
+    await assert.rejects(
+      () => provisionStorageProbeFixture({
+        projectRef: HARDCODED_TEMP_REF,
+        runId,
+        seedUserId,
+        userAccessToken: seedToken,
+        serviceRoleKey,
+        adminClient,
+        fetchFn: transport,
+        inventory: inv,
+        probeContent: badPayload
+      }),
+      /INVALID_ADMISSION_TYPE/
+    );
+  }
+  assert.equal(sentinelCalls, 0);
+  assert.equal(transport.calls.length, 0);
+  assert.equal(inv.storageFixtures.size, 0);
+
+  // 2. Exact byte preservation for non-text Uint8Array, Buffer with null/high bytes, and sliced Uint8Array with nonzero offset
+  const rawBacking = new Uint8Array([0xaa, 0xbb, 0x00, 0xff, 0x0a, 0x7f, 0x80, 0xcc]);
+  const slicedInput = new Uint8Array(rawBacking.buffer, 2, 5); // [0x00, 0xff, 0x0a, 0x7f, 0x80]
+  const expectedSliceCopy = Buffer.from([0x00, 0xff, 0x0a, 0x7f, 0x80]);
+  const expectedSha = crypto.createHash('sha256').update(expectedSliceCopy).digest('hex');
+
+  const exactTransport = createDeterministicFixtureTransport({
+    routes: [
+      { method: 'GET', urlIncludes: '/auth/v1/user', status: 200, body: { id: seedUserId, email: seedEmail } },
+      { method: 'GET', urlIncludes: '/auth/v1/admin/users/', status: 200, body: { id: seedUserId, email: seedEmail } },
+      { method: 'GET', urlIncludes: '/storage/v1/object/', status: 404, times: 1, body: { error: 'not_found' } },
+      {
+        method: 'POST',
+        urlIncludes: '/storage/v1/object/',
+        status: 200,
+        body: { Key: `${STORAGE_PROBE_BUCKET}/${runId}/probe-fixture.txt` }
+      },
+      {
+        method: 'POST',
+        urlIncludes: '/rest/v1/rpc/task06i_lookup_storage_object_owner',
+        status: 200,
+        body: [{ id: '22222222-2222-4222-a222-222222222222', owner_id: seedUserId, bucket_id: STORAGE_PROBE_BUCKET, name: `${runId}/probe.txt` }]
+      },
+      {
+        method: 'GET',
+        urlIncludes: '/storage/v1/object/',
+        status: 200,
+        headers: { 'content-type': 'application/octet-stream' },
+        rawBytes: expectedSliceCopy
+      }
+    ]
+  });
+  const exactAdmin = createHostedAdminClient({
+    projectRef: HARDCODED_TEMP_REF,
+    serviceRoleKey,
+    runId,
+    fetchFn: exactTransport
+  });
+  const fixture = await provisionStorageProbeFixture({
+    projectRef: HARDCODED_TEMP_REF,
+    runId,
+    seedUserId,
+    userAccessToken: seedToken,
+    serviceRoleKey,
+    adminClient: exactAdmin,
+    fetchFn: exactTransport,
+    inventory: inv,
+    probeContent: slicedInput
+  });
+
+  // Mutate original backing buffer AFTER provisioning — must not affect fixture metadata or uploaded bytes
+  rawBacking.fill(0x55);
+  assert.equal(fixture.bytes, 5);
+  assert.equal(fixture.sha256, expectedSha);
+  const uploadCall = exactTransport.calls.find(c => c.method === 'POST' && c.url.includes('/storage/v1/object/'));
+  assert.ok(uploadCall);
+  assert.equal(uploadCall.body, expectedSliceCopy.toString('utf8'));
+
+  // 3. Same-length mismatched downloaded bytes must fail integrity verification
+  const runIdBad = 'r11-02b-mismatch';
+  const invBad = new TestRunInventory(runIdBad, { seedUserId, seedEmail });
+  const badDownloadTransport = createDeterministicFixtureTransport({
+    routes: [
+      { method: 'GET', urlIncludes: '/auth/v1/user', status: 200, body: { id: seedUserId, email: seedEmail } },
+      { method: 'GET', urlIncludes: '/auth/v1/admin/users/', status: 200, body: { id: seedUserId, email: seedEmail } },
+      { method: 'GET', urlIncludes: '/storage/v1/object/', status: 404, times: 1, body: { error: 'not_found' } },
+      {
+        method: 'POST',
+        urlIncludes: '/storage/v1/object/',
+        status: 200,
+        body: { Key: `${STORAGE_PROBE_BUCKET}/${runIdBad}/probe-fixture.txt` }
+      },
+      {
+        method: 'POST',
+        urlIncludes: '/rest/v1/rpc/task06i_lookup_storage_object_owner',
+        status: 200,
+        body: [{ id: '22222222-2222-4222-a222-222222222222', owner_id: seedUserId, bucket_id: STORAGE_PROBE_BUCKET, name: `${runIdBad}/probe.txt` }]
+      },
+      {
+        method: 'GET',
+        urlIncludes: '/storage/v1/object/',
+        status: 200,
+        headers: { 'content-type': 'application/octet-stream' },
+        rawBytes: Buffer.from([0x00, 0xff, 0x0a, 0x7f, 0x81]) // same length (5), 1 byte different
+      }
+    ]
+  });
+  const badDownloadAdmin = createHostedAdminClient({
+    projectRef: HARDCODED_TEMP_REF,
+    serviceRoleKey,
+    runId: runIdBad,
+    fetchFn: badDownloadTransport
+  });
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      projectRef: HARDCODED_TEMP_REF,
+      runId: runIdBad,
+      seedUserId,
+      userAccessToken: seedToken,
+      serviceRoleKey,
+      adminClient: badDownloadAdmin,
+      fetchFn: badDownloadTransport,
+      inventory: invBad,
+      probeContent: Buffer.from([0x00, 0xff, 0x0a, 0x7f, 0x80])
+    }),
+    /STORAGE_PROVISIONING_INTEGRITY_MISMATCH|STORAGE_OWNERSHIP_VERIFICATION_FAILED|sha256|mismatch/i
+  );
 });

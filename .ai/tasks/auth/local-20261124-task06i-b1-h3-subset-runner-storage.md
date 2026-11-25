@@ -688,3 +688,58 @@ Offline verification and independent diff review are complete for implementation
 - **Hosted Mutations:** `0`
 - **Cost:** `$0`
 - **Merge:** `NOT AUTHORIZED`
+
+---
+
+## 15. Revision R11 — Prototype-Safe Admission & Intrinsic Special-Object Security Closure
+
+**Bootstrap baseline:** Local/remote HEAD `ca6dfe07d4295c160441c7256168aa600ac134ea`, `main` `4569479e8fe2caa6659fe1cc6c7a484596a01bbc`, clean worktree, 46 review threads (44 resolved, 2 unresolved P1: `PRRT_kwDOVtCmZc673fHh`, `PRRT_kwDOVtCmZc673jKU`), 6 successful checks (Cursor Security Reviewer PASS, Cursor Bugbot NEUTRAL), and independent `im-tio` review `CHANGES_REQUESTED` (`2026-11-25T11:26:23Z`).
+
+### R11 Security Contracts
+
+1. **Prototype-Safe Admission & Schema Metadata Integrity (`PRRT_kwDOVtCmZc673fHh` P1):**
+   - `admitValidatedInput()` constructs `admitted = Object.create(null)` and defines fields via `setNullProtoField()` (`Object.defineProperty`), preventing omitted optional fields (`probeTimeoutMs`, `settlementTimeoutMs`, `inventory`, `runContext`, `adminClient`, `timing`, etc.) from resolving through `Object.prototype`.
+   - `deepFreezeNullProto()` builds `INTERNAL_ADMISSION_SCHEMAS` and `UNIFIED_ADMISSION_SCHEMAS` with `null` prototypes at registry, schema, and field-spec levels; `ownSchemaMeta()` reads optional flags (`required`, `nullable`, `integer`, `min`, `max`, `allowEmpty`, `trimNonEmpty`, `deferRunnerRejection`, `errorCode`) strictly via `Object.hasOwn`.
+   - Prototype-sensitive `'__proto__'` own keys are rejected in `extractValidatedPlainOptions()` and `clonePlainData()`.
+2. **Trusted Cancellation (`AbortSignal`) Contract (`PRRT_kwDOVtCmZc673jKU` P1):**
+   - `validateTrustedAbortSignal()` rejects Proxies, forged prototypes, subclasses, own `aborted`/`reason`/`addEventListener`/`removeEventListener` accessors or overrides, and `Symbol.toStringTag` overrides, and verifies the internal `[[AbortSignal]]` slot using captured `INTRINSIC_ABORT_SIGNAL_ABORTED_GET`.
+   - All consumers (`createOfflineBarrier`, `createDeterministicFixtureTransport`, `createTrustedOfflineDispatcher`, `createHostedAdminClient` ownership lookup) use captured intrinsics (`INTRINSIC_ABORT_SIGNAL_ABORTED_GET`, `INTRINSIC_ABORT_SIGNAL_ADD_EVENT_LISTENER`, `INTRINSIC_ABORT_SIGNAL_REMOVE_EVENT_LISTENER`), ignoring caller overrides even if mutated after registration.
+3. **Binary Payload Integrity Contract (`PRRT_kwDOVtCmZc673jKU` P1):**
+   - `snapshotTrustedBinaryInput()` accepts only genuine non-Proxy, non-subclassed `Uint8Array`, `Buffer`, or `DataView` instances with `ArrayBuffer.prototype` backing, rejects own accessors/method overrides/`Symbol` properties, extracts `buffer`/`byteOffset`/`byteLength` via captured intrinsics, and copies exact bytes via `INTRINSIC_UINT8_ARRAY_SLICE` into an independent module-owned `Buffer`.
+   - `cloneBinaryViewToIndependentBuffer()` and `toIndependentBytesBuffer()` use `snapshotTrustedBinaryInput()` (no `String(binaryInput)` coercion). `provisionStorageProbeFixture()` uses the single admitted/snapshotted `expectedBuf` for upload body, expected length, SHA-256 digest, and download verification.
+
+### Source-Backed Special-Object & Executable Dependency Audit (R11)
+
+| Input / Consumer | Validation & Snapshot | Intrinsic / Isolated Execution | Regression Test |
+|---|---|---|---|
+| Admitted option records (`admitValidatedInput`) | `Object.create(null)` + `extractValidatedPlainOptions` + `__proto__` rejection | Own-property destructuring only | Test 138 |
+| Schema metadata (`INTERNAL_ADMISSION_SCHEMAS`) | `deepFreezeNullProto` + `ownSchemaMeta()` (`Object.hasOwn`) | Immutable null-prototype descriptors | Tests 135, 138 |
+| `AbortSignal` (`barrier`, `transport`, `offlineDispatcher`, `hostedDispatcher`, `adminClient`) | `validateTrustedAbortSignal()` | `INTRINSIC_ABORT_SIGNAL_*` `.call()` | Test 139 |
+| Binary payloads (`string_or_binary`, `provisionStorageProbeFixture`, `clonePlainData`) | `snapshotTrustedBinaryInput()` | `INTRINSIC_TYPED_ARRAY_*` / `INTRINSIC_DATA_VIEW_*` + `INTRINSIC_UINT8_ARRAY_SLICE` | Tests 111, 140 |
+
+*Threat model note:* Application-level admission validation defends against untrusted caller inputs, prototype pollution on `Object.prototype`, coercive objects, and special-object instance overrides across documented APIs; it is not a general-purpose JavaScript VM sandbox, and offline tests remain additionally isolated via Docker `--network none`.
+
+### R11 Verification Matrix
+
+| Check Executed | Result / Exit Code |
+|---|---|
+| `node --test experiments/task06i/hosted-probe-runner.test.mjs` | **144/144 PASS**, exit 0 (includes Tests 138–140) |
+| Docker `node:24-bookworm --network none --pull never` runner suite | **144/144 PASS**, exit 0 |
+| `node --test experiments/task06i/*.test.mjs` | **212/212 PASS**, exit 0 |
+| `node experiments/task06i/sql-contract-parity.mjs` | **POSTGRES_VERIFIED** on PostgreSQL 17.11, exit 0 |
+| `node --test experiments/task06h/*.test.mjs` | **115/115 PASS**, exit 0 |
+| `npm run verify` | Tokens guard, `tsc --noEmit`, `eslint --max-warnings=0`, **22/22 shell tests PASS**, exit 0 |
+| `git diff --check` & `git diff --check origin/main...HEAD` | **CLEAN**, exit 0 |
+
+### Final R11 Decisions
+
+- **H3 Subset Runner:** `IMPLEMENTED_OFFLINE_TESTED / BLOCKED`
+- **H3 Storage Lifecycle:** `IMPLEMENTED_OFFLINE_TESTED / BLOCKED`
+- **Durable Recovery:** `NOT IMPLEMENTED`
+- **Run-Created Seed Support:** `NOT IMPLEMENTED`
+- **Hosted Verification:** `0/18`
+- **Hosted LIVE:** `NOT AUTHORIZED`
+- **Production Real Auth:** `STRICT NO-GO`
+- **Hosted Mutations:** `0`
+- **Cost:** `$0`
+- **Merge:** `NOT AUTHORIZED`

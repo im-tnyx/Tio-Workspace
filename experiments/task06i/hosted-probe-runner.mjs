@@ -124,6 +124,81 @@ export function getFetchIsolationDebugState() {
   return GlobalFetchIsolationCoordinator.getState();
 }
 
+const INTRINSIC_ABORT_SIGNAL_PROTO = AbortSignal.prototype;
+const INTRINSIC_ABORT_SIGNAL_ABORTED_GET = Object.getOwnPropertyDescriptor(INTRINSIC_ABORT_SIGNAL_PROTO, 'aborted')?.get;
+const INTRINSIC_ABORT_SIGNAL_REASON_GET = Object.getOwnPropertyDescriptor(INTRINSIC_ABORT_SIGNAL_PROTO, 'reason')?.get;
+const INTRINSIC_ABORT_SIGNAL_ADD_EVENT_LISTENER = INTRINSIC_ABORT_SIGNAL_PROTO.addEventListener;
+const INTRINSIC_ABORT_SIGNAL_REMOVE_EVENT_LISTENER = INTRINSIC_ABORT_SIGNAL_PROTO.removeEventListener;
+
+const INTRINSIC_TYPED_ARRAY_PROTO = Object.getPrototypeOf(Uint8Array.prototype);
+const INTRINSIC_TYPED_ARRAY_BUFFER_GET = Object.getOwnPropertyDescriptor(INTRINSIC_TYPED_ARRAY_PROTO, 'buffer')?.get;
+const INTRINSIC_TYPED_ARRAY_BYTE_OFFSET_GET = Object.getOwnPropertyDescriptor(INTRINSIC_TYPED_ARRAY_PROTO, 'byteOffset')?.get;
+const INTRINSIC_TYPED_ARRAY_BYTE_LENGTH_GET = Object.getOwnPropertyDescriptor(INTRINSIC_TYPED_ARRAY_PROTO, 'byteLength')?.get;
+const INTRINSIC_DATA_VIEW_BUFFER_GET = Object.getOwnPropertyDescriptor(DataView.prototype, 'buffer')?.get;
+const INTRINSIC_DATA_VIEW_BYTE_OFFSET_GET = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteOffset')?.get;
+const INTRINSIC_DATA_VIEW_BYTE_LENGTH_GET = Object.getOwnPropertyDescriptor(DataView.prototype, 'byteLength')?.get;
+const INTRINSIC_UINT8_ARRAY_SLICE = Uint8Array.prototype.slice;
+const INTRINSIC_ARRAY_BUFFER_BYTE_LENGTH_GET = Object.getOwnPropertyDescriptor(ArrayBuffer.prototype, 'byteLength')?.get;
+
+function validateTrustedAbortSignal(signal, label = 'signal') {
+  if (utilTypes.isProxy(signal)) {
+    throw new Error(`INVALID_ADMISSION_TYPE: Proxy AbortSignal rejected at '${label}' (R11-02A)`);
+  }
+  if (!signal || typeof signal !== 'object' || Object.getPrototypeOf(signal) !== INTRINSIC_ABORT_SIGNAL_PROTO) {
+    throw new Error(`INVALID_ADMISSION_TYPE: Expected genuine non-subclassed AbortSignal at '${label}' (R11-02A)`);
+  }
+  try {
+    INTRINSIC_ABORT_SIGNAL_ABORTED_GET.call(signal);
+    if (INTRINSIC_ABORT_SIGNAL_REASON_GET) {
+      INTRINSIC_ABORT_SIGNAL_REASON_GET.call(signal);
+    }
+  } catch {
+    throw new Error(`INVALID_ADMISSION_TYPE: Forged AbortSignal internal slot rejected at '${label}' (R11-02A)`);
+  }
+  const forbiddenOwnKeys = new Set([
+    'addEventListener',
+    'removeEventListener',
+    'dispatchEvent',
+    'aborted',
+    'reason',
+    'onabort',
+    'throwIfAborted'
+  ]);
+  for (const key of Object.getOwnPropertyNames(signal)) {
+    const desc = Object.getOwnPropertyDescriptor(signal, key);
+    if (!desc || typeof desc.get === 'function' || typeof desc.set === 'function') {
+      throw new Error(`INVALID_ADMISSION_TYPE: Own accessor '${key}' on AbortSignal rejected at '${label}' (R11-02A)`);
+    }
+    if (forbiddenOwnKeys.has(key) || typeof desc.value === 'function') {
+      throw new Error(`INVALID_ADMISSION_TYPE: Own override '${key}' on AbortSignal rejected at '${label}' (R11-02A)`);
+    }
+  }
+  if (Object.getOwnPropertyDescriptor(signal, Symbol.toStringTag) !== undefined) {
+    throw new Error(`INVALID_ADMISSION_TYPE: Symbol.toStringTag override on AbortSignal rejected at '${label}' (R11-02A)`);
+  }
+  return signal;
+}
+
+function isTrustedSignalAborted(signal) {
+  if (signal === null || signal === undefined) return false;
+  validateTrustedAbortSignal(signal, 'signal');
+  return Boolean(INTRINSIC_ABORT_SIGNAL_ABORTED_GET.call(signal));
+}
+
+function addTrustedSignalAbortListener(signal, listener) {
+  if (signal === null || signal === undefined) return;
+  validateTrustedAbortSignal(signal, 'signal');
+  INTRINSIC_ABORT_SIGNAL_ADD_EVENT_LISTENER.call(signal, 'abort', listener, { once: true });
+}
+
+function removeTrustedSignalAbortListener(signal, listener) {
+  if (signal === null || signal === undefined) return;
+  if (utilTypes.isProxy(signal) || !signal || typeof signal !== 'object' || Object.getPrototypeOf(signal) !== INTRINSIC_ABORT_SIGNAL_PROTO) {
+    throw new Error('INVALID_ADMISSION_TYPE: Expected genuine AbortSignal on listener cleanup (R11-02A)');
+  }
+  INTRINSIC_ABORT_SIGNAL_REMOVE_EVENT_LISTENER.call(signal, 'abort', listener);
+}
+
 /**
  * Creates a declarative deterministic barrier for offline concurrency testing (R3-02, R3-03, R3-04, R4-03).
  * Contains no arbitrary network capabilities and settles both wait() and waitForArrivals() waiters on release.
@@ -136,8 +211,8 @@ export function createOfflineBarrier(name = 'offline-barrier') {
   const arrivalWaiters = new Set();
 
   function detachAbort(entry) {
-    if (entry.signal && entry.onAbort && typeof entry.signal.removeEventListener === 'function') {
-      entry.signal.removeEventListener('abort', entry.onAbort);
+    if (entry.signal && entry.onAbort) {
+      removeTrustedSignalAbortListener(entry.signal, entry.onAbort);
     }
     entry.onAbort = null;
   }
@@ -175,7 +250,7 @@ export function createOfflineBarrier(name = 'offline-barrier') {
     },
     wait(signal = null) {
       if (released) return Promise.resolve();
-      if (signal && signal.aborted) {
+      if (isTrustedSignalAborted(signal)) {
         return Promise.reject(createAbortError());
       }
       return new Promise((resolve, reject) => {
@@ -198,12 +273,12 @@ export function createOfflineBarrier(name = 'offline-barrier') {
             }
           }
         };
-        if (signal && typeof signal.addEventListener === 'function') {
+        if (signal !== null && signal !== undefined) {
           entry.onAbort = () => {
             waiters.delete(entry);
             entry.reject(createAbortError());
           };
-          signal.addEventListener('abort', entry.onAbort, { once: true });
+          addTrustedSignalAbortListener(signal, entry.onAbort);
         }
         waiters.add(entry);
       });
@@ -217,7 +292,7 @@ export function createOfflineBarrier(name = 'offline-barrier') {
         );
       }
       if (arrivedCount >= target) return Promise.resolve();
-      if (signal && signal.aborted) {
+      if (isTrustedSignalAborted(signal)) {
         return Promise.reject(createAbortError());
       }
       if (released) {
@@ -244,12 +319,12 @@ export function createOfflineBarrier(name = 'offline-barrier') {
             }
           }
         };
-        if (signal && typeof signal.addEventListener === 'function') {
+        if (signal !== null && signal !== undefined) {
           entry.onAbort = () => {
             arrivalWaiters.delete(entry);
             entry.reject(createAbortError());
           };
-          signal.addEventListener('abort', entry.onAbort, { once: true });
+          addTrustedSignalAbortListener(signal, entry.onAbort);
         }
         arrivalWaiters.add(entry);
       });
@@ -362,31 +437,90 @@ function validateDeclarativeFixtureValue(val, pathLabel = 'spec', seen = new Wea
   seen.delete(val);
 }
 
+function snapshotTrustedBinaryInput(rawVal, label = 'binary') {
+  if (utilTypes.isProxy(rawVal)) {
+    throw new Error(`INVALID_ADMISSION_TYPE: Proxy binary input rejected at '${label}' (R11-02B)`);
+  }
+  if (!rawVal || typeof rawVal !== 'object') {
+    throw new Error(`INVALID_ADMISSION_TYPE: Expected genuine Uint8Array or Buffer at '${label}' (R11-02B)`);
+  }
+  const proto = Object.getPrototypeOf(rawVal);
+  const isDataView = proto === DataView.prototype;
+  if (proto !== Uint8Array.prototype && proto !== Buffer.prototype && !isDataView) {
+    throw new Error(`INVALID_ADMISSION_TYPE: Unsupported binary prototype/subclass rejected at '${label}' (R11-02B)`);
+  }
+  const forbiddenOwnKeys = new Set([
+    'toString',
+    'valueOf',
+    'buffer',
+    'byteOffset',
+    'byteLength',
+    'slice',
+    'subarray',
+    'set',
+    'copy'
+  ]);
+  for (const key of Object.getOwnPropertyNames(rawVal)) {
+    const desc = Object.getOwnPropertyDescriptor(rawVal, key);
+    if (!desc || typeof desc.get === 'function' || typeof desc.set === 'function') {
+      throw new Error(`INVALID_ADMISSION_TYPE: Own accessor '${key}' on binary input rejected at '${label}' (R11-02B)`);
+    }
+    if (forbiddenOwnKeys.has(key) || typeof desc.value === 'function') {
+      throw new Error(`INVALID_ADMISSION_TYPE: Own override '${key}' on binary input rejected at '${label}' (R11-02B)`);
+    }
+  }
+  if (Object.getOwnPropertySymbols(rawVal).length > 0) {
+    throw new Error(`INVALID_ADMISSION_TYPE: Own symbol property on binary input rejected at '${label}' (R11-02B)`);
+  }
+  let ab;
+  let offset;
+  let len;
+  try {
+    ab = (isDataView ? INTRINSIC_DATA_VIEW_BUFFER_GET : INTRINSIC_TYPED_ARRAY_BUFFER_GET).call(rawVal);
+    offset = (isDataView ? INTRINSIC_DATA_VIEW_BYTE_OFFSET_GET : INTRINSIC_TYPED_ARRAY_BYTE_OFFSET_GET).call(rawVal);
+    len = (isDataView ? INTRINSIC_DATA_VIEW_BYTE_LENGTH_GET : INTRINSIC_TYPED_ARRAY_BYTE_LENGTH_GET).call(rawVal);
+  } catch {
+    throw new Error(`INVALID_ADMISSION_TYPE: Forged binary internal slot rejected at '${label}' (R11-02B)`);
+  }
+  if (!ab || utilTypes.isProxy(ab) || Object.getPrototypeOf(ab) !== ArrayBuffer.prototype) {
+    throw new Error(`INVALID_ADMISSION_TYPE: Unsupported backing ArrayBuffer rejected at '${label}' (R11-02B)`);
+  }
+  const view = new Uint8Array(ab, offset, len);
+  const independent = INTRINSIC_UINT8_ARRAY_SLICE.call(view, 0, len);
+  return Buffer.from(independent.buffer, 0, independent.byteLength);
+}
+
 function cloneBinaryViewToIndependentBuffer(view) {
-  const copy = new Uint8Array(view.byteLength);
-  copy.set(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
-  return Buffer.from(copy.buffer, 0, copy.byteLength);
+  return snapshotTrustedBinaryInput(view, 'binaryView');
 }
 
 function toIndependentBytesBuffer(rawVal) {
+  if (typeof rawVal === 'string') {
+    const strBuf = Buffer.from(rawVal, 'utf8');
+    return snapshotTrustedBinaryInput(strBuf, 'stringBytes');
+  }
   if (rawVal instanceof ArrayBuffer) {
-    const copy = Uint8Array.from(new Uint8Array(rawVal));
-    return Buffer.from(copy.buffer, 0, copy.byteLength);
+    if (utilTypes.isProxy(rawVal) || Object.getPrototypeOf(rawVal) !== ArrayBuffer.prototype) {
+      throw new Error('INVALID_ADMISSION_TYPE: Unsupported ArrayBuffer rejected (R11-02B)');
+    }
+    const len = INTRINSIC_ARRAY_BUFFER_BYTE_LENGTH_GET.call(rawVal);
+    const independent = INTRINSIC_UINT8_ARRAY_SLICE.call(new Uint8Array(rawVal, 0, len), 0, len);
+    return Buffer.from(independent.buffer, 0, independent.byteLength);
   }
-  if (ArrayBuffer.isView(rawVal)) {
-    return cloneBinaryViewToIndependentBuffer(rawVal);
-  }
-  const strBuf = Buffer.from(String(rawVal), 'utf8');
-  return cloneBinaryViewToIndependentBuffer(strBuf);
+  return snapshotTrustedBinaryInput(rawVal, 'bytesBuffer');
 }
 
 function clonePlainData(val) {
   if (val === null || val === undefined || typeof val !== 'object') return val;
   if (val instanceof ArrayBuffer) {
-    return Uint8Array.from(new Uint8Array(val)).buffer;
+    if (utilTypes.isProxy(val) || Object.getPrototypeOf(val) !== ArrayBuffer.prototype) {
+      throw new Error('INVALID_ADMISSION_TYPE: Unsupported ArrayBuffer in plain data (R11-02B)');
+    }
+    const len = INTRINSIC_ARRAY_BUFFER_BYTE_LENGTH_GET.call(val);
+    return INTRINSIC_UINT8_ARRAY_SLICE.call(new Uint8Array(val, 0, len), 0, len).buffer;
   }
   if (ArrayBuffer.isView(val)) {
-    return cloneBinaryViewToIndependentBuffer(val);
+    return snapshotTrustedBinaryInput(val, 'plainDataBinary');
   }
   if (utilTypes.isRegExp(val)) {
     return new RegExp(INTRINSIC_REGEXP_SOURCE_GET.call(val), INTRINSIC_REGEXP_FLAGS_GET.call(val));
@@ -402,6 +536,9 @@ function clonePlainData(val) {
   }
   const out = {};
   for (const k of Object.getOwnPropertyNames(val)) {
+    if (k === '__proto__') {
+      throw new Error('INVALID_DETERMINISTIC_FIXTURE_SPEC: Prototype-sensitive key \'__proto__\' rejected (R11-01)');
+    }
     const desc = Object.getOwnPropertyDescriptor(val, k);
     if (desc && Object.hasOwn(desc, 'value')) {
       Object.defineProperty(out, k, {
@@ -528,6 +665,9 @@ function extractValidatedPlainOptions(rawInput, label, { allowNullUndefined = tr
   }
   const snapshot = Object.create(null);
   for (const key of Object.getOwnPropertyNames(rawInput)) {
+    if (key === '__proto__') {
+      throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Prototype-sensitive key '__proto__' rejected at '${label}' (R11-01)`);
+    }
     const desc = Object.getOwnPropertyDescriptor(rawInput, key);
     if (!desc || typeof desc.get === 'function' || typeof desc.set === 'function') {
       throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Accessor property rejected at '${label}.${key}' (R7-02)`);
@@ -596,19 +736,27 @@ function snapshotStringArray(
  * Every public execution path admits inputs through extractValidatedPlainOptions() + schema field contracts
  * before any subsequent property read or capability invocation.
  */
-function deepFreeze(obj) {
+function deepFreezeNullProto(obj) {
   if (obj === null || typeof obj !== 'object') return obj;
-  Object.freeze(obj);
-  for (const key of Object.getOwnPropertyNames(obj)) {
-    const val = obj[key];
-    if (val !== null && typeof val === 'object' && !Object.isFrozen(val)) {
-      deepFreeze(val);
+  if (Array.isArray(obj)) {
+    for (let i = 0; i < obj.length; i++) {
+      deepFreezeNullProto(obj[i]);
     }
+    return Object.freeze(obj);
   }
-  return obj;
+  const out = Object.create(null);
+  for (const key of Object.getOwnPropertyNames(obj)) {
+    Object.defineProperty(out, key, {
+      value: deepFreezeNullProto(obj[key]),
+      enumerable: true,
+      writable: false,
+      configurable: false
+    });
+  }
+  return Object.freeze(out);
 }
 
-const INTERNAL_ADMISSION_SCHEMAS = deepFreeze({
+const INTERNAL_ADMISSION_SCHEMAS = deepFreezeNullProto({
   runnerOptions: {
     projectRef: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'project' },
     tempRef: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'project' },
@@ -743,18 +891,31 @@ const INTERNAL_ADMISSION_SCHEMAS = deepFreeze({
 
 export const UNIFIED_ADMISSION_SCHEMAS = INTERNAL_ADMISSION_SCHEMAS;
 
+function ownSchemaMeta(spec, prop, fallback = undefined) {
+  return spec && Object.hasOwn(spec, prop) ? spec[prop] : fallback;
+}
+
+function setNullProtoField(target, key, value) {
+  Object.defineProperty(target, key, {
+    value,
+    enumerable: true,
+    writable: true,
+    configurable: true
+  });
+}
+
 function admitValidatedInput(rawInput, schemaName, { allowNullUndefined = true } = {}) {
-  const schema = Object.prototype.hasOwnProperty.call(INTERNAL_ADMISSION_SCHEMAS, schemaName)
+  const schema = Object.hasOwn(INTERNAL_ADMISSION_SCHEMAS, schemaName)
     ? INTERNAL_ADMISSION_SCHEMAS[schemaName]
     : null;
   if (!schema) {
     throw new Error(`UNKNOWN_ADMISSION_SCHEMA: Admission schema '${schemaName}' is not registered (R10-01)`);
   }
   const snapshot = extractValidatedPlainOptions(rawInput, schemaName, { allowNullUndefined });
-  const admitted = {};
+  const admitted = Object.create(null);
 
   for (const key of Object.getOwnPropertyNames(snapshot)) {
-    const spec = Object.prototype.hasOwnProperty.call(schema, key) ? schema[key] : null;
+    const spec = Object.hasOwn(schema, key) ? schema[key] : null;
     if (!spec) {
       throw new Error(
         `UNTRUSTED_ADMISSION_KEY: Unknown field '${key}' rejected at '${schemaName}' (R10-01)`
@@ -762,19 +923,24 @@ function admitValidatedInput(rawInput, schemaName, { allowNullUndefined = true }
     }
     const val = snapshot[key];
     if (val === undefined) continue;
+    const specType = ownSchemaMeta(spec, 'type');
+    const specKind = ownSchemaMeta(spec, 'kind');
+    const isNullable = Boolean(ownSchemaMeta(spec, 'nullable', false));
+    const deferRunnerRejection = Boolean(ownSchemaMeta(spec, 'deferRunnerRejection', false));
+
     if (val === null) {
-      if (spec.nullable) {
-        admitted[key] = null;
+      if (isNullable) {
+        setNullProtoField(admitted, key, null);
         continue;
       }
       throw new Error(
-        `INVALID_ADMISSION_TYPE: Null value rejected at '${schemaName}.${key}' (expected ${spec.type}) (R10-01)`
+        `INVALID_ADMISSION_TYPE: Null value rejected at '${schemaName}.${key}' (expected ${specType}) (R10-01)`
       );
     }
 
-    if (typeof val === 'function' && spec.kind === 'inert_data') {
-      if (spec.deferRunnerRejection) {
-        admitted[key] = val;
+    if (typeof val === 'function' && specKind === 'inert_data') {
+      if (deferRunnerRejection) {
+        setNullProtoField(admitted, key, val);
         continue;
       }
       throw new Error(
@@ -782,14 +948,14 @@ function admitValidatedInput(rawInput, schemaName, { allowNullUndefined = true }
       );
     }
 
-    switch (spec.type) {
+    switch (specType) {
       case 'string': {
         if (typeof val !== 'string') {
           throw new Error(
             `INVALID_ADMISSION_TYPE: Expected string at '${schemaName}.${key}', received ${typeof val} (R10-01)`
           );
         }
-        admitted[key] = val;
+        setNullProtoField(admitted, key, val);
         break;
       }
       case 'number': {
@@ -798,22 +964,24 @@ function admitValidatedInput(rawInput, schemaName, { allowNullUndefined = true }
             `INVALID_ADMISSION_TYPE: Expected finite number at '${schemaName}.${key}' (R10-01)`
           );
         }
-        if (spec.integer && !Number.isInteger(val)) {
+        if (Boolean(ownSchemaMeta(spec, 'integer', false)) && !Number.isInteger(val)) {
           throw new Error(
             `INVALID_ADMISSION_TYPE: Expected integer at '${schemaName}.${key}' (R10-01)`
           );
         }
-        if (typeof spec.min === 'number' && val < spec.min) {
+        const minVal = ownSchemaMeta(spec, 'min');
+        if (typeof minVal === 'number' && val < minVal) {
           throw new Error(
-            `INVALID_ADMISSION_RANGE: Value ${val} at '${schemaName}.${key}' is below minimum ${spec.min} (R10-01)`
+            `INVALID_ADMISSION_RANGE: Value ${val} at '${schemaName}.${key}' is below minimum ${minVal} (R10-01)`
           );
         }
-        if (typeof spec.max === 'number' && val > spec.max) {
+        const maxVal = ownSchemaMeta(spec, 'max');
+        if (typeof maxVal === 'number' && val > maxVal) {
           throw new Error(
-            `INVALID_ADMISSION_RANGE: Value ${val} at '${schemaName}.${key}' exceeds maximum ${spec.max} (R10-01)`
+            `INVALID_ADMISSION_RANGE: Value ${val} at '${schemaName}.${key}' exceeds maximum ${maxVal} (R10-01)`
           );
         }
-        admitted[key] = val;
+        setNullProtoField(admitted, key, val);
         break;
       }
       case 'boolean': {
@@ -822,92 +990,89 @@ function admitValidatedInput(rawInput, schemaName, { allowNullUndefined = true }
             `INVALID_ADMISSION_TYPE: Expected boolean at '${schemaName}.${key}', received ${typeof val} (R10-01)`
           );
         }
-        admitted[key] = val;
+        setNullProtoField(admitted, key, val);
         break;
       }
       case 'string_array': {
-        admitted[key] = snapshotStringArray(val, `${schemaName}.${key}`, {
-          allowEmpty: spec.allowEmpty !== false,
-          trimNonEmpty: Boolean(spec.trimNonEmpty),
-          errorCode: spec.errorCode || 'INVALID_ADMISSION_TYPE'
-        });
+        const allowEmpty = ownSchemaMeta(spec, 'allowEmpty');
+        const trimNonEmpty = Boolean(ownSchemaMeta(spec, 'trimNonEmpty', false));
+        const errorCode = ownSchemaMeta(spec, 'errorCode', 'INVALID_ADMISSION_TYPE');
+        setNullProtoField(admitted, key, snapshotStringArray(val, `${schemaName}.${key}`, {
+          allowEmpty: allowEmpty !== false,
+          trimNonEmpty,
+          errorCode
+        }));
         break;
       }
       case 'env_record': {
-        admitted[key] = snapshotRunnerEnv(val);
+        setNullProtoField(admitted, key, snapshotRunnerEnv(val));
         break;
       }
       case 'declarative_record': {
-        if (spec.deferRunnerRejection) {
-          admitted[key] = val;
+        if (deferRunnerRejection) {
+          setNullProtoField(admitted, key, val);
         } else {
           validateDeclarativeFixtureValue(val, `${schemaName}.${key}`);
-          admitted[key] = clonePlainData(val);
+          setNullProtoField(admitted, key, clonePlainData(val));
         }
         break;
       }
       case 'string_or_binary': {
-        if (typeof val !== 'string' && !(val instanceof Uint8Array) && !Buffer.isBuffer(val)) {
-          throw new Error(
-            `INVALID_ADMISSION_TYPE: Expected string or binary buffer at '${schemaName}.${key}' (R10-01)`
-          );
+        if (typeof val === 'string') {
+          setNullProtoField(admitted, key, val);
+        } else {
+          setNullProtoField(admitted, key, snapshotTrustedBinaryInput(val, `${schemaName}.${key}`));
         }
-        admitted[key] = val;
         break;
       }
       case 'abort_signal': {
-        if (utilTypes.isProxy(val) || !(val instanceof AbortSignal)) {
-          throw new Error(
-            `INVALID_ADMISSION_TYPE: Expected non-Proxy AbortSignal at '${schemaName}.${key}' (R10-01)`
-          );
-        }
-        admitted[key] = val;
+        setNullProtoField(admitted, key, validateTrustedAbortSignal(val, `${schemaName}.${key}`));
         break;
       }
       case 'trusted_transport': {
         assertOfflineMockTransport(val);
-        admitted[key] = val;
+        setNullProtoField(admitted, key, val);
         break;
       }
       case 'trusted_offline_dispatcher': {
-        if (spec.deferRunnerRejection) {
-          admitted[key] = val;
+        if (deferRunnerRejection) {
+          setNullProtoField(admitted, key, val);
         } else {
           assertTrustedOfflineDispatcher(val, { requireRunBinding: false });
-          admitted[key] = val;
+          setNullProtoField(admitted, key, val);
         }
         break;
       }
       case 'trusted_admin_client': {
-        if (spec.deferRunnerRejection) {
-          admitted[key] = val;
+        if (deferRunnerRejection) {
+          setNullProtoField(admitted, key, val);
         } else {
           assertTrustedAdminClient(val, { requireRunBinding: false });
-          admitted[key] = val;
+          setNullProtoField(admitted, key, val);
         }
         break;
       }
       case 'trusted_inventory': {
-        if (spec.deferRunnerRejection) {
-          admitted[key] = val;
+        if (deferRunnerRejection) {
+          setNullProtoField(admitted, key, val);
         } else {
           assertTrustedRunInventory(val, {});
-          admitted[key] = val;
+          setNullProtoField(admitted, key, val);
         }
         break;
       }
       case 'trusted_run_context': {
-        if (spec.deferRunnerRejection) {
-          admitted[key] = val;
+        if (deferRunnerRejection) {
+          setNullProtoField(admitted, key, val);
         } else {
           assertTrustedRunContext(val, {});
-          admitted[key] = val;
+          setNullProtoField(admitted, key, val);
         }
         break;
       }
       case 'any_rejected_callback': {
-        if (spec.deferRunnerRejection) {
-          admitted[key] = val;
+        if (deferRunnerRejection) {
+          setNullProtoField(admitted, key, val);
         } else {
           throw new Error(
             `BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_EXECUTABLE_INPUT: Callback override '${schemaName}.${key}' is strictly prohibited (R10-01)`
@@ -917,14 +1082,14 @@ function admitValidatedInput(rawInput, schemaName, { allowNullUndefined = true }
       }
       default:
         throw new Error(
-          `UNKNOWN_ADMISSION_FIELD_TYPE: Unsupported schema type '${spec.type}' at '${schemaName}.${key}' (R10-01)`
+          `UNKNOWN_ADMISSION_FIELD_TYPE: Unsupported schema type '${specType}' at '${schemaName}.${key}' (R10-01)`
         );
     }
   }
 
   for (const fieldName of Object.getOwnPropertyNames(schema)) {
     const spec = schema[fieldName];
-    if (spec.required && !Object.prototype.hasOwnProperty.call(admitted, fieldName)) {
+    if (Boolean(ownSchemaMeta(spec, 'required', false)) && !Object.hasOwn(admitted, fieldName)) {
       throw new Error(
         `MISSING_REQUIRED_ADMISSION_FIELD: Required field '${schemaName}.${fieldName}' is missing (R10-01)`
       );
@@ -1138,18 +1303,18 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
             reject(abortErr);
           };
           timer = setTimeout(() => {
-            if (signal && typeof signal.removeEventListener === 'function') {
-              signal.removeEventListener('abort', onAbort);
+            if (signal !== null && signal !== undefined) {
+              removeTrustedSignalAbortListener(signal, onAbort);
             }
             resolve();
           }, selected.delayMs);
-          if (signal && typeof signal.addEventListener === 'function') {
-            if (signal.aborted) {
+          if (signal !== null && signal !== undefined) {
+            if (isTrustedSignalAborted(signal)) {
               clearTimeout(timer);
               onAbort();
               return;
             }
-            signal.addEventListener('abort', onAbort, { once: true });
+            addTrustedSignalAbortListener(signal, onAbort);
           }
         });
       }
@@ -1438,10 +1603,10 @@ export function createTrustedOfflineDispatcher(rawSpec = {}) {
                 }, descriptor.rejectAfterAbortMs);
               }
             };
-            if (signal.aborted) {
+            if (isTrustedSignalAborted(signal)) {
               onAbort();
-            } else if (typeof signal.addEventListener === 'function') {
-              signal.addEventListener('abort', onAbort, { once: true });
+            } else if (signal !== null && signal !== undefined) {
+              addTrustedSignalAbortListener(signal, onAbort);
             }
           }
         });
@@ -1461,17 +1626,17 @@ export function createTrustedOfflineDispatcher(rawSpec = {}) {
             reject(abortErr);
           };
           timer = setTimeout(() => {
-            if (signal && typeof signal.removeEventListener === 'function') {
-              signal.removeEventListener('abort', onAbort);
+            if (signal !== null && signal !== undefined) {
+              removeTrustedSignalAbortListener(signal, onAbort);
             }
             resolve();
           }, descriptor.delayMs);
-          if (signal && typeof signal.addEventListener === 'function') {
-            if (signal.aborted) {
+          if (signal !== null && signal !== undefined) {
+            if (isTrustedSignalAborted(signal)) {
               onAbort();
               if (descriptor.ignoreAbort !== true) return;
             } else {
-              signal.addEventListener('abort', onAbort, { once: true });
+              addTrustedSignalAbortListener(signal, onAbort);
             }
           }
         });
@@ -2510,7 +2675,7 @@ function snapshotRunnerEnv(rawEnv = {}) {
   }
   if (source === process.env) {
     const authDesc = Object.getOwnPropertyDescriptor(process.env, 'TASK06I_HOSTED_PROBE_AUTHORIZED');
-    const out = Object.create(null);
+    const out = {};
     out.TASK06I_HOSTED_PROBE_AUTHORIZED =
       authDesc && Object.hasOwn(authDesc, 'value') && typeof authDesc.value === 'string'
         ? authDesc.value
@@ -2540,7 +2705,7 @@ function snapshotRunnerEnv(rawEnv = {}) {
       authorizedVal = desc.value;
     }
   }
-  const out = Object.create(null);
+  const out = {};
   out.TASK06I_HOSTED_PROBE_AUTHORIZED = authorizedVal;
   return out;
 }
@@ -6797,7 +6962,9 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
   const baseUrl = `https://${normRef}.supabase.co`;
 
   // Compute expected byte buffer & SHA-256 digest upfront before atomic reservation
-  const expectedBuf = Buffer.isBuffer(probeContent) ? probeContent : Buffer.from(String(probeContent), 'utf8');
+  const expectedBuf = typeof probeContent === 'string'
+    ? Buffer.from(probeContent, 'utf8')
+    : snapshotTrustedBinaryInput(probeContent, 'probeContent');
   const expectedSha256 = crypto.createHash('sha256').update(expectedBuf).digest('hex');
 
   // 6B. Register provisioning operation & atomically reserve fixture slot BEFORE the very first await (R3-03, R3-04)
@@ -7062,7 +7229,7 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
       uploadRes = await safeFetch(`${baseUrl}/storage/v1/object/${fullKey}`, {
         method: 'POST',
         headers: uploadHeaders,
-        body: probeContent
+        body: expectedBuf
       });
     } catch (err) {
       uploadError = err;
@@ -10293,8 +10460,8 @@ export function createHostedAdminClient(rawOptions = {}) {
       }, timeoutMs);
 
       const onExternalAbort = () => controller.abort();
-      if (signal && typeof signal.addEventListener === 'function') {
-        if (signal.aborted) {
+      if (signal !== null && signal !== undefined) {
+        if (isTrustedSignalAborted(signal)) {
           clearTimeout(timer);
           return {
             found: false,
@@ -10303,7 +10470,7 @@ export function createHostedAdminClient(rawOptions = {}) {
             error: { code: 'OWNERSHIP_LOOKUP_ABORTED', message: 'Ownership lookup signal aborted' }
           };
         }
-        signal.addEventListener('abort', onExternalAbort, { once: true });
+        addTrustedSignalAbortListener(signal, onExternalAbort);
       }
 
       let res;
@@ -10334,8 +10501,8 @@ export function createHostedAdminClient(rawOptions = {}) {
         };
       } finally {
         clearTimeout(timer);
-        if (signal && typeof signal.removeEventListener === 'function') {
-          signal.removeEventListener('abort', onExternalAbort);
+        if (signal !== null && signal !== undefined) {
+          removeTrustedSignalAbortListener(signal, onExternalAbort);
         }
       }
 
