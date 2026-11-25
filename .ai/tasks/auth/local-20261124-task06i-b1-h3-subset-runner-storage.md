@@ -1,6 +1,6 @@
 # Task 06I-B1-H3 — Controlled Subset Dispatch & Run-Scoped Storage Implementation
 
-**Task ID:** `06I-B1-H3` (Revision `R7`)<br>
+**Task ID:** `06I-B1-H3` (Revision `R8`)<br>
 **Creation Date:** 2026-11-24<br>
 **Revision Date:** 2026-11-25<br>
 **Author:** Santosh Jangid (`im-tnyx`)<br>
@@ -8,7 +8,7 @@
 **Branch:** `feat/task06i-b1-h3-subset-runner-storage`<br>
 **Base:** `main` at `4569479e8fe2caa6659fe1cc6c7a484596a01bbc` (PR #43 merge commit)<br>
 **PR Reference:** https://github.com/im-tnyx/Tio-Workspace/pull/44<br>
-**Prior Audited HEAD:** `7c4efa70c442236cfb7d635afefa4dddacf2f0a7`<br>
+**Prior Audited HEAD:** `9a6cb6cc258a675434fabd1a465364eff6149a5b` (R7)<br>
 **Cost Ceiling:** $0.00 (Free-Tier Only)<br>
 **Mode:** Local Implementation, Mocked Transport Tests & Offline Verification ONLY<br>
 **Hosted LIVE Dispatch:** **NOT AUTHORIZED**<br>
@@ -522,6 +522,61 @@ Offline verification and independent diff review are complete for implementation
 | `git diff --check` & `git diff --check origin/main...HEAD` | **CLEAN**, exit 0 |
 
 ### Final R7 Decisions
+
+- **H3 Subset Runner:** `IMPLEMENTED_OFFLINE_TESTED / BLOCKED`
+- **H3 Storage Lifecycle:** `IMPLEMENTED_OFFLINE_TESTED / BLOCKED`
+- **Durable Recovery:** `NOT IMPLEMENTED`
+- **Run-Created Seed Support:** `NOT IMPLEMENTED`
+- **Hosted Verification:** `0/18`
+- **Hosted LIVE:** `NOT AUTHORIZED`
+- **Production Real Auth:** `STRICT NO-GO`
+- **Hosted Mutations:** `0`
+- **Cost:** `$0`
+- **Merge:** `NOT AUTHORIZED`
+
+---
+
+## 12. Revision R8 — Recursive Input Admission & Trusted Runtime State Closure
+
+**Bootstrap baseline:** Local/remote HEAD `9a6cb6cc258a675434fabd1a465364eff6149a5b`, `main` `4569479e8fe2caa6659fe1cc6c7a484596a01bbc`, clean worktree, 36 review threads (34 resolved, 2 unresolved P1s `PRRT_kwDOVtCmZc671plF` and `PRRT_kwDOVtCmZc671plN`), 6 successful checks (Cursor Bugbot pending at audit time), and independent `im-tio` review `CHANGES_REQUESTED` (`2026-11-25T10:13:56Z`).
+
+### R8-01: Typed `argv`/`env` Snapshots, Trusted Runtime Inventory/Context & Safe Admission Failure (`PRRT_kwDOVtCmZc671plF`)
+
+1. **Typed `argv` / `env` (`snapshotRunnerArgv`, `snapshotRunnerEnv`, `determineRunnerMode`):** Rejects Proxy objects, non-Array `argv`, custom prototypes, extra/overridden properties (`includes`, etc.), symbol properties, index getters, and non-string elements; copies validated strings by index descriptor into a module-owned array without calling any method on the caller array. `env` rejects Proxies, non-plain objects, symbols, accessors, and non-string values, extracting only `TASK06I_HOSTED_PROBE_AUTHORIZED` (with safe descriptor-read support for real `process.env`).
+2. **Trusted Runtime `TestRunInventory` (`TRUSTED_RUN_INVENTORIES`, `assertTrustedRunInventory`):** Every `TestRunInventory` registers itself and its immutable baseline methods in module-private `WeakMap` `TRUSTED_RUN_INVENTORIES`. `assertTrustedRunInventory()` rejects Proxies, forged objects, custom prototypes, symbols, own accessors, tampered `runId`, and replaced instance methods BEFORE reading `runId` or calling `executeCleanup()`, enforced in `_runHostedProbeRunnerInternal()`, `provisionStorageProbeFixture()`, and `createHostedDispatcher()`.
+3. **Trusted Runtime `RunContext` (`TRUSTED_RUN_CONTEXTS`, `assertTrustedRunContext`):** `createRunContext()` validates options via `extractValidatedPlainOptions()` and registers `{ instance, runId, methods: { clear } }` in `TRUSTED_RUN_CONTEXTS`; `assertTrustedRunContext()` is enforced at runner admission.
+4. **Safe Admission Failure Reporting:** When `inventory` fails `assertTrustedRunInventory()`, `_runHostedProbeRunnerInternal()` never accesses its properties or calls `executeCleanup()`, throwing `cleanupFailure` with `inventoryTrusted: false`, `inventoryEvidenceUnavailable: true`, and `CLEANUP_FAILED_RESIDUAL_RESOURCES`. Authentic inventories with admission failures preserve existing obligations via `executeCleanup({ adminClient: null, failClosed: false, settlementTimeoutMs: 0 })` without destructive dispatch.
+
+### R8-02 & R8-03: Intrinsic `RegExp` Snapshot & Unified Recursive Validation Contract (`PRRT_kwDOVtCmZc671plN`)
+
+1. `validateDeclarativeFixtureValue()` validates `RegExp` via `util.types.isRegExp()`, exact `RegExp.prototype` check (rejecting subclasses/modified prototypes), zero symbol properties, and own descriptor scan permitting only numeric data `lastIndex` (rejecting `source`/`flags` getters, `exec`/`test` overrides, and non-enumerable accessors).
+2. `clonePlainData()` and `createDeterministicFixtureTransport()` (`matchesRoute`) use module-load captured intrinsic `RegExp.prototype` `source`/`flags` getters and `RegExp.prototype.test` (`INTRINSIC_REGEXP_SOURCE_GET`, `INTRINSIC_REGEXP_FLAGS_GET`, `INTRINSIC_REGEXP_TEST`), plus descriptor-only array/plain-object cloning.
+
+| Input Category | R8 Admission Contract |
+|---|---|
+| Primitive values | Explicit type and range validation |
+| `argv` / `env` | `snapshotRunnerArgv()` / `snapshotRunnerEnv()` inert primitive snapshots |
+| Arrays and plain records | Recursive descriptor-first validation and independent snapshot |
+| Binary fixture data | Intrinsic `ArrayBuffer` / `ArrayBuffer.isView` + independent byte slice copy |
+| Regex patterns | `util.types.isRegExp()` + `RegExp.prototype` + data-only `lastIndex` + intrinsic `source`/`flags`/`test` |
+| Admin and dispatcher | Private `WeakMap` (`TRUSTED_ADMIN_CLIENTS`, `TRUSTED_OFFLINE_DISPATCHERS`), frozen capabilities |
+| Inventory and run context | Private `WeakMap` (`TRUSTED_RUN_INVENTORIES`, `TRUSTED_RUN_CONTEXTS`), baseline method integrity |
+| Barrier handles | Private `WeakSet` (`TRUSTED_OFFLINE_BARRIERS`) |
+| Functions and unknown objects | Rejected fail-closed unless registered by internal factory |
+
+### R8 Verification Matrix
+
+| Check Executed | Result / Exit Code |
+|---|---|
+| `node --test experiments/task06i/hosted-probe-runner.test.mjs` | **134/134 PASS**, exit 0 (includes Tests 128–130) |
+| `node --test experiments/task06i/*.test.mjs` | **202/202 PASS**, exit 0 |
+| Docker `node:24-bookworm --network none --pull never` runner suite | **134/134 PASS**, exit 0 |
+| `node experiments/task06i/sql-contract-parity.mjs` | **POSTGRES_VERIFIED 18/18** on PostgreSQL 17.11, exit 0 |
+| `node --test experiments/task06h/*.test.mjs` | **115/115 PASS**, exit 0 |
+| `npm run verify` | Tokens guard, `tsc --noEmit`, `eslint --max-warnings=0`, **22/22 shell tests PASS**, exit 0 |
+| `git diff --check` & `git diff --check origin/main...HEAD` | **CLEAN**, exit 0 |
+
+### Final R8 Decisions
 
 - **H3 Subset Runner:** `IMPLEMENTED_OFFLINE_TESTED / BLOCKED`
 - **H3 Storage Lifecycle:** `IMPLEMENTED_OFFLINE_TESTED / BLOCKED`

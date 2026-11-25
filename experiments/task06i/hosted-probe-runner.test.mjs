@@ -58,6 +58,8 @@ import {
   verifyStorageObjectAbsenceDetailed,
   assertOfflineMockTransport,
   assertTrustedAdminClient,
+  assertTrustedRunInventory,
+  assertTrustedRunContext,
   createTrustedOfflineDispatcher,
   assertTrustedOfflineDispatcher,
   runOfflineProbeSimulation,
@@ -11559,4 +11561,300 @@ test('127. H3-R7-03: All public factories and runner/cleanup/absence wrappers re
   assert.equal(getterCalls, 0);
   assert.equal(trapCalls, 0);
   assert.equal(transport.calls.length, 0);
+});
+
+// ===========================================================================
+// Task 06I-B1-H3-R8: Recursive Input Admission & Trusted Runtime State Closure
+// ===========================================================================
+
+test('128. H3-R8-01A: argv and env reject executable methods, getters, Proxies, and non-strings with zero invocations', async () => {
+  let methodCalls = 0;
+  let getterCalls = 0;
+  let trapCalls = 0;
+  const runId = 'r8-01a-argv-env';
+
+  // 1. Plain object with executable argv.includes
+  const objArgv = { includes: () => { methodCalls++; return true; } };
+  // 2. Array with overridden includes
+  const overriddenArr = ['--live'];
+  overriddenArr.includes = () => { methodCalls++; return true; };
+  // 3. Array index getter
+  const getterArr = [];
+  Object.defineProperty(getterArr, 0, { enumerable: true, get() { getterCalls++; return '--live'; } });
+  // 4. Proxy argument array
+  const proxyArgv = new Proxy(['--live'], {
+    get(t, p, r) { trapCalls++; return Reflect.get(t, p, r); },
+    ownKeys(t) { trapCalls++; return Reflect.ownKeys(t); },
+    getOwnPropertyDescriptor(t, p) { trapCalls++; return Reflect.getOwnPropertyDescriptor(t, p); },
+    getPrototypeOf(t) { trapCalls++; return Reflect.getPrototypeOf(t); }
+  });
+  // 5. Non-string argument value
+  const nonStrArr = [123];
+
+  for (const badArgv of [objArgv, overriddenArr, getterArr, proxyArgv, nonStrArr]) {
+    assert.throws(() => determineRunnerMode(badArgv, {}), /INVALID_RUNNER_ARGV/);
+    await assert.rejects(
+      () => runHostedProbeRunner({ projectRef: HARDCODED_TEMP_REF, runId, argv: badArgv, env: {} }),
+      /INVALID_RUNNER_ARGV/
+    );
+  }
+
+  // 6. Environment authorization getter
+  const getterEnv = {};
+  Object.defineProperty(getterEnv, 'TASK06I_HOSTED_PROBE_AUTHORIZED', {
+    enumerable: true,
+    get() { getterCalls++; return 'true'; }
+  });
+  // 7. Proxy environment object
+  const proxyEnv = new Proxy({ TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, {
+    get(t, p, r) { trapCalls++; return Reflect.get(t, p, r); },
+    ownKeys(t) { trapCalls++; return Reflect.ownKeys(t); },
+    getOwnPropertyDescriptor(t, p) { trapCalls++; return Reflect.getOwnPropertyDescriptor(t, p); },
+    getPrototypeOf(t) { trapCalls++; return Reflect.getPrototypeOf(t); }
+  });
+  // 8. Executable environment values
+  const fnEnv = { TASK06I_HOSTED_PROBE_AUTHORIZED: () => { methodCalls++; return 'true'; } };
+  const coerceEnv = { EXTRA: { toString() { methodCalls++; return 'x'; } } };
+
+  for (const badEnv of [getterEnv, proxyEnv, fnEnv, coerceEnv]) {
+    assert.throws(() => determineRunnerMode(['--live'], badEnv), /INVALID_RUNNER_ENV/);
+    await assert.rejects(
+      () => runHostedProbeRunner({ projectRef: HARDCODED_TEMP_REF, runId, argv: ['--live'], env: badEnv }),
+      /INVALID_RUNNER_ENV/
+    );
+  }
+
+  // 9. Valid DRY_RUN planning & valid OFFLINE_SIMULATION succeed
+  const dryRes = await runHostedProbeRunner({ projectRef: HARDCODED_TEMP_REF, runId, argv: [], env: {} });
+  assert.equal(dryRes.status, 'DRY_RUN_COMPLETED');
+
+  assert.equal(methodCalls, 0);
+  assert.equal(getterCalls, 0);
+  assert.equal(trapCalls, 0);
+});
+
+test('129. H3-R8-01B/C/D: Untrusted inventory and runContext reject with zero executions and safe admission failure reporting', async () => {
+  const runId = 'r8-01bcd-inventory-ctx';
+  let cleanupCalls = 0;
+  let getterCalls = 0;
+  let trapCalls = 0;
+
+  const transport = staticTransport({ status: 200, json: {} });
+  const adminClient = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    anonKey: validTestAnonKey,
+    runId,
+    fetchFn: transport
+  });
+  const dispatcher = createTrustedOfflineDispatcher({
+    runId,
+    fetchFn: transport,
+    outcomes: {
+      'BYPASS-01': { passed: true, status: 422, route_disabled: true, error_code: 'email_provider_disabled' }
+    }
+  });
+
+  // Forged inventories
+  const plainForgedInv = { runId: 'other' };
+  const matchingRunIdForgedInv = {
+    runId,
+    executeCleanup: async () => { cleanupCalls++; return { status: 'CLEANUP_VERIFIED_SUCCESS' }; }
+  };
+  const getterRunIdInv = {};
+  Object.defineProperty(getterRunIdInv, 'runId', {
+    enumerable: true,
+    get() { getterCalls++; return runId; }
+  });
+  const realForProxy = new TestRunInventory(runId);
+  const proxyInv = new Proxy(realForProxy, {
+    get(t, p, r) { trapCalls++; return Reflect.get(t, p, r); },
+    getPrototypeOf(t) { trapCalls++; return Reflect.getPrototypeOf(t); }
+  });
+  const replacedMethodInv = new TestRunInventory(runId);
+  replacedMethodInv.executeCleanup = async () => { cleanupCalls++; return { status: 'CLEANUP_VERIFIED_SUCCESS' }; };
+
+  for (const badInv of [plainForgedInv, matchingRunIdForgedInv, getterRunIdInv, proxyInv, replacedMethodInv]) {
+    assert.throws(() => assertTrustedRunInventory(badInv, { projectRef: HARDCODED_TEMP_REF }), /UNTRUSTED_RUN_INVENTORY/);
+    // Even when combined with a rejected dispatcher, untrusted inventory.executeCleanup() MUST NOT execute!
+    await assert.rejects(
+      () => runHostedProbeRunner({
+        projectRef: HARDCODED_TEMP_REF,
+        runId,
+        inventory: badInv,
+        adminClient,
+        argv: ['--live'],
+        env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+        selectedProbeIds: ['BYPASS-01'],
+        mockDispatcher: async () => ({ passed: true })
+      }),
+      error => {
+        assert.match(error.message, /UNTRUSTED_RUN_INVENTORY/);
+        assert.equal(error.cleanupReport.inventoryTrusted, false);
+        assert.equal(error.cleanupReport.inventoryEvidenceUnavailable, true);
+        assert.equal(error.cleanupReport.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+        return true;
+      }
+    );
+  }
+
+  // Cross-run valid inventory rejects while preserving authentic obligations
+  const crossRunInv = r5OutstandingInventory('r8-other-run');
+  await assert.rejects(
+    () => runHostedProbeRunner({
+      projectRef: HARDCODED_TEMP_REF,
+      runId,
+      inventory: crossRunInv,
+      adminClient,
+      argv: ['--live'],
+      env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+      selectedProbeIds: ['BYPASS-01'],
+      mockDispatcher: dispatcher
+    }),
+    error => {
+      assert.match(error.message, /ADMIN_CLIENT_RUN_MISMATCH|INVENTORY_RUN_ID_MISMATCH/);
+      r5AssertOutstanding(error.cleanupReport, crossRunInv);
+      return true;
+    }
+  );
+
+  // Valid inventory with outstanding obligations + rejected dispatcher preserves obligations with 0 destructive calls
+  const validOutstandingInv = r5OutstandingInventory(runId);
+  await assert.rejects(
+    () => runHostedProbeRunner({
+      projectRef: HARDCODED_TEMP_REF,
+      runId,
+      inventory: validOutstandingInv,
+      adminClient,
+      argv: ['--live'],
+      env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+      selectedProbeIds: ['BYPASS-01'],
+      mockDispatcher: async () => ({ passed: true })
+    }),
+    error => {
+      assert.match(error.message, /UNTRUSTED_OFFLINE_DISPATCHER/);
+      r5AssertOutstanding(error.cleanupReport, validOutstandingInv);
+      return true;
+    }
+  );
+
+  // Untrusted runContext (plain forged, getter, Proxy, replaced clear)
+  const forgedCtx = { runId, clear() { cleanupCalls++; } };
+  const getterCtx = {};
+  Object.defineProperty(getterCtx, 'runId', { enumerable: true, get() { getterCalls++; return runId; } });
+  const realCtx = createRunContext({ runId, testEmail: 'r8@proof.invalid' });
+  const proxyCtx = new Proxy(realCtx, {
+    get(t, p, r) { trapCalls++; return Reflect.get(t, p, r); },
+    getPrototypeOf(t) { trapCalls++; return Reflect.getPrototypeOf(t); }
+  });
+  const replacedCtx = createRunContext({ runId, testEmail: 'r8b@proof.invalid' });
+  replacedCtx.clear = () => { cleanupCalls++; };
+
+  for (const badCtx of [forgedCtx, getterCtx, proxyCtx, replacedCtx]) {
+    assert.throws(() => assertTrustedRunContext(badCtx, { expectedRunId: runId }), /UNTRUSTED_RUN_CONTEXT/);
+    await assert.rejects(
+      () => runOfflineProbeSimulation({
+        projectRef: HARDCODED_TEMP_REF,
+        runId,
+        inventory: new TestRunInventory(runId),
+        runContext: badCtx,
+        adminClient,
+        offlineDispatcher: dispatcher,
+        selectedProbeIds: ['BYPASS-01']
+      }),
+      /UNTRUSTED_RUN_CONTEXT/
+    );
+  }
+
+  // Valid registered inventory + runContext + dispatcher + Admin succeeds
+  const okInv = new TestRunInventory(runId);
+  const okCtx = createRunContext({ runId, testEmail: 'r8-ok@proof.invalid' });
+  const okRes = await runOfflineProbeSimulation({
+    projectRef: HARDCODED_TEMP_REF,
+    runId,
+    inventory: okInv,
+    runContext: okCtx,
+    adminClient,
+    offlineDispatcher: dispatcher,
+    selectedProbeIds: ['BYPASS-01']
+  });
+  assert.equal(okRes.status, 'COMPLETED');
+
+  assert.equal(cleanupCalls, 0);
+  assert.equal(getterCalls, 0);
+  assert.equal(trapCalls, 0);
+  assert.equal(transport.calls.length, 0);
+});
+
+test('130. H3-R8-02/R8-03: Nested RegExp fixtures reject accessors, subclasses, prototypes, method overrides, and Proxies with zero executions', async () => {
+  const runId = 'r8-02-regexp-sentinels';
+  let getterCalls = 0;
+  let methodCalls = 0;
+  let trapCalls = 0;
+
+  // 1. Own source getter
+  const rxSourceGetter = /abc/;
+  Object.defineProperty(rxSourceGetter, 'source', { enumerable: true, get() { getterCalls++; return 'abc'; } });
+  // 2. Own flags getter
+  const rxFlagsGetter = /abc/i;
+  Object.defineProperty(rxFlagsGetter, 'flags', { enumerable: true, get() { getterCalls++; return 'i'; } });
+  // 3. Non-enumerable RegExp getter
+  const rxNonEnumGetter = /abc/;
+  Object.defineProperty(rxNonEnumGetter, 'hidden', { enumerable: false, get() { getterCalls++; return 1; } });
+  // 4. RegExp subclass
+  class CustomRegExp extends RegExp {}
+  const rxSubclass = new CustomRegExp('abc');
+  // 5. Modified RegExp prototype
+  const customProto = Object.create(RegExp.prototype);
+  const rxCustomProto = /abc/;
+  Object.setPrototypeOf(rxCustomProto, customProto);
+  // 6. Overridden exec & test
+  const rxExec = /abc/;
+  rxExec.exec = () => { methodCalls++; return null; };
+  const rxTest = /abc/;
+  rxTest.test = () => { methodCalls++; return true; };
+  // 7. Symbol-based method override
+  const rxSym = /abc/;
+  rxSym[Symbol.match] = () => { methodCalls++; return null; };
+  // 8. Proxy RegExp
+  const rxProxy = new Proxy(/abc/, {
+    get(t, p, r) { trapCalls++; return Reflect.get(t, p, r); },
+    ownKeys(t) { trapCalls++; return Reflect.ownKeys(t); },
+    getOwnPropertyDescriptor(t, p) { trapCalls++; return Reflect.getOwnPropertyDescriptor(t, p); },
+    getPrototypeOf(t) { trapCalls++; return Reflect.getPrototypeOf(t); }
+  });
+
+  for (const badRx of [rxSourceGetter, rxFlagsGetter, rxNonEnumGetter, rxSubclass, rxCustomProto, rxExec, rxTest, rxSym, rxProxy]) {
+    assert.throws(
+      () => createDeterministicFixtureTransport({ routes: [{ urlRegex: badRx, status: 200, json: {} }] }),
+      /INVALID_DETERMINISTIC_FIXTURE_SPEC/
+    );
+    assert.throws(
+      () => createTrustedOfflineDispatcher({ runId, outcomes: { 'BYPASS-01': { passed: true, status: 422, route_disabled: true, pattern: badRx } } }),
+      /INVALID_DETERMINISTIC_FIXTURE_SPEC/
+    );
+  }
+
+  // Valid ordinary pattern + supported flags + deterministic matching without calling tampered RegExp.prototype.test
+  const transport = createDeterministicFixtureTransport({
+    routes: [
+      { urlRegex: /\/auth\/v1\/otp$/i, status: 422, json: { error_code: 'email_provider_disabled' } }
+    ]
+  });
+  const origProtoTest = RegExp.prototype.test;
+  RegExp.prototype.test = function tamperedTest() {
+    methodCalls++;
+    return false;
+  };
+  try {
+    const res1 = await transport(`https://${HARDCODED_TEMP_REF}.supabase.co/AUTH/V1/OTP`, { method: 'POST' });
+    const res2 = await transport(`https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/otp`, { method: 'POST' });
+    assert.equal(res1.status, 422);
+    assert.equal(res2.status, 422);
+  } finally {
+    RegExp.prototype.test = origProtoTest;
+  }
+
+  assert.equal(getterCalls, 0);
+  assert.equal(methodCalls, 0);
+  assert.equal(trapCalls, 0);
 });

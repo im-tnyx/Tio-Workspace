@@ -29,6 +29,12 @@ const TRUSTED_OFFLINE_BARRIERS = new WeakSet();
 const TARGET_ISOLATION_STATES = new WeakMap();
 const TRUSTED_ADMIN_CLIENTS = new WeakMap();
 const TRUSTED_OFFLINE_DISPATCHERS = new WeakMap();
+const TRUSTED_RUN_INVENTORIES = new WeakMap();
+const TRUSTED_RUN_CONTEXTS = new WeakMap();
+const INTRINSIC_REGEXP_PROTO = RegExp.prototype;
+const INTRINSIC_REGEXP_SOURCE_GET = Object.getOwnPropertyDescriptor(INTRINSIC_REGEXP_PROTO, 'source').get;
+const INTRINSIC_REGEXP_FLAGS_GET = Object.getOwnPropertyDescriptor(INTRINSIC_REGEXP_PROTO, 'flags').get;
+const INTRINSIC_REGEXP_TEST = INTRINSIC_REGEXP_PROTO.test;
 // Private receipts cannot be manufactured by setting public inventory lifecycle fields.
 const VERIFIED_STORAGE_DELETIONS = new WeakMap();
 const VERIFIED_STORAGE_CREATIONS = new WeakMap();
@@ -289,9 +295,21 @@ function validateDeclarativeFixtureValue(val, pathLabel = 'spec', seen = new Wea
   if (seen.has(val)) {
     throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Circular object reference rejected at '${pathLabel}' (R4-04)`);
   }
-  if (val instanceof RegExp) {
+  if (utilTypes.isRegExp(val)) {
+    if (Object.getPrototypeOf(val) !== INTRINSIC_REGEXP_PROTO) {
+      throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: RegExp subclass or custom prototype rejected at '${pathLabel}' (R8-02)`);
+    }
     for (const sym of Object.getOwnPropertySymbols(val)) {
-      throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Symbol property '${String(sym)}' rejected at '${pathLabel}' (R4-04)`);
+      throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Symbol property '${String(sym)}' rejected at '${pathLabel}' (R4-04/R8-02)`);
+    }
+    for (const key of Object.getOwnPropertyNames(val)) {
+      const desc = Object.getOwnPropertyDescriptor(val, key);
+      if (!desc || typeof desc.get === 'function' || typeof desc.set === 'function') {
+        throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Accessor property rejected at '${pathLabel}.${key}' (R8-02)`);
+      }
+      if (key !== 'lastIndex' || typeof desc.value !== 'number') {
+        throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Unexpected RegExp property '${key}' rejected at '${pathLabel}' (R8-02)`);
+      }
     }
     return;
   }
@@ -370,12 +388,29 @@ function clonePlainData(val) {
   if (ArrayBuffer.isView(val)) {
     return cloneBinaryViewToIndependentBuffer(val);
   }
-  if (val instanceof RegExp) return new RegExp(val.source, val.flags);
+  if (utilTypes.isRegExp(val)) {
+    return new RegExp(INTRINSIC_REGEXP_SOURCE_GET.call(val), INTRINSIC_REGEXP_FLAGS_GET.call(val));
+  }
   if (TRUSTED_OFFLINE_BARRIERS.has(val)) return val;
-  if (Array.isArray(val)) return val.map(clonePlainData);
+  if (Array.isArray(val)) {
+    const arr = [];
+    for (let i = 0; i < val.length; i++) {
+      const desc = Object.getOwnPropertyDescriptor(val, String(i));
+      arr.push(clonePlainData(desc ? desc.value : undefined));
+    }
+    return arr;
+  }
   const out = {};
-  for (const k of Object.keys(val)) {
-    out[k] = clonePlainData(val[k]);
+  for (const k of Object.getOwnPropertyNames(val)) {
+    const desc = Object.getOwnPropertyDescriptor(val, k);
+    if (desc && Object.hasOwn(desc, 'value')) {
+      Object.defineProperty(out, k, {
+        value: clonePlainData(desc.value),
+        enumerable: true,
+        writable: true,
+        configurable: true
+      });
+    }
   }
   return out;
 }
@@ -577,8 +612,10 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
       if (!needles.every(n => req.url.includes(String(n)))) return false;
     }
     if (route.urlRegex !== undefined) {
-      const rx = route.urlRegex instanceof RegExp ? route.urlRegex : new RegExp(String(route.urlRegex));
-      if (!rx.test(req.url)) return false;
+      const rx = utilTypes.isRegExp(route.urlRegex)
+        ? route.urlRegex
+        : new RegExp(String(route.urlRegex));
+      if (!INTRINSIC_REGEXP_TEST.call(rx, req.url)) return false;
     }
     if (route.pathEquals !== undefined && req.pathname !== String(route.pathEquals)) return false;
     if (route.pathIncludes !== undefined) {
@@ -586,8 +623,10 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
       if (!needles.every(n => req.pathname.includes(String(n)))) return false;
     }
     if (route.pathRegex !== undefined) {
-      const rx = route.pathRegex instanceof RegExp ? route.pathRegex : new RegExp(String(route.pathRegex));
-      if (!rx.test(req.pathname)) return false;
+      const rx = utilTypes.isRegExp(route.pathRegex)
+        ? route.pathRegex
+        : new RegExp(String(route.pathRegex));
+      if (!INTRINSIC_REGEXP_TEST.call(rx, req.pathname)) return false;
     }
     if (route.headersMatch && typeof route.headersMatch === 'object') {
       for (const [hk, hv] of Object.entries(route.headersMatch)) {
@@ -2057,13 +2096,91 @@ export function validateTargetProject(projectRef, tempRef = HARDCODED_TEMP_REF, 
   return normRef;
 }
 
+function snapshotRunnerArgv(rawArgv) {
+  const source = rawArgv === undefined ? process.argv : rawArgv;
+  if (utilTypes.isProxy(source)) {
+    throw new Error('INVALID_RUNNER_ARGV: Proxy argv rejected (R8-01)');
+  }
+  if (!Array.isArray(source) || Object.getPrototypeOf(source) !== Array.prototype) {
+    throw new Error('INVALID_RUNNER_ARGV: argv must be a genuine Array of strings (R8-01)');
+  }
+  if (Object.getOwnPropertySymbols(source).length > 0) {
+    throw new Error('INVALID_RUNNER_ARGV: Symbol properties on argv rejected (R8-01)');
+  }
+  const lenDesc = Object.getOwnPropertyDescriptor(source, 'length');
+  if (!lenDesc || !Object.hasOwn(lenDesc, 'value') || typeof lenDesc.value !== 'number') {
+    throw new Error('INVALID_RUNNER_ARGV: Invalid argv length descriptor (R8-01)');
+  }
+  const len = lenDesc.value;
+  for (const key of Object.getOwnPropertyNames(source)) {
+    if (key === 'length') continue;
+    const idx = Number(key);
+    if (!Number.isInteger(idx) || idx < 0 || idx >= len || String(idx) !== key) {
+      throw new Error(`INVALID_RUNNER_ARGV: Unexpected property '${key}' on argv rejected (R8-01)`);
+    }
+  }
+  const copy = [];
+  for (let i = 0; i < len; i++) {
+    const desc = Object.getOwnPropertyDescriptor(source, String(i));
+    if (!desc || !Object.hasOwn(desc, 'value') || typeof desc.value !== 'string') {
+      throw new Error(`INVALID_RUNNER_ARGV: argv[${i}] must be a primitive string data property (R8-01)`);
+    }
+    copy.push(desc.value);
+  }
+  return copy;
+}
+
+function snapshotRunnerEnv(rawEnv) {
+  const source = rawEnv === undefined ? process.env : rawEnv;
+  if (utilTypes.isProxy(source)) {
+    throw new Error('INVALID_RUNNER_ENV: Proxy env rejected (R8-01)');
+  }
+  if (source === process.env) {
+    const authDesc = Object.getOwnPropertyDescriptor(process.env, 'TASK06I_HOSTED_PROBE_AUTHORIZED');
+    const out = Object.create(null);
+    out.TASK06I_HOSTED_PROBE_AUTHORIZED =
+      authDesc && Object.hasOwn(authDesc, 'value') && typeof authDesc.value === 'string'
+        ? authDesc.value
+        : undefined;
+    return out;
+  }
+  if (!source || typeof source !== 'object' || Array.isArray(source)) {
+    throw new Error('INVALID_RUNNER_ENV: env must be a plain object (R8-01)');
+  }
+  const proto = Object.getPrototypeOf(source);
+  if (proto !== Object.prototype && proto !== null) {
+    throw new Error('INVALID_RUNNER_ENV: Unsupported prototype on env rejected (R8-01)');
+  }
+  if (Object.getOwnPropertySymbols(source).length > 0) {
+    throw new Error('INVALID_RUNNER_ENV: Symbol properties on env rejected (R8-01)');
+  }
+  let authorizedVal;
+  for (const key of Object.getOwnPropertyNames(source)) {
+    const desc = Object.getOwnPropertyDescriptor(source, key);
+    if (!desc || !Object.hasOwn(desc, 'value')) {
+      throw new Error(`INVALID_RUNNER_ENV: Accessor property '${key}' on env rejected (R8-01)`);
+    }
+    if (desc.value !== undefined && typeof desc.value !== 'string') {
+      throw new Error(`INVALID_RUNNER_ENV: env.${key} must be a primitive string or undefined (R8-01)`);
+    }
+    if (key === 'TASK06I_HOSTED_PROBE_AUTHORIZED') {
+      authorizedVal = desc.value;
+    }
+  }
+  const out = Object.create(null);
+  out.TASK06I_HOSTED_PROBE_AUTHORIZED = authorizedVal;
+  return out;
+}
+
 /**
  * Determines runner execution mode.
  * Defaults strictly to DRY_RUN unless explicit --live flag AND env var are present.
  */
-export function determineRunnerMode(argv = [], env = process.env) {
-  const hasLiveFlag = argv.includes('--live');
-  const hasAuthEnv = env.TASK06I_HOSTED_PROBE_AUTHORIZED === 'true';
+export function determineRunnerMode(argv = process.argv, env = process.env) {
+  const safeArgv = snapshotRunnerArgv(argv);
+  const safeEnv = snapshotRunnerEnv(env);
+  const hasLiveFlag = safeArgv.includes('--live');
+  const hasAuthEnv = safeEnv.TASK06I_HOSTED_PROBE_AUTHORIZED === 'true';
 
   if (hasLiveFlag && hasAuthEnv) {
     return 'LIVE';
@@ -3990,6 +4107,109 @@ function cleanupFailure(message, report) {
   return error;
 }
 
+export function assertTrustedRunInventory(
+  inventory,
+  {
+    projectRef = HARDCODED_TEMP_REF,
+    expectedRunId = null
+  } = {}
+) {
+  const normRef = (projectRef || '').trim().toLowerCase();
+  if (!inventory || typeof inventory !== 'object' || Array.isArray(inventory) || utilTypes.isProxy(inventory)) {
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_RUN_INVENTORY: Inventory must be a registered TestRunInventory instance (R8-01)'
+    );
+  }
+  const meta = TRUSTED_RUN_INVENTORIES.get(inventory);
+  if (!meta || meta.instance !== inventory || Object.getPrototypeOf(inventory) !== TestRunInventory.prototype) {
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_RUN_INVENTORY: Unregistered, forged, or prototyped inventory rejected fail-closed (R8-01)'
+    );
+  }
+  if (Object.getOwnPropertySymbols(inventory).length > 0) {
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_RUN_INVENTORY: Symbol property on inventory rejected fail-closed (R8-01)'
+    );
+  }
+  for (const key of Object.getOwnPropertyNames(inventory)) {
+    const desc = Object.getOwnPropertyDescriptor(inventory, key);
+    if (!desc || !Object.hasOwn(desc, 'value')) {
+      throw new Error(
+        `BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_RUN_INVENTORY: Accessor property '${key}' on inventory rejected fail-closed (R8-01)`
+      );
+    }
+  }
+  const runIdDesc = Object.getOwnPropertyDescriptor(inventory, 'runId');
+  if (!runIdDesc || !Object.hasOwn(runIdDesc, 'value') || runIdDesc.value !== meta.runId) {
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_RUN_INVENTORY: Inventory runId tampered or invalid (R8-01)'
+    );
+  }
+  if (!meta.projectRef || meta.projectRef !== normRef || meta.projectRef !== HARDCODED_TEMP_REF || isForbiddenProject(meta.projectRef)) {
+    throw new Error(
+      `CRITICAL_SECURITY_VIOLATION: UNTRUSTED_RUN_INVENTORY: Inventory bound to '${meta.projectRef}', expected '${normRef}' (R8-01)`
+    );
+  }
+  if (expectedRunId && meta.runId !== expectedRunId) {
+    throw new Error(
+      `INVENTORY_RUN_ID_MISMATCH: Inventory runId '${meta.runId}' does not match expected '${expectedRunId}' (R8-01)`
+    );
+  }
+  for (const [methodName, expectedFn] of Object.entries(meta.methods)) {
+    if (inventory[methodName] !== expectedFn) {
+      throw new Error(
+        `BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_RUN_INVENTORY: Inventory method '${methodName}' was altered or replaced (R8-01)`
+      );
+    }
+  }
+  return meta;
+}
+
+export function assertTrustedRunContext(ctx, { expectedRunId = null } = {}) {
+  if (!ctx || typeof ctx !== 'object' || Array.isArray(ctx) || utilTypes.isProxy(ctx)) {
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_RUN_CONTEXT: Run context must be a registered instance from createRunContext() (R8-01)'
+    );
+  }
+  const meta = TRUSTED_RUN_CONTEXTS.get(ctx);
+  if (!meta || meta.instance !== ctx) {
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_RUN_CONTEXT: Unregistered or forged run context rejected fail-closed (R8-01)'
+    );
+  }
+  const proto = Object.getPrototypeOf(ctx);
+  if (proto !== Object.prototype && proto !== null) {
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_RUN_CONTEXT: Unsupported prototype on run context rejected (R8-01)'
+    );
+  }
+  if (Object.getOwnPropertySymbols(ctx).length > 0) {
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_RUN_CONTEXT: Symbol property on run context rejected (R8-01)'
+    );
+  }
+  for (const key of Object.getOwnPropertyNames(ctx)) {
+    const desc = Object.getOwnPropertyDescriptor(ctx, key);
+    if (!desc || !Object.hasOwn(desc, 'value')) {
+      throw new Error(
+        `BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_RUN_CONTEXT: Accessor property '${key}' on run context rejected (R8-01)`
+      );
+    }
+  }
+  if (ctx.clear !== meta.methods.clear) {
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_RUN_CONTEXT: Run context clear() method was altered or replaced (R8-01)'
+    );
+  }
+  const runIdDesc = Object.getOwnPropertyDescriptor(ctx, 'runId');
+  if (expectedRunId && runIdDesc && runIdDesc.value !== null && runIdDesc.value !== expectedRunId) {
+    throw new Error(
+      `ADMIN_CLIENT_RUN_MISMATCH: Run context runId '${runIdDesc.value}' does not match expected '${expectedRunId}' (R8-01)`
+    );
+  }
+  return meta;
+}
+
 /**
  * Run-scoped identity and fixture inventory for deterministic cleanup and verification.
  * Distinguishes createdThisRun resources (eligible for deletion) from pre-existing fixture references (NEVER deleted).
@@ -3998,7 +4218,10 @@ function cleanupFailure(message, report) {
  * Resolves PRRT_kwDOVtCmZc66lEzi, PRRT_kwDOVtCmZc66lOOS, PRRT_kwDOVtCmZc66lOOU, and PRRT_kwDOVtCmZc66lq3S.
  */
 export class TestRunInventory {
-  constructor(runId = null, { seedEmail = null, seedUserId = null } = {}) {
+  constructor(runId = null, rawSeedOptions = {}) {
+    const seedOpts = extractValidatedPlainOptions(rawSeedOptions, 'TestRunInventoryOptions');
+    const seedEmail = seedOpts.seedEmail !== undefined ? seedOpts.seedEmail : null;
+    const seedUserId = seedOpts.seedUserId !== undefined ? seedOpts.seedUserId : null;
     if (runId !== null && runId !== undefined) {
       this.runId = validateRunId(runId);
     } else {
@@ -4035,6 +4258,44 @@ export class TestRunInventory {
     if (seedUserId) {
       this.protectSeedIdentity({ id: seedUserId, email: seedEmail });
     }
+
+    const trustedMethods = Object.freeze({
+      assertActiveForAdmission: this.assertActiveForAdmission,
+      protectSeedIdentity: this.protectSeedIdentity,
+      registerCreatedUser: this.registerCreatedUser,
+      registerReferencedUser: this.registerReferencedUser,
+      trackReferencedUser: this.trackReferencedUser,
+      registerUnverifiedUser: this.registerUnverifiedUser,
+      registerSession: this.registerSession,
+      registerUntrackedSession: this.registerUntrackedSession,
+      registerUntrackedUser: this.registerUntrackedUser,
+      registerInFlightOperation: this.registerInFlightOperation,
+      settleInFlightOperation: this.settleInFlightOperation,
+      markProbeOperationsTimedOut: this.markProbeOperationsTimedOut,
+      hasUnresolvedOperations: this.hasUnresolvedOperations,
+      getUnresolvedOperations: this.getUnresolvedOperations,
+      awaitInFlightSettlement: this.awaitInFlightSettlement,
+      finalize: this.finalize,
+      executeCleanup: this.executeCleanup,
+      _executeCleanupInternal: this._executeCleanupInternal,
+      getSummary: this.getSummary,
+      isClean: this.isClean,
+      clearCredentials: this.clearCredentials,
+      reserveStorageFixture: this.reserveStorageFixture,
+      updateStorageFixture: this.updateStorageFixture,
+      getStorageFixture: this.getStorageFixture,
+      registerStorageObject: this.registerStorageObject,
+      registerSeedPasswordModification: this.registerSeedPasswordModification
+    });
+    TRUSTED_RUN_INVENTORIES.set(
+      this,
+      Object.freeze({
+        instance: this,
+        runId: this.runId,
+        projectRef: HARDCODED_TEMP_REF,
+        methods: trustedMethods
+      })
+    );
   }
 
   /**
@@ -6070,18 +6331,12 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
   // 3. Validate run ID (R1-02)
   const validRunId = validateRunId(runId);
 
-  // 4. Mandatory inventory tracking & admission gate (R1-08, R3-03, R3-04)
-  if (!inventory || (typeof inventory.reserveStorageFixture !== 'function' && typeof inventory.registerStorageFixture !== 'function')) {
+  // 4. Mandatory inventory tracking & admission gate (R1-08, R3-03, R3-04, R8-01)
+  if (!inventory) {
     throw new Error('STORAGE_PROVISIONING_FAILED: inventory is required for write-ahead tracking (R1-08)');
   }
-  if (typeof inventory.assertActiveForAdmission === 'function') {
-    inventory.assertActiveForAdmission('provisionStorageProbeFixture');
-  } else if (inventory.finalized) {
-    throw new Error('INVENTORY_FINALIZED: Cannot provision storage fixture against finalized inventory');
-  }
-  if (inventory.runId !== validRunId) {
-    throw new Error(`INVENTORY_RUN_ID_MISMATCH: Inventory runId '${inventory.runId}' does not match '${validRunId}'`);
-  }
+  assertTrustedRunInventory(inventory, { projectRef: normRef, expectedRunId: validRunId });
+  inventory.assertActiveForAdmission('provisionStorageProbeFixture');
 
   // 5. Structural Fail-Closed Transport / Durable Recovery Gate (R1-01, R2 Sec 6, R3-02, R4-01)
   if (ownershipLookupFn !== null && ownershipLookupFn !== undefined) {
@@ -6753,10 +7008,11 @@ export function getRunTestPassword(options = {}) {
  * Creates private run-scoped credential context for token propagation and cleanup.
  * Resolves PRRT_kwDOVtCmZc66lOOP.
  */
-export function createRunContext(options = {}) {
+export function createRunContext(rawOptions = {}) {
+  const options = extractValidatedPlainOptions(rawOptions, 'createRunContextOptions');
   const testEmail = options.testEmail || options.testUser || null;
   const runId = options.runId ? validateRunId(options.runId) : `run-${Date.now()}-${crypto.randomUUID()}`;
-  return {
+  const ctx = {
     runId,
     storageFixturePath: options.storageFixturePath || getStorageProbeObjectPath(runId),
     testPassword: getRunTestPassword(options),
@@ -6790,6 +7046,15 @@ export function createRunContext(options = {}) {
       this.activeSeedPassword = null;
     }
   };
+  TRUSTED_RUN_CONTEXTS.set(
+    ctx,
+    Object.freeze({
+      instance: ctx,
+      runId,
+      methods: Object.freeze({ clear: ctx.clear })
+    })
+  );
+  return ctx;
 }
 
 /**
@@ -8780,7 +9045,28 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
   });
   validateTestIdentity(testEmail);
 
-  const runId = options.runId ? validateRunId(options.runId) : (inventory?.runId || null);
+  const explicitRunId = options.runId ? validateRunId(options.runId) : null;
+  let validatedInventory = null;
+  if (inventory !== null && inventory !== undefined) {
+    try {
+      assertTrustedRunInventory(inventory, {
+        projectRef: validatedRef,
+        expectedRunId: null
+      });
+      validatedInventory = inventory;
+    } catch (invErr) {
+      // Untrusted inventory MUST NEVER have its properties read or executeCleanup() invoked (R8-01D).
+      throw cleanupFailure(invErr.message, {
+        runId: explicitRunId || 'untrusted-inventory',
+        status: 'CLEANUP_FAILED_RESIDUAL_RESOURCES',
+        inventoryTrusted: false,
+        inventoryEvidenceUnavailable: true,
+        residualResources: [{ type: 'inventory', error: sanitizeData(invErr.message) }]
+      });
+    }
+  }
+
+  const runId = explicitRunId || (validatedInventory ? validatedInventory.runId : null);
 
   const plan = planProbeExecution(validatedRef, {
     testEmail,
@@ -8805,6 +9091,9 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
     if (options.timing !== undefined && options.timing !== null) {
       validateDeclarativeTimingConfig(options.timing, true);
     }
+    if (runContext !== null && runContext !== undefined) {
+      assertTrustedRunContext(runContext, { expectedRunId: runId });
+    }
     return sanitizeData({
       status: 'DRY_RUN_COMPLETED',
       mode: 'DRY_RUN',
@@ -8828,11 +9117,11 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
 
   const adminClient = options.adminClient || null;
   const candidateDispatcher = offlineDispatcher ?? mockDispatcher;
-  const activeInventory = inventory || new TestRunInventory(runId || plan.runId);
+  const activeInventory = validatedInventory || new TestRunInventory(runId || plan.runId);
   let timingConfig;
 
   // Admission checks private identities, timing contract, and durable-recovery boundaries
-  // BEFORE any probe, provisioning, or destructive cleanup execution (R5-01, R6-01, R7-01).
+  // BEFORE any probe, provisioning, or destructive cleanup execution (R5-01, R6-01, R7-01, R8-01).
   try {
     if (hasOwnSleepFn || hasProtoSleepFn) {
       throw new Error(
@@ -8851,6 +9140,9 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
     timingConfig = validateDeclarativeTimingConfig(options.timing, true);
     if (runId && runId !== activeInventory.runId) {
       throw new Error('ADMIN_CLIENT_RUN_MISMATCH: Runner and inventory run IDs differ');
+    }
+    if (runContext !== null && runContext !== undefined) {
+      assertTrustedRunContext(runContext, { expectedRunId: activeInventory.runId });
     }
     assertTrustedOfflineDispatcher(candidateDispatcher, { projectRef: validatedRef, runId: activeInventory.runId });
     if (!adminClient) {
