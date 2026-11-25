@@ -18,7 +18,59 @@
 // 10. Zero automated project deletion and zero fallback to Tio-world.
 
 import crypto from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { PREFLIGHT_REQUIREMENTS, EXPECTED_REQUIREMENT_IDS } from './preflight-evaluator.mjs';
+
+const REAL_GLOBAL_FETCH = globalThis.fetch;
+const HOSTED_NETWORK_DISPATCHERS = new WeakSet();
+const RUNNER_LIVE_DISPATCH_CONTEXT = new AsyncLocalStorage();
+const DISPATCHER_CALL_CONTEXT = new AsyncLocalStorage();
+
+/**
+ * Detects direct, bound, native, or unmocked network fetch references.
+ */
+function isRealOrBoundFetch(fn) {
+  if (!fn || typeof fn !== 'function') return true;
+  if (fn === REAL_GLOBAL_FETCH || fn === globalThis.fetch) return true;
+  const fnName = typeof fn.name === 'string' ? fn.name : '';
+  if (fnName === 'bound fetch' || fnName === 'fetch') return true;
+  try {
+    const src = Function.prototype.toString.call(fn);
+    if (src.includes('[native code]')) return true;
+  } catch {
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Rejects real, bound, or missing transports fail-closed while durable recovery is unimplemented.
+ */
+export function assertOfflineMockTransport(fetchFn) {
+  if (isRealOrBoundFetch(fetchFn)) {
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: LIVE hosted execution against Supabase Cloud is blocked pending durable crash recovery and journaled inventory implementation'
+    );
+  }
+}
+
+/**
+ * Dynamically traps indirect or wrapped invocations of globalThis.fetch during offline mock execution.
+ */
+async function runWithBlockedRealFetch(fn) {
+  const prevFetch = globalThis.fetch;
+  const blockedTrap = () => {
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: Indirect, wrapped, or bound real network fetch invocation is strictly blocked pending durable crash recovery'
+    );
+  };
+  globalThis.fetch = blockedTrap;
+  try {
+    return await fn();
+  } finally {
+    globalThis.fetch = prevFetch;
+  }
+}
 
 export const HARDCODED_REAL_REF = 'bsfwzvgynwriswapxpsp';
 export const HARDCODED_TIO_WORLD_REF = 'oykupyiitspujzpwwvuj';
@@ -66,22 +118,51 @@ export const UNSUPPORTED_LAYER_B_PROBE_IDS = Object.freeze([
 ]);
 
 /**
- * Storage Fixture Lifecycle States (R1-03).
+ * Storage Fixture Lifecycle States (R1-03, R2-02).
  * Separates creation obligation tracking from deletion eligibility.
  * Only affirmative RUN_CREATED_VERIFIED authorizes deletion.
  */
 export const STORAGE_LIFECYCLE_STATE = Object.freeze({
   ABSENCE_VERIFIED: 'ABSENCE_VERIFIED',
+  DEFINITIVE_NON_CREATION: 'DEFINITIVE_NON_CREATION',
   CREATION_PENDING: 'CREATION_PENDING',
   CREATION_IN_FLIGHT: 'CREATION_IN_FLIGHT',
   CREATION_INDETERMINATE: 'CREATION_INDETERMINATE',
   CONFLICT_EXISTING_PRESERVED: 'CONFLICT_EXISTING_PRESERVED',
   CREATION_FAILED: 'CREATION_FAILED',
+  RESIDUAL_OWNERSHIP_BLOCKED: 'RESIDUAL_OWNERSHIP_BLOCKED',
   RUN_CREATED_VERIFIED: 'RUN_CREATED_VERIFIED',
   CLEANUP_PENDING: 'CLEANUP_PENDING',
+  CLEANUP_INDETERMINATE: 'CLEANUP_INDETERMINATE',
   DELETION_VERIFIED: 'DELETION_VERIFIED',
   RESIDUAL_BLOCKED: 'RESIDUAL_BLOCKED'
 });
+
+/**
+ * Normalized Supabase Storage provider response classifications (R2-03).
+ */
+export const STORAGE_RESPONSE_CLASS = Object.freeze({
+  OBJECT_PRESENT: 'OBJECT_PRESENT',
+  OBJECT_ABSENT: 'OBJECT_ABSENT',
+  BUCKET_MISSING: 'BUCKET_MISSING',
+  CONFLICT_EXISTS: 'CONFLICT_EXISTS',
+  UNAUTHORIZED_OR_FORBIDDEN: 'UNAUTHORIZED_OR_FORBIDDEN',
+  RATE_LIMITED_OR_SERVER_ERROR: 'RATE_LIMITED_OR_SERVER_ERROR',
+  MALFORMED_RESPONSE: 'MALFORMED_RESPONSE',
+  TRANSPORT_FAILURE: 'TRANSPORT_FAILURE',
+  INDETERMINATE: 'INDETERMINATE'
+});
+
+const STORAGE_UNVERIFIED_PRE_CLEANUP_STATES = new Set([
+  STORAGE_LIFECYCLE_STATE.ABSENCE_VERIFIED,
+  STORAGE_LIFECYCLE_STATE.DEFINITIVE_NON_CREATION,
+  STORAGE_LIFECYCLE_STATE.CREATION_PENDING,
+  STORAGE_LIFECYCLE_STATE.CREATION_IN_FLIGHT,
+  STORAGE_LIFECYCLE_STATE.CREATION_INDETERMINATE,
+  STORAGE_LIFECYCLE_STATE.CONFLICT_EXISTING_PRESERVED,
+  STORAGE_LIFECYCLE_STATE.CREATION_FAILED,
+  STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED
+]);
 
 /**
  * Canonical probe dependency graph enforcing prerequisite completeness (H3-01, H3-R1).
@@ -2332,24 +2413,412 @@ function validateSessionRevocationProof(item, rawOutcome, allowedStatuses, isRev
  * Must return true ONLY when provider affirmatively confirms HTTP 404.
  * Any other status (200, 401, 403, 500, timeout, error) fails closed returning false.
  */
-export async function verifyStorageObjectAbsence(adminClient, bucket, path) {
-  if (!adminClient || !bucket || !path) return false;
+/**
+ * Parses Storage error / metadata response envelopes while strictly distinguishing empty 404/409 stubs
+ * from malformed, truncated, or unparseable response payloads (R2-03).
+ */
+export async function parseStorageErrorEnvelope(res) {
+  if (!res) {
+    return { ok: false, status: 0, body: null, rawText: null, parseStatus: 'missing_response', parseError: null };
+  }
+  const status = typeof res.status === 'number' ? res.status : 0;
+  const ok = res.ok ?? (status >= 200 && status < 300);
+
+  if (typeof res.text === 'function') {
+    let rawText;
+    try {
+      rawText = await res.text();
+    } catch (err) {
+      return { ok, status, body: null, rawText: null, parseStatus: 'unreadable_body', parseError: err };
+    }
+    if (typeof rawText !== 'string') {
+      return { ok, status, body: null, rawText: null, parseStatus: 'unreadable_body', parseError: new Error('Non-string response text') };
+    }
+    const trimmed = rawText.trim();
+    if (!trimmed) {
+      return { ok, status, body: null, rawText: '', parseStatus: 'empty_body', parseError: null };
+    }
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return { ok, status, body: parsed, rawText, parseStatus: 'non_object', parseError: null };
+      }
+      return { ok, status, body: parsed, rawText, parseStatus: 'parsed', parseError: null };
+    } catch (err) {
+      return { ok, status, body: null, rawText, parseStatus: 'invalid_json', parseError: err };
+    }
+  }
+
+  if (typeof res.json === 'function') {
+    return parseResponseEnvelope(res);
+  }
+
+  return { ok, status, body: null, rawText: null, parseStatus: 'no_body', parseError: null };
+}
+
+/**
+ * Shared provider-aware Supabase Storage REST response normalizer (R2-03).
+ * Reconciles upstream http/error-handler.ts & storage-error.ts envelopes:
+ * - Accepts HTTP 404 (when not NoSuchBucket/AccessDenied/corrupted/mismatched)
+ * - Accepts HTTP 400 ONLY with documented structured object-not-found: statusCode === '404' AND code === 'NoSuchKey'
+ * - Rejects generic HTTP 400, logical 404 with wrong/missing code, 401/403, permission-masked responses,
+ *   429/5xx, malformed bodies, unverified project/bucket/path, or unauthorized context.
+ */
+export function normalizeStorageObjectResponse({
+  status = 0,
+  parseStatus = 'no_body',
+  body = null,
+  transportError = null,
+  expectedBucket = STORAGE_PROBE_BUCKET,
+  expectedPath = null,
+  projectRef = HARDCODED_TEMP_REF,
+  authorizedContext = true
+} = {}) {
+  const normRef = typeof projectRef === 'string' ? projectRef.trim().toLowerCase() : '';
+  if (!normRef || normRef !== HARDCODED_TEMP_REF || isForbiddenProject(normRef)) {
+    return {
+      classification: STORAGE_RESPONSE_CLASS.UNAUTHORIZED_OR_FORBIDDEN,
+      isAbsent: false,
+      isPresent: false,
+      isConflict: false,
+      status,
+      reason: `FORBIDDEN_OR_INVALID_PROJECT: '${normRef}'`
+    };
+  }
+
+  if (!authorizedContext) {
+    return {
+      classification: STORAGE_RESPONSE_CLASS.UNAUTHORIZED_OR_FORBIDDEN,
+      isAbsent: false,
+      isPresent: false,
+      isConflict: false,
+      status,
+      reason: 'UNAUTHORIZED_REQUEST_CONTEXT: Privileged or verified authorized request context required'
+    };
+  }
+
+  if (!expectedBucket || typeof expectedBucket !== 'string' || !expectedBucket.trim()) {
+    return {
+      classification: STORAGE_RESPONSE_CLASS.INDETERMINATE,
+      isAbsent: false,
+      isPresent: false,
+      isConflict: false,
+      status,
+      reason: 'MISSING_EXPECTED_BUCKET'
+    };
+  }
+
+  if (transportError) {
+    return {
+      classification: STORAGE_RESPONSE_CLASS.TRANSPORT_FAILURE,
+      isAbsent: false,
+      isPresent: false,
+      isConflict: false,
+      status: 0,
+      reason: `TRANSPORT_FAILURE: ${transportError?.message || String(transportError)}`
+    };
+  }
+
+  if (
+    parseStatus === 'invalid_json' ||
+    parseStatus === 'unreadable_body' ||
+    parseStatus === 'unreadable' ||
+    parseStatus === 'missing_response' ||
+    parseStatus === 'non_object'
+  ) {
+    return {
+      classification: STORAGE_RESPONSE_CLASS.MALFORMED_RESPONSE,
+      isAbsent: false,
+      isPresent: false,
+      isConflict: false,
+      status,
+      reason: `MALFORMED_STORAGE_RESPONSE: parseStatus='${parseStatus}'`
+    };
+  }
+
+  if (status === 200 || status === 201 || status === 206) {
+    return {
+      classification: STORAGE_RESPONSE_CLASS.OBJECT_PRESENT,
+      isAbsent: false,
+      isPresent: true,
+      isConflict: false,
+      status,
+      reason: `HTTP_${status}_PRESENT`
+    };
+  }
+
+  if (status === 401 || status === 403) {
+    return {
+      classification: STORAGE_RESPONSE_CLASS.UNAUTHORIZED_OR_FORBIDDEN,
+      isAbsent: false,
+      isPresent: false,
+      isConflict: false,
+      status,
+      reason: `STORAGE_AUTH_REJECTED: HTTP ${status}`
+    };
+  }
+
+  if (status === 429 || status >= 500) {
+    return {
+      classification: STORAGE_RESPONSE_CLASS.RATE_LIMITED_OR_SERVER_ERROR,
+      isAbsent: false,
+      isPresent: false,
+      isConflict: false,
+      status,
+      reason: `STORAGE_PROVIDER_ERROR: HTTP ${status}`
+    };
+  }
+
+  const errCode = typeof body?.code === 'string' ? body.code.trim() : '';
+  const errName = typeof body?.error === 'string' ? body.error.trim() : '';
+  const errMsg = typeof body?.message === 'string' ? body.message.trim() : '';
+  const bodyStatusCode = body?.statusCode !== undefined && body?.statusCode !== null ? String(body.statusCode).trim() : null;
+  const combinedErrText = `${errCode} ${errName} ${errMsg}`.toLowerCase();
+
+  const hasPermissionMaskIndicator =
+    errCode === 'AccessDenied' ||
+    errCode === 'InvalidJWT' ||
+    errCode === 'SignatureDoesNotMatch' ||
+    errCode === 'ExpiredToken' ||
+    /accessdenied|access denied|unauthorized|forbidden|permission|row-level security|rls|invalid jwt|signature does not match/i.test(combinedErrText);
+
+  if (hasPermissionMaskIndicator) {
+    return {
+      classification: STORAGE_RESPONSE_CLASS.UNAUTHORIZED_OR_FORBIDDEN,
+      isAbsent: false,
+      isPresent: false,
+      isConflict: false,
+      status,
+      code: errCode || null,
+      reason: `PERMISSION_MASKED_OR_AUTH_DENIED: ${errCode || errName || errMsg || `HTTP ${status}`}`
+    };
+  }
+
+  if (errCode === 'NoSuchBucket' || /bucket not found/i.test(combinedErrText)) {
+    return {
+      classification: STORAGE_RESPONSE_CLASS.BUCKET_MISSING,
+      isAbsent: false,
+      isPresent: false,
+      isConflict: false,
+      status,
+      code: errCode || 'NoSuchBucket',
+      reason: `BUCKET_MISSING: '${expectedBucket}' not found`
+    };
+  }
+
+  // Documented Supabase Storage duplicate/conflict contract
+  if (
+    status === 409 &&
+    (!body || errCode === 'KeyAlreadyExists' || errCode === 'ResourceAlreadyExists' || errName === 'Duplicate' || bodyStatusCode === '409' || /already exists/i.test(errMsg))
+  ) {
+    return {
+      classification: STORAGE_RESPONSE_CLASS.CONFLICT_EXISTS,
+      isAbsent: false,
+      isPresent: true,
+      isConflict: true,
+      status,
+      code: errCode || 'KeyAlreadyExists',
+      reason: 'CONFIRMED_409_CONFLICT'
+    };
+  }
+
+  if (
+    status === 400 &&
+    bodyStatusCode === '409' &&
+    (errCode === 'KeyAlreadyExists' || errCode === 'ResourceAlreadyExists' || errName === 'Duplicate')
+  ) {
+    return {
+      classification: STORAGE_RESPONSE_CLASS.CONFLICT_EXISTS,
+      isAbsent: false,
+      isPresent: true,
+      isConflict: true,
+      status,
+      code: errCode,
+      reason: 'CONFIRMED_STRUCTURED_400_409_CONFLICT'
+    };
+  }
+
+  // Correlate resource / key field if provided by StorageBackendError
+  const bodyResource = typeof body?.resource === 'string' ? body.resource.trim() : (typeof body?.key === 'string' ? body.key.trim() : null);
+  const resourceMatches =
+    !bodyResource ||
+    !expectedPath ||
+    bodyResource === expectedPath ||
+    bodyResource === `${expectedBucket}/${expectedPath}`;
+
+  // Documented Supabase Storage HTTP 400 structured object-not-found (renderer.ts / error-handler.ts)
+  if (status === 400) {
+    if (body && bodyStatusCode === '404' && errCode === 'NoSuchKey' && resourceMatches) {
+      return {
+        classification: STORAGE_RESPONSE_CLASS.OBJECT_ABSENT,
+        isAbsent: true,
+        isPresent: false,
+        isConflict: false,
+        status,
+        logicalStatus: '404',
+        code: 'NoSuchKey',
+        reason: 'CONFIRMED_STRUCTURED_400_NOSUCHKEY_LOGICAL_404'
+      };
+    }
+    return {
+      classification: STORAGE_RESPONSE_CLASS.INDETERMINATE,
+      isAbsent: false,
+      isPresent: false,
+      isConflict: false,
+      status,
+      logicalStatus: bodyStatusCode,
+      code: errCode || null,
+      reason: `AMBIGUOUS_HTTP_400: statusCode='${bodyStatusCode || 'none'}', code='${errCode || 'none'}' does not prove object absence`
+    };
+  }
+
+  // Transport HTTP 404
+  if (status === 404) {
+    if (body) {
+      if (errCode && errCode !== 'NoSuchKey') {
+        return {
+          classification: STORAGE_RESPONSE_CLASS.INDETERMINATE,
+          isAbsent: false,
+          isPresent: false,
+          isConflict: false,
+          status,
+          code: errCode,
+          reason: `UNEXPECTED_404_CODE: code='${errCode}' does not confirm object key absence`
+        };
+      }
+      if (bodyStatusCode !== null && bodyStatusCode !== '404') {
+        return {
+          classification: STORAGE_RESPONSE_CLASS.INDETERMINATE,
+          isAbsent: false,
+          isPresent: false,
+          isConflict: false,
+          status,
+          reason: `CONTRADICTORY_404_STATUS_CODE: body statusCode='${bodyStatusCode}'`
+        };
+      }
+      if (!resourceMatches) {
+        return {
+          classification: STORAGE_RESPONSE_CLASS.INDETERMINATE,
+          isAbsent: false,
+          isPresent: false,
+          isConflict: false,
+          status,
+          reason: `RESOURCE_MISMATCH: body resource '${bodyResource}' does not match '${expectedPath}'`
+        };
+      }
+    }
+    return {
+      classification: STORAGE_RESPONSE_CLASS.OBJECT_ABSENT,
+      isAbsent: true,
+      isPresent: false,
+      isConflict: false,
+      status,
+      logicalStatus: '404',
+      code: errCode || 'NoSuchKey',
+      reason: 'CONFIRMED_HTTP_404'
+    };
+  }
+
+  return {
+    classification: STORAGE_RESPONSE_CLASS.INDETERMINATE,
+    isAbsent: false,
+    isPresent: false,
+    isConflict: false,
+    status,
+    reason: `INDETERMINATE_HTTP_${status}`
+  };
+}
+
+/**
+ * Verifies post-deletion Storage object absence with detailed normalized evidence (R1-06, R2-03).
+ */
+export async function verifyStorageObjectAbsenceDetailed(adminClient, bucket, path, { projectRef = HARDCODED_TEMP_REF } = {}) {
+  if (!adminClient || !bucket || !path) {
+    return {
+      isAbsent: false,
+      classification: STORAGE_RESPONSE_CLASS.INDETERMINATE,
+      status: 0,
+      reason: 'MISSING_CLIENT_OR_PATH'
+    };
+  }
   if (typeof adminClient.getStorageObject === 'function') {
     try {
       const res = await adminClient.getStorageObject(bucket, path);
-      return res && res.status === 404;
-    } catch {
-      return false;
+      if (!res) {
+        return {
+          isAbsent: false,
+          classification: STORAGE_RESPONSE_CLASS.INDETERMINATE,
+          status: 0,
+          reason: 'EMPTY_ADMIN_CLIENT_RESPONSE'
+        };
+      }
+      if (res.normalized && typeof res.normalized === 'object') {
+        return res.normalized;
+      }
+      if (res.transportError) {
+        return normalizeStorageObjectResponse({
+          transportError: res.transportError,
+          expectedBucket: bucket,
+          expectedPath: path,
+          projectRef,
+          authorizedContext: res.authorizedContext ?? true
+        });
+      }
+      const parsedBody = res.body ?? null;
+      const inferredParseStatus =
+        res.parseStatus ||
+        (parsedBody && typeof parsedBody === 'object' ? 'parsed' : 'no_body');
+      return normalizeStorageObjectResponse({
+        status: typeof res.status === 'number' ? res.status : 0,
+        parseStatus: inferredParseStatus,
+        body: parsedBody,
+        expectedBucket: bucket,
+        expectedPath: path,
+        projectRef,
+        authorizedContext: res.authorizedContext ?? true
+      });
+    } catch (err) {
+      return normalizeStorageObjectResponse({
+        transportError: err,
+        expectedBucket: bucket,
+        expectedPath: path,
+        projectRef,
+        authorizedContext: true
+      });
     }
   }
   if (typeof adminClient.verifyStorageObjectAbsence === 'function') {
     try {
-      return await adminClient.verifyStorageObjectAbsence(bucket, path);
-    } catch {
-      return false;
+      const ok = await adminClient.verifyStorageObjectAbsence(bucket, path);
+      return {
+        isAbsent: ok === true,
+        classification: ok === true ? STORAGE_RESPONSE_CLASS.OBJECT_ABSENT : STORAGE_RESPONSE_CLASS.INDETERMINATE,
+        status: ok === true ? 404 : 0,
+        reason: ok === true ? 'CUSTOM_VERIFIER_TRUE' : 'CUSTOM_VERIFIER_FALSE'
+      };
+    } catch (err) {
+      return {
+        isAbsent: false,
+        classification: STORAGE_RESPONSE_CLASS.TRANSPORT_FAILURE,
+        status: 0,
+        reason: err.message
+      };
     }
   }
-  return false;
+  return {
+    isAbsent: false,
+    classification: STORAGE_RESPONSE_CLASS.INDETERMINATE,
+    status: 0,
+    reason: 'MISSING_GET_STORAGE_OBJECT_METHOD'
+  };
+}
+
+/**
+ * Boolean wrapper over verifyStorageObjectAbsenceDetailed (R1-06, R2-03).
+ */
+export async function verifyStorageObjectAbsence(adminClient, bucket, path, options = {}) {
+  const res = await verifyStorageObjectAbsenceDetailed(adminClient, bucket, path, options);
+  return res?.isAbsent === true;
 }
 
 /**
@@ -2367,6 +2836,7 @@ export class TestRunInventory {
       this.runId = `run-${Date.now()}-${crypto.randomUUID()}`;
     }
     this.createdUsers = new Map(); // Users verified as created in THIS run with affirmative proof -> deletion eligible
+    this.deletedUsers = new Set(); // Users confirmed deleted & absent during executeCleanup (R2-02)
     this.referencedUsers = new Map(); // Pre-existing / seeded users authenticated -> NEVER deleted (R3-09)
     this.unverifiedUsers = new Map(); // Users observed without affirmative run-created proof -> NEVER deleted (R16-02)
     this.userOwnership = new Map(); // userId -> USER_OWNERSHIP (R16-02)
@@ -2383,6 +2853,8 @@ export class TestRunInventory {
     this.untrackedUsersCount = 0; // Users created whose concrete ID was lost or unobserved (R14-02)
     this.inFlightOperations = new Map(); // opId -> operation record (R13-02)
     this._opSequence = 0;
+    this.cleanupStarted = false; // Set to true once executeCleanup begins (R2-02)
+    this.lateSettlementsDuringCleanup = []; // Operations or updates settling after cleanup starts (R2-02)
     this.finalized = false; // Set to true once executeCleanup completes (R13-02)
     this.postFinalizationMutations = []; // Late mutations attempted after finalization (R13-02)
     this._settlementListeners = [];
@@ -2682,7 +3154,7 @@ export class TestRunInventory {
   }
 
   /**
-   * Registers a run-scoped Storage probe fixture with explicit lifecycle tracking (H3-02, H3-R1).
+   * Registers a run-scoped Storage probe fixture with explicit lifecycle tracking (H3-02, H3-R1, H3-R2).
    * Creation obligation is tracked separately from deletion eligibility.
    * Deletion eligibility is granted ONLY upon affirmative RUN_CREATED_VERIFIED.
    */
@@ -2690,13 +3162,24 @@ export class TestRunInventory {
     bucket = STORAGE_PROBE_BUCKET,
     path,
     ownerId = null,
+    providerObjectId = null,
     bytes = 0,
+    sha256 = null,
     status = 'PROVISIONED',
     proof = null,
     lifecycleState = null,
-    deletionEligible = false
+    deletionEligible = false,
+    hasCommittedUpload = false,
+    neverDispatched = false
   } = {}) {
     if (this.finalized) {
+      this.postFinalizationMutations.push({
+        action: 'registerStorageFixture',
+        bucket,
+        path,
+        lifecycleState,
+        attemptedAt: new Date().toISOString()
+      });
       throw new Error('INVENTORY_FINALIZED: Cannot register storage creation obligation against finalized inventory');
     }
     if (!path || typeof path !== 'string' || !path.trim()) {
@@ -2719,10 +3202,15 @@ export class TestRunInventory {
       key: fixtureKey,
       runId: this.runId,
       ownerId: ownerId ? String(ownerId).trim() : null,
+      verifiedOwnerId: state === STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED && ownerId ? String(ownerId).trim() : null,
+      providerObjectId: providerObjectId ? String(providerObjectId).trim() : null,
       bytes: typeof bytes === 'number' ? bytes : 0,
-      status, // 'PROVISIONED', 'IN_FLIGHT', 'VERIFIED', 'DELETED', 'DELETION_FAILED'
+      sha256: sha256 || null,
+      status,
       lifecycleState: state,
       deletionEligible: canDelete,
+      hasCommittedUpload: Boolean(hasCommittedUpload || state === STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED || state === STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED),
+      neverDispatched: Boolean(neverDispatched && !hasCommittedUpload),
       proof: proof || null,
       registeredAt: new Date().toISOString()
     };
@@ -2731,14 +3219,11 @@ export class TestRunInventory {
   }
 
   /**
-   * Updates an existing Storage fixture's lifecycle state and metadata (H3-R1).
-   * Transitions to RUN_CREATED_VERIFIED grant deletion eligibility.
-   * Pre-existing conflicts, failures, or indeterminate states strictly revoke deletion eligibility.
+   * Updates an existing Storage fixture's lifecycle state and metadata monotonically (H3-R1, H3-R2).
+   * - Enforces monotonicity: never downgrades RUN_CREATED_VERIFIED or DELETION_VERIFIED to weaker pre-cleanup states.
+   * - Preserves committed upload obligations (hasCommittedUpload=true cannot transition to CREATION_FAILED/DEFINITIVE_NON_CREATION).
    */
   updateStorageFixture(fixtureKeyOrBucket, pathOrUpdates = {}, maybeUpdates = {}) {
-    if (this.finalized) {
-      throw new Error('INVENTORY_FINALIZED: Cannot update storage fixture against finalized inventory');
-    }
     let key = null;
     let updates = {};
     if (typeof pathOrUpdates === 'string') {
@@ -2749,9 +3234,53 @@ export class TestRunInventory {
       updates = pathOrUpdates || {};
     }
 
+    if (this.finalized) {
+      this.postFinalizationMutations.push({
+        action: 'updateStorageFixture',
+        key,
+        lifecycleState: updates.lifecycleState || null,
+        attemptedAt: new Date().toISOString()
+      });
+      throw new Error('INVENTORY_FINALIZED: Cannot update storage fixture against finalized inventory');
+    }
+
     const fixture = this.storageFixtures.get(key);
     if (!fixture) {
       throw new Error(`STORAGE_FIXTURE_NOT_FOUND: Fixture '${key}' not registered in inventory`);
+    }
+
+    const nextState = updates.lifecycleState || fixture.lifecycleState;
+
+    // Invariant R2-02 #9: Never overwrite terminal DELETION_VERIFIED or downgrade RUN_CREATED_VERIFIED
+    if (fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED && nextState !== STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED) {
+      throw new Error(`INVENTORY_STATE_MONOTONICITY_VIOLATION: Cannot transition terminal DELETION_VERIFIED fixture '${key}' to '${nextState}'`);
+    }
+    if (
+      fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED &&
+      STORAGE_UNVERIFIED_PRE_CLEANUP_STATES.has(nextState)
+    ) {
+      throw new Error(
+        `INVENTORY_STATE_MONOTONICITY_VIOLATION: Cannot overwrite RUN_CREATED_VERIFIED ownership evidence for '${key}' with weaker state '${nextState}' (R2-02)`
+      );
+    }
+
+    // Invariant R2-02 #1 & #2: Successful POST commitment cannot be downgraded to CREATION_FAILED or DEFINITIVE_NON_CREATION
+    if (
+      (fixture.hasCommittedUpload || updates.hasCommittedUpload) &&
+      (nextState === STORAGE_LIFECYCLE_STATE.CREATION_FAILED || nextState === STORAGE_LIFECYCLE_STATE.DEFINITIVE_NON_CREATION)
+    ) {
+      throw new Error(
+        `INVENTORY_STATE_MONOTONICITY_VIOLATION: Committed upload '${key}' cannot transition to '${nextState}'; must remain residual/unverified (R2-02)`
+      );
+    }
+
+    if (this.cleanupStarted && !updates._internalCleanupTransition) {
+      this.lateSettlementsDuringCleanup.push({
+        action: 'updateStorageFixture',
+        key,
+        nextState,
+        attemptedAt: new Date().toISOString()
+      });
     }
 
     if (updates.lifecycleState) {
@@ -2763,17 +3292,36 @@ export class TestRunInventory {
     if (typeof updates.bytes === 'number') {
       fixture.bytes = updates.bytes;
     }
+    if (updates.sha256 !== undefined) {
+      fixture.sha256 = updates.sha256;
+    }
+    if (updates.providerObjectId !== undefined) {
+      fixture.providerObjectId = updates.providerObjectId;
+    }
     if (updates.verifiedOwnerId !== undefined) {
       fixture.verifiedOwnerId = updates.verifiedOwnerId;
     }
     if (updates.proof !== undefined) {
       fixture.proof = updates.proof;
     }
+    if (updates.residualReason !== undefined) {
+      fixture.residualReason = updates.residualReason;
+    }
+    if (updates.hasCommittedUpload === true) {
+      fixture.hasCommittedUpload = true;
+      fixture.neverDispatched = false;
+    }
+    if (updates.neverDispatched === true && !fixture.hasCommittedUpload) {
+      fixture.neverDispatched = true;
+    }
 
     // Deletion eligibility is authorized ONLY upon affirmative RUN_CREATED_VERIFIED
     if (fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED) {
       fixture.deletionEligible = updates.deletionEligible !== false;
       this.registerStorageObject(fixture.bucket, fixture.path);
+    } else if (fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.CLEANUP_PENDING && fixture.proof?.verifiedOwnership === true) {
+      // Preserve verified proof during cleanup transition while awaiting deletion verification
+      fixture.deletionEligible = false;
     } else {
       fixture.deletionEligible = false;
       if (this.trackedStorageObjects.has(fixture.bucket)) {
@@ -2989,6 +3537,7 @@ export class TestRunInventory {
       description,
       metadata: { ...metadata },
       state: 'IN_FLIGHT',
+      registeredDuringCleanup: Boolean(this.cleanupStarted),
       registeredAt: new Date().toISOString(),
       dispatchedAt: new Date().toISOString(),
       settledAt: null,
@@ -3021,6 +3570,17 @@ export class TestRunInventory {
         attemptedAt: new Date().toISOString()
       };
       this.postFinalizationMutations.push(mutation);
+    } else if (this.cleanupStarted && !op.registeredDuringCleanup && (op.state === 'IN_FLIGHT' || op.state === 'TIMED_OUT_UNRESOLVED')) {
+      this.lateSettlementsDuringCleanup.push({
+        action: 'settleInFlightOperation',
+        opId,
+        probeId: op.probeId,
+        priorState: op.state,
+        canModifyProviderState: op.canModifyProviderState,
+        canCreateUser: op.canCreateUser,
+        canMintSession: op.canMintSession,
+        settledAt: new Date().toISOString()
+      });
     }
 
     const priorState = op.state;
@@ -3128,14 +3688,24 @@ export class TestRunInventory {
   }
 
   isClean() {
-    if (this.createdUsers.size > 0) return false;
+    for (const uId of this.createdUsers.keys()) {
+      if (!this.deletedUsers.has(uId)) return false;
+    }
     if (this.unverifiedUsers.size > 0) return false;
     if (this.untrackedSessionsCount > 0) return false;
     if (this.untrackedUsersCount > 0) return false;
     if (this.trackedSessions.size !== this.revokedSessions.size) return false;
     if (this.hasUnresolvedOperations()) return false;
     if (this.postFinalizationMutations.length > 0) return false;
+    if (this.lateSettlementsDuringCleanup.length > 0) return false;
     if (this.seedCredentialRestorations.some(r => r.state !== 'restored')) return false;
+    for (const fixture of this.storageFixtures.values()) {
+      const settledCleanly =
+        fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED ||
+        fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.CONFLICT_EXISTING_PRESERVED ||
+        (fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.DEFINITIVE_NON_CREATION && fixture.neverDispatched === true && !fixture.hasCommittedUpload);
+      if (!settledCleanly) return false;
+    }
     for (const rows of this.trackedTableRows.values()) {
       if (rows.size > 0) return false;
     }
@@ -3191,6 +3761,8 @@ export class TestRunInventory {
       status: 'CLEANUP_PENDING'
     };
 
+    this.cleanupStarted = true;
+
     // Await bounded grace period for in-flight requests to settle before auditing cleanup items (R13-02)
     if (settlementTimeoutMs > 0) {
       await this.awaitInFlightSettlement(settlementTimeoutMs);
@@ -3203,11 +3775,13 @@ export class TestRunInventory {
       this.unverifiedUsers.size > 0 ||
       this.trackedTableRows.size > 0 ||
       this.trackedStorageObjects.size > 0 ||
+      this.storageFixtures.size > 0 ||
       this.trackedSessions.size > 0 ||
       this.seedCredentialRestorations.length > 0 ||
       this.untrackedSessionsCount > 0 ||
       this.untrackedUsersCount > 0 ||
       unresolvedOps.length > 0 ||
+      this.lateSettlementsDuringCleanup.length > 0 ||
       this.postFinalizationMutations.length > 0;
 
     if (!hasCleanupEligibleItems) {
@@ -3326,92 +3900,146 @@ export class TestRunInventory {
       }
     }
 
-    // 2. Storage object deletion: ONLY for verified run-created fixtures with affirmative deletion eligibility (R1-03, R1-06)
+    // 2. Storage object deletion: ONLY for verified run-created fixtures with affirmative deletion eligibility (R1-03, R1-06, R2-02, R2-03)
     let storageCleanupFailed = false;
 
     for (const [fixtureKey, fixture] of this.storageFixtures.entries()) {
-      // 1. Conflict existing preserved or creation failed: NEVER delete pre-existing objects (R1-03)
+      // 1. Definitive non-creation (request NEVER dispatched and no committed upload): no Storage resource created
       if (
-        fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.CONFLICT_EXISTING_PRESERVED ||
-        fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.CREATION_FAILED
+        fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.DEFINITIVE_NON_CREATION &&
+        fixture.neverDispatched === true &&
+        !fixture.hasCommittedUpload
       ) {
         continue;
       }
 
-      // 2. Indeterminate, pending, in-flight: quarantine, block cleanup success, but DO NOT blind-delete (R1-03)
+      // 2. Confirmed existing-object conflict (with no committed upload from this run): preserve pre-existing object untouched
       if (
-        fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.CREATION_INDETERMINATE ||
-        fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.CREATION_PENDING ||
-        fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.CREATION_IN_FLIGHT ||
-        !fixture.deletionEligible ||
-        fixture.lifecycleState !== STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED
+        fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.CONFLICT_EXISTING_PRESERVED &&
+        !fixture.hasCommittedUpload
       ) {
+        continue;
+      }
+
+      // 3. Unverified, committed-but-unverified, indeterminate, or non-verified ownership states:
+      // Quarantine obligation, block cleanup success & block Auth user deletion, NEVER blind-delete! (R2-02)
+      const isVerifiedRunOwned =
+        fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED &&
+        fixture.deletionEligible === true;
+
+      if (!isVerifiedRunOwned) {
+        const failureCode = fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED || fixture.hasCommittedUpload
+          ? 'RESIDUAL_STORAGE_OWNERSHIP_BLOCKED'
+          : (fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.CLEANUP_INDETERMINATE
+              ? 'STORAGE_CLEANUP_INDETERMINATE'
+              : 'UNRESOLVED_STORAGE_CREATION_RISK');
+        const reason = `${failureCode}: Fixture '${fixtureKey}' in state '${fixture.lifecycleState}' (hasCommittedUpload=${Boolean(fixture.hasCommittedUpload)}) lacks affirmative deletion proof; quarantined for durable recovery without blind deletion (R2-02)`;
+
         report.residualResources.push({
           type: 'storage_object',
           bucket: fixture.bucket,
           path: fixture.path,
-          error: `UNRESOLVED_STORAGE_CREATION_RISK: Fixture '${fixtureKey}' in state '${fixture.lifecycleState}' lacks affirmative run-created proof; quarantined to prevent deleting pre-existing object`
+          lifecycleState: fixture.lifecycleState,
+          hasCommittedUpload: Boolean(fixture.hasCommittedUpload),
+          recoverableForDurableRetry: true,
+          error: reason
         });
         storageCleanupFailed = true;
-        fixture.lifecycleState = STORAGE_LIFECYCLE_STATE.RESIDUAL_BLOCKED;
+        fixture.residualReason = reason;
+        if (
+          fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.CREATION_PENDING ||
+          fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.CREATION_IN_FLIGHT
+        ) {
+          fixture.lifecycleState = STORAGE_LIFECYCLE_STATE.CREATION_INDETERMINATE;
+        } else if (
+          fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.CREATION_FAILED &&
+          fixture.hasCommittedUpload
+        ) {
+          fixture.lifecycleState = STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED;
+        }
+        fixture.deletionEligible = false;
+        fixture.status = 'CLEANUP_QUARANTINED';
         continue;
       }
 
-      // 3. Affirmative run-created fixture: authorized for deletion
+      // 4. Affirmative run-created fixture: authorized for deletion
       if (typeof adminClient.deleteStorageObject !== 'function') {
         report.residualResources.push({
           type: 'storage_object',
           bucket: fixture.bucket,
           path: fixture.path,
+          lifecycleState: fixture.lifecycleState,
           error: 'MISSING_DELETE_STORAGE_OBJECT_METHOD'
         });
         storageCleanupFailed = true;
-        fixture.lifecycleState = STORAGE_LIFECYCLE_STATE.RESIDUAL_BLOCKED;
+        fixture.lifecycleState = STORAGE_LIFECYCLE_STATE.CLEANUP_INDETERMINATE;
+        fixture.deletionEligible = false;
+        fixture.status = 'DELETION_FAILED';
         continue;
       }
 
       try {
+        fixture.lifecycleState = STORAGE_LIFECYCLE_STATE.CLEANUP_PENDING;
+        fixture.deletionEligible = false;
         const delRes = await adminClient.deleteStorageObject(fixture.bucket, fixture.path);
         if (delRes && delRes.error) {
           report.residualResources.push({
             type: 'storage_object',
             bucket: fixture.bucket,
             path: fixture.path,
+            lifecycleState: STORAGE_LIFECYCLE_STATE.CLEANUP_INDETERMINATE,
+            recoverableForDurableRetry: true,
             error: delRes.error.message || String(delRes.error)
           });
           storageCleanupFailed = true;
-          fixture.lifecycleState = STORAGE_LIFECYCLE_STATE.RESIDUAL_BLOCKED;
+          fixture.lifecycleState = STORAGE_LIFECYCLE_STATE.CLEANUP_INDETERMINATE;
           fixture.status = 'DELETION_FAILED';
           continue;
         }
 
-        // 4. Independent post-deletion absence verification (R1-06)
-        // A successful delete response does not prove absence; verify object is actually gone (GET returns 404)
-        const isAbsent = await verifyStorageObjectAbsence(adminClient, fixture.bucket, fixture.path);
-        if (!isAbsent) {
+        // 5. Independent normalized post-deletion absence verification (R1-06, R2-03)
+        // A successful delete response does not prove absence; verify via normalized provider absence response
+        const absenceDetail = await verifyStorageObjectAbsenceDetailed(adminClient, fixture.bucket, fixture.path);
+        if (!absenceDetail.isAbsent) {
+          const isStillPresent = absenceDetail.classification === STORAGE_RESPONSE_CLASS.OBJECT_PRESENT;
+          const nextState = isStillPresent
+            ? STORAGE_LIFECYCLE_STATE.RESIDUAL_BLOCKED
+            : STORAGE_LIFECYCLE_STATE.CLEANUP_INDETERMINATE;
           report.residualResources.push({
             type: 'storage_object',
             bucket: fixture.bucket,
             path: fixture.path,
-            error: `STORAGE_OBJECT_NOT_ABSENT: Storage object '${fixture.bucket}/${fixture.path}' still present or returned non-404 during post-delete verification`
+            lifecycleState: nextState,
+            absenceClassification: absenceDetail.classification,
+            recoverableForDurableRetry: true,
+            error: isStillPresent
+              ? `STORAGE_OBJECT_NOT_ABSENT: Storage object '${fixture.bucket}/${fixture.path}' still present (HTTP ${absenceDetail.status}) during post-delete verification`
+              : `STORAGE_ABSENCE_UNVERIFIED: Post-delete verification for '${fixture.bucket}/${fixture.path}' was inconclusive (${absenceDetail.classification}: ${absenceDetail.reason})`
           });
           storageCleanupFailed = true;
-          fixture.lifecycleState = STORAGE_LIFECYCLE_STATE.RESIDUAL_BLOCKED;
+          fixture.lifecycleState = nextState;
           fixture.status = 'DELETION_FAILED';
         } else {
           report.storageObjectsDeleted++;
           fixture.lifecycleState = STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED;
           fixture.status = 'DELETED';
+          fixture.deletionVerifiedAt = new Date().toISOString();
+          fixture.absenceEvidence = absenceDetail;
+          if (this.trackedStorageObjects.has(fixture.bucket)) {
+            this.trackedStorageObjects.get(fixture.bucket).delete(fixture.path);
+          }
         }
       } catch (err) {
         report.residualResources.push({
           type: 'storage_object',
           bucket: fixture.bucket,
           path: fixture.path,
+          lifecycleState: STORAGE_LIFECYCLE_STATE.CLEANUP_INDETERMINATE,
+          recoverableForDurableRetry: true,
           error: err.message
         });
         storageCleanupFailed = true;
-        fixture.lifecycleState = STORAGE_LIFECYCLE_STATE.RESIDUAL_BLOCKED;
+        fixture.lifecycleState = STORAGE_LIFECYCLE_STATE.CLEANUP_INDETERMINATE;
         fixture.status = 'DELETION_FAILED';
       }
     }
@@ -3593,12 +4221,15 @@ export class TestRunInventory {
                     email: userObj.email,
                     error: `VERIFY_FAILED: Non-404 error during absence check (${errStatus || errCode || err.message || err.msg || String(err)})`
                   });
+                } else {
+                  this.deletedUsers.add(userId);
                 }
                 continue;
               }
 
               // Confirmed null/notFound absence
               if (check?.notFound === true || check === null || check?.data === null) {
+                this.deletedUsers.add(userId);
                 continue;
               }
 
@@ -3802,6 +4433,24 @@ export class TestRunInventory {
       }
     }
 
+    // Late settlement / operation re-verification guard immediately prior to finalization (R2-02 #10)
+    const lateUnresolvedOps = this.getUnresolvedOperations();
+    if (this.lateSettlementsDuringCleanup.length > 0) {
+      report.residualResources.push({
+        type: 'late_settlement_during_cleanup',
+        count: this.lateSettlementsDuringCleanup.length,
+        details: this.lateSettlementsDuringCleanup.map(s => s.opId || s.key || s.action),
+        error: `LATE_SETTLEMENT_DURING_CLEANUP: ${this.lateSettlementsDuringCleanup.length} operation(s)/fixture(s) settled or mutated after cleanup began; cannot certify cleanup completion (R2-02)`
+      });
+    }
+    if (lateUnresolvedOps.length > unresolvedOps.length) {
+      report.residualResources.push({
+        type: 'late_unresolved_operations',
+        count: lateUnresolvedOps.length - unresolvedOps.length,
+        error: 'LATE_UNRESOLVED_OPERATIONS: Additional operations became unresolved during cleanup execution'
+      });
+    }
+
     if (report.residualUsers.length > 0 || report.residualResources.length > 0) {
       report.status = 'CLEANUP_FAILED_RESIDUAL_RESOURCES';
       this.finalize();
@@ -3822,27 +4471,32 @@ export class TestRunInventory {
 }
 
 /**
- * Provisions the run-scoped Storage probe fixture adhering to the 10-point contract (H3-02).
+ * Provisions the run-scoped Storage probe fixture adhering to the provider-compatible ownership & lifecycle contract (H3-02, H3-R1, H3-R2).
  * Contract:
- * 1. Pre-upload collision check (GET/HEAD)
- * 2. No overwrite / upsert (x-upsert: false)
- * 3. Write-ahead creation obligation in inventory
- * 4. Upload response byte verification
- * 5. Verified owner matching seed user ID
- * 6. Durable ownership record in inventory
- * 7. Exact path tracking in inventory
- * 8. Deletion during cleanup strictly precedes Auth user deletion
- * 9. Deletion failure blocks Auth user deletion
- * 10. Verify absence (HTTP 404) after deletion
+ * 1. Enforce TEMP project boundary, credential binding, runId, active inventory, and fail-closed offline mock transport
+ * 2. Require privileged server-side storage.objects.owner_id lookup interface before any mutation
+ * 3. Verify authenticated seed user identity affirmatively via provider /auth/v1/user (never unverified JWT decode alone)
+ * 4. Confirm authoritative pre-upload absence using normalized Storage responses (including HTTP 400 NoSuchKey)
+ * 5. Register write-ahead creation obligation before POST
+ * 6. Upload bytes without overwrite (x-upsert: false); preserve documented 409 conflicts; quarantine HTTP 5xx/timeouts as CREATION_INDETERMINATE
+ * 7. Immediately elevate successful POST (HTTP 200/201) to committed residual obligation (RESIDUAL_OWNERSHIP_BLOCKED) so verification failures never drop it
+ * 8. Verify exact downloaded bytes and SHA-256 digest (without reading non-existent download owner headers)
+ * 9. Verify authoritative storage.objects.owner_id correlation (projectRef, bucket_id, name, provider id, owner_id)
+ * 10. Grant RUN_CREATED_VERIFIED + deletionEligible: true ONLY after full verification passes
  */
 export async function provisionStorageProbeFixture({
   projectRef = HARDCODED_TEMP_REF,
   runId,
   seedUserId,
   userAccessToken,
+  anonKey = null,
+  serviceRoleKey = null,
+  adminClient = null,
+  ownershipLookupFn = null,
   fetchFn = globalThis.fetch,
   inventory = null,
-  probeContent = 'task06i probe test fixture\n'
+  probeContent = 'task06i probe test fixture\n',
+  ownershipTimeoutMs = DEFAULT_PROBE_TIMEOUT_MS
 } = {}) {
   // 1. Target project validation (R1-02)
   const normRef = (projectRef || '').trim().toLowerCase();
@@ -3852,11 +4506,17 @@ export async function provisionStorageProbeFixture({
     );
   }
 
-  // 2. Validate userAccessToken binding and seed user context (R1-02)
+  // 2. Validate credential bindings and seed user UUID (R1-02)
   if (!userAccessToken || typeof userAccessToken !== 'string' || !userAccessToken.trim()) {
     throw new Error('STORAGE_PROVISIONING_FAILED: userAccessToken is required to upload under authenticated seed user context');
   }
   validateProjectCredentialBinding(userAccessToken, normRef);
+  if (isNonEmptyString(anonKey)) {
+    validateProjectCredentialBinding(anonKey, normRef);
+  }
+  if (isNonEmptyString(serviceRoleKey)) {
+    validateProjectCredentialBinding(serviceRoleKey, normRef);
+  }
 
   let jwtClaims;
   try {
@@ -3889,59 +4549,160 @@ export async function provisionStorageProbeFixture({
     throw new Error(`INVENTORY_RUN_ID_MISMATCH: Inventory runId '${inventory.runId}' does not match '${validRunId}'`);
   }
 
-  // 5. Fail-Closed Transport / Durable Recovery Gate (R1-01)
-  if (!fetchFn || fetchFn === globalThis.fetch) {
-    throw new Error('BLOCKED_PENDING_DURABLE_RECOVERY: LIVE hosted execution against Supabase Cloud is blocked pending durable crash recovery and journaled inventory implementation');
-  }
+  // 5. Structural Fail-Closed Transport / Durable Recovery Gate (R1-01, R2 Sec 6)
+  assertOfflineMockTransport(fetchFn);
 
   const safeFetch = (url, opts) => {
-    if (!fetchFn || fetchFn === globalThis.fetch) {
-      throw new Error('BLOCKED_PENDING_DURABLE_RECOVERY: LIVE hosted execution against Supabase Cloud is blocked pending durable crash recovery and journaled inventory implementation');
-    }
-    return fetchFn(url, opts);
+    assertOfflineMockTransport(fetchFn);
+    return runWithBlockedRealFetch(() => fetchFn(url, opts));
   };
+
+  // 6. Require narrowly-scoped authoritative ownership lookup interface before any Storage mutation (R2-01 #2, #3, #10, #12)
+  let resolvedAdminClient = adminClient;
+  if (!resolvedAdminClient && isNonEmptyString(serviceRoleKey)) {
+    resolvedAdminClient = createHostedAdminClient({
+      serviceRoleKey,
+      anonKey,
+      projectRef: normRef,
+      fetchFn
+    });
+  }
+
+  const effectiveOwnershipLookup =
+    typeof ownershipLookupFn === 'function'
+      ? ownershipLookupFn
+      : (resolvedAdminClient && typeof resolvedAdminClient.getStorageObjectOwnership === 'function'
+          ? (b, p, opts) => resolvedAdminClient.getStorageObjectOwnership(b, p, opts)
+          : null);
+
+  if (!effectiveOwnershipLookup) {
+    throw new Error(
+      'BLOCKED_PENDING_OWNERSHIP_METADATA_INTERFACE: Authoritative storage.objects.owner_id lookup requires privileged adminClient.getStorageObjectOwnership, serviceRoleKey, or server-side ownershipLookupFn (R2-01)'
+    );
+  }
 
   const bucket = STORAGE_PROBE_BUCKET;
   const path = getStorageProbeObjectPath(validRunId);
   const fullKey = getStorageProbeObjectKey(validRunId);
   const baseUrl = `https://${normRef}.supabase.co`;
 
-  // 6. Pre-upload collision check (GET/HEAD) - Proceed ONLY on affirmative HTTP 404 (R1-03)
-  let checkRes;
-  try {
-    checkRes = await safeFetch(`${baseUrl}/storage/v1/object/authenticated/${fullKey}`, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${userAccessToken}`
-      }
-    });
-  } catch (err) {
-    throw new Error(`STORAGE_COLLISION_CHECK_FAILED: Pre-upload collision check failed: ${err.message}`);
+  // 7. Establish authenticated seed identity via affirmative provider /auth/v1/user proof (R2-01 #5, #6)
+  const authHeaders = {
+    Authorization: `Bearer ${userAccessToken.trim()}`
+  };
+  if (isNonEmptyString(anonKey)) {
+    authHeaders.apikey = anonKey.trim();
+  } else if (isNonEmptyString(serviceRoleKey)) {
+    authHeaders.apikey = serviceRoleKey.trim();
   }
 
-  if (checkRes.status === 200) {
+  let authUserRes;
+  try {
+    authUserRes = await safeFetch(`${baseUrl}/auth/v1/user`, {
+      method: 'GET',
+      headers: authHeaders
+    });
+  } catch (err) {
+    throw new Error(`SEED_IDENTITY_VERIFICATION_FAILED: Provider /auth/v1/user check failed: ${err.message}`);
+  }
+
+  const authUserEnv = await parseStorageErrorEnvelope(authUserRes);
+  if (authUserRes.status !== 200 || authUserEnv.parseStatus !== 'parsed' || !authUserEnv.body) {
+    throw new Error(
+      `SEED_IDENTITY_VERIFICATION_FAILED: Provider /auth/v1/user returned HTTP ${authUserRes.status} (${authUserEnv.parseStatus}); cannot prove seed identity from decoded JWT alone (R2-01)`
+    );
+  }
+  const providerUserId = typeof authUserEnv.body.id === 'string' ? authUserEnv.body.id.trim() : null;
+  if (!providerUserId) {
+    throw new Error('SEED_IDENTITY_VERIFICATION_FAILED: Provider /auth/v1/user response missing user id');
+  }
+  let validProviderUserId;
+  try {
+    validProviderUserId = validateUuid(providerUserId);
+  } catch (err) {
+    throw new Error(`SEED_IDENTITY_VERIFICATION_FAILED: Provider /auth/v1/user returned invalid user UUID: ${err.message}`);
+  }
+  if (validProviderUserId !== validSeedUserId || validProviderUserId !== jwtClaims.sub) {
+    throw new Error(
+      `SEED_IDENTITY_VERIFICATION_FAILED: Provider user id '${validProviderUserId}' does not match expected seedUserId '${validSeedUserId}' (R2-01)`
+    );
+  }
+
+  // 8. Pre-upload collision check using normalized Storage absence evidence (R1-03, R2-03)
+  // Prefer privileged adminClient.getStorageObject (bypasses RLS so another user's object cannot be masked as NoSuchKey)
+  let collisionNormalized;
+  if (resolvedAdminClient && typeof resolvedAdminClient.getStorageObject === 'function') {
+    try {
+      const adminCheck = await resolvedAdminClient.getStorageObject(bucket, path);
+      if (adminCheck && adminCheck.normalized) {
+        collisionNormalized = adminCheck.normalized;
+      } else {
+        collisionNormalized = normalizeStorageObjectResponse({
+          status: adminCheck?.status || 0,
+          parseStatus: adminCheck?.parseStatus || (adminCheck?.body ? 'parsed' : 'no_body'),
+          body: adminCheck?.body ?? null,
+          transportError: adminCheck?.transportError || null,
+          expectedBucket: bucket,
+          expectedPath: path,
+          projectRef: normRef,
+          authorizedContext: adminCheck?.authorizedContext ?? true
+        });
+      }
+    } catch (err) {
+      throw new Error(`STORAGE_COLLISION_CHECK_FAILED: Privileged pre-upload collision check threw: ${err.message}`);
+    }
+  } else {
+    let checkRes;
+    try {
+      checkRes = await safeFetch(`${baseUrl}/storage/v1/object/authenticated/${fullKey}`, {
+        method: 'GET',
+        headers: authHeaders
+      });
+    } catch (err) {
+      throw new Error(`STORAGE_COLLISION_CHECK_FAILED: Pre-upload collision check failed: ${err.message}`);
+    }
+    const checkEnv = await parseStorageErrorEnvelope(checkRes);
+    collisionNormalized = normalizeStorageObjectResponse({
+      status: checkEnv.status,
+      parseStatus: checkEnv.parseStatus,
+      body: checkEnv.body,
+      expectedBucket: bucket,
+      expectedPath: path,
+      projectRef: normRef,
+      authorizedContext: true
+    });
+  }
+
+  if (collisionNormalized.classification === STORAGE_RESPONSE_CLASS.OBJECT_PRESENT) {
     throw new Error(
       `STORAGE_COLLISION_DETECTED: Object '${fullKey}' already exists in bucket '${bucket}'; overwrite or collision prohibited (H3-02)`
     );
   }
-  if (checkRes.status !== 404) {
+  if (!collisionNormalized.isAbsent) {
     throw new Error(
-      `STORAGE_COLLISION_CHECK_FAILED: Pre-upload collision check failed with HTTP ${checkRes.status}; fail-closed (R1-03)`
+      `STORAGE_COLLISION_CHECK_FAILED: Pre-upload collision check failed with ${collisionNormalized.classification} (HTTP ${collisionNormalized.status}): ${collisionNormalized.reason}; fail-closed (R2-03)`
     );
   }
 
-  // 7. Write-ahead creation obligation in inventory with deletionEligible: false (R1-03)
+  // Compute expected byte buffer & SHA-256 digest
+  const expectedBuf = Buffer.isBuffer(probeContent) ? probeContent : Buffer.from(String(probeContent), 'utf8');
+  const expectedSha256 = crypto.createHash('sha256').update(expectedBuf).digest('hex');
+
+  // 9. Write-ahead creation obligation in inventory with deletionEligible: false (R1-03)
   inventory.registerStorageFixture({
     bucket,
     path,
-    ownerId: validSeedUserId,
+    ownerId: validProviderUserId,
     status: 'CREATION_PENDING',
     lifecycleState: STORAGE_LIFECYCLE_STATE.CREATION_PENDING,
     deletionEligible: false,
-    bytes: Buffer.byteLength(probeContent)
+    hasCommittedUpload: false,
+    neverDispatched: false,
+    bytes: expectedBuf.length,
+    sha256: expectedSha256
   });
 
-  // 8. Upload bytes with no overwrite/upsert (x-upsert: false)
+  // 10. Upload bytes with no overwrite/upsert (x-upsert: false)
   inventory.updateStorageFixture(fullKey, {
     lifecycleState: STORAGE_LIFECYCLE_STATE.CREATION_IN_FLIGHT,
     status: 'IN_FLIGHT'
@@ -3950,13 +4711,17 @@ export async function provisionStorageProbeFixture({
   let uploadRes;
   let uploadError = null;
   try {
+    const uploadHeaders = {
+      Authorization: `Bearer ${userAccessToken.trim()}`,
+      'Content-Type': 'text/plain',
+      'x-upsert': 'false'
+    };
+    if (isNonEmptyString(anonKey)) {
+      uploadHeaders.apikey = anonKey.trim();
+    }
     uploadRes = await safeFetch(`${baseUrl}/storage/v1/object/${fullKey}`, {
       method: 'POST',
-      headers: {
-        Authorization: `Bearer ${userAccessToken}`,
-        'Content-Type': 'text/plain',
-        'x-upsert': 'false'
-      },
+      headers: uploadHeaders,
       body: probeContent
     });
   } catch (err) {
@@ -3967,110 +4732,272 @@ export async function provisionStorageProbeFixture({
     inventory.updateStorageFixture(fullKey, {
       lifecycleState: STORAGE_LIFECYCLE_STATE.CREATION_INDETERMINATE,
       status: 'CREATION_INDETERMINATE',
-      deletionEligible: false
+      deletionEligible: false,
+      residualReason: `Upload transport failure: ${uploadError.message}`
     });
     throw new Error(`STORAGE_UPLOAD_INDETERMINATE: Network error during upload: ${uploadError.message}`);
   }
 
-  if (uploadRes.status === 409) {
-    inventory.updateStorageFixture(fullKey, {
-      lifecycleState: STORAGE_LIFECYCLE_STATE.CONFLICT_EXISTING_PRESERVED,
-      status: 'CONFLICT_PRESERVED',
-      deletionEligible: false
-    });
-    throw new Error(`STORAGE_UPLOAD_CONFLICT: HTTP 409 conflict detected during upload; existing object preserved without deletion eligibility`);
-  }
-
+  const uploadEnv = await parseStorageErrorEnvelope(uploadRes);
   if (!uploadRes.ok) {
-    inventory.updateStorageFixture(fullKey, {
-      lifecycleState: STORAGE_LIFECYCLE_STATE.CREATION_FAILED,
-      status: 'CREATION_FAILED',
-      deletionEligible: false
+    const normUploadErr = normalizeStorageObjectResponse({
+      status: uploadEnv.status,
+      parseStatus: uploadEnv.parseStatus,
+      body: uploadEnv.body,
+      expectedBucket: bucket,
+      expectedPath: path,
+      projectRef: normRef,
+      authorizedContext: true
     });
-    const errBody = await uploadRes.json().catch(() => ({}));
-    throw new Error(`STORAGE_UPLOAD_FAILED: HTTP ${uploadRes.status} - ${errBody?.message || errBody?.msg || 'Upload failed'}`);
+
+    if (normUploadErr.classification === STORAGE_RESPONSE_CLASS.CONFLICT_EXISTS) {
+      inventory.updateStorageFixture(fullKey, {
+        lifecycleState: STORAGE_LIFECYCLE_STATE.CONFLICT_EXISTING_PRESERVED,
+        status: 'CONFLICT_PRESERVED',
+        deletionEligible: false
+      });
+      throw new Error(
+        `STORAGE_UPLOAD_CONFLICT: Documented conflict detected during upload (HTTP ${uploadRes.status}); existing object preserved without deletion eligibility`
+      );
+    }
+
+    // Invariant R2-02 #3: Any ambiguous non-conflict upload failure (e.g. HTTP 500, 429, malformed) after POST dispatch
+    // MUST remain CREATION_INDETERMINATE so cleanup NEVER silently skips potentially committed objects!
+    inventory.updateStorageFixture(fullKey, {
+      lifecycleState: STORAGE_LIFECYCLE_STATE.CREATION_INDETERMINATE,
+      status: 'CREATION_INDETERMINATE',
+      deletionEligible: false,
+      residualReason: `Ambiguous POST response HTTP ${uploadRes.status} (${normUploadErr.classification})`
+    });
+    const detailMsg = uploadEnv.body?.message || uploadEnv.body?.msg || normUploadErr.reason || 'Upload failed';
+    throw new Error(
+      `STORAGE_UPLOAD_FAILED: HTTP ${uploadRes.status} - ${detailMsg} (quarantined as CREATION_INDETERMINATE, R2-02)`
+    );
   }
 
-  // 9. Verification of accessibility (GET 200), payload integrity, and owner metadata (R1-04)
+  // POST succeeded (HTTP 200/201): Immediately create committed resource obligation! (R2-02 #1, #2)
+  // Verification failure below MUST preserve RESIDUAL_OWNERSHIP_BLOCKED and never downgrade to CREATION_FAILED.
+  const uploadedObjectId = typeof uploadEnv.body?.Id === 'string' && uploadEnv.body.Id.trim()
+    ? uploadEnv.body.Id.trim()
+    : null;
+
+  inventory.updateStorageFixture(fullKey, {
+    lifecycleState: STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED,
+    status: 'UPLOAD_COMMITTED_UNVERIFIED',
+    hasCommittedUpload: true,
+    deletionEligible: false,
+    providerObjectId: uploadedObjectId
+  });
+
+  // 11. Verification of accessibility (GET 200) and byte/digest integrity (R2-01 #7, #9)
   let verifyRes;
   try {
     verifyRes = await safeFetch(`${baseUrl}/storage/v1/object/authenticated/${fullKey}`, {
       method: 'GET',
-      headers: {
-        Authorization: `Bearer ${userAccessToken}`
-      }
+      headers: authHeaders
     });
   } catch (err) {
     inventory.updateStorageFixture(fullKey, {
-      lifecycleState: STORAGE_LIFECYCLE_STATE.CREATION_INDETERMINATE,
-      status: 'CREATION_INDETERMINATE',
-      deletionEligible: false
+      lifecycleState: STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED,
+      status: 'VERIFICATION_NETWORK_FAILED',
+      deletionEligible: false,
+      residualReason: `Post-upload GET failed: ${err.message}`
     });
-    throw new Error(`STORAGE_VERIFICATION_FAILED: Verification network request failed: ${err.message}`);
+    throw new Error(`STORAGE_VERIFICATION_FAILED: Verification network request failed (residual obligation preserved): ${err.message}`);
   }
 
   if (verifyRes.status !== 200) {
     inventory.updateStorageFixture(fullKey, {
-      lifecycleState: STORAGE_LIFECYCLE_STATE.CREATION_FAILED,
+      lifecycleState: STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED,
       status: 'VERIFICATION_FAILED',
-      deletionEligible: false
-    });
-    throw new Error(`STORAGE_VERIFICATION_FAILED: Uploaded fixture '${fullKey}' is not accessible (HTTP ${verifyRes.status})`);
-  }
-
-  // Read downloaded text and compare with probeContent
-  let downloadedText = '';
-  if (typeof verifyRes.text === 'function') {
-    downloadedText = await verifyRes.text();
-  } else if (typeof verifyRes.json === 'function') {
-    const j = await verifyRes.json();
-    downloadedText = typeof j === 'string' ? j : JSON.stringify(j);
-  } else if (typeof verifyRes.body === 'string') {
-    downloadedText = verifyRes.body;
-  } else {
-    throw new Error('STORAGE_VERIFICATION_FAILED: Verification response body could not be read as text (R1-04)');
-  }
-
-  if (downloadedText !== probeContent) {
-    inventory.updateStorageFixture(fullKey, {
-      lifecycleState: STORAGE_LIFECYCLE_STATE.CREATION_FAILED,
-      status: 'INTEGRITY_MISMATCH',
-      deletionEligible: false
-    });
-    throw new Error(`STORAGE_PAYLOAD_INTEGRITY_MISMATCH: Downloaded storage object content does not match probeContent exactly (R1-04)`);
-  }
-
-  // Inspect provider owner metadata (x-owner-id / owner_id) and correlate with authenticated seed user (R1-04)
-  const getHeader = (name) => {
-    if (!verifyRes.headers) return null;
-    if (typeof verifyRes.headers.get === 'function') {
-      return verifyRes.headers.get(name);
-    }
-    return verifyRes.headers[name] || verifyRes.headers[name.toLowerCase()] || null;
-  };
-  const ownerHeader = getHeader('x-owner-id') || getHeader('owner_id') || getHeader('x-supabase-owner');
-  if (!ownerHeader || ownerHeader !== validSeedUserId) {
-    inventory.updateStorageFixture(fullKey, {
-      lifecycleState: STORAGE_LIFECYCLE_STATE.CREATION_FAILED,
-      status: 'OWNER_MISMATCH',
-      deletionEligible: false
+      deletionEligible: false,
+      residualReason: `Post-upload GET returned HTTP ${verifyRes.status}`
     });
     throw new Error(
-      `STORAGE_OWNER_VERIFICATION_FAILED: Storage object owner '${ownerHeader || 'missing'}' does not match authenticated seed user '${validSeedUserId}' (R1-04)`
+      `STORAGE_VERIFICATION_FAILED: Uploaded fixture '${fullKey}' verification GET returned HTTP ${verifyRes.status} (residual obligation preserved, R2-02)`
     );
   }
 
-  // 10. Affirmative RUN_CREATED_VERIFIED assigns deletion eligibility (R1-03)
-  const verifiedBytes = Buffer.byteLength(probeContent);
+  let downloadedBuf = null;
+  try {
+    if (typeof verifyRes.arrayBuffer === 'function') {
+      const ab = await verifyRes.arrayBuffer();
+      downloadedBuf = Buffer.from(ab);
+    } else if (typeof verifyRes.text === 'function') {
+      const textVal = await verifyRes.text();
+      if (typeof textVal !== 'string') throw new Error('Response.text() returned non-string');
+      downloadedBuf = Buffer.from(textVal, 'utf8');
+    } else if (typeof verifyRes.body === 'string' || Buffer.isBuffer(verifyRes.body)) {
+      downloadedBuf = Buffer.isBuffer(verifyRes.body) ? verifyRes.body : Buffer.from(verifyRes.body, 'utf8');
+    } else {
+      throw new Error('Verification response body interface missing (no arrayBuffer, text, or buffer/string body)');
+    }
+  } catch (err) {
+    inventory.updateStorageFixture(fullKey, {
+      lifecycleState: STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED,
+      status: 'VERIFICATION_UNREADABLE',
+      deletionEligible: false,
+      residualReason: `Verification body read failed: ${err.message}`
+    });
+    throw new Error(`STORAGE_VERIFICATION_FAILED: Verification response body could not be read (${err.message}); residual obligation preserved`);
+  }
+
+  const downloadedSha256 = crypto.createHash('sha256').update(downloadedBuf).digest('hex');
+  if (Buffer.compare(downloadedBuf, expectedBuf) !== 0 || downloadedSha256 !== expectedSha256) {
+    inventory.updateStorageFixture(fullKey, {
+      lifecycleState: STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED,
+      status: 'INTEGRITY_MISMATCH',
+      deletionEligible: false,
+      residualReason: `Byte/SHA-256 mismatch (expected ${expectedSha256}, got ${downloadedSha256})`
+    });
+    throw new Error(
+      `STORAGE_PAYLOAD_INTEGRITY_MISMATCH: Downloaded bytes/digest mismatch for '${fullKey}' (residual obligation preserved, R2-01/R2-02)`
+    );
+  }
+
+  // 12. Authoritative provider ownership verification via storage.objects.owner_id lookup (R2-01 #2-#4, #10-#12)
+  let lookupRes;
+  let lookupTimedOut = false;
+  try {
+    const controller = new AbortController();
+    let timer;
+    const timeoutPromise = new Promise((_, reject) => {
+      timer = setTimeout(() => {
+        controller.abort();
+        lookupTimedOut = true;
+        reject(new Error(`OWNERSHIP_LOOKUP_TIMEOUT: Lookup exceeded ${ownershipTimeoutMs}ms`));
+      }, ownershipTimeoutMs);
+    });
+    try {
+      const lookupPromise = Promise.resolve(
+        effectiveOwnershipLookup(bucket, path, {
+          projectRef: normRef,
+          expectedObjectId: uploadedObjectId,
+          timeoutMs: ownershipTimeoutMs,
+          signal: controller.signal
+        })
+      );
+      lookupPromise.catch(() => {});
+      lookupRes = await Promise.race([lookupPromise, timeoutPromise]);
+    } finally {
+      clearTimeout(timer);
+    }
+  } catch (err) {
+    inventory.updateStorageFixture(fullKey, {
+      lifecycleState: STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED,
+      status: lookupTimedOut ? 'OWNERSHIP_LOOKUP_TIMEOUT' : 'OWNERSHIP_LOOKUP_ERROR',
+      deletionEligible: false,
+      residualReason: err.message
+    });
+    throw new Error(`STORAGE_OWNER_VERIFICATION_FAILED: ${err.message} (residual obligation preserved)`);
+  }
+
+  if (!lookupRes || lookupRes.error || !lookupRes.found || !lookupRes.data || typeof lookupRes.data !== 'object') {
+    const reasonMsg = lookupRes?.error?.message || lookupRes?.error?.code || 'Ownership metadata record missing';
+    inventory.updateStorageFixture(fullKey, {
+      lifecycleState: STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED,
+      status: 'OWNER_METADATA_MISSING',
+      deletionEligible: false,
+      residualReason: reasonMsg
+    });
+    throw new Error(
+      `STORAGE_OWNER_VERIFICATION_FAILED: Authoritative storage.objects.owner_id lookup failed (${reasonMsg}); residual obligation preserved (R2-01/R2-02)`
+    );
+  }
+
+  const meta = lookupRes.data;
+  if (meta.project_ref && String(meta.project_ref).trim().toLowerCase() !== normRef) {
+    inventory.updateStorageFixture(fullKey, {
+      lifecycleState: STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED,
+      status: 'PROJECT_MISMATCH',
+      deletionEligible: false,
+      residualReason: `Metadata project_ref '${meta.project_ref}' !== '${normRef}'`
+    });
+    throw new Error(
+      `STORAGE_OWNER_VERIFICATION_FAILED: Metadata project_ref '${meta.project_ref}' does not match '${normRef}'`
+    );
+  }
+
+  if (meta.bucket_id !== bucket || meta.name !== path) {
+    inventory.updateStorageFixture(fullKey, {
+      lifecycleState: STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED,
+      status: 'KEY_MISMATCH',
+      deletionEligible: false,
+      residualReason: `Metadata bucket/name '${meta.bucket_id}/${meta.name}' !== '${bucket}/${path}'`
+    });
+    throw new Error(
+      `STORAGE_OBJECT_KEY_MISMATCH: Authoritative metadata '${meta.bucket_id}/${meta.name}' does not match '${bucket}/${path}' (R2-01)`
+    );
+  }
+
+  let validProviderObjectId;
+  try {
+    validProviderObjectId = validateUuid(meta.id);
+  } catch (err) {
+    inventory.updateStorageFixture(fullKey, {
+      lifecycleState: STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED,
+      status: 'OBJECT_ID_INVALID',
+      deletionEligible: false,
+      residualReason: `Invalid provider object UUID: ${err.message}`
+    });
+    throw new Error(`STORAGE_OBJECT_IDENTITY_MISMATCH: Authoritative storage.objects.id missing or invalid UUID: ${err.message}`);
+  }
+
+  if (uploadedObjectId && validProviderObjectId !== uploadedObjectId.toLowerCase()) {
+    inventory.updateStorageFixture(fullKey, {
+      lifecycleState: STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED,
+      status: 'OBJECT_ID_MISMATCH',
+      deletionEligible: false,
+      residualReason: `Upload Id '${uploadedObjectId}' !== metadata id '${validProviderObjectId}'`
+    });
+    throw new Error(
+      `STORAGE_OBJECT_IDENTITY_MISMATCH: Uploaded object Id '${uploadedObjectId}' does not match metadata id '${validProviderObjectId}' (R2-01)`
+    );
+  }
+
+  let validMetaOwnerId = null;
+  if (typeof meta.owner_id === 'string' && meta.owner_id.trim()) {
+    try {
+      validMetaOwnerId = validateUuid(meta.owner_id);
+    } catch {
+      validMetaOwnerId = null;
+    }
+  }
+
+  if (!validMetaOwnerId || validMetaOwnerId !== validProviderUserId) {
+    inventory.updateStorageFixture(fullKey, {
+      lifecycleState: STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED,
+      status: 'OWNER_MISMATCH',
+      deletionEligible: false,
+      residualReason: `storage.objects.owner_id '${meta.owner_id || 'missing'}' !== seedUserId '${validProviderUserId}'`
+    });
+    throw new Error(
+      `STORAGE_OWNER_VERIFICATION_FAILED: storage.objects.owner_id '${meta.owner_id || 'missing'}' does not match verified seed user '${validProviderUserId}' (R2-01)`
+    );
+  }
+
+  // 13. Affirmative RUN_CREATED_VERIFIED grants deletion eligibility (R1-03, R2-01, R2-02)
+  const verifiedBytes = expectedBuf.length;
   const fixtureRecord = inventory.updateStorageFixture(fullKey, {
     lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED,
     deletionEligible: true,
     status: 'VERIFIED',
     bytes: verifiedBytes,
+    sha256: expectedSha256,
+    providerObjectId: validProviderObjectId,
+    verifiedOwnerId: validMetaOwnerId,
     proof: {
+      verifiedOwnership: true,
+      projectRef: normRef,
+      bucket,
+      path,
+      objectId: validProviderObjectId,
+      ownerId: validMetaOwnerId,
+      seedIdentityEndpoint: '/auth/v1/user',
+      ownershipSource: lookupRes.source || 'storage.objects.owner_id',
       verifiedGetStatus: 200,
       uploadedBytes: verifiedBytes,
-      ownerId: validSeedUserId,
+      sha256: expectedSha256,
       timestamp: new Date().toISOString()
     }
   });
@@ -4080,8 +5007,11 @@ export async function provisionStorageProbeFixture({
     path,
     key: fullKey,
     runId: validRunId,
-    ownerId: validSeedUserId,
+    projectRef: normRef,
+    objectId: validProviderObjectId,
+    ownerId: validMetaOwnerId,
     bytes: verifiedBytes,
+    sha256: expectedSha256,
     status: 'VERIFIED',
     lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED,
     deletionEligible: true,
@@ -4604,46 +5534,54 @@ export function createHostedDispatcher({
 
   const baseUrl = `https://${normRef}.supabase.co`;
 
-  // 5. Fail-Closed Transport / Durable Recovery Gate (R1-01)
-  if (!fetchFn || fetchFn === globalThis.fetch) {
-    throw new Error(
-      'BLOCKED_PENDING_DURABLE_RECOVERY: LIVE hosted execution against Supabase Cloud is blocked pending durable crash recovery and journaled inventory implementation'
-    );
-  }
+  // 5. Structural Fail-Closed Transport / Durable Recovery Gate (R1-01, R2 Sec 6)
+  assertOfflineMockTransport(fetchFn);
 
   const transportFetch = fetchFn;
-  fetchFn = (url, opts) => {
-    if (!transportFetch || transportFetch === globalThis.fetch) {
-      throw new Error(
-        'BLOCKED_PENDING_DURABLE_RECOVERY: LIVE hosted execution against Supabase Cloud is blocked pending durable crash recovery and journaled inventory implementation'
-      );
+  fetchFn = async (url, opts) => {
+    try {
+      assertOfflineMockTransport(transportFetch);
+      return await runWithBlockedRealFetch(() => transportFetch(url, opts));
+    } catch (err) {
+      if (typeof err?.message === 'string' && err.message.includes('BLOCKED_PENDING_DURABLE_RECOVERY')) {
+        const callCtx = DISPATCHER_CALL_CONTEXT.getStore();
+        if (callCtx) callCtx.trappedRecoveryError = err;
+      }
+      throw err;
     }
-    return transportFetch(url, opts);
   };
 
   // Return the async dispatcher matching (item, options) contract
   const dispatcher = async function hostedDispatcher(item, options = {}) {
-    const signal = options.signal;
-    const probeId = item.id;
-    const ctx = options.runContext || runContext;
-    const inv = options.inventory || inventory;
-    const testPassword = options.testPassword || ctx?.testPassword || getRunTestPassword(options);
-    const testUser = item?.testUser || options.testEmail || options.testUser || ctx?.testEmail || factorySeedEmail || 'tio-test-user-06i@proof.invalid';
-
-    if (inv) {
-      const seedEmailToProtect = options.seedEmail || factorySeedEmail || ctx?.seedEmail || null;
-      const seedUserIdToProtect = options.seedUserId || factorySeedUserId || ctx?.seedUserId || null;
-      if (seedUserIdToProtect) {
-        inv.protectSeedIdentity({ email: seedEmailToProtect, id: seedUserIdToProtect });
-      }
+    const liveCtx = RUNNER_LIVE_DISPATCH_CONTEXT.getStore();
+    if (liveCtx && liveCtx.durableRecoveryVerified !== true) {
+      throw new Error(
+        'BLOCKED_PENDING_DURABLE_RECOVERY: Hosted network dispatcher cannot execute inside LIVE runner while durable crash recovery is not implemented'
+      );
     }
+    const callCtx = { trappedRecoveryError: null };
+    const outcome = await DISPATCHER_CALL_CONTEXT.run(callCtx, async () => {
+      const signal = options.signal;
+      const probeId = item.id;
+      const ctx = options.runContext || runContext;
+      const inv = options.inventory || inventory;
+      const testPassword = options.testPassword || ctx?.testPassword || getRunTestPassword(options);
+      const testUser = item?.testUser || options.testEmail || options.testUser || ctx?.testEmail || factorySeedEmail || 'tio-test-user-06i@proof.invalid';
 
-    const headers = {
-      'apikey': anonKey,
-      'Content-Type': 'application/json'
-    };
+      if (inv) {
+        const seedEmailToProtect = options.seedEmail || factorySeedEmail || ctx?.seedEmail || null;
+        const seedUserIdToProtect = options.seedUserId || factorySeedUserId || ctx?.seedUserId || null;
+        if (seedUserIdToProtect) {
+          inv.protectSeedIdentity({ email: seedEmailToProtect, id: seedUserIdToProtect });
+        }
+      }
 
-    switch (probeId) {
+      const headers = {
+        'apikey': anonKey,
+        'Content-Type': 'application/json'
+      };
+
+      switch (probeId) {
       case 'BYPASS-01': {
         const cap = getEndpointCapabilities('BYPASS-01') || {
           canMintSession: false,
@@ -5888,12 +6826,20 @@ export function createHostedDispatcher({
               error: `STORAGE_FIXTURE_RECORD_MISSING: No verified storage fixture found in inventory for '${fullKey}' before dispatch (R1-07)`
             };
           }
-          const expectedOwner = ctx?.activeUserId || factorySeedUserId || options.seedUserId || null;
-          if (expectedOwner && fixture.ownerId && fixture.ownerId !== expectedOwner) {
+          if (fixture.lifecycleState !== STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED || fixture.deletionEligible !== true) {
             return {
               passed: false,
               status: 0,
-              error: `STORAGE_FIXTURE_OWNER_MISMATCH: Fixture owner '${fixture.ownerId}' does not match expected seed user '${expectedOwner}' (R1-07)`
+              error: `STORAGE_FIXTURE_NOT_VERIFIED: Storage fixture '${fullKey}' is in state '${fixture.lifecycleState}' (deletionEligible=${Boolean(fixture.deletionEligible)}) and cannot authorize SESSION-05 dispatch`
+            };
+          }
+          const expectedOwner = ctx?.activeUserId || factorySeedUserId || options.seedUserId || null;
+          const fixtureOwner = fixture.verifiedOwnerId || fixture.ownerId || null;
+          if (expectedOwner && fixtureOwner && fixtureOwner !== expectedOwner) {
+            return {
+              passed: false,
+              status: 0,
+              error: `STORAGE_FIXTURE_OWNER_MISMATCH: Fixture owner '${fixtureOwner}' does not match expected seed user '${expectedOwner}' (R1-07)`
             };
           }
         }
@@ -5905,16 +6851,27 @@ export function createHostedDispatcher({
           headers: { ...headers, Authorization: authHeader },
           signal
         });
-        const body = await parseResponseBody(res);
+        const body = res.status === 200 ? null : (await parseStorageErrorEnvelope(res)).body;
+        const normStorage = res.status === 200
+          ? { classification: STORAGE_RESPONSE_CLASS.OBJECT_PRESENT, isAbsent: false }
+          : normalizeStorageObjectResponse({
+              status: res.status,
+              parseStatus: body ? 'parsed' : 'no_body',
+              body,
+              expectedBucket: STORAGE_PROBE_BUCKET,
+              expectedPath: objectPath,
+              projectRef: normRef,
+              authorizedContext: true
+            });
 
         // Stateless linger is observed ONLY when token is unexpired AND lifetime is strictly bounded (<= 300s) AND Storage accepts it with HTTP 200 AND session is correlated (R3-03, R7-02, R17-02)
         const lingerObserved = res.status === 200 && tokenUnexpired && lifetimeBounded && sessionCorrelated;
 
         let error = null;
-        if (res.status === 404) {
-          error = `STORAGE_FIXTURE_MISSING: Storage probe file returned HTTP 404 (PROVIDER_PRECONDITION_MISSING: ${STORAGE_PROBE_BUCKET}/${objectPath} must be provisioned before test, R5-07)`;
-        } else if (res.status === 401) {
-          error = 'STORAGE_TOKEN_REJECTED: Storage returned HTTP 401';
+        if (normStorage.isAbsent || res.status === 404) {
+          error = `STORAGE_FIXTURE_MISSING: Storage probe file returned ${normStorage.classification} (HTTP ${res.status}, PROVIDER_PRECONDITION_MISSING: ${STORAGE_PROBE_BUCKET}/${objectPath} must be provisioned before test, R5-07)`;
+        } else if (res.status === 401 || normStorage.classification === STORAGE_RESPONSE_CLASS.UNAUTHORIZED_OR_FORBIDDEN) {
+          error = `STORAGE_TOKEN_REJECTED: Storage returned HTTP ${res.status} (${normStorage.classification})`;
         } else if (!tokenUnexpired) {
           error = 'TOKEN_ALREADY_EXPIRED';
         } else if (tokenIat === null || tokenExpiry === null) {
@@ -6044,8 +7001,19 @@ export function createHostedDispatcher({
         };
       }
     }
+    });
+    if (callCtx.trappedRecoveryError) {
+      throw callCtx.trappedRecoveryError;
+    }
+    return outcome;
   };
-  dispatcher._isHostedNetworkDispatcher = true;
+  HOSTED_NETWORK_DISPATCHERS.add(dispatcher);
+  Object.defineProperty(dispatcher, '_isHostedNetworkDispatcher', {
+    value: true,
+    writable: false,
+    configurable: false,
+    enumerable: true
+  });
   return dispatcher;
 }
 
@@ -6135,12 +7103,13 @@ export async function runHostedProbeRunner(options = {}) {
     }
   }
 
-  // Real LIVE hosted cloud dispatch is permanently gated pending durable crash recovery (H3-05, R1-01)
+  // Real LIVE hosted cloud dispatch is permanently gated pending durable crash recovery (H3-05, R1-01, R2 Sec 6)
   if (
     isLive &&
     (options.liveHostedDispatch === true ||
       options.enforceDurableRecoveryGate === true ||
       !mockDispatcher ||
+      HOSTED_NETWORK_DISPATCHERS.has(mockDispatcher) ||
       mockDispatcher._isHostedNetworkDispatcher === true)
   ) {
     throw new Error(
@@ -6237,17 +7206,22 @@ export async function runHostedProbeRunner(options = {}) {
 
       let rawOutcome;
       try {
-        const dispatchPromise = Promise.resolve(
-          mockDispatcher(item, {
-            signal: controller.signal,
-            projectRef: validatedRef,
-            inventory: activeInventory,
-            runContext: activeRunContext,
-            testPassword: activeRunContext.testPassword,
-            testEmail: item.testUser || activeRunContext.testEmail || testEmail,
-            testUser: item.testUser || activeRunContext.testEmail || testEmail,
-            activeRefreshToken: activeRunContext.activeRefreshToken
-          })
+        const dispatchPromise = RUNNER_LIVE_DISPATCH_CONTEXT.run(
+          { durableRecoveryVerified: false },
+          () => runWithBlockedRealFetch(() =>
+            Promise.resolve(
+              mockDispatcher(item, {
+                signal: controller.signal,
+                projectRef: validatedRef,
+                inventory: activeInventory,
+                runContext: activeRunContext,
+                testPassword: activeRunContext.testPassword,
+                testEmail: item.testUser || activeRunContext.testEmail || testEmail,
+                testUser: item.testUser || activeRunContext.testEmail || testEmail,
+                activeRefreshToken: activeRunContext.activeRefreshToken
+              })
+            )
+          )
         );
         // Attach no-op rejection handler so late rejection after timeout/abort never leaks unhandledRejection (PRRT_kwDOVtCmZc66jd3O)
         dispatchPromise.catch(() => {});
@@ -6256,6 +7230,12 @@ export async function runHostedProbeRunner(options = {}) {
           activeInventory.settleInFlightOperation(runnerOp.opId, { outcome: rawOutcome });
         }
       } catch (err) {
+        if (typeof err?.message === 'string' && err.message.includes('BLOCKED_PENDING_DURABLE_RECOVERY')) {
+          if (runnerOp && activeInventory?.settleInFlightOperation) {
+            activeInventory.settleInFlightOperation(runnerOp.opId, { error: err });
+          }
+          throw err;
+        }
         const isTimeout = err?.code === 'ETIMEDOUT' || (typeof err?.message === 'string' && err.message.includes('PROBE_TIMEOUT'));
         if (isTimeout) {
           if (activeInventory?.markProbeOperationsTimedOut) {
@@ -6363,7 +7343,7 @@ export function createHostedAdminClient({
   serviceRoleKey,
   anonKey,
   projectRef = HARDCODED_TEMP_REF,
-  fetchFn = fetch
+  fetchFn = globalThis.fetch
 } = {}) {
   if (projectRef !== HARDCODED_TEMP_REF) {
     throw new Error(`SECURITY_BOUNDARY_VIOLATION: createHostedAdminClient strictly permitted only against TEMP project '${HARDCODED_TEMP_REF}', attempted '${projectRef}'`);
@@ -6371,6 +7351,17 @@ export function createHostedAdminClient({
   if (!serviceRoleKey || typeof serviceRoleKey !== 'string' || !serviceRoleKey.trim()) {
     throw new Error('MISSING_HOSTED_CREDENTIALS: createHostedAdminClient requires non-empty serviceRoleKey');
   }
+  validateProjectCredentialBinding(serviceRoleKey, projectRef);
+  if (isNonEmptyString(anonKey)) {
+    validateProjectCredentialBinding(anonKey, projectRef);
+  }
+  assertOfflineMockTransport(fetchFn);
+
+  const rawTransportFetch = fetchFn;
+  fetchFn = (url, opts) => {
+    assertOfflineMockTransport(rawTransportFetch);
+    return runWithBlockedRealFetch(() => rawTransportFetch(url, opts));
+  };
 
   const baseUrl = `https://${projectRef}.supabase.co`;
 
@@ -6679,17 +7670,213 @@ export function createHostedAdminClient({
 
     async getStorageObject(bucket, path) {
       if (!bucket || !path) {
-        return { status: 0, ok: false, error: 'MISSING_PARAMS: getStorageObject requires bucket and path' };
+        return {
+          status: 0,
+          ok: false,
+          body: null,
+          parseStatus: 'missing_params',
+          authorizedContext: false,
+          normalized: normalizeStorageObjectResponse({
+            status: 0,
+            expectedBucket: bucket,
+            expectedPath: path,
+            projectRef,
+            authorizedContext: false
+          }),
+          error: 'MISSING_PARAMS: getStorageObject requires bucket and path'
+        };
       }
       const encodedPath = String(path).split('/').map(encodeURIComponent).join('/');
-      const res = await fetchFn(`${baseUrl}/storage/v1/object/authenticated/${encodeURIComponent(bucket)}/${encodedPath}`, {
-        method: 'GET',
-        headers: {
-          apikey: serviceRoleKey,
-          Authorization: `Bearer ${serviceRoleKey}`
-        }
+      let res;
+      let transportError = null;
+      try {
+        res = await fetchFn(`${baseUrl}/storage/v1/object/authenticated/${encodeURIComponent(bucket)}/${encodedPath}`, {
+          method: 'GET',
+          headers: {
+            apikey: serviceRoleKey,
+            Authorization: `Bearer ${serviceRoleKey}`
+          }
+        });
+      } catch (err) {
+        transportError = err;
+      }
+
+      if (transportError) {
+        const normalized = normalizeStorageObjectResponse({
+          transportError,
+          expectedBucket: bucket,
+          expectedPath: path,
+          projectRef,
+          authorizedContext: true
+        });
+        return {
+          status: 0,
+          ok: false,
+          body: null,
+          parseStatus: 'transport_error',
+          transportError,
+          authorizedContext: true,
+          normalized
+        };
+      }
+
+      const env = res.ok
+        ? { ok: true, status: res.status, body: null, parseStatus: 'present_binary_or_text' }
+        : await parseStorageErrorEnvelope(res);
+
+      const normalized = normalizeStorageObjectResponse({
+        status: env.status,
+        parseStatus: env.parseStatus,
+        body: env.body,
+        expectedBucket: bucket,
+        expectedPath: path,
+        projectRef,
+        authorizedContext: true
       });
-      return { status: res.status, ok: res.ok };
+
+      return {
+        status: env.status,
+        ok: Boolean(res.ok),
+        body: env.body,
+        parseStatus: env.parseStatus,
+        authorizedContext: true,
+        normalized
+      };
+    },
+
+    /**
+     * Narrowly-scoped server-side lookup of authoritative storage.objects.owner_id metadata (R2-01).
+     * Calls PostgreSQL SECURITY DEFINER RPC executable ONLY by service_role; keeps storage schema unexposed.
+     */
+    async getStorageObjectOwnership(bucket, path, { timeoutMs = DEFAULT_PROBE_TIMEOUT_MS, signal = null } = {}) {
+      if (!bucket || !path || bucket !== STORAGE_PROBE_BUCKET) {
+        return {
+          found: false,
+          source: 'storage.objects.owner_id',
+          data: null,
+          error: { code: 'INVALID_SCOPE', message: `OWNERSHIP_LOOKUP_INVALID_SCOPE: Only '${STORAGE_PROBE_BUCKET}' is authorized` }
+        };
+      }
+
+      const controller = new AbortController();
+      let timedOut = false;
+      const timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort();
+      }, timeoutMs);
+
+      const onExternalAbort = () => controller.abort();
+      if (signal && typeof signal.addEventListener === 'function') {
+        if (signal.aborted) {
+          clearTimeout(timer);
+          return {
+            found: false,
+            source: 'storage.objects.owner_id',
+            data: null,
+            error: { code: 'OWNERSHIP_LOOKUP_ABORTED', message: 'Ownership lookup signal aborted' }
+          };
+        }
+        signal.addEventListener('abort', onExternalAbort, { once: true });
+      }
+
+      let res;
+      try {
+        res = await fetchFn(`${baseUrl}/rest/v1/rpc/task06i_lookup_storage_object_owner`, {
+          method: 'POST',
+          headers: {
+            apikey: serviceRoleKey,
+            Authorization: `Bearer ${serviceRoleKey}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json'
+          },
+          body: JSON.stringify({
+            p_bucket_id: bucket,
+            p_object_name: path
+          }),
+          signal: controller.signal
+        });
+      } catch (err) {
+        return {
+          found: false,
+          source: 'storage.objects.owner_id',
+          data: null,
+          error: {
+            code: timedOut ? 'OWNERSHIP_LOOKUP_TIMEOUT' : 'OWNERSHIP_LOOKUP_TRANSPORT_ERROR',
+            message: timedOut ? `OWNERSHIP_LOOKUP_TIMEOUT: exceeded ${timeoutMs}ms` : err.message
+          }
+        };
+      } finally {
+        clearTimeout(timer);
+        if (signal && typeof signal.removeEventListener === 'function') {
+          signal.removeEventListener('abort', onExternalAbort);
+        }
+      }
+
+      const env = await parseStorageErrorEnvelope(res);
+      // RPC TABLE return can serialize as an array of rows OR a single object depending on mock/Accept header
+      let rawJson = null;
+      if (env.parseStatus === 'parsed') {
+        rawJson = env.body;
+      } else if (env.parseStatus === 'non_object' && Array.isArray(env.body)) {
+        rawJson = env.body;
+      } else if (!res.ok) {
+        const errCode = env.body?.code || null;
+        return {
+          found: false,
+          source: 'storage.objects.owner_id',
+          data: null,
+          error: {
+            code: res.status === 404 || errCode === 'PGRST202' ? 'PROVIDER_PRECONDITION_MISSING' : 'OWNERSHIP_LOOKUP_FAILED',
+            status: res.status,
+            message: env.body?.message || env.body?.hint || `HTTP ${res.status} (${env.parseStatus})`
+          }
+        };
+      } else {
+        return {
+          found: false,
+          source: 'storage.objects.owner_id',
+          data: null,
+          error: {
+            code: 'OWNERSHIP_METADATA_MALFORMED',
+            status: res.status,
+            message: `Unreadable or malformed ownership lookup response (${env.parseStatus})`
+          }
+        };
+      }
+
+      if (!res.ok) {
+        const errCode = rawJson?.code || null;
+        return {
+          found: false,
+          source: 'storage.objects.owner_id',
+          data: null,
+          error: {
+            code: res.status === 404 || errCode === 'PGRST202' ? 'PROVIDER_PRECONDITION_MISSING' : 'OWNERSHIP_LOOKUP_FAILED',
+            status: res.status,
+            message: rawJson?.message || `HTTP ${res.status}`
+          }
+        };
+      }
+
+      const row = Array.isArray(rawJson) ? rawJson[0] || null : rawJson;
+      if (!row || typeof row !== 'object') {
+        return {
+          found: false,
+          source: 'storage.objects.owner_id',
+          data: null,
+          error: {
+            code: 'OBJECT_NOT_FOUND',
+            message: `No storage.objects metadata row found for '${bucket}/${path}'`
+          }
+        };
+      }
+
+      return {
+        found: true,
+        source: 'storage.objects.owner_id',
+        data: row,
+        error: null
+      };
     },
 
     async deleteStorageObject(bucket, path) {
@@ -6739,83 +7926,8 @@ if (process.argv[1] && process.argv[1].endsWith('hosted-probe-runner.mjs')) {
       process.exit(1);
     });
   } else {
-    // Mode is LIVE
-    if (process.env.TASK06I_HOSTED_PROBE_AUTHORIZED !== 'true') {
-      console.error('AUTHORIZATION_REQUIRED: LIVE hosted probe execution requires explicit environment variable TASK06I_HOSTED_PROBE_AUTHORIZED="true".');
-      process.exit(1);
-    }
-
-    // Prohibit generic keys for LIVE TEMP testing to prevent accidental production key leakage (PRRT_kwDOVtCmZc66lq3W, R3-10)
-    if (process.env.SUPABASE_ANON_KEY && !process.env.TIO_TEMP_ANON_KEY) {
-      console.error('GENERIC_KEY_PROHIBITED: Generic SUPABASE_ANON_KEY is forbidden for LIVE TEMP testing. Set TIO_TEMP_ANON_KEY explicitly (R3-10).');
-      process.exit(1);
-    }
-    if (process.env.SUPABASE_SERVICE_ROLE_KEY && !process.env.TIO_TEMP_SERVICE_ROLE_KEY) {
-      console.error('GENERIC_KEY_PROHIBITED: Generic SUPABASE_SERVICE_ROLE_KEY is forbidden for LIVE TEMP testing. Set TIO_TEMP_SERVICE_ROLE_KEY explicitly (R3-10).');
-      process.exit(1);
-    }
-
-    const anonKey = process.env.TIO_TEMP_ANON_KEY;
-    if (!anonKey) {
-      console.error('MISSING_HOSTED_CREDENTIALS: LIVE mode against TEMP project requires TIO_TEMP_ANON_KEY (R3-10). None found in environment.');
-      process.exit(1);
-    }
-
-    const serviceRoleKey = process.env.TIO_TEMP_SERVICE_ROLE_KEY;
-
-    // Validate project credential binding for anonKey and serviceRoleKey
-    try {
-      validateProjectCredentialBinding(anonKey, HARDCODED_TEMP_REF);
-      if (serviceRoleKey) {
-        validateProjectCredentialBinding(serviceRoleKey, HARDCODED_TEMP_REF);
-      }
-    } catch (err) {
-      console.error('CREDENTIAL_BINDING_ERROR:', err.message);
-      process.exit(1);
-    }
-
-    const inventory = new TestRunInventory();
-    const runContext = createRunContext({
-      testPassword: process.env.TASK06I_TEST_PASSWORD
-    });
-
-    const liveDispatcher = createHostedDispatcher({
-      projectRef: HARDCODED_TEMP_REF,
-      anonKey,
-      serviceRoleKey,
-      inventory,
-      runContext
-    });
-
-    if (!serviceRoleKey) {
-      console.error('MISSING_HOSTED_CREDENTIALS: LIVE mode against TEMP project strictly requires TIO_TEMP_SERVICE_ROLE_KEY to construct adminClient for resource cleanup and SESSION-02 (R4-02).');
-      process.exit(1);
-    }
-
-    const adminClient = createHostedAdminClient({
-      serviceRoleKey,
-      anonKey,
-      projectRef: HARDCODED_TEMP_REF,
-      fetchFn: fetch
-    });
-
-    runHostedProbeRunner({
-      projectRef: HARDCODED_TEMP_REF,
-      argv,
-      env: process.env,
-      inventory,
-      runContext,
-      adminClient,
-      mockDispatcher: liveDispatcher
-    }).then(res => {
-      console.log(`[HOSTED PROBE RUNNER] Mode: ${res.mode} | Status: ${res.status} | Project: ${res.projectRef} | Executed: ${res.totalExecuted}`);
-      console.log(JSON.stringify(res, null, 2));
-      if (res.status !== 'COMPLETED' || (res.cleanupReport && res.cleanupReport.status !== 'CLEANUP_VERIFIED_SUCCESS')) {
-        process.exit(1);
-      }
-    }).catch(err => {
-      console.error('CRITICAL_LIVE_RUNNER_ERROR:', err.message);
-      process.exit(1);
-    });
+    // LIVE CLI execution unconditionally blocked while durable crash recovery is not implemented
+    console.error('BLOCKED_PENDING_DURABLE_RECOVERY: LIVE hosted execution against Supabase Cloud is blocked pending durable crash recovery and journaled inventory implementation');
+    process.exit(1);
   }
 }

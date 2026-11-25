@@ -49,6 +49,12 @@ import {
   validateSelectedProbeIds,
   provisionStorageProbeFixture,
   STORAGE_LIFECYCLE_STATE,
+  STORAGE_RESPONSE_CLASS,
+  parseStorageErrorEnvelope,
+  normalizeStorageObjectResponse,
+  verifyStorageObjectAbsence,
+  verifyStorageObjectAbsenceDetailed,
+  assertOfflineMockTransport,
   validateUuid
 } from './hosted-probe-runner.mjs';
 
@@ -8125,6 +8131,7 @@ test('92. Task 06I-B1-H3 (H3-02): Run-Scoped Storage Fixture Contract — runId 
 test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — collision detection, upload verification, and ownership tracking', async () => {
   const runId = 'test-run-storage-provision-93';
   const seedUserId = '11111111-1111-4111-a111-111111111193';
+  const uploadedObjectId = '99999999-1111-4111-a111-111111111193';
   const testToken = createMockJwt({ sub: seedUserId });
   const inv = new TestRunInventory(runId);
 
@@ -8135,6 +8142,7 @@ test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — col
         runId,
         seedUserId,
         userAccessToken: null,
+        serviceRoleKey: validTestServiceRoleKey,
         inventory: inv,
         fetchFn: async () => ({ status: 200 })
       });
@@ -8149,8 +8157,13 @@ test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — col
         runId,
         seedUserId,
         userAccessToken: testToken,
+        anonKey: validTestAnonKey,
+        serviceRoleKey: validTestServiceRoleKey,
         inventory: inv,
         fetchFn: async (url, opts) => {
+          if (url.includes('/auth/v1/user')) {
+            return { status: 200, ok: true, json: async () => ({ id: seedUserId, aud: 'authenticated' }) };
+          }
           // Pre-upload GET check returns 200 indicating collision
           if (opts.method === 'GET') {
             return { status: 200, ok: true };
@@ -8162,7 +8175,7 @@ test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — col
     /STORAGE_COLLISION_DETECTED: Object 'task06i_probe_bucket\/test-run-storage-provision-93\/probe.txt' already exists/
   );
 
-  // 3. Upload failure (HTTP 500) fails closed
+  // 3. Upload failure (HTTP 500) fails closed and quarantines as CREATION_INDETERMINATE
   const invFail = new TestRunInventory(runId);
   await assert.rejects(
     async () => {
@@ -8170,12 +8183,17 @@ test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — col
         runId,
         seedUserId,
         userAccessToken: testToken,
+        anonKey: validTestAnonKey,
+        serviceRoleKey: validTestServiceRoleKey,
         inventory: invFail,
         fetchFn: async (url, opts) => {
+          if (url.includes('/auth/v1/user')) {
+            return { status: 200, ok: true, json: async () => ({ id: seedUserId, aud: 'authenticated' }) };
+          }
           if (opts.method === 'GET') {
             return { status: 404, ok: false }; // no collision
           }
-          if (opts.method === 'POST') {
+          if (opts.method === 'POST' && url.includes('/storage/v1/object/')) {
             return { status: 500, ok: false, json: async () => ({ message: 'Internal Server Error' }) };
           }
           return { status: 500, ok: false };
@@ -8184,37 +8202,70 @@ test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — col
     },
     /STORAGE_UPLOAD_FAILED: HTTP 500/
   );
+  assert.equal(
+    invFail.getStorageFixture('task06i_probe_bucket', `${runId}/probe.txt`)?.lifecycleState,
+    STORAGE_LIFECYCLE_STATE.CREATION_INDETERMINATE
+  );
 
-  // 4. Successful provisioning: pre-check 404 (no collision), upload 200, verify 200 with text & owner metadata
+  // 4. Successful provisioning: /auth/v1/user + pre-check 404 + upload 200 + realistic download (NO custom owner headers) + authoritative owner_id RPC
   const invSuccess = new TestRunInventory(runId);
+  let uploadCompleted = false;
   const result = await provisionStorageProbeFixture({
     runId,
     seedUserId,
     userAccessToken: testToken,
+    anonKey: validTestAnonKey,
+    serviceRoleKey: validTestServiceRoleKey,
     inventory: invSuccess,
     probeContent: 'task06i probe test fixture\n',
     fetchFn: async (url, opts) => {
-      if (opts.method === 'GET') {
-        // First GET is collision check: return 404 (clean)
-        // Second GET is verification check: return 200 (verified accessible) with payload text and owner header
-        if (opts.headers?.Authorization === `Bearer ${testToken}`) {
-          if (!invSuccess.storageFixtures.has(`task06i_probe_bucket/${runId}/probe.txt`)) {
-            return { status: 404, ok: false };
-          }
-          return {
-            status: 200,
-            ok: true,
-            text: async () => 'task06i probe test fixture\n',
-            headers: new Headers({ 'x-owner-id': seedUserId })
-          };
+      if (url.includes('/auth/v1/user')) {
+        return {
+          status: 200,
+          ok: true,
+          text: async () => JSON.stringify({ id: seedUserId, aud: 'authenticated' })
+        };
+      }
+      if (url.includes('/rest/v1/rpc/task06i_lookup_storage_object_owner')) {
+        assert.equal(opts.headers.Authorization, `Bearer ${validTestServiceRoleKey}`);
+        return {
+          status: 200,
+          ok: true,
+          text: async () => JSON.stringify([{
+            id: uploadedObjectId,
+            bucket_id: 'task06i_probe_bucket',
+            name: `${runId}/probe.txt`,
+            owner_id: seedUserId
+          }])
+        };
+      }
+      if (opts.method === 'GET' && url.includes('/storage/v1/object/authenticated/')) {
+        if (!uploadCompleted) {
+          return { status: 404, ok: false };
         }
+        // Realistic Supabase Storage GET response: standard HTTP headers ONLY, NO fabricated owner headers!
+        return {
+          status: 200,
+          ok: true,
+          text: async () => 'task06i probe test fixture\n',
+          headers: new Headers({
+            'Content-Type': 'text/plain',
+            'ETag': '"abc123"',
+            'Last-Modified': 'Wed, 25 Nov 2026 04:00:00 GMT',
+            'X-Robots-Tag': 'none'
+          })
+        };
       }
-      if (opts.method === 'POST') {
-        // Assert no upsert flag
+      if (opts.method === 'POST' && url.includes('/storage/v1/object/')) {
         assert.equal(opts.headers['x-upsert'], 'false');
-        return { status: 200, ok: true, json: async () => ({ Key: `task06i_probe_bucket/${runId}/probe.txt` }) };
+        uploadCompleted = true;
+        return {
+          status: 200,
+          ok: true,
+          text: async () => JSON.stringify({ Id: uploadedObjectId, Key: `task06i_probe_bucket/${runId}/probe.txt` })
+        };
       }
-      return { status: 200, ok: true };
+      return { status: 404, ok: false };
     }
   });
 
@@ -8222,6 +8273,7 @@ test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — col
   assert.equal(result.bucket, 'task06i_probe_bucket');
   assert.equal(result.path, `${runId}/probe.txt`);
   assert.equal(result.key, `task06i_probe_bucket/${runId}/probe.txt`);
+  assert.equal(result.objectId, uploadedObjectId);
   assert.equal(result.ownerId, seedUserId);
   assert.equal(result.bytes, 27);
 
@@ -8230,6 +8282,8 @@ test('93. Task 06I-B1-H3 (H3-02): 10-Point Storage Provisioning Contract — col
   assert.ok(fixture);
   assert.equal(fixture.status, 'VERIFIED');
   assert.equal(fixture.ownerId, seedUserId);
+  assert.equal(fixture.verifiedOwnerId, seedUserId);
+  assert.equal(fixture.providerObjectId, uploadedObjectId);
   assert.equal(fixture.bytes, 27);
   assert.equal(invSuccess.trackedStorageObjects.get('task06i_probe_bucket').has(`${runId}/probe.txt`), true);
 });
@@ -8638,10 +8692,13 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
         runId,
         seedUserId,
         userAccessToken: testToken,
+        anonKey: validTestAnonKey,
+        serviceRoleKey: validTestServiceRoleKey,
         inventory: new TestRunInventory(runId),
         fetchFn: async (url, opts) => {
+          if (url.includes('/auth/v1/user')) return { status: 200, ok: true, json: async () => ({ id: seedUserId }) };
           if (opts.method === 'GET') return { status: 403, ok: false };
-          if (opts.method === 'POST') {
+          if (opts.method === 'POST' && url.includes('/storage/v1/object/')) {
             uploadPostAttempted = true;
             return { status: 200, ok: true };
           }
@@ -8649,7 +8706,7 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
         }
       });
     },
-    /STORAGE_COLLISION_CHECK_FAILED: Pre-upload collision check failed with HTTP 403/
+    /STORAGE_COLLISION_CHECK_FAILED:.*UNAUTHORIZED_OR_FORBIDDEN \(HTTP 403\)/
   );
   assert.equal(uploadPostAttempted, false, 'Upload POST must never be attempted when collision check returns non-404');
 
@@ -8661,10 +8718,15 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
         runId,
         seedUserId,
         userAccessToken: testToken,
+        anonKey: validTestAnonKey,
+        serviceRoleKey: validTestServiceRoleKey,
         inventory: invConflict,
         fetchFn: async (url, opts) => {
+          if (url.includes('/auth/v1/user')) return { status: 200, ok: true, json: async () => ({ id: seedUserId }) };
           if (opts.method === 'GET') return { status: 404, ok: false };
-          if (opts.method === 'POST') return { status: 409, ok: false, json: async () => ({ message: 'The resource already exists' }) };
+          if (opts.method === 'POST' && url.includes('/storage/v1/object/')) {
+            return { status: 409, ok: false, json: async () => ({ statusCode: '409', code: 'KeyAlreadyExists', error: 'Duplicate', message: 'The resource already exists' }) };
+          }
           return { status: 500 };
         }
       });
@@ -8700,10 +8762,13 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
         runId,
         seedUserId,
         userAccessToken: testToken,
+        anonKey: validTestAnonKey,
+        serviceRoleKey: validTestServiceRoleKey,
         inventory: invIndet,
         fetchFn: async (url, opts) => {
+          if (url.includes('/auth/v1/user')) return { status: 200, ok: true, json: async () => ({ id: seedUserId }) };
           if (opts.method === 'GET') return { status: 404, ok: false };
-          if (opts.method === 'POST') throw new Error('ECONNRESET: socket hang up');
+          if (opts.method === 'POST' && url.includes('/storage/v1/object/')) throw new Error('ECONNRESET: socket hang up');
           return { status: 500 };
         }
       });
@@ -8716,93 +8781,138 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
 
   // ==========================================
   // R1-04: Payload Integrity & Authoritative Owner Verification
-  // (PRRT_kwDOVtCmZc67gqO4)
+  // (PRRT_kwDOVtCmZc67gqO4 & R2-01)
   // ==========================================
-  // 16. Verification GET with corrupted/wrong bytes throws STORAGE_PAYLOAD_INTEGRITY_MISMATCH
-  let getCount16 = 0;
+  const objId16 = '88888888-1111-4111-a111-111111111196';
+  // 16. Verification GET with corrupted/wrong bytes throws STORAGE_PAYLOAD_INTEGRITY_MISMATCH and retains RESIDUAL_OWNERSHIP_BLOCKED
+  let uploaded16 = false;
+  const invMismatch16 = new TestRunInventory(runId);
   await assert.rejects(
     async () => {
       await provisionStorageProbeFixture({
         runId,
         seedUserId,
         userAccessToken: testToken,
-        inventory: new TestRunInventory(runId),
+        anonKey: validTestAnonKey,
+        serviceRoleKey: validTestServiceRoleKey,
+        inventory: invMismatch16,
         probeContent: 'expected-bytes\n',
         fetchFn: async (url, opts) => {
-          if (opts.method === 'GET') {
-            getCount16++;
-            if (getCount16 === 1) return { status: 404, ok: false };
+          if (url.includes('/auth/v1/user')) return { status: 200, ok: true, json: async () => ({ id: seedUserId }) };
+          if (opts.method === 'GET' && url.includes('/storage/v1/object/authenticated/')) {
+            if (!uploaded16) return { status: 404, ok: false };
             return {
               status: 200,
               ok: true,
               text: async () => 'corrupted-different-bytes\n',
-              headers: new Headers({ 'x-owner-id': seedUserId })
+              headers: new Headers({ 'Content-Type': 'text/plain' })
             };
           }
-          if (opts.method === 'POST') return { status: 200, ok: true, json: async () => ({}) };
+          if (opts.method === 'POST' && url.includes('/storage/v1/object/')) {
+            uploaded16 = true;
+            return { status: 200, ok: true, json: async () => ({ Id: objId16, Key: getStorageProbeObjectKey(runId) }) };
+          }
           return { status: 500 };
         }
       });
     },
     /STORAGE_PAYLOAD_INTEGRITY_MISMATCH/
   );
+  assert.equal(
+    invMismatch16.getStorageFixture(STORAGE_PROBE_BUCKET, getStorageProbeObjectPath(runId))?.lifecycleState,
+    STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED
+  );
 
-  // 17. Verification GET missing owner metadata header throws STORAGE_OWNER_VERIFICATION_FAILED
-  let getCount17 = 0;
+  // 17. Missing owner metadata in authoritative lookup throws STORAGE_OWNER_VERIFICATION_FAILED and preserves RESIDUAL_OWNERSHIP_BLOCKED
+  let uploaded17 = false;
+  const invMissing17 = new TestRunInventory(runId);
   await assert.rejects(
     async () => {
       await provisionStorageProbeFixture({
         runId,
         seedUserId,
         userAccessToken: testToken,
-        inventory: new TestRunInventory(runId),
+        anonKey: validTestAnonKey,
+        serviceRoleKey: validTestServiceRoleKey,
+        inventory: invMissing17,
         probeContent: 'valid-bytes\n',
         fetchFn: async (url, opts) => {
-          if (opts.method === 'GET') {
-            getCount17++;
-            if (getCount17 === 1) return { status: 404, ok: false };
+          if (url.includes('/auth/v1/user')) return { status: 200, ok: true, json: async () => ({ id: seedUserId }) };
+          if (url.includes('/rest/v1/rpc/task06i_lookup_storage_object_owner')) {
+            return {
+              status: 200,
+              ok: true,
+              text: async () => JSON.stringify([{ id: objId16, bucket_id: STORAGE_PROBE_BUCKET, name: getStorageProbeObjectPath(runId), owner_id: null }])
+            };
+          }
+          if (opts.method === 'GET' && url.includes('/storage/v1/object/authenticated/')) {
+            if (!uploaded17) return { status: 404, ok: false };
             return {
               status: 200,
               ok: true,
               text: async () => 'valid-bytes\n',
-              headers: new Headers({}) // Missing x-owner-id
+              headers: new Headers({ 'Content-Type': 'text/plain' })
             };
           }
-          if (opts.method === 'POST') return { status: 200, ok: true, json: async () => ({}) };
+          if (opts.method === 'POST' && url.includes('/storage/v1/object/')) {
+            uploaded17 = true;
+            return { status: 200, ok: true, json: async () => ({ Id: objId16, Key: getStorageProbeObjectKey(runId) }) };
+          }
           return { status: 500 };
         }
       });
     },
     /STORAGE_OWNER_VERIFICATION_FAILED.*missing/
   );
+  assert.equal(
+    invMissing17.getStorageFixture(STORAGE_PROBE_BUCKET, getStorageProbeObjectPath(runId))?.lifecycleState,
+    STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED
+  );
 
-  // 18. Verification GET with mismatched owner ID throws STORAGE_OWNER_VERIFICATION_FAILED
-  let getCount18 = 0;
+  // 18. Mismatched owner_id in authoritative lookup throws STORAGE_OWNER_VERIFICATION_FAILED and preserves RESIDUAL_OWNERSHIP_BLOCKED
+  let uploaded18 = false;
+  const invOwnerMismatch18 = new TestRunInventory(runId);
   await assert.rejects(
     async () => {
       await provisionStorageProbeFixture({
         runId,
         seedUserId,
         userAccessToken: testToken,
-        inventory: new TestRunInventory(runId),
+        anonKey: validTestAnonKey,
+        serviceRoleKey: validTestServiceRoleKey,
+        inventory: invOwnerMismatch18,
         probeContent: 'valid-bytes\n',
         fetchFn: async (url, opts) => {
-          if (opts.method === 'GET') {
-            getCount18++;
-            if (getCount18 === 1) return { status: 404, ok: false };
+          if (url.includes('/auth/v1/user')) return { status: 200, ok: true, json: async () => ({ id: seedUserId }) };
+          if (url.includes('/rest/v1/rpc/task06i_lookup_storage_object_owner')) {
+            return {
+              status: 200,
+              ok: true,
+              text: async () => JSON.stringify([{ id: objId16, bucket_id: STORAGE_PROBE_BUCKET, name: getStorageProbeObjectPath(runId), owner_id: otherUserId }])
+            };
+          }
+          if (opts.method === 'GET' && url.includes('/storage/v1/object/authenticated/')) {
+            if (!uploaded18) return { status: 404, ok: false };
             return {
               status: 200,
               ok: true,
               text: async () => 'valid-bytes\n',
-              headers: new Headers({ 'x-owner-id': otherUserId }) // Mismatched owner
+              headers: new Headers({ 'Content-Type': 'text/plain' })
             };
           }
-          if (opts.method === 'POST') return { status: 200, ok: true, json: async () => ({}) };
+          if (opts.method === 'POST' && url.includes('/storage/v1/object/')) {
+            uploaded18 = true;
+            return { status: 200, ok: true, json: async () => ({ Id: objId16, Key: getStorageProbeObjectKey(runId) }) };
+          }
           return { status: 500 };
         }
       });
     },
-    /STORAGE_OWNER_VERIFICATION_FAILED.*does not match authenticated seed user/
+    /STORAGE_OWNER_VERIFICATION_FAILED.*does not match verified seed user/
+  );
+  assert.equal(
+    invOwnerMismatch18.getStorageFixture(STORAGE_PROBE_BUCKET, getStorageProbeObjectPath(runId))?.lifecycleState,
+    STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED
   );
 
   // ==========================================
@@ -8943,5 +9053,936 @@ test('96. Task 06I-B1-H3-R1: Fail-Closed Dispatch, Project Isolation & Storage O
       });
     },
     /INVENTORY_RUN_ID_MISMATCH/
+  );
+});
+
+
+test('97. Task 06I-B1-H3-R2 (R2-01): Authoritative storage.objects.owner_id Metadata Verification & Realistic Provider Responses', async () => {
+  const runId = 'test-run-h3-r2-owner-97';
+  const seedUserId = '11111111-1111-4111-a111-111111111197';
+  const otherUserId = '22222222-2222-4222-b222-222222222297';
+  const objectUuid = 'aaaa1111-2222-4333-a444-555555555597';
+  const otherObjectUuid = 'bbbb1111-2222-4333-a444-555555555597';
+  const token = createMockJwt({ sub: seedUserId });
+  const expectedPath = getStorageProbeObjectPath(runId);
+  const expectedKey = getStorageProbeObjectKey(runId);
+
+  // Static SQL contract verification: narrowly scoped SECURITY DEFINER RPC, no storage schema exposure
+  const sqlContent = fs.readFileSync('experiments/task06i/sql/testbed-fixtures.sql', 'utf8');
+  assert.match(sqlContent, /CREATE OR REPLACE FUNCTION public\.task06i_lookup_storage_object_owner\(/);
+  assert.match(sqlContent, /SECURITY DEFINER\s+SET search_path = ''/);
+  assert.match(sqlContent, /IF p_bucket_id IS DISTINCT FROM 'task06i_probe_bucket'/);
+  assert.match(sqlContent, /REVOKE ALL ON FUNCTION public\.task06i_lookup_storage_object_owner\(text, text\) FROM PUBLIC, anon, authenticated/);
+  assert.match(sqlContent, /GRANT EXECUTE ON FUNCTION public\.task06i_lookup_storage_object_owner\(text, text\) TO service_role/);
+  assert.ok(!/pgrst\.db_schemas|GRANT .* ON SCHEMA storage TO anon|GRANT .* ON SCHEMA storage TO authenticated/i.test(sqlContent));
+
+  // Helper creating realistic provider mock (NO custom x-owner-id headers on GET download!)
+  function makeProviderFetch({
+    authUserStatus = 200,
+    authUserBody = { id: seedUserId, aud: 'authenticated' },
+    uploadObjectId = objectUuid,
+    downloadBody = 'abcd-fixture-bytes\n',
+    downloadBodyFn = null,
+    downloadHeaders = {
+      'Content-Type': 'text/plain',
+      'ETag': '"realistic-etag-97"',
+      'Last-Modified': 'Wed, 25 Nov 2026 04:30:00 GMT',
+      'Content-Length': '19',
+      'X-Robots-Tag': 'none'
+    },
+    ownershipRpcStatus = 200,
+    ownershipRpcBody = [{
+      id: objectUuid,
+      bucket_id: STORAGE_PROBE_BUCKET,
+      name: expectedPath,
+      owner_id: seedUserId,
+      version: 'v1'
+    }],
+    ownershipRpcDelayMs = 0,
+    ownershipRpcMalformed = false
+  } = {}) {
+    let uploaded = false;
+    return async (url, opts = {}) => {
+      if (url.includes('/auth/v1/user')) {
+        return {
+          status: authUserStatus,
+          ok: authUserStatus === 200,
+          text: async () => JSON.stringify(authUserBody)
+        };
+      }
+      if (url.includes('/rest/v1/rpc/task06i_lookup_storage_object_owner')) {
+        assert.equal(opts.headers?.Authorization, `Bearer ${validTestServiceRoleKey}`);
+        if (ownershipRpcDelayMs > 0) {
+          await new Promise((resolve, reject) => {
+            const t = setTimeout(resolve, ownershipRpcDelayMs);
+            if (opts.signal) {
+              opts.signal.addEventListener('abort', () => {
+                clearTimeout(t);
+                const e = new Error('The operation was aborted');
+                e.name = 'AbortError';
+                reject(e);
+              }, { once: true });
+            }
+          });
+        }
+        if (ownershipRpcMalformed) {
+          return { status: 200, ok: true, text: async () => '<html>not-json</html>' };
+        }
+        return {
+          status: ownershipRpcStatus,
+          ok: ownershipRpcStatus >= 200 && ownershipRpcStatus < 300,
+          text: async () => JSON.stringify(ownershipRpcBody)
+        };
+      }
+      if (opts.method === 'GET' && url.includes('/storage/v1/object/authenticated/')) {
+        if (!uploaded) {
+          return {
+            status: 400,
+            ok: false,
+            text: async () => JSON.stringify({ error: 'Not found', message: 'The resource was not found', statusCode: '404', code: 'NoSuchKey' })
+          };
+        }
+        if (downloadBodyFn) {
+          return downloadBodyFn();
+        }
+        return {
+          status: 200,
+          ok: true,
+          headers: new Headers(downloadHeaders),
+          arrayBuffer: async () => Buffer.from(downloadBody, 'utf8')
+        };
+      }
+      if (opts.method === 'POST' && url.includes('/storage/v1/object/')) {
+        uploaded = true;
+        return {
+          status: 200,
+          ok: true,
+          text: async () => JSON.stringify({ Id: uploadObjectId, Key: expectedKey })
+        };
+      }
+      return { status: 404, ok: false };
+    };
+  }
+
+  // 1 & 2. Realistic authenticated download WITHOUT custom owner headers + authoritative owner_id lookup + exact byte match
+  const invPass = new TestRunInventory(runId);
+  const resPass = await provisionStorageProbeFixture({
+    runId,
+    seedUserId,
+    userAccessToken: token,
+    anonKey: validTestAnonKey,
+    serviceRoleKey: validTestServiceRoleKey,
+    inventory: invPass,
+    probeContent: 'abcd-fixture-bytes\n',
+    fetchFn: makeProviderFetch()
+  });
+  assert.equal(resPass.lifecycleState, STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED);
+  assert.equal(resPass.deletionEligible, true);
+  assert.equal(resPass.objectId, objectUuid);
+  assert.equal(resPass.ownerId, seedUserId);
+  assert.equal(resPass.fixtureRecord.proof.ownershipSource, 'storage.objects.owner_id');
+  assert.equal(resPass.fixtureRecord.proof.seedIdentityEndpoint, '/auth/v1/user');
+
+  // 3. Wrong object owner -> RESIDUAL_OWNERSHIP_BLOCKED (no deletion eligibility)
+  const invWrongOwner = new TestRunInventory(runId);
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      runId,
+      seedUserId,
+      userAccessToken: token,
+      serviceRoleKey: validTestServiceRoleKey,
+      inventory: invWrongOwner,
+      probeContent: 'abcd-fixture-bytes\n',
+      fetchFn: makeProviderFetch({
+        ownershipRpcBody: [{ id: objectUuid, bucket_id: STORAGE_PROBE_BUCKET, name: expectedPath, owner_id: otherUserId }]
+      })
+    }),
+    /STORAGE_OWNER_VERIFICATION_FAILED/
+  );
+  assert.equal(invWrongOwner.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.lifecycleState, STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED);
+  assert.equal(invWrongOwner.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.deletionEligible, false);
+
+  // 4. Missing owner metadata (empty result / RPC 404 PGRST202 / missing ownership interface)
+  const invMissingMeta = new TestRunInventory(runId);
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      runId,
+      seedUserId,
+      userAccessToken: token,
+      serviceRoleKey: validTestServiceRoleKey,
+      inventory: invMissingMeta,
+      probeContent: 'abcd-fixture-bytes\n',
+      fetchFn: makeProviderFetch({
+        ownershipRpcStatus: 404,
+        ownershipRpcBody: { code: 'PGRST202', message: 'Could not find the function public.task06i_lookup_storage_object_owner' }
+      })
+    }),
+    /STORAGE_OWNER_VERIFICATION_FAILED/
+  );
+  assert.equal(invMissingMeta.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.deletionEligible, false);
+
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      runId,
+      seedUserId,
+      userAccessToken: token,
+      inventory: new TestRunInventory(runId),
+      fetchFn: makeProviderFetch()
+    }),
+    /BLOCKED_PENDING_OWNERSHIP_METADATA_INTERFACE/
+  );
+
+  // 5. Wrong bucket or wrong object key in authoritative lookup
+  const invWrongBucket = new TestRunInventory(runId);
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      runId,
+      seedUserId,
+      userAccessToken: token,
+      serviceRoleKey: validTestServiceRoleKey,
+      inventory: invWrongBucket,
+      probeContent: 'abcd-fixture-bytes\n',
+      fetchFn: makeProviderFetch({
+        ownershipRpcBody: [{ id: objectUuid, bucket_id: 'other_bucket', name: expectedPath, owner_id: seedUserId }]
+      })
+    }),
+    /STORAGE_OBJECT_KEY_MISMATCH/
+  );
+  assert.equal(invWrongBucket.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.deletionEligible, false);
+
+  const invWrongKey = new TestRunInventory(runId);
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      runId,
+      seedUserId,
+      userAccessToken: token,
+      serviceRoleKey: validTestServiceRoleKey,
+      inventory: invWrongKey,
+      probeContent: 'abcd-fixture-bytes\n',
+      fetchFn: makeProviderFetch({
+        ownershipRpcBody: [{ id: objectUuid, bucket_id: STORAGE_PROBE_BUCKET, name: 'other-run/probe.txt', owner_id: seedUserId }]
+      })
+    }),
+    /STORAGE_OBJECT_KEY_MISMATCH/
+  );
+  assert.equal(invWrongKey.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.deletionEligible, false);
+
+  // 6. Different provider object identity (POST Id !== storage.objects.id)
+  const invDiffId = new TestRunInventory(runId);
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      runId,
+      seedUserId,
+      userAccessToken: token,
+      serviceRoleKey: validTestServiceRoleKey,
+      inventory: invDiffId,
+      probeContent: 'abcd-fixture-bytes\n',
+      fetchFn: makeProviderFetch({
+        uploadObjectId: objectUuid,
+        ownershipRpcBody: [{ id: otherObjectUuid, bucket_id: STORAGE_PROBE_BUCKET, name: expectedPath, owner_id: seedUserId }]
+      })
+    }),
+    /STORAGE_OBJECT_IDENTITY_MISMATCH/
+  );
+  assert.equal(invDiffId.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.deletionEligible, false);
+
+  // 7. Unverified or mismatched seed identity (/auth/v1/user rejects forged JWT even when decoded sub matches)
+  let storageCalledOnBadIdentity = false;
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      runId,
+      seedUserId,
+      userAccessToken: token,
+      serviceRoleKey: validTestServiceRoleKey,
+      inventory: new TestRunInventory(runId),
+      fetchFn: async (url) => {
+        if (url.includes('/auth/v1/user')) {
+          return { status: 401, ok: false, text: async () => JSON.stringify({ error: 'invalid_jwt' }) };
+        }
+        storageCalledOnBadIdentity = true;
+        return { status: 200 };
+      }
+    }),
+    /SEED_IDENTITY_VERIFICATION_FAILED/
+  );
+  assert.equal(storageCalledOnBadIdentity, false, 'Unverified /auth/v1/user must fail BEFORE any Storage call');
+
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      runId,
+      seedUserId,
+      userAccessToken: token,
+      serviceRoleKey: validTestServiceRoleKey,
+      inventory: new TestRunInventory(runId),
+      fetchFn: makeProviderFetch({ authUserBody: { id: otherUserId } })
+    }),
+    /SEED_IDENTITY_VERIFICATION_FAILED/
+  );
+
+  // 8 & 9. Same-length but different downloaded bytes ('abce...' vs 'abcd...')
+  const invSameLenDiff = new TestRunInventory(runId);
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      runId,
+      seedUserId,
+      userAccessToken: token,
+      serviceRoleKey: validTestServiceRoleKey,
+      inventory: invSameLenDiff,
+      probeContent: 'abcd-fixture-bytes\n',
+      fetchFn: makeProviderFetch({
+        downloadBody: 'abce-fixture-bytes\n' // Exact same 19-byte length!
+      })
+    }),
+    /STORAGE_PAYLOAD_INTEGRITY_MISMATCH/
+  );
+  assert.equal(invSameLenDiff.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.lifecycleState, STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED);
+  assert.equal(invSameLenDiff.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.deletionEligible, false);
+
+  // 10. Malformed or unreadable download/metadata responses
+  const invUnreadable = new TestRunInventory(runId);
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      runId,
+      seedUserId,
+      userAccessToken: token,
+      serviceRoleKey: validTestServiceRoleKey,
+      inventory: invUnreadable,
+      probeContent: 'abcd-fixture-bytes\n',
+      fetchFn: makeProviderFetch({
+        downloadBodyFn: () => ({ status: 200, ok: true, arrayBuffer: async () => { throw new Error('Stream truncated'); } })
+      })
+    }),
+    /STORAGE_VERIFICATION_FAILED/
+  );
+  assert.equal(invUnreadable.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.deletionEligible, false);
+
+  const invMalformedMeta = new TestRunInventory(runId);
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      runId,
+      seedUserId,
+      userAccessToken: token,
+      serviceRoleKey: validTestServiceRoleKey,
+      inventory: invMalformedMeta,
+      probeContent: 'abcd-fixture-bytes\n',
+      fetchFn: makeProviderFetch({ ownershipRpcMalformed: true })
+    }),
+    /STORAGE_OWNER_VERIFICATION_FAILED/
+  );
+  assert.equal(invMalformedMeta.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.deletionEligible, false);
+
+  // 11. Ownership lookup timeout -> RESIDUAL_OWNERSHIP_BLOCKED, deletionEligible: false
+  const invTimeout = new TestRunInventory(runId);
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      runId,
+      seedUserId,
+      userAccessToken: token,
+      serviceRoleKey: validTestServiceRoleKey,
+      inventory: invTimeout,
+      probeContent: 'abcd-fixture-bytes\n',
+      ownershipTimeoutMs: 30,
+      fetchFn: makeProviderFetch({ ownershipRpcDelayMs: 120 })
+    }),
+    /STORAGE_OWNER_VERIFICATION_FAILED.*OWNERSHIP_LOOKUP_TIMEOUT/
+  );
+  assert.equal(invTimeout.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.lifecycleState, STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED);
+  assert.equal(invTimeout.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.deletionEligible, false);
+});
+
+test('98. Task 06I-B1-H3-R2 (R2-02): Residual Storage Obligations, State Monotonicity & Cascade Prevention', async () => {
+  const runId = 'test-run-h3-r2-residual-98';
+  const seedUserId = '11111111-1111-4111-a111-111111111198';
+  const createdUserId = '22222222-2222-4222-b222-222222222298';
+  const objectUuid = 'cccc1111-2222-4333-a444-555555555598';
+  const otherUserId = '33333333-3333-4333-b333-333333333398';
+  const token = createMockJwt({ sub: seedUserId });
+  const expectedPath = getStorageProbeObjectPath(runId);
+  const expectedKey = getStorageProbeObjectKey(runId);
+
+  async function assertUnresolvedCleanupBlocked(inv, expectedState) {
+    // Associate a verified run-created Auth user to assert Storage-before-user cascade block
+    inv.registerCreatedUser({
+      id: createdUserId,
+      email: 'created-98@proof.invalid',
+      creationProof: createCreationProof('before_after_check')
+    });
+    let storageDeleted = false;
+    let userDeleted = false;
+    const mockAdmin = {
+      deleteStorageObject: async () => { storageDeleted = true; return { data: null, error: null }; },
+      getStorageObject: async () => ({ status: 404, ok: false }),
+      deleteUser: async () => { userDeleted = true; return { data: null, error: null }; },
+      getUserById: async () => ({ notFound: true }),
+      signOut: async () => ({ data: null, error: null })
+    };
+    const report = await inv.executeCleanup({ adminClient: mockAdmin, failClosed: false });
+    assert.equal(storageDeleted, false, `Must NEVER blind-delete storage for state '${expectedState}'`);
+    assert.equal(userDeleted, false, `Must NEVER delete Auth user while storage state is '${expectedState}'`);
+    assert.notEqual(report.status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.ok(report.residualResources.some(r => r.type === 'storage_object'));
+    assert.ok(report.residualUsers.some(u => u.id === createdUserId && /STORAGE_CLEANUP_FAILURE_CASCADE_PREVENTED/.test(u.error)));
+    assert.equal(inv.isClean(), false);
+  }
+
+  // Scenarios 1, 2, 3: Successful POST followed by verification GET 403, 404, or 500
+  for (const getErrStatus of [403, 404, 500]) {
+    const inv = new TestRunInventory(runId);
+    let posted = false;
+    await assert.rejects(
+      () => provisionStorageProbeFixture({
+        runId,
+        seedUserId,
+        userAccessToken: token,
+        serviceRoleKey: validTestServiceRoleKey,
+        inventory: inv,
+        fetchFn: async (url, opts) => {
+          if (url.includes('/auth/v1/user')) return { status: 200, ok: true, text: async () => JSON.stringify({ id: seedUserId }) };
+          if (opts.method === 'GET' && url.includes('/storage/v1/object/authenticated/')) {
+            return posted ? { status: getErrStatus, ok: false } : { status: 404, ok: false };
+          }
+          if (opts.method === 'POST' && url.includes('/storage/v1/object/')) {
+            posted = true;
+            return { status: 200, ok: true, text: async () => JSON.stringify({ Id: objectUuid, Key: expectedKey }) };
+          }
+          return { status: 500 };
+        }
+      }),
+      /STORAGE_VERIFICATION_FAILED/
+    );
+    const f = inv.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath);
+    assert.equal(f.lifecycleState, STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED);
+    assert.equal(f.hasCommittedUpload, true);
+    assert.equal(f.deletionEligible, false);
+    await assertUnresolvedCleanupBlocked(inv, `POST_200_GET_${getErrStatus}`);
+  }
+
+  // Scenario 4, 5, 6, 7: Content mismatch, owner mismatch, owner lookup failure, body-read rejection after POST 200
+  const post200FailureVariants = [
+    { name: 'content_mismatch', body: 'wrong-content', lookupRes: [{ id: objectUuid, bucket_id: STORAGE_PROBE_BUCKET, name: expectedPath, owner_id: seedUserId }], errRegex: /STORAGE_PAYLOAD_INTEGRITY_MISMATCH/ },
+    { name: 'owner_mismatch', body: 'expected-98\n', lookupRes: [{ id: objectUuid, bucket_id: STORAGE_PROBE_BUCKET, name: expectedPath, owner_id: otherUserId }], errRegex: /STORAGE_OWNER_VERIFICATION_FAILED/ },
+    { name: 'lookup_failure', body: 'expected-98\n', lookupStatus: 500, errRegex: /STORAGE_OWNER_VERIFICATION_FAILED/ },
+    { name: 'body_read_rejection', bodyRejects: true, errRegex: /STORAGE_VERIFICATION_FAILED/ }
+  ];
+
+  for (const variant of post200FailureVariants) {
+    const inv = new TestRunInventory(runId);
+    let posted = false;
+    await assert.rejects(
+      () => provisionStorageProbeFixture({
+        runId,
+        seedUserId,
+        userAccessToken: token,
+        serviceRoleKey: validTestServiceRoleKey,
+        inventory: inv,
+        probeContent: 'expected-98\n',
+        fetchFn: async (url, opts) => {
+          if (url.includes('/auth/v1/user')) return { status: 200, ok: true, text: async () => JSON.stringify({ id: seedUserId }) };
+          if (url.includes('/rest/v1/rpc/task06i_lookup_storage_object_owner')) {
+            const st = variant.lookupStatus || 200;
+            return { status: st, ok: st === 200, text: async () => JSON.stringify(variant.lookupRes || { message: 'db error' }) };
+          }
+          if (opts.method === 'GET' && url.includes('/storage/v1/object/authenticated/')) {
+            if (!posted) return { status: 404, ok: false };
+            if (variant.bodyRejects) return { status: 200, ok: true, arrayBuffer: async () => { throw new Error('ECONNRESET'); } };
+            return { status: 200, ok: true, text: async () => variant.body };
+          }
+          if (opts.method === 'POST' && url.includes('/storage/v1/object/')) {
+            posted = true;
+            return { status: 200, ok: true, text: async () => JSON.stringify({ Id: objectUuid, Key: expectedKey }) };
+          }
+          return { status: 500 };
+        }
+      }),
+      variant.errRegex
+    );
+    assert.equal(inv.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.lifecycleState, STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED);
+    await assertUnresolvedCleanupBlocked(inv, variant.name);
+  }
+
+  // Scenario 8 & 9: Upload HTTP 500 after possible commit & Upload timeout/transport reset -> CREATION_INDETERMINATE
+  for (const uploadFail of ['http_500', 'transport_reset']) {
+    const inv = new TestRunInventory(runId);
+    await assert.rejects(
+      () => provisionStorageProbeFixture({
+        runId,
+        seedUserId,
+        userAccessToken: token,
+        serviceRoleKey: validTestServiceRoleKey,
+        inventory: inv,
+        fetchFn: async (url, opts) => {
+          if (url.includes('/auth/v1/user')) return { status: 200, ok: true, text: async () => JSON.stringify({ id: seedUserId }) };
+          if (opts.method === 'GET') return { status: 404, ok: false };
+          if (opts.method === 'POST') {
+            if (uploadFail === 'transport_reset') throw new Error('ETIMEDOUT: socket hang up');
+            return { status: 500, ok: false, text: async () => JSON.stringify({ message: 'upstream timeout' }) };
+          }
+          return { status: 500 };
+        }
+      })
+    );
+    assert.equal(inv.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.lifecycleState, STORAGE_LIFECYCLE_STATE.CREATION_INDETERMINATE);
+    await assertUnresolvedCleanupBlocked(inv, uploadFail);
+  }
+
+  // Scenario 10: Definitive collision (HTTP 400 statusCode 409 KeyAlreadyExists) preserves existing object
+  const invCollision = new TestRunInventory(runId);
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      runId,
+      seedUserId,
+      userAccessToken: token,
+      serviceRoleKey: validTestServiceRoleKey,
+      inventory: invCollision,
+      fetchFn: async (url, opts) => {
+        if (url.includes('/auth/v1/user')) return { status: 200, ok: true, text: async () => JSON.stringify({ id: seedUserId }) };
+        if (opts.method === 'GET') return { status: 404, ok: false };
+        if (opts.method === 'POST') {
+          return {
+            status: 400,
+            ok: false,
+            text: async () => JSON.stringify({ statusCode: '409', code: 'KeyAlreadyExists', error: 'Duplicate', message: 'The resource already exists' })
+          };
+        }
+        return { status: 500 };
+      }
+    }),
+    /STORAGE_UPLOAD_CONFLICT/
+  );
+  assert.equal(invCollision.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.lifecycleState, STORAGE_LIFECYCLE_STATE.CONFLICT_EXISTING_PRESERVED);
+  let collisionDeleteCalled = false;
+  const repCol = await invCollision.executeCleanup({
+    adminClient: {
+      deleteStorageObject: async () => { collisionDeleteCalled = true; return { error: null }; },
+      getStorageObject: async () => ({ status: 200, ok: true }),
+      deleteUser: async () => ({ error: null }),
+      getUserById: async () => ({ notFound: true }),
+      signOut: async () => ({ error: null })
+    }
+  });
+  assert.equal(collisionDeleteCalled, false);
+  assert.equal(repCol.status, 'CLEANUP_VERIFIED_SUCCESS');
+
+  // Scenario 11: Unknown ownership / ambiguous CREATION_FAILED does NOT skip silently
+  const invUnknown = new TestRunInventory(runId);
+  invUnknown.registerStorageFixture({
+    bucket: STORAGE_PROBE_BUCKET,
+    path: expectedPath,
+    ownerId: null,
+    lifecycleState: STORAGE_LIFECYCLE_STATE.CREATION_FAILED,
+    hasCommittedUpload: true,
+    deletionEligible: false
+  });
+  await assertUnresolvedCleanupBlocked(invUnknown, 'unknown_ownership');
+
+  // Scenario 13: Monotonicity & late settlement during/after cleanup
+  const invMono = new TestRunInventory(runId);
+  invMono.registerStorageFixture({
+    bucket: STORAGE_PROBE_BUCKET,
+    path: expectedPath,
+    ownerId: seedUserId,
+    lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED,
+    deletionEligible: true,
+    hasCommittedUpload: true
+  });
+  assert.throws(
+    () => invMono.updateStorageFixture(expectedKey, { lifecycleState: STORAGE_LIFECYCLE_STATE.CREATION_FAILED }),
+    /INVENTORY_STATE_MONOTONICITY_VIOLATION/
+  );
+
+  // Late operation settlement after cleanup starts must block CLEANUP_VERIFIED_SUCCESS
+  const invLate = new TestRunInventory(runId);
+  const lateOp = invLate.registerInFlightOperation({ probeId: 'HOOK-01', endpoint: '/auth/v1/token', canMintSession: true });
+  const lateAdmin = {
+    deleteStorageObject: async () => ({ error: null }),
+    getStorageObject: async () => ({ status: 404, ok: false }),
+    deleteUser: async () => ({ error: null }),
+    getUserById: async () => ({ notFound: true }),
+    signOut: async () => ({ error: null })
+  };
+  const cleanupPromise = invLate.executeCleanup({ adminClient: lateAdmin, failClosed: false, settlementTimeoutMs: 40 });
+  setTimeout(() => {
+    invLate.settleInFlightOperation(lateOp.opId, { observed: { status: 200 } });
+  }, 10);
+  const lateReport = await cleanupPromise;
+  assert.notEqual(lateReport.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.ok(lateReport.residualResources.some(r => r.type === 'late_settlement_during_cleanup'));
+
+  // Scenario 14: Verified run-owned object removed & absence confirmed before user deletion
+  const invClean = new TestRunInventory(runId);
+  invClean.registerCreatedUser({ id: createdUserId, email: 'clean-98@proof.invalid', creationProof: createCreationProof('before_after_check') });
+  invClean.registerStorageFixture({
+    bucket: STORAGE_PROBE_BUCKET,
+    path: expectedPath,
+    ownerId: seedUserId,
+    lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED,
+    deletionEligible: true,
+    hasCommittedUpload: true
+  });
+  const orderLog = [];
+  const repClean = await invClean.executeCleanup({
+    adminClient: {
+      deleteStorageObject: async (b, p) => { orderLog.push(`del:${b}/${p}`); return { error: null }; },
+      getStorageObject: async (b, p) => { orderLog.push(`chk:${b}/${p}`); return { status: 404, ok: false }; },
+      deleteUser: async (u) => { orderLog.push(`user:${u}`); return { error: null }; },
+      getUserById: async () => ({ notFound: true }),
+      signOut: async () => ({ error: null })
+    }
+  });
+  assert.equal(repClean.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.deepEqual(orderLog, [`del:${expectedKey}`, `chk:${expectedKey}`, `user:${createdUserId}`]);
+  assert.equal(invClean.isClean(), true);
+});
+
+test('99. Task 06I-B1-H3-R2 (R2-03): Provider-Aware Storage Absence Normalization Across Collision, Admin Client, Cleanup & SESSION-05', async () => {
+  const runId = 'test-run-h3-r2-normalize-99';
+  const path = getStorageProbeObjectPath(runId);
+
+  // 1. Authoritative HTTP 404 -> OBJECT_ABSENT
+  const r404 = normalizeStorageObjectResponse({ status: 404, expectedBucket: STORAGE_PROBE_BUCKET, expectedPath: path });
+  assert.equal(r404.isAbsent, true);
+  assert.equal(r404.classification, STORAGE_RESPONSE_CLASS.OBJECT_ABSENT);
+
+  // 2. Documented Supabase Storage HTTP 400 + statusCode: '404' + code: 'NoSuchKey' -> OBJECT_ABSENT
+  const rStructured = normalizeStorageObjectResponse({
+    status: 400,
+    parseStatus: 'parsed',
+    body: { error: 'Not found', message: 'The resource was not found', statusCode: '404', code: 'NoSuchKey' },
+    expectedBucket: STORAGE_PROBE_BUCKET,
+    expectedPath: path
+  });
+  assert.equal(rStructured.isAbsent, true);
+  assert.equal(rStructured.classification, STORAGE_RESPONSE_CLASS.OBJECT_ABSENT);
+
+  // 3. Logical 404 with wrong or missing provider code -> rejected
+  for (const badBody of [
+    { statusCode: '404', message: 'Not found' },
+    { statusCode: '404', code: 'InvalidRequest', message: 'Invalid' },
+    { statusCode: '404', code: 'NoSuchBucket', message: 'Bucket not found' }
+  ]) {
+    const rBad = normalizeStorageObjectResponse({ status: 400, parseStatus: 'parsed', body: badBody, expectedBucket: STORAGE_PROBE_BUCKET, expectedPath: path });
+    assert.equal(rBad.isAbsent, false, `Must reject ${JSON.stringify(badBody)}`);
+  }
+
+  // 4. Generic HTTP 400 -> rejected
+  assert.equal(
+    normalizeStorageObjectResponse({ status: 400, parseStatus: 'parsed', body: { message: 'Bad request' }, expectedBucket: STORAGE_PROBE_BUCKET, expectedPath: path }).isAbsent,
+    false
+  );
+
+  // 5. HTTP 401 or 403 -> UNAUTHORIZED_OR_FORBIDDEN
+  for (const s of [401, 403]) {
+    const resAuth = normalizeStorageObjectResponse({ status: s, expectedBucket: STORAGE_PROBE_BUCKET, expectedPath: path });
+    assert.equal(resAuth.isAbsent, false);
+    assert.equal(resAuth.classification, STORAGE_RESPONSE_CLASS.UNAUTHORIZED_OR_FORBIDDEN);
+  }
+
+  // 6. Permission-masked / unauthorized context / forbidden project -> rejected
+  assert.equal(
+    normalizeStorageObjectResponse({
+      status: 400,
+      parseStatus: 'parsed',
+      body: { statusCode: '404', code: 'AccessDenied', error: 'Unauthorized', message: 'row-level security policy violation' },
+      expectedBucket: STORAGE_PROBE_BUCKET,
+      expectedPath: path
+    }).isAbsent,
+    false
+  );
+  assert.equal(
+    normalizeStorageObjectResponse({
+      status: 404,
+      expectedBucket: STORAGE_PROBE_BUCKET,
+      expectedPath: path,
+      authorizedContext: false
+    }).isAbsent,
+    false
+  );
+  assert.equal(
+    normalizeStorageObjectResponse({
+      status: 404,
+      expectedBucket: STORAGE_PROBE_BUCKET,
+      expectedPath: path,
+      projectRef: HARDCODED_REAL_REF
+    }).isAbsent,
+    false
+  );
+
+  // 7. HTTP 429 or 500 -> RATE_LIMITED_OR_SERVER_ERROR
+  for (const s of [429, 500]) {
+    const resErr = normalizeStorageObjectResponse({ status: s, expectedBucket: STORAGE_PROBE_BUCKET, expectedPath: path });
+    assert.equal(resErr.isAbsent, false);
+    assert.equal(resErr.classification, STORAGE_RESPONSE_CLASS.RATE_LIMITED_OR_SERVER_ERROR);
+  }
+
+  // 8. Malformed or unreadable error envelope -> MALFORMED_RESPONSE
+  const malformedEnv = await parseStorageErrorEnvelope({ status: 400, ok: false, text: async () => '<html>bad</html>' });
+  assert.equal(malformedEnv.parseStatus, 'invalid_json');
+  assert.equal(
+    normalizeStorageObjectResponse({
+      status: malformedEnv.status,
+      parseStatus: malformedEnv.parseStatus,
+      body: malformedEnv.body,
+      expectedBucket: STORAGE_PROBE_BUCKET,
+      expectedPath: path
+    }).classification,
+    STORAGE_RESPONSE_CLASS.MALFORMED_RESPONSE
+  );
+
+  // 9. Transport timeout -> TRANSPORT_FAILURE
+  const adminTimeoutClient = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    fetchFn: async () => { throw new Error('ETIMEDOUT: socket timed out'); }
+  });
+  const detailTimeout = await verifyStorageObjectAbsenceDetailed(adminTimeoutClient, STORAGE_PROBE_BUCKET, path);
+  assert.equal(detailTimeout.isAbsent, false);
+  assert.equal(detailTimeout.classification, STORAGE_RESPONSE_CLASS.TRANSPORT_FAILURE);
+
+  // 10. Admin client preserves error body: HTTP 400 NoSuchKey + logical 404 IS recognized as absent in cleanup!
+  const adminStructuredAbsent = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    fetchFn: async (url, opts) => {
+      if (opts.method === 'GET' && url.includes('/storage/v1/object/authenticated/')) {
+        return {
+          status: 400,
+          ok: false,
+          text: async () => JSON.stringify({ error: 'Not found', message: 'The resource was not found', statusCode: '404', code: 'NoSuchKey' })
+        };
+      }
+      return { status: 200, ok: true, text: async () => '{}' };
+    }
+  });
+  const invStructuredDel = new TestRunInventory(runId);
+  invStructuredDel.registerStorageFixture({
+    bucket: STORAGE_PROBE_BUCKET,
+    path,
+    ownerId: '11111111-1111-4111-a111-111111111199',
+    lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED,
+    deletionEligible: true,
+    hasCommittedUpload: true
+  });
+  const repStructured = await invStructuredDel.executeCleanup({ adminClient: adminStructuredAbsent });
+  assert.equal(repStructured.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(repStructured.storageObjectsDeleted, 1);
+  assert.equal(invStructuredDel.getStorageFixture(STORAGE_PROBE_BUCKET, path)?.lifecycleState, STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED);
+
+  // 11. Object remains present (HTTP 200) -> RESIDUAL_BLOCKED, cleanup fails
+  const adminStillPresent = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    fetchFn: async (url, opts) => {
+      if (opts.method === 'DELETE') return { status: 200, ok: true, text: async () => '{}' };
+      return { status: 200, ok: true, text: async () => 'still here' };
+    }
+  });
+  const invPresent = new TestRunInventory(runId);
+  invPresent.registerStorageFixture({
+    bucket: STORAGE_PROBE_BUCKET,
+    path,
+    ownerId: '11111111-1111-4111-a111-111111111199',
+    lifecycleState: STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED,
+    deletionEligible: true,
+    hasCommittedUpload: true
+  });
+  const repPresent = await invPresent.executeCleanup({ adminClient: adminStillPresent, failClosed: false });
+  assert.equal(repPresent.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(invPresent.getStorageFixture(STORAGE_PROBE_BUCKET, path)?.lifecycleState, STORAGE_LIFECYCLE_STATE.RESIDUAL_BLOCKED);
+
+  // Verify SESSION-05 also normalizes structured HTTP 400 NoSuchKey cleanly
+  const runCtx99 = createRunContext({ runId });
+  runCtx99.activeAccessToken = createMockJwt({
+    sub: '11111111-1111-4111-a111-111111111199',
+    session_id: 'sess-99',
+    iat: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + 300
+  });
+  runCtx99.preInvalidationSessionValid = true;
+  runCtx99.passwordResetCompleted = true;
+  runCtx99.sessionRevocationConfirmed = true;
+  runCtx99.revokedSessionId = 'sess-99';
+  const dispSess05 = createHostedDispatcher({
+    anonKey: validTestAnonKey,
+    runContext: runCtx99,
+    fetchFn: async () => ({
+      status: 400,
+      ok: false,
+      text: async () => JSON.stringify({ error: 'Not found', message: 'The resource was not found', statusCode: '404', code: 'NoSuchKey' })
+    })
+  });
+  const outSess05 = await dispSess05({ id: 'SESSION-05', category: 'Session & Consumer' });
+  assert.equal(outSess05.passed, false);
+  assert.match(outSess05.error, /STORAGE_FIXTURE_MISSING/);
+});
+
+test('100. Task 06I-B1-H3-R2 (Sec 5 & 6): Unified Storage Lifecycle E2E Regression & Real-Network Fetch Bypass Hardening', async () => {
+  const runId = 'test-run-h3-r2-e2e-100';
+  const seedUserId = '11111111-1111-4111-a111-111111111100';
+  const objectUuid = 'dddd1111-2222-4333-a444-555555555500';
+  const seedEmail = 'seed-e2e-100@proof.invalid';
+  const payload = 'unified-e2e-task06i-bytes\n';
+  const seedToken = createMockJwt({
+    sub: seedUserId,
+    session_id: 'sess-e2e-100',
+    iat: Math.floor(Date.now() / 1000),
+    exp: Math.floor(Date.now() / 1000) + 300
+  });
+
+  // Part A: End-to-End 14-step Unified Lifecycle using actual components
+  let storageExists = false;
+  let storedBytes = null;
+  let storedOwner = null;
+  let userDeleted = false;
+  const auditEvents = [];
+
+  const mockProviderFetch = async (url, opts = {}) => {
+    if (url.includes('/auth/v1/user')) {
+      auditEvents.push('GET:/auth/v1/user');
+      return { status: 200, ok: true, text: async () => JSON.stringify({ id: seedUserId, email: seedEmail, aud: 'authenticated' }) };
+    }
+    if (url.includes('/rest/v1/rpc/task06i_lookup_storage_object_owner')) {
+      auditEvents.push('RPC:owner_lookup');
+      return {
+        status: 200,
+        ok: true,
+        text: async () => JSON.stringify(
+          storageExists
+            ? [{ id: objectUuid, bucket_id: STORAGE_PROBE_BUCKET, name: getStorageProbeObjectPath(runId), owner_id: storedOwner }]
+            : []
+        )
+      };
+    }
+    if (url.includes('/storage/v1/object/authenticated/')) {
+      if (!storageExists) {
+        auditEvents.push('GET:storage_absent_400_NoSuchKey');
+        return {
+          status: 400,
+          ok: false,
+          text: async () => JSON.stringify({ error: 'Not found', message: 'The resource was not found', statusCode: '404', code: 'NoSuchKey' })
+        };
+      }
+      auditEvents.push('GET:storage_present_200');
+      return {
+        status: 200,
+        ok: true,
+        headers: new Headers({ 'Content-Type': 'text/plain', 'ETag': '"e2e-100"' }),
+        arrayBuffer: async () => Buffer.from(storedBytes, 'utf8')
+      };
+    }
+    if (opts.method === 'POST' && url.includes('/storage/v1/object/')) {
+      auditEvents.push('POST:storage_upload');
+      assert.equal(opts.headers['x-upsert'], 'false');
+      storageExists = true;
+      storedBytes = opts.body;
+      storedOwner = seedUserId;
+      return { status: 200, ok: true, text: async () => JSON.stringify({ Id: objectUuid, Key: getStorageProbeObjectKey(runId) }) };
+    }
+    if (opts.method === 'DELETE' && url.includes('/storage/v1/object/')) {
+      auditEvents.push('DELETE:storage_object');
+      storageExists = false;
+      storedBytes = null;
+      return { status: 200, ok: true, text: async () => JSON.stringify({ message: 'Successfully deleted' }) };
+    }
+    if (opts.method === 'DELETE' && url.includes('/auth/v1/admin/users/')) {
+      userDeleted = true;
+      return { status: 200, ok: true, text: async () => JSON.stringify({}) };
+    }
+    return { status: 404, ok: false };
+  };
+
+  // 1-2. Context & verified pre-existing seed identity (Option A)
+  const ctx = createRunContext({ runId, testEmail: seedEmail });
+  const inv = new TestRunInventory(runId, { seedUserId, seedEmail });
+  const adminClient = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    anonKey: validTestAnonKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: mockProviderFetch
+  });
+
+  // 3-9. Provision fixture with realistic provider responses
+  const prov = await provisionStorageProbeFixture({
+    projectRef: HARDCODED_TEMP_REF,
+    runId,
+    seedUserId,
+    userAccessToken: seedToken,
+    anonKey: validTestAnonKey,
+    serviceRoleKey: validTestServiceRoleKey,
+    adminClient,
+    inventory: inv,
+    probeContent: payload,
+    fetchFn: mockProviderFetch
+  });
+  assert.equal(prov.lifecycleState, STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED);
+  assert.equal(prov.deletionEligible, true);
+
+  // 10. Use the verified fixture for SESSION-05
+  ctx.activeAccessToken = seedToken;
+  ctx.activeUserId = seedUserId;
+  ctx.preInvalidationSessionValid = true;
+  ctx.passwordResetCompleted = true;
+  ctx.sessionRevocationConfirmed = true;
+  ctx.revokedSessionId = 'sess-e2e-100';
+
+  const disp = createHostedDispatcher({
+    projectRef: HARDCODED_TEMP_REF,
+    anonKey: validTestAnonKey,
+    serviceRoleKey: validTestServiceRoleKey,
+    inventory: inv,
+    runContext: ctx,
+    fetchFn: mockProviderFetch
+  });
+  const s05Out = await disp({ id: 'SESSION-05', category: 'Session & Consumer' });
+  assert.equal(s05Out.passed, true);
+  assert.equal(s05Out.storage_linger_observed, true);
+
+  // 11-14. Delete verified run-owned object, confirm absence via NoSuchKey, preserve pre-existing seed, certify CLEANUP_VERIFIED_SUCCESS
+  const finalReport = await inv.executeCleanup({ adminClient, failClosed: true });
+  assert.equal(finalReport.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(finalReport.storageObjectsDeleted, 1);
+  assert.equal(finalReport.usersDeleted, 0);
+  assert.equal(userDeleted, false, 'Pre-existing seed user must be preserved untouched');
+  assert.equal(inv.getStorageFixture(STORAGE_PROBE_BUCKET, getStorageProbeObjectPath(runId))?.lifecycleState, STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED);
+  assert.equal(inv.isClean(), true);
+  assert.deepEqual(auditEvents, [
+    'GET:/auth/v1/user',
+    'GET:storage_absent_400_NoSuchKey',
+    'POST:storage_upload',
+    'GET:storage_present_200',
+    'RPC:owner_lookup',
+    'GET:storage_present_200',
+    'DELETE:storage_object',
+    'GET:storage_absent_400_NoSuchKey'
+  ]);
+
+  // Part B: Structural Real-Network Transport & Wrapped Dispatcher Bypass Hardening (Sec 6)
+  // 1. Bound globalThis.fetch rejected at factory/guard level
+  const boundFetch = globalThis.fetch.bind(globalThis);
+  assert.throws(() => assertOfflineMockTransport(boundFetch), /BLOCKED_PENDING_DURABLE_RECOVERY/);
+  assert.throws(() => createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: boundFetch }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
+  assert.throws(() => createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, fetchFn: boundFetch }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
+
+  // 2. Indirect arrow wrapper calling globalThis.fetch trapped at execution time (ZERO network requests)
+  const wrappedGlobalFetch = (...args) => globalThis.fetch(...args);
+  const dispWrappedFetch = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: wrappedGlobalFetch });
+  await assert.rejects(
+    () => dispWrappedFetch({ id: 'BYPASS-01', testUser: 'probe@proof.invalid' }),
+    /BLOCKED_PENDING_DURABLE_RECOVERY: Indirect, wrapped, or bound real network fetch invocation is strictly blocked/
+  );
+
+  // 3. Mutable _isHostedNetworkDispatcher property cannot be tampered to false (non-writable)
+  const hostedDisp = createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: async () => ({ status: 200 }) });
+  assert.throws(() => { hostedDisp._isHostedNetworkDispatcher = false; }, TypeError);
+
+  // 4. Wrapping hostedDispatcher in an untagged arrow wrapper CANNOT bypass runHostedProbeRunner durable recovery gate!
+  const untaggedWrapper = (item, opts) => hostedDisp(item, opts);
+  await assert.rejects(
+    () => runHostedProbeRunner({
+      projectRef: HARDCODED_TEMP_REF,
+      argv: ['--live'],
+      env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+      mockDispatcher: untaggedWrapper,
+      adminClient: defaultMockAdminClient,
+      selectedProbeIds: ['BYPASS-01']
+    }),
+    /BLOCKED_PENDING_DURABLE_RECOVERY/
   );
 });

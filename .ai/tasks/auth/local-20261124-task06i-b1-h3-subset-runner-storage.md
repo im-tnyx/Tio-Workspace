@@ -1,6 +1,6 @@
 # Task 06I-B1-H3 — Controlled Subset Dispatch & Run-Scoped Storage Implementation
 
-**Task ID:** `06I-B1-H3` (Revision `R1`)<br>
+**Task ID:** `06I-B1-H3` (Revision `R2`)<br>
 **Creation Date:** 2026-11-24<br>
 **Revision Date:** 2026-11-25<br>
 **Author:** Santosh Jangid (`im-tnyx`)<br>
@@ -8,12 +8,12 @@
 **Branch:** `feat/task06i-b1-h3-subset-runner-storage`<br>
 **Base:** `main` at `4569479e8fe2caa6659fe1cc6c7a484596a01bbc` (PR #43 merge commit)<br>
 **PR Reference:** https://github.com/im-tnyx/Tio-Workspace/pull/44<br>
-**Reviewed HEAD:** `bc1f1dd3402faf6559517412fe3215cc3c7da4ad`<br>
+**Prior Audited HEAD:** `62e32e9f9751c0fb8212d240484843b593403cdd`<br>
 **Cost Ceiling:** $0.00 (Free-Tier Only)<br>
 **Mode:** Local Implementation, Mocked Transport Tests & Offline Verification ONLY<br>
 **Hosted LIVE Dispatch:** **NOT AUTHORIZED**<br>
 **Production Real Auth:** **STRICT NO-GO**<br>
-**Readiness Status:** `SUBSET_RUNNER_IMPLEMENTED`, `RUN_SCOPED_STORAGE_IMPLEMENTED`, `CLEANUP_ORDERING_ENFORCED`, `R1_FAIL_CLOSED_DISPATCH_ENFORCED`, `R1_STORAGE_OWNERSHIP_VERIFIED`, `LIVE_DISPATCH_BLOCKED_PENDING_DURABLE_RECOVERY`
+**Readiness Status:** `IMPLEMENTED_OFFLINE_TESTED / BLOCKED` (`BLOCKED_PENDING_DURABLE_RECOVERY`, `RUN_CREATED_SEED_SUPPORT_NOT_IMPLEMENTED`, `PROVIDER_PRECONDITION_MISSING` for RPC/Testbed deployment)
 
 ---
 
@@ -39,7 +39,7 @@ Following the completion and squash merge of Task 06I-B1-H2 via PR #43 (commit `
 |---|---|---|
 | **PR #43 Status** | **MERGED** | Squash merge at `4569479e8fe2caa6659fe1cc6c7a484596a01bbc` |
 | **Current Branch** | `feat/task06i-b1-h3-subset-runner-storage` | Branched directly from `main` HEAD |
-| **Task 06I Unit Tests** | **168/168 PASS** | `node --test experiments/task06i/*.test.mjs` (including Tests 90–96) |
+| **Task 06I Unit Tests** | **172/172 PASS** | `node --test experiments/task06i/*.test.mjs` (104 runner tests including Tests 90–100 + 68 parity/evaluator tests) |
 | **PostgreSQL Contract Parity** | **POSTGRES_VERIFIED** (18/18) | `node experiments/task06i/sql-contract-parity.mjs` on PostgreSQL 17.11 |
 | **Task 06H Local Suite** | **115/115 PASS** | `node --test experiments/task06h/*.test.mjs` |
 | **Repository Verification** | **PASS** | `npm run verify` (tokens guard, tsc, eslint max-warnings=0, 22 shell tests) |
@@ -177,76 +177,125 @@ Following comprehensive independent reviews on PR #44 by `@im-tio` (Codex) and G
 - **Review Thread:** `PRRT_kwDOVtCmZc67grU_` (Bugbot Med)
 - **Remediation:**
   1. `provisionStorageProbeFixture` enforces non-null active `TestRunInventory` instance matching `runId` and target project.
-  2. Throws `STORAGE_INVENTORY_REQUIRED` if inventory is missing, mismatched, or already finalized.
+  2. Throws `STORAGE_INVENTORY_REQUIRED` / `STORAGE_PROVISIONING_FAILED` if inventory is missing, mismatched, or already finalized.
+
+---
+
+## 3.7 Revision R2: Provider-Compatible Storage Evidence, Residual Cleanup & Real-Network Isolation
+
+Inspected upstream Supabase Storage (`supabase/storage` tag `v1.98.9`: `getObject.ts`, `renderer.ts`, `getObjectInfo.ts`, `info.ts`, `createObject.ts`, `error-handler.ts`, `storage-error.ts`, `codes.ts`, `uploader.ts`, `database/pg.ts`) and Supabase Storage Ownership documentation to resolve all 5 open review findings on commit `62e32e9f9751c0fb8212d240484843b593403cdd`:
+
+### R2-01: Provider-Compatible Authoritative Ownership Metadata Lookup
+- **Review Threads:** `PRRT_kwDOVtCmZc67iBrf` (Codex P2), `PRRT_kwDOVtCmZc67iC_Q` (Bugbot High)
+- **Upstream Contract Finding:** Authenticated `GET /storage/v1/object/authenticated/:bucket/*` (`getObject.ts` + `renderer.ts`) returns standard HTTP headers (`ETag`, `Content-Type`, `Last-Modified`, `Content-Length`, `X-Robots-Tag`) and raw bytes; it NEVER returns `x-owner-id`, `owner_id`, or `x-supabase-owner`. Neither `GET /object/info/authenticated` (`info.ts`) nor `POST /object/list` returns `owner_id`. Authoritative `owner_id` resides in `storage.objects.owner_id`.
+- **Remediation:**
+  1. Removed unsupported download-header ownership checks and stripped all fabricated `x-owner-id` download headers from positive test fixtures.
+  2. Defined narrowly-scoped server-side lookup function `public.task06i_lookup_storage_object_owner(p_bucket_id text, p_object_name text)` in `experiments/task06i/sql/testbed-fixtures.sql` (`SECURITY DEFINER`, `SET search_path = ''`, restricted strictly to `'task06i_probe_bucket'`, `REVOKE ALL FROM PUBLIC, anon, authenticated; GRANT EXECUTE TO service_role;`). Storage schema remains unexposed and RLS remains strict.
+  3. Added `adminClient.getStorageObjectOwnership(bucket, path, { timeoutMs })` calling `POST /rest/v1/rpc/task06i_lookup_storage_object_owner` with `service_role`. Missing RPC/metadata interface retains blocking prerequisite `BLOCKED_PENDING_OWNERSHIP_METADATA_INTERFACE` / `PROVIDER_PRECONDITION_MISSING`.
+  4. Verified authenticated seed user affirmatively against provider `GET /auth/v1/user` before any Storage mutation (never trusting unverified decoded JWT `sub` alone).
+  5. Verified downloaded payload bytes via `Buffer.compare` and SHA-256 digest, and correlated `projectRef`, `bucket_id`, exact object `name`, provider object `id`, and `owner_id` before granting `RUN_CREATED_VERIFIED`.
+
+### R2-02: Residual Obligation Preservation & State Transition Matrix
+- **Review Threads:** `PRRT_kwDOVtCmZc67iBrk` (Codex P2), `PRRT_kwDOVtCmZc67iC_D` (Cursor Bugbot High)
+- **Remediation:** Eliminated silent `CREATION_FAILED` skip in `executeCleanup()`, made successful POST immediately transition to committed residual state (`RESIDUAL_OWNERSHIP_BLOCKED`, `hasCommittedUpload: true`), quarantined non-409 ambiguous POST failures (e.g., HTTP 500, timeout, reset) as `CREATION_INDETERMINATE`, enforced monotonic state transitions, tracked late settlements during/after cleanup, and checked `storageFixtures` in both `hasCleanupEligibleItems` and `isClean()`.
+
+| Provider Outcome | Required Lifecycle State (`STORAGE_LIFECYCLE_STATE`) | Deletion Eligible | Cleanup Behavior |
+|---|---|---|---|
+| Request never dispatched (`neverDispatched: true`) | `DEFINITIVE_NON_CREATION` | No | Skipped safely; 0 deletions |
+| Documented existing-object conflict (HTTP 409 or structured 400/409 `KeyAlreadyExists`) | `CONFLICT_EXISTING_PRESERVED` | No | Preserved untouched; 0 deletions |
+| Dispatched POST returned 5xx / timeout / reset / ambiguous error | `CREATION_INDETERMINATE` | No | Quarantined; no blind delete; blocks user delete & completion |
+| POST 200/201 succeeded, verification GET/bytes/owner check failed | `RESIDUAL_OWNERSHIP_BLOCKED` | No | Obligation preserved (`hasCommittedUpload: true`); no blind delete; blocks user delete & completion |
+| Affirmative `/auth/v1/user` + bytes/digest + `storage.objects.owner_id` correlation | `RUN_CREATED_VERIFIED` | Yes | Authorized for Storage-first deletion |
+| Delete requested, absence timeout / 5xx / 403 / ambiguous 400 | `CLEANUP_INDETERMINATE` | No completion | Halts user delete (`STORAGE_CLEANUP_FAILURE_CASCADE_PREVENTED`); recoverable |
+| Delete requested, object still present (HTTP 200) | `RESIDUAL_BLOCKED` | No completion | Halts user delete (`STORAGE_CLEANUP_FAILURE_CASCADE_PREVENTED`) |
+| Authoritative absence verified & cleanup operations settled | `DELETION_VERIFIED` | Completed | Verified clean (`deletedStorage` counted; user deletion permitted) |
+
+### R2-03: Normalized Provider-Aware Storage Absence & Conflict Evidence
+- **Review Thread:** `PRRT_kwDOVtCmZc67iBrt` (Codex P2)
+- **Upstream Contract Finding:** `supabase/storage` (`v1.98.9` `error-handler.ts`, `renderer.ts`, `storage-error.ts`) renders non-500 errors with transport HTTP `400` and JSON `{ statusCode: '404', code: 'NoSuchKey', error: 'Not found', message: 'The resource was not found' }`. `createHostedAdminClient.getStorageObject()` previously discarded response bodies.
+- **Remediation:**
+  1. Implemented shared `parseStorageErrorEnvelope(res)` and `normalizeStorageObjectResponse()` classifying `OBJECT_PRESENT`, `OBJECT_ABSENT`, `BUCKET_MISSING`, `CONFLICT_EXISTS`, `UNAUTHORIZED_OR_FORBIDDEN`, `RATE_LIMITED_OR_SERVER_ERROR`, `MALFORMED_RESPONSE`, `TRANSPORT_FAILURE`, and `INDETERMINATE`.
+  2. Accepts HTTP 404 (not `NoSuchBucket`/auth-masked) AND documented structured HTTP 400 (`statusCode === '404'` AND `code === 'NoSuchKey'`) under valid project, bucket, path, and authorized context. Rejects generic HTTP 400, logical 404 with wrong/missing code, 401/403, permission-masked responses, 429/500, malformed envelopes, and timeouts.
+  3. Wired consistently across pre-upload collision check, `createHostedAdminClient.getStorageObject()`, `verifyStorageObjectAbsenceDetailed()`, and `SESSION-05`.
+
+### R2-04: Structural Real-Network Fetch Isolation & R1 Bypass Hardening
+- Replaced mutable property-only and `=== globalThis.fetch` checks with `assertOfflineMockTransport()` (rejecting `globalThis.fetch`, native `[native code]`, and `fetch.bind(...)`), `runWithBlockedRealFetch()` (dynamically trapping indirect/wrapped `globalThis.fetch` calls inside `createHostedDispatcher`, `createHostedAdminClient`, `provisionStorageProbeFixture`, and `runHostedProbeRunner`), `HOSTED_NETWORK_DISPATCHERS` private `WeakSet`, non-writable `_isHostedNetworkDispatcher`, and `AsyncLocalStorage` dispatch-context enforcement (catching wrapped `(item, opts) => hostedDispatcher(...)` and rethrowing `BLOCKED_PENDING_DURABLE_RECOVERY` across all runner/dispatcher catch blocks).
+- *Residual containment boundary documented honestly:* In-process JavaScript closures capturing `globalThis.fetch` prior to module load or direct `node:http`/`node:https`/`undici` calls require OS/container network isolation (`--allow-net=none`) if untrusted code runs in-process.
 
 ---
 
 ## 4. Traceability Against H2-R3 Acceptance Matrix
 
-| Criterion | Description | Task 06I-B1-H3 Status | Verification Test |
+| Criterion | Description | Task 06I-B1-H3-R2 Status | Verification Test |
 |---|---|---|---|
-| **AC-01** | Run-created seed owns Storage object | **IMPLEMENTED** | Test 93 (`provisionStorageProbeFixture`) |
-| **AC-02** | Storage object deletion strictly precedes Auth user deletion | **IMPLEMENTED** | Test 94 (`executeCleanup` ordering check) |
-| **AC-03** | Storage deletion failure prevents Auth user deletion | **IMPLEMENTED** | Test 94 (`STORAGE_CLEANUP_FAILURE_CASCADE_PREVENTED`) |
-| **AC-04** | Collision detection rejects pre-existing object key | **IMPLEMENTED** | Test 93 (`STORAGE_FIXTURE_COLLISION_DETECTED`) |
-| **AC-05** | Interrupted run before upload leaves 0 residual storage | **IMPLEMENTED** | Test 93 & Test 94 |
-| **AC-06** | Interrupted run after upload before persistence quarantined | **IMPLEMENTED** | Test 93 (write-ahead tracking) |
-| **AC-07** | Storage object with unknown ownership quarantined | **IMPLEMENTED** | Test 93 & Test 94 |
-| **AC-08** | Reusable pre-existing seed user never deleted | **IMPLEMENTED** | Test 88, 89, 94 (`protectSeedIdentity`) |
-| **AC-09** | Run-created seed user never reclassified as pre-existing | **IMPLEMENTED** | Test 88, 94 |
-| **AC-10** | Seed user with unknown ownership blocks destructive action | **IMPLEMENTED** | Test 88, 89 |
-| **AC-11** | Seed password restore blocks on pending uncompleted mutation | **IMPLEMENTED** | Test 78, 79, 86 |
-| **AC-12** | Operator recovery verifies object absence before user delete | **IMPLEMENTED** | Test 94 (Step 3 404 absence check) |
+| **AC-01** | Run-created seed owns Storage object | **IMPLEMENTED (OFFLINE TESTED)** | Tests 93, 97, 100 (`provisionStorageProbeFixture` + `storage.objects.owner_id`) |
+| **AC-02** | Storage object deletion strictly precedes Auth user deletion | **IMPLEMENTED (OFFLINE TESTED)** | Tests 94, 98, 100 (`executeCleanup` ordering proof) |
+| **AC-03** | Storage deletion failure prevents Auth user deletion | **IMPLEMENTED (OFFLINE TESTED)** | Tests 94, 96, 98, 99 (`STORAGE_CLEANUP_FAILURE_CASCADE_PREVENTED`) |
+| **AC-04** | Collision detection rejects pre-existing object key | **IMPLEMENTED (OFFLINE TESTED)** | Tests 93, 96, 99 (`STORAGE_COLLISION_DETECTED` + normalized `NoSuchKey`) |
+| **AC-05** | Interrupted run before upload leaves 0 residual storage | **IMPLEMENTED (OFFLINE TESTED)** | Tests 93, 98 (`DEFINITIVE_NON_CREATION` / `neverDispatched`) |
+| **AC-06** | Interrupted run after upload before verification quarantined | **IMPLEMENTED (OFFLINE TESTED)** | Tests 97, 98 (`CREATION_INDETERMINATE` / `RESIDUAL_OWNERSHIP_BLOCKED`) |
+| **AC-07** | Storage object with unknown ownership quarantined | **IMPLEMENTED (OFFLINE TESTED)** | Tests 97, 98 (quarantined without blind delete; blocks completion) |
+| **AC-08** | Reusable pre-existing seed user never deleted | **IMPLEMENTED (OFFLINE TESTED)** | Tests 88, 89, 94, 100 (`protectSeedIdentity`) |
+| **AC-09** | Run-created seed user never reclassified as pre-existing | **IMPLEMENTED (OFFLINE TESTED)** | Tests 88, 94 |
+| **AC-10** | Seed user with unknown ownership blocks destructive action | **IMPLEMENTED (OFFLINE TESTED)** | Tests 88, 89 |
+| **AC-11** | Seed password restore blocks on pending uncompleted mutation | **IMPLEMENTED (OFFLINE TESTED)** | Tests 78, 79, 86, 98 (`lateSettlementsDuringCleanup`) |
+| **AC-12** | Operator recovery verifies object absence before user delete | **IMPLEMENTED (OFFLINE TESTED)** | Tests 94, 98, 99, 100 (`verifyStorageObjectAbsenceDetailed` HTTP 404 & 400 `NoSuchKey`) |
 
 ---
 
 ## 5. Verification Test Suite Results
 
 ```powershell
-# 1. Task 06I Security Test Suite (100 runner tests + 68 parity/evaluator tests = 168 total)
-node --test experiments/task06i/*.test.mjs
-# Result: 168 passed, 0 failed, 0 skipped (duration: ~19.2s)
-# Includes Test 96 with 26 sub-assertions verifying all 8 R1 remediation areas
+# 1. Hosted Probe Runner Suite
+node --test experiments/task06i/hosted-probe-runner.test.mjs
+# Result: 104 passed, 0 failed, 0 skipped
 
-# 2. PostgreSQL Contract Parity Check
+# 2. Task 06I Security Test Suite (104 runner tests + 68 parity/evaluator tests = 172 total)
+node --test experiments/task06i/*.test.mjs
+# Result: 172 passed, 0 failed, 0 skipped
+# Includes Tests 96-100 verifying R1 closures, R2-01, R2-02, R2-03, unified E2E, and R1 bypass hardening
+
+# 3. PostgreSQL Contract Parity Check
 node experiments/task06i/sql-contract-parity.mjs
 # Result: Status POSTGRES_VERIFIED (18/18 cases matched on PostgreSQL 17.11)
 
-# 3. Task 06H Isolated Auth Integration Suite
+# 4. Task 06H Isolated Auth Integration Suite
 node --test experiments/task06h/*.test.mjs
-# Result: 115 passed, 0 failed, 0 skipped (duration: ~116ms)
+# Result: 115 passed, 0 failed, 0 skipped
 
-# 4. Repository Verification Suite
+# 5. Repository Verification Suite
 npm run verify
-# Result: tokens guard pass, tsc --noEmit pass, eslint max-warnings=0 pass, tests 22 pass
+# Result: tokens guard pass, tsc --noEmit pass, eslint max-warnings=0 pass, 22 shell tests pass
 
-# 5. Git Diff Check
+# 6. Git Diff Checks
 git diff --check
-# Result: Completely clean (0 errors)
+git diff --check origin/main...HEAD
+# Result: Clean (0 errors)
 ```
 
 ---
 
-## 6. Security Gates & Invariants Status
+## 6. Security Gates, Remaining Prerequisites & Final Verdict
 
-| Gate / Invariant | Status | Enforcement Mechanism |
+| Gate / Invariant | Status | Notes / Prerequisite |
 |---|---|---|
-| **Controlled Subset Execution** | **IMPLEMENTED** | Validated probe array, dependency ordering, fail-closed validation |
-| **Run-Scoped Storage Fixture** | **IMPLEMENTED** | Entropy-backed runId, collision check, no-upsert, inventory tracking |
-| **Storage-First Cleanup Ordering** | **IMPLEMENTED** | Storage deletion strictly precedes user deletion; failure halts user delete |
-| **Durable Crash Recovery Gate** | **PRESERVED** | Live dispatch halts with `BLOCKED_PENDING_DURABLE_RECOVERY` |
-| **Seed Identity Lifecycle** | **PRESERVED** | Option A (reusable seed) supported; Option B disposable seed gated |
-| **Hosted LIVE Execution** | **NOT AUTHORIZED** | Runner defaults unconditionally to `DRY_RUN`; 0 network calls dispatched |
+| **H3 Subset Runner** | **IMPLEMENTED_OFFLINE_TESTED / BLOCKED** | Blocked from live dispatch pending Durable Recovery |
+| **H3 Storage Lifecycle** | **IMPLEMENTED_OFFLINE_TESTED / BLOCKED** | Blocked pending Durable Recovery & `testbed-fixtures.sql` deployment (`task06i_lookup_storage_object_owner`) |
+| **Durable Recovery** | **NOT IMPLEMENTED** | Blocks live hosted execution (`BLOCKED_PENDING_DURABLE_RECOVERY`) |
+| **Run-Created Seed Support** | **NOT IMPLEMENTED** | Option B disposable seed gated; Option A pre-existing seed preserved |
+| **Hosted Verification** | **0/18** | Zero live probes executed |
+| **Hosted LIVE Execution** | **NOT AUTHORIZED** | Runner defaults unconditionally to `DRY_RUN`; real/bound/wrapped fetch trapped |
 | **Production Real Auth** | **STRICT NO-GO** | Pinned GoTrue vulnerabilities remain; production gates strictly locked |
-| **Cost Ceiling ($0.00)** | **HONORED** | Zero paid services, zero cost incurred |
+| **Cost Ceiling ($0.00)** | **HONORED** | Zero paid services, 0 hosted mutations |
 | **Protected Boundaries** | **HONORED** | `bsfwzvgynwriswapxpsp` (REAL) and `oykupyiitspujzpwwvuj` (Tio-world) immune |
 
 ---
 
 ## 7. Next Actions
 
-1. Commit all H3-R1 implementation, test, and documentation files to `feat/task06i-b1-h3-subset-runner-storage`.
+1. Commit all H3-R2 code, SQL fixture specification, tests, and documentation to `feat/task06i-b1-h3-subset-runner-storage`.
 2. Push branch to `origin feat/task06i-b1-h3-subset-runner-storage`.
-3. Post comprehensive resolution replies to all 11 review threads on PR #44 referencing the exact commit SHA, and resolve the threads via GraphQL.
-4. Request re-review from independent reviewer `@im-tio` on PR #44.
-5. Maintain strictly local execution mode; wait for owner instructions and review resolution before any subsequent steps.
+3. Verify remote HEAD and required CI checks.
+4. Reply individually to all 5 unresolved PR #44 review threads (`PRRT_kwDOVtCmZc67iBrf`, `PRRT_kwDOVtCmZc67iC_Q`, `PRRT_kwDOVtCmZc67iBrk`, `PRRT_kwDOVtCmZc67iC_D`, `PRRT_kwDOVtCmZc67iBrt`) and resolve demonstrably fixed threads.
+5. Request independent re-review on the new HEAD from `im-tio` (and Codex/Bugbot where configured).
+6. Stop before merge; wait for owner authorization.
