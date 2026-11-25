@@ -1,6 +1,6 @@
 # Task 06I-B1-H3 — Controlled Subset Dispatch & Run-Scoped Storage Implementation
 
-**Task ID:** `06I-B1-H3` (Revision `R3`)<br>
+**Task ID:** `06I-B1-H3` (Revision `R4`)<br>
 **Creation Date:** 2026-11-24<br>
 **Revision Date:** 2026-11-25<br>
 **Author:** Santosh Jangid (`im-tnyx`)<br>
@@ -8,7 +8,7 @@
 **Branch:** `feat/task06i-b1-h3-subset-runner-storage`<br>
 **Base:** `main` at `4569479e8fe2caa6659fe1cc6c7a484596a01bbc` (PR #43 merge commit)<br>
 **PR Reference:** https://github.com/im-tnyx/Tio-Workspace/pull/44<br>
-**Prior Audited HEAD:** `d9bc80d3e49bbab863f1a5fdecfc0fe0c62843ba`<br>
+**Prior Audited HEAD:** `42b87f04dd3d4ed5876bad1863d60f991d75220b`<br>
 **Cost Ceiling:** $0.00 (Free-Tier Only)<br>
 **Mode:** Local Implementation, Mocked Transport Tests & Offline Verification ONLY<br>
 **Hosted LIVE Dispatch:** **NOT AUTHORIZED**<br>
@@ -245,21 +245,37 @@ Inspected upstream Supabase Storage (`supabase/storage` tag `v1.98.9`: `getObjec
 
 ---
 
+### Revision R4 — Trusted Offline Execution Boundary & Deterministic Fixture Integrity Closure
+
+#### Contracts Closed in R4
+
+1. **R4-01 (`PRRT_kwDOVtCmZc67v-7-` Codex P1) — Offline Execution Trust Boundary & Immutable Run-Bound Admin Adapters:**
+   - **Arbitrary Ownership Lookup Closure:** `provisionStorageProbeFixture()` strictly rejects any caller-supplied `ownershipLookupFn` (`BLOCKED_PENDING_DURABLE_RECOVERY`) before inventory operation registration, fixture reservation, `/auth/v1/user`, or any Storage GET/POST mutation.
+   - **Registered Admin Adapter Capability Model:** `createHostedAdminClient()` accepts optional `runId` (`validateRunId`), freezes the returned adapter (`Object.freeze(client)`), and registers immutable capability bindings `{ projectRef, runId, rawTransportFetch, capabilities }` in module-private `WeakMap` `TRUSTED_ADMIN_CLIENTS`.
+   - **Strict Pre-Mutation Validation (`assertTrustedAdminClient`):** `provisionStorageProbeFixture()` requires either a `TRUSTED_ADMIN_CLIENTS`-registered, TEMP-bound, `runId`-matching, transport-verified `adminClient` OR `serviceRoleKey` (used to construct a run-bound `createHostedAdminClient`), plus a registered `fetchFn` (`TRUSTED_DETERMINISTIC_TRANSPORTS`). Unregistered objects, forged markers, shallow clones, `Object.create` overrides, `Proxy` wrappers, cross-project adapters, and cross-run/unbound adapters are rejected before any mutation or sentinel call (`Tests 108, 112`). `TestRunInventory.executeCleanup()` and `verifyStorageObjectAbsenceDetailed()` similarly verify `TRUSTED_ADMIN_CLIENTS` project/run/method integrity and reject forged trusted markers.
+   - **Executable Dependency Audit:** Audited dispatchers (`createHostedDispatcher`: `fetchFn` gated via `assertOfflineMockTransport`, registered in `HOSTED_NETWORK_DISPATCHERS`, blocked by `runHostedProbeRunner`), Admin clients (`createHostedAdminClient`: `fetchFn` gated via `assertOfflineMockTransport`, `Object.freeze` + `TRUSTED_ADMIN_CLIENTS` `WeakMap`), ownership lookup (`ownershipLookupFn` rejected, routed exclusively through `trustedAdminMeta.capabilities.getStorageObjectOwnership` inside `runWithBlockedRealFetch`), cleanup/absence helpers (`executeCleanup`, `verifyStorageObjectAbsenceDetailed`), provisioning (`provisionStorageProbeFixture`), transport specs (`validateDeclarativeFixtureValue` rejects callbacks/accessors/symbols/cycles/non-plain instances), and CLI `--live` path (`process.exit(1)` fail-closed `BLOCKED_PENDING_DURABLE_RECOVERY`). Application-level adapter guards complement (and do not replace) OS/container network isolation (`docker --network none`).
+2. **R4-02 (`PRRT_kwDOVtCmZc67v-xG` Bugbot Med) — Coordinator Lifecycle Contract (One State Per Target):**
+   - `createFetchIsolationCoordinator(target = globalThis)` stores one shared `{ activeLeases, baselineFetch }` record per target inside module-private `WeakMap` `TARGET_ISOLATION_STATES`. Multiple handles targeting the same object (`globalThis` or isolated targets) share the exact lease count and single baseline `fetch`, restoring `target.fetch` only on the final `1 -> 0` lease release, with idempotent release handles and full independence across distinct targets (`Test 109`).
+3. **R4-03 (`PRRT_kwDOVtCmZc67v-xA` Bugbot Med) — Barrier Termination Contract:**
+   - `createOfflineBarrier()` enforces positive-integer target validation in `waitForArrivals()` (`RangeError` `INVALID_BARRIER_ARRIVAL_TARGET`), resolves already-satisfied targets normally, settles all pending unsatisfied `waitForArrivals()` waiters and post-release `waitForArrivals()` calls immediately with `BARRIER_RELEASED_BEFORE_ARRIVALS`, gives pre-aborted `AbortSignal`s deterministic `AbortError` priority, detaches all `abort` listeners on settle/release/abort races, and preserves idempotent `release()` (`Test 110`).
+4. **R4-04 (`PRRT_kwDOVtCmZc67v-xN` Bugbot Low) — Binary Fixture Integrity & Declarative Transport Contract:**
+   - Replaced aliased `Buffer.from(val.buffer, val.byteOffset, val.byteLength)` in `clonePlainData()` with `cloneBinaryViewToIndependentBuffer()` (exact-slice copy into a dedicated standalone `Uint8Array`/`Buffer`), backed up by `toIndependentBytesBuffer()` and fresh `ArrayBuffer` copies per `res.arrayBuffer()` call in `buildDeterministicResponse()`. Source mutations (`Buffer`, `Uint8Array`, `ArrayBuffer`, nonzero-offset `DataView`, pooled sliced `Buffer`) and caller mutations to returned `ArrayBuffer`s leave compiled fixture bytes and SHA-256 checksums unaltered (`Test 111`). Tightened `validateDeclarativeFixtureValue()` to audit non-enumerable/array getters (`Object.getOwnPropertyNames` + `desc.value`), symbols (`Object.getOwnPropertySymbols`), and circular references (`WeakSet`).
+
 ## 4. Traceability Against H2-R3 Acceptance Matrix
 
-| Criterion | Description | Task 06I-B1-H3-R3 Status | Verification Test |
+| Criterion | Description | Task 06I-B1-H3-R4 Status | Verification Test |
 |---|---|---|---|
-| **AC-01** | Run-created seed owns Storage object | **IMPLEMENTED (OFFLINE TESTED)** | Tests 93, 97, 100, 103 (`reserveStorageFixture` + `storage.objects.owner_id`) |
-| **AC-02** | Storage object deletion strictly precedes Auth user deletion | **IMPLEMENTED (OFFLINE TESTED)** | Tests 94, 98, 100, 104 (`executeCleanup` ordering + live pre-user audit) |
-| **AC-03** | Storage deletion failure prevents Auth user deletion | **IMPLEMENTED (OFFLINE TESTED)** | Tests 94, 96, 98, 99, 106 (`STORAGE_CLEANUP_FAILURE_CASCADE_PREVENTED`) |
+| **AC-01** | Run-created seed owns Storage object | **IMPLEMENTED (OFFLINE TESTED)** | Tests 93, 97, 100, 103, 108 (`reserveStorageFixture` + run-bound `createHostedAdminClient` + `storage.objects.owner_id`) |
+| **AC-02** | Storage object deletion strictly precedes Auth user deletion | **IMPLEMENTED (OFFLINE TESTED)** | Tests 94, 98, 100, 104, 112 (`executeCleanup` ordering + live pre-user audit) |
+| **AC-03** | Storage deletion failure prevents Auth user deletion | **IMPLEMENTED (OFFLINE TESTED)** | Tests 94, 96, 98, 99, 106, 112 (`STORAGE_CLEANUP_FAILURE_CASCADE_PREVENTED`) |
 | **AC-04** | Collision detection rejects pre-existing object key | **IMPLEMENTED (OFFLINE TESTED)** | Tests 93, 96, 99, 105 (`STORAGE_COLLISION_DETECTED` + text/binary 200/201/206 `OBJECT_PRESENT` & `NoSuchKey`) |
-| **AC-05** | Interrupted run before upload leaves 0 residual storage | **IMPLEMENTED (OFFLINE TESTED)** | Tests 93, 98, 103 (`DEFINITIVE_NON_CREATION` / `neverDispatched`) |
-| **AC-06** | Interrupted run after upload before verification quarantined | **IMPLEMENTED (OFFLINE TESTED)** | Tests 97, 98, 103, 104 (`CREATION_INDETERMINATE` / `RESIDUAL_OWNERSHIP_BLOCKED`) |
-| **AC-07** | Storage object with unknown ownership quarantined | **IMPLEMENTED (OFFLINE TESTED)** | Tests 97, 98, 103 (quarantined without blind delete; blocks completion) |
+| **AC-05** | Interrupted run before upload leaves 0 residual storage | **IMPLEMENTED (OFFLINE TESTED)** | Tests 93, 98, 103, 108 (`DEFINITIVE_NON_CREATION` / pre-mutation boundary rejection) |
+| **AC-06** | Interrupted run after upload before verification quarantined | **IMPLEMENTED (OFFLINE TESTED)** | Tests 97, 98, 103, 104, 112 (`CREATION_INDETERMINATE` / `RESIDUAL_OWNERSHIP_BLOCKED`) |
+| **AC-07** | Storage object with unknown ownership quarantined | **IMPLEMENTED (OFFLINE TESTED)** | Tests 97, 98, 103, 112 (quarantined without blind delete; blocks completion) |
 | **AC-08** | Reusable pre-existing seed user never deleted | **IMPLEMENTED (OFFLINE TESTED)** | Tests 88, 89, 94, 100 (`protectSeedIdentity`) |
 | **AC-09** | Run-created seed user never reclassified as pre-existing | **IMPLEMENTED (OFFLINE TESTED)** | Tests 88, 94 |
 | **AC-10** | Seed user with unknown ownership blocks destructive action | **IMPLEMENTED (OFFLINE TESTED)** | Tests 88, 89 |
-| **AC-11** | Seed password restore blocks on pending uncompleted mutation | **IMPLEMENTED (OFFLINE TESTED)** | Tests 78, 79, 86, 98, 104 (`lateSettlementsDuringCleanup` & concurrent quiesce) |
+| **AC-11** | Seed password restore blocks on pending uncompleted mutation | **IMPLEMENTED (OFFLINE TESTED)** | Tests 78, 79, 86, 98, 104, 112 (`lateSettlementsDuringCleanup` & concurrent quiesce) |
 | **AC-12** | Operator recovery verifies object absence before user delete | **IMPLEMENTED (OFFLINE TESTED)** | Tests 94, 98, 99, 100, 106 (`verifyStorageObjectAbsenceDetailed` HTTP 404 & 400 `NoSuchKey`) |
 
 ---
@@ -269,13 +285,13 @@ Inspected upstream Supabase Storage (`supabase/storage` tag `v1.98.9`: `getObjec
 ```powershell
 # 1. Hosted Probe Runner Suite (Host + Docker node:24-bookworm --network none)
 node --test experiments/task06i/hosted-probe-runner.test.mjs
-# Result: 111 passed, 0 failed, 0 skipped (both host Windows Node.js & Docker node:24-bookworm --network none)
-# Inside --network none: arbitrary callback fetchFn rejected fail-closed with BLOCKED_PENDING_DURABLE_RECOVERY; raw fetch('https://example.com') failed at OS level (EAI_AGAIN)
+# Result: 116 passed, 0 failed, 0 skipped (both Windows host Node.js & Docker node:24-bookworm --network none)
+# Includes Tests 108-112 verifying R4-01..R4-04 and Unified Offline Trust Boundary Acceptance
+# Inside --network none: raw fetch('https://example.com') failed at OS level (EAI_AGAIN)
 
-# 2. Task 06I Security Test Suite (111 runner tests + 68 parity/evaluator tests = 179 total)
+# 2. Task 06I Security Test Suite (116 runner tests + 68 parity/evaluator tests = 184 total)
 node --test experiments/task06i/*.test.mjs
-# Result: 179 passed, 0 failed, 0 skipped
-# Includes Tests 101-107 verifying R3-01..R3-06 and Sec 8 consolidated matrix
+# Result: 184 passed, 0 failed, 0 skipped
 
 # 3. PostgreSQL Contract Parity Check + SQL RPC Verification (public.ecr.aws/supabase/postgres:17.11.0.018 --network none)
 node experiments/task06i/sql-contract-parity.mjs
@@ -295,6 +311,7 @@ npm run verify
 
 # 6. Git Diff Checks
 git diff --check
+git diff --check origin/main...HEAD
 # Result: Clean (0 errors)
 ```
 
@@ -309,7 +326,7 @@ git diff --check
 | **Durable Recovery** | **NOT IMPLEMENTED** | Blocks live hosted execution (`BLOCKED_PENDING_DURABLE_RECOVERY`) |
 | **Run-Created Seed Support** | **NOT IMPLEMENTED** | Option B disposable seed gated; Option A pre-existing seed preserved |
 | **Hosted Verification** | **0/18** | Zero live probes executed |
-| **Hosted LIVE Execution** | **NOT AUTHORIZED** | Runner defaults unconditionally to `DRY_RUN`; real/bound/wrapped fetch trapped |
+| **Hosted LIVE Execution** | **NOT AUTHORIZED** | Runner defaults unconditionally to `DRY_RUN`; real/bound/wrapped fetch & arbitrary ownership callbacks blocked |
 | **Production Real Auth** | **STRICT NO-GO** | Pinned GoTrue vulnerabilities remain; production gates strictly locked |
 | **Cost Ceiling ($0.00)** | **HONORED** | Zero paid services, 0 hosted mutations |
 | **Protected Boundaries** | **HONORED** | `bsfwzvgynwriswapxpsp` (REAL) and `oykupyiitspujzpwwvuj` (Tio-world) immune |
@@ -318,9 +335,9 @@ git diff --check
 
 ## 7. Next Actions
 
-1. Commit all H3-R3 code, tests, and documentation to `feat/task06i-b1-h3-subset-runner-storage` without AI `Co-Authored-By` trailers.
+1. Review security-sensitive diff (`git diff`), run `git diff --check`, and commit all H3-R4 code, tests, and documentation to `feat/task06i-b1-h3-subset-runner-storage` without AI `Co-Authored-By` trailers.
 2. Push branch to `origin feat/task06i-b1-h3-subset-runner-storage`.
-3. Verify remote HEAD and required CI checks.
-4. Reply individually with exact commit SHA and verification evidence to all 7 unresolved PR #44 review threads (`PRRT_kwDOVtCmZc67vNQ4`, `PRRT_kwDOVtCmZc67vNQ8`, `PRRT_kwDOVtCmZc67vOmm`, `PRRT_kwDOVtCmZc67vOmp`, `PRRT_kwDOVtCmZc67vOmq`, `PRRT_kwDOVtCmZc67vPVB`, `PRRT_kwDOVtCmZc67vPVG`) and resolve all 7 via GraphQL.
-5. Request independent re-review on the new HEAD from `im-tio`, `@codex review`, and Bugbot where configured.
+3. Verify exact new remote HEAD and required CI checks.
+4. Reply individually with exact commit SHA and observed verification evidence to all 4 unresolved PR #44 review threads (`PRRT_kwDOVtCmZc67v-7-`, `PRRT_kwDOVtCmZc67v-xG`, `PRRT_kwDOVtCmZc67v-xA`, `PRRT_kwDOVtCmZc67v-xN`) and resolve all 4 via GraphQL.
+5. Request re-review from `im-tio`, Codex (`@codex review`), and Bugbot where configured.
 6. Stop before merge; wait for explicit owner authorization.

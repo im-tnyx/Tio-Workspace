@@ -25,8 +25,19 @@ const REAL_GLOBAL_FETCH = globalThis.fetch;
 const HOSTED_NETWORK_DISPATCHERS = new WeakSet();
 const TRUSTED_DETERMINISTIC_TRANSPORTS = new WeakSet();
 const TRUSTED_OFFLINE_BARRIERS = new WeakSet();
+const TARGET_ISOLATION_STATES = new WeakMap();
+const TRUSTED_ADMIN_CLIENTS = new WeakMap();
 const RUNNER_LIVE_DISPATCH_CONTEXT = new AsyncLocalStorage();
 const DISPATCHER_CALL_CONTEXT = new AsyncLocalStorage();
+
+const FORGED_TRUSTED_ADMIN_MARKER_KEYS = Object.freeze([
+  '_isTrustedAdminClient',
+  '__trustedAdminClient',
+  '_trustedAdmin',
+  'isTrustedAdminClient',
+  'isTrustedAdmin',
+  '_trustedCapabilities'
+]);
 
 const GLOBAL_FETCH_BLOCK_TRAP = function blockedRealFetchTrap() {
   throw new Error(
@@ -35,37 +46,54 @@ const GLOBAL_FETCH_BLOCK_TRAP = function blockedRealFetchTrap() {
 };
 
 /**
- * Factory for concurrency-safe reference-counted fetch isolation coordinators (R3-01).
- * Overlapping async scopes keep target.fetch trapped until the last active lease settles,
- * without restoring stale trap/fetch snapshots across concurrent lifetimes.
+ * Factory for concurrency-safe reference-counted fetch isolation coordinators (R3-01, R4-02).
+ * Maintains exactly ONE shared coordinator state per target object via WeakMap, preserving a single
+ * baseline fetch and restoring target.fetch only when the final active lease across all handles settles.
  */
 export function createFetchIsolationCoordinator(target = globalThis) {
-  const initialFetch = target.fetch === GLOBAL_FETCH_BLOCK_TRAP ? REAL_GLOBAL_FETCH : target.fetch;
-  let activeLeases = 0;
-  let baselineFetch = initialFetch;
+  if (!target || (typeof target !== 'object' && typeof target !== 'function')) {
+    throw new TypeError('INVALID_ISOLATION_TARGET: createFetchIsolationCoordinator requires an object target');
+  }
 
-  return {
+  let sharedState = TARGET_ISOLATION_STATES.get(target);
+  if (!sharedState) {
+    const initialFetch =
+      target.fetch === GLOBAL_FETCH_BLOCK_TRAP && target === globalThis
+        ? REAL_GLOBAL_FETCH
+        : target.fetch;
+    sharedState = {
+      activeLeases: 0,
+      baselineFetch: initialFetch
+    };
+    TARGET_ISOLATION_STATES.set(target, sharedState);
+  }
+
+  return Object.freeze({
     acquire() {
-      if (activeLeases === 0) {
-        baselineFetch = target.fetch === GLOBAL_FETCH_BLOCK_TRAP ? initialFetch : target.fetch;
+      if (sharedState.activeLeases === 0) {
+        if (target.fetch !== GLOBAL_FETCH_BLOCK_TRAP) {
+          sharedState.baselineFetch = target.fetch;
+        } else if (target === globalThis && sharedState.baselineFetch === undefined) {
+          sharedState.baselineFetch = REAL_GLOBAL_FETCH;
+        }
         target.fetch = GLOBAL_FETCH_BLOCK_TRAP;
       }
-      activeLeases += 1;
+      sharedState.activeLeases += 1;
 
       let released = false;
       return () => {
         if (released) return;
         released = true;
-        if (activeLeases <= 0) {
-          activeLeases = 0;
+        if (sharedState.activeLeases <= 0) {
+          sharedState.activeLeases = 0;
           if (target.fetch === GLOBAL_FETCH_BLOCK_TRAP) {
-            target.fetch = baselineFetch || initialFetch;
+            target.fetch = sharedState.baselineFetch;
           }
           return;
         }
-        activeLeases -= 1;
-        if (activeLeases === 0) {
-          target.fetch = baselineFetch || initialFetch;
+        sharedState.activeLeases -= 1;
+        if (sharedState.activeLeases === 0 && target.fetch === GLOBAL_FETCH_BLOCK_TRAP) {
+          target.fetch = sharedState.baselineFetch;
         }
       };
     },
@@ -81,11 +109,11 @@ export function createFetchIsolationCoordinator(target = globalThis) {
 
     getState() {
       return Object.freeze({
-        activeDepth: activeLeases,
+        activeDepth: sharedState.activeLeases,
         isTrapped: target.fetch === GLOBAL_FETCH_BLOCK_TRAP
       });
     }
-  };
+  });
 }
 
 const GlobalFetchIsolationCoordinator = createFetchIsolationCoordinator(globalThis);
@@ -95,8 +123,8 @@ export function getFetchIsolationDebugState() {
 }
 
 /**
- * Creates a declarative deterministic barrier for offline concurrency testing (R3-02, R3-03, R3-04).
- * Contains no arbitrary network capabilities and can be referenced safely by deterministic fixture transports.
+ * Creates a declarative deterministic barrier for offline concurrency testing (R3-02, R3-03, R3-04, R4-03).
+ * Contains no arbitrary network capabilities and settles both wait() and waitForArrivals() waiters on release.
  */
 export function createOfflineBarrier(name = 'offline-barrier') {
   const cleanName = typeof name === 'string' && name.trim() ? name.trim() : 'offline-barrier';
@@ -104,6 +132,27 @@ export function createOfflineBarrier(name = 'offline-barrier') {
   let arrivedCount = 0;
   const waiters = new Set();
   const arrivalWaiters = new Set();
+
+  function detachAbort(entry) {
+    if (entry.signal && entry.onAbort && typeof entry.signal.removeEventListener === 'function') {
+      entry.signal.removeEventListener('abort', entry.onAbort);
+    }
+    entry.onAbort = null;
+  }
+
+  function createAbortError() {
+    const abortErr = new Error('The operation was aborted');
+    abortErr.name = 'AbortError';
+    return abortErr;
+  }
+
+  function createReleasedBeforeTargetError(target) {
+    const err = new Error(
+      `BARRIER_RELEASED_BEFORE_ARRIVALS: Offline barrier '${cleanName}' was released at ${arrivedCount}/${target} arrivals`
+    );
+    err.code = 'BARRIER_RELEASED_BEFORE_ARRIVALS';
+    return err;
+  }
 
   const barrier = Object.freeze({
     name: cleanName,
@@ -125,18 +174,32 @@ export function createOfflineBarrier(name = 'offline-barrier') {
     wait(signal = null) {
       if (released) return Promise.resolve();
       if (signal && signal.aborted) {
-        const abortErr = new Error('The operation was aborted');
-        abortErr.name = 'AbortError';
-        return Promise.reject(abortErr);
+        return Promise.reject(createAbortError());
       }
       return new Promise((resolve, reject) => {
-        const entry = { resolve, reject, onAbort: null };
+        const entry = {
+          signal,
+          onAbort: null,
+          settled: false,
+          resolve: () => {
+            if (!entry.settled) {
+              entry.settled = true;
+              detachAbort(entry);
+              resolve();
+            }
+          },
+          reject: (err) => {
+            if (!entry.settled) {
+              entry.settled = true;
+              detachAbort(entry);
+              reject(err);
+            }
+          }
+        };
         if (signal && typeof signal.addEventListener === 'function') {
           entry.onAbort = () => {
             waiters.delete(entry);
-            const abortErr = new Error('The operation was aborted');
-            abortErr.name = 'AbortError';
-            reject(abortErr);
+            entry.reject(createAbortError());
           };
           signal.addEventListener('abort', entry.onAbort, { once: true });
         }
@@ -144,30 +207,45 @@ export function createOfflineBarrier(name = 'offline-barrier') {
       });
     },
     waitForArrivals(target = 1, signal = null) {
-      const targetNum = Math.max(1, Number(target) || 1);
-      if (arrivedCount >= targetNum) return Promise.resolve();
+      if (typeof target !== 'number' || !Number.isInteger(target) || target < 1) {
+        return Promise.reject(
+          new RangeError(
+            `INVALID_BARRIER_ARRIVAL_TARGET: Offline barrier '${cleanName}' requires a positive integer arrival target`
+          )
+        );
+      }
+      if (arrivedCount >= target) return Promise.resolve();
       if (signal && signal.aborted) {
-        const abortErr = new Error('The operation was aborted');
-        abortErr.name = 'AbortError';
-        return Promise.reject(abortErr);
+        return Promise.reject(createAbortError());
+      }
+      if (released) {
+        return Promise.reject(createReleasedBeforeTargetError(target));
       }
       return new Promise((resolve, reject) => {
         const entry = {
-          target: targetNum,
+          target,
+          signal,
+          onAbort: null,
+          settled: false,
           resolve: () => {
-            if (signal && entry.onAbort) {
-              signal.removeEventListener('abort', entry.onAbort);
+            if (!entry.settled) {
+              entry.settled = true;
+              detachAbort(entry);
+              resolve();
             }
-            resolve();
           },
-          onAbort: null
+          reject: (err) => {
+            if (!entry.settled) {
+              entry.settled = true;
+              detachAbort(entry);
+              reject(err);
+            }
+          }
         };
         if (signal && typeof signal.addEventListener === 'function') {
           entry.onAbort = () => {
             arrivalWaiters.delete(entry);
-            const abortErr = new Error('The operation was aborted');
-            abortErr.name = 'AbortError';
-            reject(abortErr);
+            entry.reject(createAbortError());
           };
           signal.addEventListener('abort', entry.onAbort, { once: true });
         }
@@ -175,13 +253,19 @@ export function createOfflineBarrier(name = 'offline-barrier') {
       });
     },
     release() {
+      if (released) return;
       released = true;
       for (const entry of Array.from(waiters)) {
         waiters.delete(entry);
-        if (entry.onAbort) {
-          // Listeners registered with { once: true } are automatically cleaned or safe on settle
-        }
         entry.resolve();
+      }
+      for (const entry of Array.from(arrivalWaiters)) {
+        arrivalWaiters.delete(entry);
+        if (arrivedCount >= entry.target) {
+          entry.resolve();
+        } else {
+          entry.reject(createReleasedBeforeTargetError(entry.target));
+        }
       }
     }
   });
@@ -190,7 +274,7 @@ export function createOfflineBarrier(name = 'offline-barrier') {
   return barrier;
 }
 
-function validateDeclarativeFixtureValue(val, pathLabel = 'spec') {
+function validateDeclarativeFixtureValue(val, pathLabel = 'spec', seen = new WeakSet()) {
   if (val === null || val === undefined) return;
   const t = typeof val;
   if (t === 'string' || t === 'number' || t === 'boolean') return;
@@ -203,11 +287,41 @@ function validateDeclarativeFixtureValue(val, pathLabel = 'spec') {
     throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Unsupported type '${t}' at '${pathLabel}'`);
   }
   if (TRUSTED_OFFLINE_BARRIERS.has(val)) return;
-  if (val instanceof RegExp || val instanceof ArrayBuffer || ArrayBuffer.isView(val)) return;
-  if (Array.isArray(val)) {
-    for (let i = 0; i < val.length; i++) {
-      validateDeclarativeFixtureValue(val[i], `${pathLabel}[${i}]`);
+  if (seen.has(val)) {
+    throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Circular object reference rejected at '${pathLabel}' (R4-04)`);
+  }
+  if (val instanceof RegExp) {
+    for (const sym of Object.getOwnPropertySymbols(val)) {
+      throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Symbol property '${String(sym)}' rejected at '${pathLabel}' (R4-04)`);
     }
+    return;
+  }
+  if (val instanceof ArrayBuffer || ArrayBuffer.isView(val)) {
+    for (const sym of Object.getOwnPropertySymbols(val)) {
+      throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Symbol property '${String(sym)}' rejected at '${pathLabel}' (R4-04)`);
+    }
+    for (const key of Object.getOwnPropertyNames(val)) {
+      const desc = Object.getOwnPropertyDescriptor(val, key);
+      if (desc && (typeof desc.get === 'function' || typeof desc.set === 'function')) {
+        throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Accessor property rejected at '${pathLabel}.${key}' (R3-02/R4-04)`);
+      }
+    }
+    return;
+  }
+  seen.add(val);
+  if (Array.isArray(val)) {
+    for (const sym of Object.getOwnPropertySymbols(val)) {
+      throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Symbol property '${String(sym)}' rejected at '${pathLabel}' (R4-04)`);
+    }
+    for (const key of Object.getOwnPropertyNames(val)) {
+      if (key === 'length') continue;
+      const desc = Object.getOwnPropertyDescriptor(val, key);
+      if (!desc || typeof desc.get === 'function' || typeof desc.set === 'function') {
+        throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Accessor property rejected at '${pathLabel}.${key}' (R3-02/R4-04)`);
+      }
+      validateDeclarativeFixtureValue(desc.value, `${pathLabel}[${key}]`, seen);
+    }
+    seen.delete(val);
     return;
   }
   const proto = Object.getPrototypeOf(val);
@@ -216,21 +330,47 @@ function validateDeclarativeFixtureValue(val, pathLabel = 'spec') {
       `INVALID_DETERMINISTIC_FIXTURE_SPEC: Non-plain object instance rejected at '${pathLabel}' (R3-02)`
     );
   }
-  for (const key of Object.keys(val)) {
+  for (const sym of Object.getOwnPropertySymbols(val)) {
+    throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Symbol property '${String(sym)}' rejected at '${pathLabel}' (R4-04)`);
+  }
+  for (const key of Object.getOwnPropertyNames(val)) {
     const desc = Object.getOwnPropertyDescriptor(val, key);
     if (!desc || typeof desc.get === 'function' || typeof desc.set === 'function') {
       throw new Error(
         `INVALID_DETERMINISTIC_FIXTURE_SPEC: Accessor property rejected at '${pathLabel}.${key}' (R3-02)`
       );
     }
-    validateDeclarativeFixtureValue(val[key], `${pathLabel}.${key}`);
+    validateDeclarativeFixtureValue(desc.value, `${pathLabel}.${key}`, seen);
   }
+  seen.delete(val);
+}
+
+function cloneBinaryViewToIndependentBuffer(view) {
+  const copy = new Uint8Array(view.byteLength);
+  copy.set(new Uint8Array(view.buffer, view.byteOffset, view.byteLength));
+  return Buffer.from(copy.buffer, 0, copy.byteLength);
+}
+
+function toIndependentBytesBuffer(rawVal) {
+  if (rawVal instanceof ArrayBuffer) {
+    const copy = Uint8Array.from(new Uint8Array(rawVal));
+    return Buffer.from(copy.buffer, 0, copy.byteLength);
+  }
+  if (ArrayBuffer.isView(rawVal)) {
+    return cloneBinaryViewToIndependentBuffer(rawVal);
+  }
+  const strBuf = Buffer.from(String(rawVal), 'utf8');
+  return cloneBinaryViewToIndependentBuffer(strBuf);
 }
 
 function clonePlainData(val) {
   if (val === null || val === undefined || typeof val !== 'object') return val;
-  if (val instanceof ArrayBuffer) return val.slice(0);
-  if (ArrayBuffer.isView(val)) return Buffer.from(val.buffer, val.byteOffset, val.byteLength);
+  if (val instanceof ArrayBuffer) {
+    return Uint8Array.from(new Uint8Array(val)).buffer;
+  }
+  if (ArrayBuffer.isView(val)) {
+    return cloneBinaryViewToIndependentBuffer(val);
+  }
   if (val instanceof RegExp) return new RegExp(val.source, val.flags);
   if (TRUSTED_OFFLINE_BARRIERS.has(val)) return val;
   if (Array.isArray(val)) return val.map(clonePlainData);
@@ -294,6 +434,8 @@ function buildDeterministicResponse(descriptor) {
     res.json = async () => JSON.parse(textVal);
   }
 
+  const immutableRawBytes = hasRawBytesProp ? toIndependentBytesBuffer(descriptor.rawBytes) : null;
+
   if (descriptor.textError) {
     res.text = async () => {
       throw new Error(String(descriptor.textError));
@@ -304,21 +446,28 @@ function buildDeterministicResponse(descriptor) {
   } else if (hasJsonProp || hasBodyProp) {
     const serialized = JSON.stringify(hasJsonProp ? descriptor.json : descriptor.body);
     res.text = async () => serialized;
-  } else if (hasRawBytesProp) {
-    const buf = Buffer.from(descriptor.rawBytes);
-    res.text = async () => buf.toString('utf8');
+  } else if (immutableRawBytes) {
+    const textVal = immutableRawBytes.toString('utf8');
+    res.text = async () => textVal;
   }
 
   if (descriptor.arrayBufferError) {
     res.arrayBuffer = async () => {
       throw new Error(String(descriptor.arrayBufferError));
     };
-  } else if (hasRawBytesProp) {
-    const buf = Buffer.from(descriptor.rawBytes);
-    res.arrayBuffer = async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+  } else if (immutableRawBytes) {
+    res.arrayBuffer = async () => {
+      const freshCopy = new Uint8Array(immutableRawBytes.byteLength);
+      freshCopy.set(new Uint8Array(immutableRawBytes.buffer, immutableRawBytes.byteOffset, immutableRawBytes.byteLength));
+      return freshCopy.buffer;
+    };
   } else if (hasTextProp) {
-    const buf = Buffer.from(String(descriptor.text), 'utf8');
-    res.arrayBuffer = async () => buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength);
+    const textBytes = Buffer.from(String(descriptor.text), 'utf8');
+    res.arrayBuffer = async () => {
+      const freshCopy = new Uint8Array(textBytes.byteLength);
+      freshCopy.set(new Uint8Array(textBytes.buffer, textBytes.byteOffset, textBytes.byteLength));
+      return freshCopy.buffer;
+    };
   }
 
   return res;
@@ -541,6 +690,88 @@ export function assertOfflineMockTransport(fetchFn) {
       'BLOCKED_PENDING_DURABLE_RECOVERY: Arbitrary executable transport rejected; LIVE hosted execution is blocked pending durable crash recovery and offline tests must use createDeterministicFixtureTransport()'
     );
   }
+}
+
+function assertNoForgedAdminMarkers(adminClient) {
+  if (!adminClient || typeof adminClient !== 'object') return;
+  for (const key of FORGED_TRUSTED_ADMIN_MARKER_KEYS) {
+    if (key in adminClient && adminClient[key]) {
+      throw new Error(
+        `BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_ADMIN_CLIENT: Forged trusted Admin client marker '${key}' rejected fail-closed (R4-01)`
+      );
+    }
+  }
+}
+
+/**
+ * Verifies that an Admin client adapter was constructed by this module's createHostedAdminClient(),
+ * preserves immutable registered capabilities, and matches project/run/transport bindings (R4-01).
+ */
+export function assertTrustedAdminClient(
+  adminClient,
+  {
+    projectRef = HARDCODED_TEMP_REF,
+    runId = null,
+    requireRunBinding = true
+  } = {}
+) {
+  const normRef = (projectRef || '').trim().toLowerCase();
+  if (!adminClient || (typeof adminClient !== 'object' && typeof adminClient !== 'function')) {
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_ADMIN_CLIENT: Admin client adapter must be a registered fixture-backed instance from createHostedAdminClient() (R4-01)'
+    );
+  }
+
+  const meta = TRUSTED_ADMIN_CLIENTS.get(adminClient);
+  if (!meta) {
+    assertNoForgedAdminMarkers(adminClient);
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_ADMIN_CLIENT: Unregistered or forged Admin client adapter rejected fail-closed before provider operation (R4-01)'
+    );
+  }
+
+  if (!meta.projectRef || meta.projectRef !== normRef || meta.projectRef !== HARDCODED_TEMP_REF || isForbiddenProject(meta.projectRef)) {
+    throw new Error(
+      `CRITICAL_SECURITY_VIOLATION: ADMIN_CLIENT_PROJECT_MISMATCH: Trusted Admin adapter bound to '${meta.projectRef}', expected '${normRef}' (R4-01)`
+    );
+  }
+
+  if (requireRunBinding) {
+    if (!meta.runId || !runId || meta.runId !== runId) {
+      throw new Error(
+        `ADMIN_CLIENT_RUN_MISMATCH: Trusted Admin adapter bound to runId '${meta.runId || 'unbound'}', expected '${runId || 'none'}' (R4-01)`
+      );
+    }
+  } else if (meta.runId && runId && meta.runId !== runId) {
+    throw new Error(
+      `ADMIN_CLIENT_RUN_MISMATCH: Trusted Admin adapter bound to runId '${meta.runId}', expected '${runId}' (R4-01)`
+    );
+  }
+
+  assertOfflineMockTransport(meta.rawTransportFetch);
+
+  for (const [methodName, expectedFn] of Object.entries(meta.capabilities)) {
+    if (adminClient[methodName] !== expectedFn) {
+      throw new Error(
+        `TRUSTED_ADAPTER_MUTATION_REJECTED: Trusted Admin adapter method '${methodName}' was altered or replaced after registration (R4-01)`
+      );
+    }
+  }
+
+  return meta;
+}
+
+function verifyAdminClientIntegrityIfTrustedOrMarked(adminClient, expectedRunId = null) {
+  if (!adminClient || typeof adminClient !== 'object') return null;
+  if (TRUSTED_ADMIN_CLIENTS.has(adminClient)) {
+    return assertTrustedAdminClient(adminClient, {
+      projectRef: HARDCODED_TEMP_REF,
+      runId: expectedRunId,
+      requireRunBinding: false
+    });
+  }
+  assertNoForgedAdminMarkers(adminClient);
+  return null;
 }
 
 /**
@@ -3249,9 +3480,11 @@ export async function verifyStorageObjectAbsenceDetailed(adminClient, bucket, pa
       reason: 'MISSING_CLIENT_OR_PATH'
     };
   }
-  if (typeof adminClient.getStorageObject === 'function') {
+  const trustedMeta = verifyAdminClientIntegrityIfTrustedOrMarked(adminClient);
+  const getStorageFn = trustedMeta ? trustedMeta.capabilities.getStorageObject : adminClient.getStorageObject;
+  if (typeof getStorageFn === 'function') {
     try {
-      const res = await adminClient.getStorageObject(bucket, path);
+      const res = await runWithBlockedRealFetch(() => getStorageFn.call(adminClient, bucket, path));
       if (!res) {
         return {
           isAbsent: false,
@@ -4611,6 +4844,16 @@ export class TestRunInventory {
       return report;
     }
 
+    try {
+      verifyAdminClientIntegrityIfTrustedOrMarked(adminClient, this.runId);
+    } catch (integrityErr) {
+      report.residualResources.push({ type: 'client', error: integrityErr.message });
+      report.status = 'CLEANUP_FAILED_RESIDUAL_RESOURCES';
+      this.runLifecycleState = INVENTORY_RUN_STATE.RESIDUAL_BLOCKED;
+      this.finalize();
+      throw integrityErr;
+    }
+
     // 0A. Untracked minted sessions blocker (R5-04, R8-01, R13-02)
     if (this.untrackedSessionsCount > 0) {
       report.residualResources.push({
@@ -5415,7 +5658,12 @@ export async function provisionStorageProbeFixture({
     throw new Error(`INVENTORY_RUN_ID_MISMATCH: Inventory runId '${inventory.runId}' does not match '${validRunId}'`);
   }
 
-  // 5. Structural Fail-Closed Transport / Durable Recovery Gate (R1-01, R2 Sec 6, R3-02)
+  // 5. Structural Fail-Closed Transport / Durable Recovery Gate (R1-01, R2 Sec 6, R3-02, R4-01)
+  if (ownershipLookupFn !== null && ownershipLookupFn !== undefined) {
+    throw new Error(
+      'BLOCKED_PENDING_DURABLE_RECOVERY: Arbitrary executable ownershipLookupFn is rejected fail-closed; authoritative ownership metadata lookup must route exclusively through a registered offline Admin adapter (R4-01)'
+    );
+  }
   assertOfflineMockTransport(fetchFn);
 
   const safeFetch = (url, opts) => {
@@ -5423,29 +5671,44 @@ export async function provisionStorageProbeFixture({
     return runWithBlockedRealFetch(() => fetchFn(url, opts));
   };
 
-  // 6. Require narrowly-scoped authoritative ownership lookup interface before any Storage mutation (R2-01 #2, #3, #10, #12)
+  // 6. Require narrowly-scoped, registered, run-bound authoritative ownership lookup interface before any Storage mutation (R2-01, R4-01)
   let resolvedAdminClient = adminClient;
-  if (!resolvedAdminClient && isNonEmptyString(serviceRoleKey)) {
+  let trustedAdminMeta = null;
+  if (resolvedAdminClient !== null && resolvedAdminClient !== undefined) {
+    trustedAdminMeta = assertTrustedAdminClient(resolvedAdminClient, {
+      projectRef: normRef,
+      runId: validRunId,
+      requireRunBinding: true
+    });
+  } else if (isNonEmptyString(serviceRoleKey)) {
     resolvedAdminClient = createHostedAdminClient({
       serviceRoleKey,
       anonKey,
       projectRef: normRef,
+      runId: validRunId,
       fetchFn
+    });
+    trustedAdminMeta = assertTrustedAdminClient(resolvedAdminClient, {
+      projectRef: normRef,
+      runId: validRunId,
+      requireRunBinding: true
     });
   }
 
-  const effectiveOwnershipLookup =
-    typeof ownershipLookupFn === 'function'
-      ? ownershipLookupFn
-      : (resolvedAdminClient && typeof resolvedAdminClient.getStorageObjectOwnership === 'function'
-          ? (b, p, opts) => resolvedAdminClient.getStorageObjectOwnership(b, p, opts)
-          : null);
-
-  if (!effectiveOwnershipLookup) {
+  if (!trustedAdminMeta) {
     throw new Error(
-      'BLOCKED_PENDING_OWNERSHIP_METADATA_INTERFACE: Authoritative storage.objects.owner_id lookup requires privileged adminClient.getStorageObjectOwnership, serviceRoleKey, or server-side ownershipLookupFn (R2-01)'
+      'BLOCKED_PENDING_OWNERSHIP_METADATA_INTERFACE: Authoritative storage.objects.owner_id lookup requires a registered run-bound createHostedAdminClient (adminClient) or serviceRoleKey (R2-01, R4-01)'
     );
   }
+
+  const effectiveOwnershipLookup = (b, p, opts) => {
+    assertTrustedAdminClient(resolvedAdminClient, {
+      projectRef: normRef,
+      runId: validRunId,
+      requireRunBinding: true
+    });
+    return trustedAdminMeta.capabilities.getStorageObjectOwnership.call(resolvedAdminClient, b, p, opts);
+  };
 
   const bucket = STORAGE_PROBE_BUCKET;
   const path = getStorageProbeObjectPath(validRunId);
@@ -8368,6 +8631,7 @@ export function createHostedAdminClient({
   serviceRoleKey,
   anonKey,
   projectRef = HARDCODED_TEMP_REF,
+  runId = null,
   fetchFn = null
 } = {}) {
   if (projectRef !== HARDCODED_TEMP_REF) {
@@ -8380,6 +8644,7 @@ export function createHostedAdminClient({
   if (isNonEmptyString(anonKey)) {
     validateProjectCredentialBinding(anonKey, projectRef);
   }
+  const boundRunId = runId !== null && runId !== undefined ? validateRunId(runId) : null;
   assertOfflineMockTransport(fetchFn);
 
   const rawTransportFetch = fetchFn;
@@ -8390,7 +8655,7 @@ export function createHostedAdminClient({
 
   const baseUrl = `https://${projectRef}.supabase.co`;
 
-  return {
+  const client = {
     async verifyUserCredentials(email, password, options = {}) {
       const inv = options?.inventory || null;
       if (!email || typeof email !== 'string' || !email.trim()) {
@@ -9001,6 +9266,31 @@ export function createHostedAdminClient({
       };
     }
   };
+
+  const capabilities = Object.freeze({
+    verifyUserCredentials: client.verifyUserCredentials,
+    deleteUser: client.deleteUser,
+    getUserById: client.getUserById,
+    signOut: client.signOut,
+    invalidateSession: client.invalidateSession,
+    updateUserById: client.updateUserById,
+    deleteTableRow: client.deleteTableRow,
+    getStorageObject: client.getStorageObject,
+    getStorageObjectOwnership: client.getStorageObjectOwnership,
+    deleteStorageObject: client.deleteStorageObject
+  });
+
+  Object.freeze(client);
+  TRUSTED_ADMIN_CLIENTS.set(
+    client,
+    Object.freeze({
+      projectRef,
+      runId: boundRunId,
+      rawTransportFetch,
+      capabilities
+    })
+  );
+  return client;
 }
 
 // Standalone CLI execution: defaults strictly to DRY_RUN

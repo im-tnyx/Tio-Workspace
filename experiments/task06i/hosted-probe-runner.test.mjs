@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import crypto from 'node:crypto';
 import {
   validateTargetProject,
   validateTestIdentity,
@@ -56,6 +57,7 @@ import {
   verifyStorageObjectAbsence,
   verifyStorageObjectAbsenceDetailed,
   assertOfflineMockTransport,
+  assertTrustedAdminClient,
   createDeterministicFixtureTransport,
   createOfflineBarrier,
   createFetchIsolationCoordinator,
@@ -9733,6 +9735,7 @@ test('100. Task 06I-B1-H3-R2 (Sec 5 & 6): Unified Storage Lifecycle E2E Regressi
     serviceRoleKey: validTestServiceRoleKey,
     anonKey: validTestAnonKey,
     projectRef: HARDCODED_TEMP_REF,
+    runId,
     fetchFn: mockProviderFetch
   });
 
@@ -10303,7 +10306,7 @@ test('105. Task 06I-B1-H3-R3 (R3-05): Successful text/plain, binary, and HTTP 20
       seedUserId,
       userAccessToken: token,
       anonKey: validTestAnonKey,
-      ownershipLookupFn: async () => ({ found: true, data: {} }),
+      serviceRoleKey: validTestServiceRoleKey,
       inventory: inv,
       fetchFn: collisionTransport
     }),
@@ -10456,7 +10459,7 @@ test('107. Task 06I-B1-H3-R3 (Sec 8): Consolidated Adversarial Concurrency & Lif
     ]
   });
 
-  const adminClient = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, anonKey: validTestAnonKey, fetchFn: matrixTransport });
+  const adminClient = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, anonKey: validTestAnonKey, runId, fetchFn: matrixTransport });
 
   // Overlap an independent blocked fetch lease concurrently with provisioning
   const baseDepth107 = getFetchIsolationDebugState().activeDepth;
@@ -10508,4 +10511,735 @@ test('107. Task 06I-B1-H3-R3 (Sec 8): Consolidated Adversarial Concurrency & Lif
 
   // Post-finalization admission remains permanently closed
   assert.throws(() => inv.reserveStorageFixture({ path: 'post/probe.txt', ownerId: seedUserId }), /INVENTORY_FINALIZED/);
+});
+
+// ---------------------------------------------------------------------------
+// Task 06I-B1-H3-R4: Trusted Offline Execution Boundary & Fixture Integrity
+// ---------------------------------------------------------------------------
+
+test('108. Task 06I-B1-H3-R4 (R4-01): Rejects arbitrary ownershipLookupFn, unregistered/forged/mutated/cross-project/cross-run Admin adapters before any mutation', async () => {
+  const runId = 'test-run-h3-r4-01-trust';
+  const otherRunId = 'test-run-h3-r4-01-other';
+  const seedUserId = '11111111-1111-4111-a111-111111111401';
+  const objectUuid = 'aaaaaaaa-aaaa-4aaa-aaaa-aaaaaaaaa401';
+  const token = createMockJwt({ sub: seedUserId });
+  const expectedPath = getStorageProbeObjectPath(runId);
+  const expectedKey = `${STORAGE_PROBE_BUCKET}/${expectedPath}`;
+  const payload = 'r4-01-trusted-ownership-payload\n';
+
+  let sentinelNetworkCalls = 0;
+  const sentinelNetworkRef = async () => {
+    sentinelNetworkCalls += 1;
+    return { status: 200, ok: true };
+  };
+
+  function makeStorageTransport() {
+    return createDeterministicFixtureTransport({
+      initialState: { uploaded: false },
+      routes: [
+        { method: 'GET', urlIncludes: '/auth/v1/user', status: 200, ok: true, json: { id: seedUserId }, tag: 'auth_user' },
+        {
+          method: 'GET',
+          urlIncludes: '/storage/v1/object/authenticated/',
+          whenState: { uploaded: false },
+          status: 400,
+          ok: false,
+          text: JSON.stringify({ statusCode: '404', code: 'NoSuchKey', message: 'Not found' }),
+          tag: 'collision_absent'
+        },
+        {
+          method: 'POST',
+          urlIncludes: '/storage/v1/object/',
+          setsState: { uploaded: true },
+          status: 200,
+          ok: true,
+          json: { Id: objectUuid, Key: expectedKey },
+          tag: 'upload_post'
+        },
+        {
+          method: 'GET',
+          urlIncludes: '/storage/v1/object/authenticated/',
+          whenState: { uploaded: true },
+          status: 200,
+          ok: true,
+          rawBytes: Buffer.from(payload, 'utf8'),
+          tag: 'verify_download'
+        },
+        {
+          method: 'POST',
+          urlIncludes: '/rest/v1/rpc/task06i_lookup_storage_object_owner',
+          status: 200,
+          ok: true,
+          json: [{ id: objectUuid, bucket_id: STORAGE_PROBE_BUCKET, name: expectedPath, owner_id: seedUserId }],
+          tag: 'ownership_rpc'
+        }
+      ],
+      defaultResponse: { status: 500, ok: false }
+    });
+  }
+
+  // 1 & 2. Arbitrary ownershipLookupFn (including captured sentinel network reference) rejected BEFORE any GET/POST/reservation
+  const tArb = makeStorageTransport();
+  const invArb = new TestRunInventory(runId);
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      runId,
+      seedUserId,
+      userAccessToken: token,
+      anonKey: validTestAnonKey,
+      serviceRoleKey: validTestServiceRoleKey,
+      ownershipLookupFn: async () => {
+        await sentinelNetworkRef();
+        return { found: true, data: { id: objectUuid, bucket_id: STORAGE_PROBE_BUCKET, name: expectedPath, owner_id: seedUserId } };
+      },
+      inventory: invArb,
+      probeContent: payload,
+      fetchFn: tArb
+    }),
+    /BLOCKED_PENDING_DURABLE_RECOVERY.*ownershipLookupFn/
+  );
+  assert.equal(tArb.calls.length, 0, 'Must dispatch ZERO provider calls when arbitrary ownershipLookupFn is passed');
+  assert.equal(sentinelNetworkCalls, 0, 'Sentinel network reference must execute ZERO times');
+  assert.equal(invArb.storageFixtures.size, 0, 'Must reserve ZERO fixtures before ownershipLookupFn rejection');
+
+  // 3. Unregistered plain Admin client rejected
+  const tUnreg = makeStorageTransport();
+  const invUnreg = new TestRunInventory(runId);
+  const unregisteredAdmin = {
+    getStorageObjectOwnership: async () => {
+      sentinelNetworkCalls += 1;
+      return { found: true, data: {} };
+    }
+  };
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      runId,
+      seedUserId,
+      userAccessToken: token,
+      anonKey: validTestAnonKey,
+      adminClient: unregisteredAdmin,
+      inventory: invUnreg,
+      probeContent: payload,
+      fetchFn: tUnreg
+    }),
+    /BLOCKED_PENDING_DURABLE_RECOVERY.*UNTRUSTED_ADMIN_CLIENT/
+  );
+  assert.equal(tUnreg.calls.length, 0);
+  assert.equal(sentinelNetworkCalls, 0);
+
+  // 4. Forged trusted-client markers and shallow clones rejected
+  const tTrusted = makeStorageTransport();
+  const trustedAdmin = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    anonKey: validTestAnonKey,
+    projectRef: HARDCODED_TEMP_REF,
+    runId,
+    fetchFn: tTrusted
+  });
+  const forgedAdmin = {
+    _isTrustedAdminClient: true,
+    __trustedAdminClient: true,
+    getStorageObjectOwnership: async () => {
+      sentinelNetworkCalls += 1;
+      return { found: true, data: {} };
+    }
+  };
+  const shallowClone = { ...trustedAdmin };
+  for (const badClient of [forgedAdmin, shallowClone]) {
+    const tBad = makeStorageTransport();
+    await assert.rejects(
+      () => provisionStorageProbeFixture({
+        runId,
+        seedUserId,
+        userAccessToken: token,
+        anonKey: validTestAnonKey,
+        adminClient: badClient,
+        inventory: new TestRunInventory(runId),
+        probeContent: payload,
+        fetchFn: tBad
+      }),
+      /BLOCKED_PENDING_DURABLE_RECOVERY.*UNTRUSTED_ADMIN_CLIENT/
+    );
+    assert.equal(tBad.calls.length, 0);
+  }
+  assert.equal(sentinelNetworkCalls, 0);
+
+  const invCleanForged = new TestRunInventory(runId);
+  invCleanForged.registerStorageFixture({ bucket: STORAGE_PROBE_BUCKET, path: expectedPath, ownerId: seedUserId });
+  await assert.rejects(
+    () => invCleanForged.executeCleanup({ adminClient: forgedAdmin, failClosed: true }),
+    /UNTRUSTED_ADMIN_CLIENT/
+  );
+
+  // 5. Immutable adapter capabilities & method replacement / Proxy / Object.create rejected
+  assert.equal(Object.isFrozen(trustedAdmin), true, 'Trusted admin client must be frozen');
+  assert.throws(() => {
+    trustedAdmin.getStorageObjectOwnership = async () => {
+      sentinelNetworkCalls += 1;
+      return { found: true, data: {} };
+    };
+  }, TypeError);
+
+  const inheritedOverride = Object.create(trustedAdmin, {
+    getStorageObjectOwnership: {
+      value: async () => {
+        sentinelNetworkCalls += 1;
+        return { found: true, data: {} };
+      }
+    }
+  });
+  const proxiedAdmin = new Proxy(trustedAdmin, {});
+  for (const tampered of [inheritedOverride, proxiedAdmin]) {
+    const tTamper = makeStorageTransport();
+    await assert.rejects(
+      () => provisionStorageProbeFixture({
+        runId,
+        seedUserId,
+        userAccessToken: token,
+        anonKey: validTestAnonKey,
+        adminClient: tampered,
+        inventory: new TestRunInventory(runId),
+        probeContent: payload,
+        fetchFn: tTamper
+      }),
+      /UNTRUSTED_ADMIN_CLIENT/
+    );
+    assert.equal(tTamper.calls.length, 0);
+  }
+  assert.equal(sentinelNetworkCalls, 0);
+
+  // 6. Cross-project adapter rejected
+  assert.throws(
+    () => createHostedAdminClient({
+      serviceRoleKey: validTestServiceRoleKey,
+      projectRef: HARDCODED_REAL_REF,
+      runId,
+      fetchFn: makeStorageTransport()
+    }),
+    /SECURITY_BOUNDARY_VIOLATION/
+  );
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      projectRef: 'unauthorized-proj-ref',
+      runId,
+      seedUserId,
+      userAccessToken: token,
+      adminClient: trustedAdmin,
+      inventory: new TestRunInventory(runId),
+      fetchFn: tTrusted
+    }),
+    /CRITICAL_SECURITY_VIOLATION/
+  );
+  assert.equal(tTrusted.calls.length, 0);
+
+  // 7. Cross-run adapter rejected (both mismatched runId and unbound runId: null)
+  const adminUnbound = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    anonKey: validTestAnonKey,
+    projectRef: HARDCODED_TEMP_REF,
+    fetchFn: makeStorageTransport()
+  });
+  const tCrossRun = makeStorageTransport();
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      runId: otherRunId,
+      seedUserId,
+      userAccessToken: token,
+      anonKey: validTestAnonKey,
+      adminClient: trustedAdmin,
+      inventory: new TestRunInventory(otherRunId),
+      fetchFn: tCrossRun
+    }),
+    /ADMIN_CLIENT_RUN_MISMATCH/
+  );
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      runId: otherRunId,
+      seedUserId,
+      userAccessToken: token,
+      anonKey: validTestAnonKey,
+      adminClient: adminUnbound,
+      inventory: new TestRunInventory(otherRunId),
+      fetchFn: tCrossRun
+    }),
+    /ADMIN_CLIENT_RUN_MISMATCH/
+  );
+  assert.equal(tCrossRun.calls.length, 0);
+
+  const invOtherRun = new TestRunInventory(otherRunId);
+  invOtherRun.registerStorageFixture({ bucket: STORAGE_PROBE_BUCKET, path: getStorageProbeObjectPath(otherRunId), ownerId: seedUserId });
+  await assert.rejects(
+    () => invOtherRun.executeCleanup({ adminClient: trustedAdmin, failClosed: true }),
+    /ADMIN_CLIENT_RUN_MISMATCH/
+  );
+
+  // 8. Direct provisioner invocation rejected without trusted dependencies
+  const tNoCreds = makeStorageTransport();
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      runId,
+      seedUserId,
+      userAccessToken: token,
+      inventory: new TestRunInventory(runId),
+      fetchFn: tNoCreds
+    }),
+    /BLOCKED_PENDING_OWNERSHIP_METADATA_INTERFACE/
+  );
+  await assert.rejects(
+    () => provisionStorageProbeFixture({
+      runId,
+      seedUserId,
+      userAccessToken: token,
+      adminClient: trustedAdmin,
+      inventory: new TestRunInventory(runId)
+    }),
+    /BLOCKED_PENDING_DURABLE_RECOVERY/
+  );
+  assert.equal(tNoCreds.calls.length, 0);
+
+  // 9. Valid deterministic run-bound Admin adapter + RPC succeeds cleanly
+  const invPass = new TestRunInventory(runId);
+  const resPass = await provisionStorageProbeFixture({
+    runId,
+    seedUserId,
+    userAccessToken: token,
+    anonKey: validTestAnonKey,
+    adminClient: trustedAdmin,
+    inventory: invPass,
+    probeContent: payload,
+    fetchFn: tTrusted
+  });
+  assert.equal(resPass.lifecycleState, STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED);
+  assert.equal(resPass.deletionEligible, true);
+  assert.equal(resPass.objectId, objectUuid);
+  assert.equal(resPass.ownerId, seedUserId);
+  assert.equal(tTrusted.calls.some(c => c.tag === 'ownership_rpc'), true);
+  assert.equal(sentinelNetworkCalls, 0);
+  assert.throws(
+    () => assertTrustedAdminClient(forgedAdmin, { projectRef: HARDCODED_TEMP_REF, runId }),
+    /UNTRUSTED_ADMIN_CLIENT/
+  );
+});
+
+test('109. Task 06I-B1-H3-R4 (R4-02): Shared WeakMap isolation coordinator per target prevents cross-handle premature restore', async () => {
+  const realTargetFetch = async () => 'real-target-response';
+  const targetA = { fetch: realTargetFetch };
+  const targetB = { fetch: async () => 'real-b-response' };
+
+  const coord1 = createFetchIsolationCoordinator(targetA);
+  const coord2 = createFetchIsolationCoordinator(targetA);
+  const coordB = createFetchIsolationCoordinator(targetB);
+
+  assert.equal(coord1.getState().activeDepth, 0);
+  assert.equal(coord2.getState().activeDepth, 0);
+  assert.equal(coord1.getState().isTrapped, false);
+
+  // 1. Overlapping leases across two coordinator handles on the SAME target (A settles before B)
+  const rel1 = coord1.acquire();
+  assert.equal(coord1.getState().activeDepth, 1);
+  assert.equal(coord2.getState().activeDepth, 1);
+  assert.notEqual(targetA.fetch, realTargetFetch);
+  assert.equal(coordB.getState().isTrapped, false, 'Separate target B must stay unaffected');
+
+  const rel2 = coord2.acquire();
+  assert.equal(coord1.getState().activeDepth, 2);
+  assert.equal(coord2.getState().activeDepth, 2);
+
+  // Releasing handle 1 repeatedly while handle 2 is active MUST NOT restore realTargetFetch
+  rel1();
+  rel1();
+  rel1();
+  assert.equal(coord1.getState().activeDepth, 1, 'Duplicate release must be idempotent and keep depth at 1');
+  assert.equal(coord2.getState().isTrapped, true, 'Target A must stay trapped until handle 2 releases');
+  assert.throws(() => targetA.fetch(), /BLOCKED_PENDING_DURABLE_RECOVERY/);
+
+  // Releasing handle 2 drops shared depth 1 -> 0 and restores original baseline cleanly
+  rel2();
+  rel2();
+  assert.equal(coord1.getState().activeDepth, 0);
+  assert.equal(targetA.fetch, realTargetFetch);
+
+  // 2. B settles before A + nested leases with deterministic barriers
+  const barrierA = createOfflineBarrier('r4-02-a');
+  const barrierB = createOfflineBarrier('r4-02-b');
+  const pA = coord1.run(async () => {
+    await barrierA.wait();
+    assert.equal(coord2.getState().isTrapped, true);
+    return 'A-done';
+  });
+  const pB = coord2.run(async () => {
+    await barrierB.wait();
+    return 'B-done';
+  });
+  assert.equal(coord1.getState().activeDepth, 2);
+
+  barrierB.release();
+  assert.equal(await pB, 'B-done');
+  assert.equal(coord1.getState().activeDepth, 1);
+  assert.equal(coord1.getState().isTrapped, true, 'Real fetch must not restore when B settles before A');
+
+  barrierA.release();
+  assert.equal(await pA, 'A-done');
+  assert.equal(coord1.getState().activeDepth, 0);
+  assert.equal(targetA.fetch, realTargetFetch);
+
+  // 3. Nested leases across handles + exception and cancellation safety
+  await assert.rejects(
+    () => coord1.run(async () => {
+      assert.equal(coord2.getState().activeDepth, 1);
+      await coord2.run(async () => {
+        assert.equal(coord1.getState().activeDepth, 2);
+        throw new Error('INNER_ABORT_BOOM');
+      });
+    }),
+    /INNER_ABORT_BOOM/
+  );
+  assert.equal(coord1.getState().activeDepth, 0);
+  assert.equal(targetA.fetch, realTargetFetch);
+
+  // 4. Separate target independence
+  const relTargetB = coordB.acquire();
+  assert.equal(coordB.getState().activeDepth, 1);
+  assert.equal(coordB.getState().isTrapped, true);
+  assert.equal(coord1.getState().activeDepth, 0);
+  assert.equal(targetA.fetch, realTargetFetch);
+  relTargetB();
+  assert.equal(coordB.getState().activeDepth, 0);
+
+  // 5. Explicit coordinator targeting globalThis shares exact state with runWithBlockedRealFetch()
+  const explicitGlobal = createFetchIsolationCoordinator(globalThis);
+  const baseGlobalDepth = getFetchIsolationDebugState().activeDepth;
+  assert.equal(explicitGlobal.getState().activeDepth, baseGlobalDepth);
+
+  const globalGate = createOfflineBarrier('r4-02-global');
+  const globalRunP = runWithBlockedRealFetch(async () => {
+    await globalGate.wait();
+    assert.throws(() => globalThis.fetch('https://blocked.invalid'), /BLOCKED_PENDING_DURABLE_RECOVERY/);
+  });
+  assert.equal(explicitGlobal.getState().activeDepth, baseGlobalDepth + 1);
+
+  const relGlobal2 = explicitGlobal.acquire();
+  assert.equal(getFetchIsolationDebugState().activeDepth, baseGlobalDepth + 2);
+  relGlobal2();
+  assert.equal(getFetchIsolationDebugState().activeDepth, baseGlobalDepth + 1);
+  assert.equal(getFetchIsolationDebugState().isTrapped, true);
+
+  globalGate.release();
+  await globalRunP;
+  assert.equal(getFetchIsolationDebugState().activeDepth, baseGlobalDepth);
+  assert.equal(explicitGlobal.getState().activeDepth, baseGlobalDepth);
+});
+
+test('110. Task 06I-B1-H3-R4 (R4-03): Barrier release settles all arrival waiters cleanly without hanging or leaking abort listeners', async () => {
+  function createSpiedAbortController() {
+    const controller = new AbortController();
+    let activeListeners = 0;
+    const origAdd = controller.signal.addEventListener.bind(controller.signal);
+    const origRemove = controller.signal.removeEventListener.bind(controller.signal);
+    controller.signal.addEventListener = (type, fn, opts) => {
+      activeListeners += 1;
+      const wrapped = (...args) => {
+        activeListeners = Math.max(0, activeListeners - 1);
+        return fn(...args);
+      };
+      controller._map = controller._map || new Map();
+      controller._map.set(fn, wrapped);
+      return origAdd(type, wrapped, opts);
+    };
+    controller.signal.removeEventListener = (type, fn, opts) => {
+      const mapped = controller._map?.get(fn);
+      if (mapped) {
+        activeListeners = Math.max(0, activeListeners - 1);
+        controller._map.delete(fn);
+        return origRemove(type, mapped, opts);
+      }
+      return origRemove(type, fn, opts);
+    };
+    return { controller, getActiveListeners: () => activeListeners };
+  }
+
+  // 1. Release BEFORE any arrival settles pending waitForArrivals immediately with explicit error
+  const b1 = createOfflineBarrier('r4-03-before-any');
+  const p1 = b1.waitForArrivals(1);
+  b1.release();
+  await assert.rejects(() => p1, /BARRIER_RELEASED_BEFORE_ARRIVALS/);
+
+  // 2. Release BEFORE target count (1/2 arrivals) settles with explicit error
+  const b2 = createOfflineBarrier('r4-03-partial');
+  b2.markArrived();
+  const p2 = b2.waitForArrivals(2);
+  b2.release();
+  await assert.rejects(() => p2, /BARRIER_RELEASED_BEFORE_ARRIVALS/);
+
+  // 3. Release AFTER target count achieved resolves normally (including post-release calls for achieved target)
+  const b3 = createOfflineBarrier('r4-03-achieved');
+  const p3 = b3.waitForArrivals(2);
+  b3.markArrived();
+  b3.markArrived();
+  await p3;
+  b3.release();
+  await b3.waitForArrivals(2);
+
+  // 4. waitForArrivals() invoked AFTER release when target not achieved settles immediately with rejection
+  await assert.rejects(() => b2.waitForArrivals(2), /BARRIER_RELEASED_BEFORE_ARRIVALS/);
+
+  // 5. Multiple pending arrival waiters: lower target satisfied resolves, unsatisfied higher targets reject on release
+  const b4 = createOfflineBarrier('r4-03-multi');
+  const wSatisfied = b4.waitForArrivals(1);
+  const wUnsat2 = b4.waitForArrivals(2);
+  const wUnsat3 = b4.waitForArrivals(3);
+  b4.markArrived();
+  await wSatisfied;
+  b4.release();
+  await assert.rejects(() => wUnsat2, /BARRIER_RELEASED_BEFORE_ARRIVALS/);
+  await assert.rejects(() => wUnsat3, /BARRIER_RELEASED_BEFORE_ARRIVALS/);
+
+  // 6. Abort before release & concurrent abort + release & listener cleanup
+  const b5 = createOfflineBarrier('r4-03-abort');
+  const spyBefore = createSpiedAbortController();
+  const wAbortFirst = b5.waitForArrivals(2, spyBefore.controller.signal);
+  assert.equal(spyBefore.getActiveListeners(), 1);
+  spyBefore.controller.abort();
+  await assert.rejects(() => wAbortFirst, { name: 'AbortError' });
+  assert.equal(spyBefore.getActiveListeners(), 0, 'Abort must detach/clear listener cleanly');
+
+  const spyReleaseRace = createSpiedAbortController();
+  const wReleaseRace = b5.waitForArrivals(2, spyReleaseRace.controller.signal);
+  assert.equal(spyReleaseRace.getActiveListeners(), 1);
+  b5.release();
+  spyReleaseRace.controller.abort();
+  await assert.rejects(() => wReleaseRace, /BARRIER_RELEASED_BEFORE_ARRIVALS/);
+  assert.equal(spyReleaseRace.getActiveListeners(), 0, 'Release must detach abort listener on settled waiter');
+
+  // Already-aborted signal attaches 0 listeners and rejects immediately
+  const spyPreAborted = createSpiedAbortController();
+  spyPreAborted.controller.abort();
+  await assert.rejects(() => b5.waitForArrivals(2, spyPreAborted.controller.signal), { name: 'AbortError' });
+  assert.equal(spyPreAborted.getActiveListeners(), 0);
+
+  // 7. Repeated release is strictly idempotent
+  b5.release();
+  b5.release();
+  assert.equal(b5.isReleased(), true);
+
+  // 8. Invalid arrival targets fail closed cleanly
+  for (const invalidTarget of [0, -1, 1.5, NaN, Infinity, '1', null]) {
+    await assert.rejects(() => b1.waitForArrivals(invalidTarget), RangeError);
+  }
+});
+
+test('111. Task 06I-B1-H3-R4 (R4-04): Immutable independent binary fixture snapshots and declarative spec validation', async () => {
+  // 1. Buffer source mutation after transport construction
+  const origBufText = 'immutable-buffer-snapshot-01';
+  const expectedBufSha = crypto.createHash('sha256').update(Buffer.from(origBufText, 'utf8')).digest('hex');
+  const srcBuf = Buffer.from(origBufText, 'utf8');
+  const tBuf = createDeterministicFixtureTransport({
+    routes: [{ urlIncludes: '/buf', status: 200, rawBytes: srcBuf }]
+  });
+  srcBuf.fill(0x58); // Mutate original source memory completely
+
+  const resBuf1 = await tBuf('https://example.test/buf');
+  const abBuf1 = await resBuf1.arrayBuffer();
+  const gotBuf1 = Buffer.from(abBuf1);
+  assert.equal(gotBuf1.toString('utf8'), origBufText);
+  assert.equal(crypto.createHash('sha256').update(gotBuf1).digest('hex'), expectedBufSha);
+
+  // 2. Uint8Array source mutation
+  const srcU8 = new Uint8Array([10, 20, 30, 40, 50]);
+  const tU8 = createDeterministicFixtureTransport({
+    routes: [{ urlIncludes: '/u8', status: 200, rawBytes: srcU8 }]
+  });
+  srcU8.fill(0);
+  const abU8 = await (await tU8('https://example.test/u8')).arrayBuffer();
+  assert.deepEqual(Array.from(new Uint8Array(abU8)), [10, 20, 30, 40, 50]);
+
+  // 3. ArrayBuffer source mutation
+  const srcAB = Uint8Array.from([5, 6, 7, 8]).buffer;
+  const tAB = createDeterministicFixtureTransport({
+    routes: [{ urlIncludes: '/ab', status: 200, rawBytes: srcAB }]
+  });
+  new Uint8Array(srcAB).fill(0xff);
+  const abOut = await (await tAB('https://example.test/ab')).arrayBuffer();
+  assert.deepEqual(Array.from(new Uint8Array(abOut)), [5, 6, 7, 8]);
+
+  // 4. DataView with nonzero byteOffset and sub-range byteLength
+  const dvBacking = Uint8Array.from([1, 2, 11, 22, 33, 44, 98, 99]);
+  const srcDV = new DataView(dvBacking.buffer, 2, 4);
+  const tDV = createDeterministicFixtureTransport({
+    routes: [{ urlIncludes: '/dv', status: 200, rawBytes: srcDV }]
+  });
+  dvBacking.fill(0xee);
+  const dvOut = await (await tDV('https://example.test/dv')).arrayBuffer();
+  assert.deepEqual(Array.from(new Uint8Array(dvOut)), [11, 22, 33, 44]);
+
+  // 5. Sliced Buffer backed by shared pooled/larger memory
+  const largeSlab = Buffer.allocUnsafe(64).fill(0x11);
+  const expectedSlice = Buffer.from('slice-secret-payload');
+  expectedSlice.copy(largeSlab, 16);
+  const slicedView = largeSlab.subarray(16, 16 + expectedSlice.length);
+  const tSliced = createDeterministicFixtureTransport({
+    routes: [{ urlIncludes: '/slice', status: 200, rawBytes: slicedView }]
+  });
+  largeSlab.fill(0xaa);
+  const sliceOut = await (await tSliced('https://example.test/slice')).arrayBuffer();
+  assert.equal(Buffer.from(sliceOut).toString('utf8'), 'slice-secret-payload');
+
+  // 6 & 7. Repeated responses remain independent and caller mutation of returned buffer does not alter subsequent responses
+  new Uint8Array(abBuf1).fill(0x00);
+  const abBufSameRes = await resBuf1.arrayBuffer();
+  assert.equal(Buffer.from(abBufSameRes).toString('utf8'), origBufText);
+  const resBuf2 = await tBuf('https://example.test/buf');
+  assert.equal(await resBuf2.text(), origBufText);
+  const abBuf2 = await resBuf2.arrayBuffer();
+  assert.equal(crypto.createHash('sha256').update(Buffer.from(abBuf2)).digest('hex'), expectedBufSha);
+
+  // 8. Declarative fixture validation rejects accessors in arrays/buffers, symbols, and cycles
+  const accessorArr = [];
+  Object.defineProperty(accessorArr, '0', {
+    enumerable: true,
+    get() {
+      return { status: 200 };
+    }
+  });
+  assert.throws(
+    () => createDeterministicFixtureTransport({ routes: accessorArr }),
+    /INVALID_DETERMINISTIC_FIXTURE_SPEC/
+  );
+  const symHookSpec = { routes: [{ urlIncludes: '/x', status: 200 }], [Symbol('exec')]: () => {} };
+  assert.throws(
+    () => createDeterministicFixtureTransport(symHookSpec),
+    /INVALID_DETERMINISTIC_FIXTURE_SPEC.*Symbol/
+  );
+  const cyclic = { urlIncludes: '/cycle', status: 200 };
+  cyclic.self = cyclic;
+  assert.throws(
+    () => createDeterministicFixtureTransport({ routes: [cyclic] }),
+    /INVALID_DETERMINISTIC_FIXTURE_SPEC.*Circular/
+  );
+
+  // 9. End-to-end Storage SHA-256 verification survives post-construction buffer mutation
+  const runId = 'test-run-h3-r4-04-storage';
+  const seedUserId = '11111111-1111-4111-a111-111111111404';
+  const objectUuid = 'bbbbbbbb-bbbb-4bbb-bbbb-bbbbbbbbb404';
+  const token = createMockJwt({ sub: seedUserId });
+  const expectedPath = getStorageProbeObjectPath(runId);
+  const expectedPayload = Buffer.from([0, 1, 2, 3, 250, 251, 252, 253, 254, 255]);
+  const mutableSource = Buffer.from(expectedPayload);
+
+  const storageTransport = createDeterministicFixtureTransport({
+    initialState: { uploaded: false },
+    routes: [
+      { method: 'GET', urlIncludes: '/auth/v1/user', status: 200, ok: true, json: { id: seedUserId } },
+      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: false }, status: 404, ok: false, text: JSON.stringify({ code: 'NoSuchKey' }) },
+      { method: 'POST', urlIncludes: '/storage/v1/object/', setsState: { uploaded: true }, status: 200, ok: true, json: { Id: objectUuid } },
+      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: true }, status: 200, ok: true, rawBytes: mutableSource },
+      { method: 'POST', urlIncludes: '/rest/v1/rpc/task06i_lookup_storage_object_owner', status: 200, ok: true, json: [{ id: objectUuid, bucket_id: STORAGE_PROBE_BUCKET, name: expectedPath, owner_id: seedUserId }] }
+    ],
+    defaultResponse: { status: 500, ok: false }
+  });
+  mutableSource.fill(0x00);
+
+  const invStorage = new TestRunInventory(runId);
+  const prov = await provisionStorageProbeFixture({
+    runId,
+    seedUserId,
+    userAccessToken: token,
+    anonKey: validTestAnonKey,
+    serviceRoleKey: validTestServiceRoleKey,
+    inventory: invStorage,
+    probeContent: expectedPayload,
+    fetchFn: storageTransport
+  });
+  assert.equal(prov.lifecycleState, STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED);
+  assert.equal(prov.deletionEligible, true);
+});
+
+test('112. Task 06I-B1-H3-R4 (Sec 6): Unified offline trust boundary & deterministic concurrency acceptance', async () => {
+  const runId = 'test-run-h3-r4-unified';
+  const seedUserId = '11111111-1111-4111-a111-111111111499';
+  const createdUserId = '22222222-2222-4222-b222-222222222499';
+  const objectUuid = 'cccccccc-cccc-4ccc-cccc-ccccccccc499';
+  const token = createMockJwt({ sub: seedUserId });
+  const expectedPath = getStorageProbeObjectPath(runId);
+  const rawFixture = Buffer.from('unified-r4-trust-payload\n', 'utf8');
+  const mutableInput = Buffer.from(rawFixture);
+  const rpcBarrier = createOfflineBarrier('r4-unified-rpc');
+
+  const unifiedTransport = createDeterministicFixtureTransport({
+    initialState: { uploaded: false, deleted: false },
+    routes: [
+      { method: 'GET', urlIncludes: '/auth/v1/user', status: 200, ok: true, json: { id: seedUserId } },
+      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: false }, status: 400, ok: false, text: JSON.stringify({ statusCode: '404', code: 'NoSuchKey' }) },
+      { method: 'POST', urlIncludes: '/storage/v1/object/', setsState: { uploaded: true }, status: 200, ok: true, json: { Id: objectUuid } },
+      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: true, deleted: false }, status: 200, ok: true, rawBytes: mutableInput },
+      { method: 'POST', urlIncludes: '/rest/v1/rpc/task06i_lookup_storage_object_owner', waitForBarrier: rpcBarrier, status: 200, ok: true, json: [{ id: objectUuid, bucket_id: STORAGE_PROBE_BUCKET, name: expectedPath, owner_id: seedUserId }] },
+      { method: 'DELETE', urlIncludes: '/storage/v1/object/', setsState: { deleted: true }, status: 400, ok: false, text: JSON.stringify({ statusCode: '404', code: 'NoSuchKey' }) },
+      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { deleted: true }, status: 400, ok: false, text: JSON.stringify({ statusCode: '404', code: 'NoSuchKey' }) },
+      { method: 'DELETE', urlIncludes: `/auth/v1/admin/users/${createdUserId}`, setsState: { userDeleted: true }, status: 200, ok: true, json: {} },
+      { method: 'GET', urlIncludes: `/auth/v1/admin/users/${createdUserId}`, whenState: { userDeleted: true }, status: 404, ok: false, json: { message: 'User not found' } }
+    ],
+    defaultResponse: { status: 500, ok: false }
+  });
+  mutableInput.fill(0x7a);
+
+  const trustedAdmin = createHostedAdminClient({
+    serviceRoleKey: validTestServiceRoleKey,
+    anonKey: validTestAnonKey,
+    projectRef: HARDCODED_TEMP_REF,
+    runId,
+    fetchFn: unifiedTransport
+  });
+  const inv = new TestRunInventory(runId);
+  inv.registerCreatedUser({
+    id: createdUserId,
+    email: 'created-r4@proof.invalid',
+    creationProof: createCreationProof({ method: 'admin_create_user', endpoint: '/auth/v1/admin/users' })
+  });
+
+  // 1. Real hosted runner remains permanently blocked pending durable recovery
+  await assert.rejects(
+    () => runHostedProbeRunner({
+      projectRef: HARDCODED_TEMP_REF,
+      runId,
+      argv: ['--live'],
+      env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' },
+      mockDispatcher: createHostedDispatcher({ anonKey: validTestAnonKey, fetchFn: unifiedTransport }),
+      adminClient: trustedAdmin
+    }),
+    /BLOCKED_PENDING_DURABLE_RECOVERY/
+  );
+
+  // 2. Coordinated overlapping global leases + terminal barrier termination + atomic provisioning + cleanup
+  const sharedGlobalCoord = createFetchIsolationCoordinator(globalThis);
+  const baseDepth = getFetchIsolationDebugState().activeDepth;
+
+  const provPromise = sharedGlobalCoord.run(async () => {
+    assert.equal(getFetchIsolationDebugState().activeDepth, baseDepth + 1);
+    const p = provisionStorageProbeFixture({
+      runId,
+      seedUserId,
+      userAccessToken: token,
+      anonKey: validTestAnonKey,
+      adminClient: trustedAdmin,
+      inventory: inv,
+      probeContent: rawFixture,
+      fetchFn: unifiedTransport
+    });
+    await rpcBarrier.waitForArrivals(1);
+
+    // Concurrent cleanup while provisioning is in-flight waits/observes unresolved ops and refuses premature user deletion
+    const prematureCleanup = await inv.executeCleanup({ adminClient: trustedAdmin, failClosed: false, settlementTimeoutMs: 5 });
+    assert.equal(prematureCleanup.usersDeleted, 0, 'Unverified/in-flight storage must forbid Auth user deletion');
+    assert.equal(prematureCleanup.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+
+    rpcBarrier.release();
+    return p;
+  });
+
+  await assert.rejects(() => provPromise, /PROVISIONING_ABORTED_DURING_CLEANUP/);
+  assert.equal(getFetchIsolationDebugState().activeDepth, baseDepth);
+  // Residual committed upload was preserved without blind deletion and blocked user deletion cleanly
+  assert.equal(inv.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.lifecycleState, STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED);
+  assert.equal(inv.getStorageFixture(STORAGE_PROBE_BUCKET, expectedPath)?.deletionEligible, false);
+  assert.equal(unifiedTransport.calls.some(c => c.method === 'DELETE' && c.url.includes('/storage/v1/object/')), false);
 });
