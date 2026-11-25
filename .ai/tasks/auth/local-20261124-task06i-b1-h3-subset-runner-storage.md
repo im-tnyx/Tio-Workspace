@@ -639,3 +639,52 @@ Offline verification and independent diff review are complete for implementation
 - **Hosted Mutations:** `0`
 - **Cost:** `$0`
 - **Merge:** `NOT AUTHORIZED`
+
+---
+
+## 14. Revision R10 — Enforced Typed Admission & Effective Run Capability Correlation
+
+**Bootstrap baseline:** Local/remote HEAD `a192fbcd0958738a0126fe05d885a1493f625317`, `main` `4569479e8fe2caa6659fe1cc6c7a484596a01bbc`, clean worktree, 44 review threads (40 resolved, 4 unresolved: `PRRT_kwDOVtCmZc672m_v`, `PRRT_kwDOVtCmZc672m_0`, `PRRT_kwDOVtCmZc672pRQ`, `PRRT_kwDOVtCmZc672pRX`), 6 successful checks, Cursor Bugbot NEUTRAL, and independent `im-tio` review `CHANGES_REQUESTED` (`2026-11-25T10:49:55Z`).
+
+### R10-01 & R10-02 Remediation Summary
+
+1. **R10-01 (`PRRT_kwDOVtCmZc672m_v` P1) — Enforced Typed Admission & Deeply Immutable Schemas:** `deepFreeze()` locks `INTERNAL_ADMISSION_SCHEMAS` and exported `UNIFIED_ADMISSION_SCHEMAS` recursively across all 13 public entry-point/item schemas (`runnerOptions`, `planProbeExecutionOptions`, `validateSelectedProbeIdsOptions`, `createHostedDispatcherOptions`, `dispatcherCallOptions`, `offlineDispatcherCallOptions`, `probeItem`, `createRunContextOptions`, `TestRunInventoryOptions`, `createHostedAdminClientOptions`, `provisionStorageProbeFixtureOptions`, `executeCleanupOptions`, `verifyStorageObjectAbsenceOptions`). `admitValidatedInput()` reads exclusively from module-private `INTERNAL_ADMISSION_SCHEMAS` and enforces unknown-schema rejection, unknown-key rejection (`UNTRUSTED_ADMISSION_KEY`), required fields (`MISSING_REQUIRED_ADMISSION_FIELD`), nullability, `string` (blocking `.trim()` coercive objects), finite `number` + `min`/`max` bounds (`probeTimeoutMs` 1..60000, `ownershipTimeoutMs` 1..60000, `settlementTimeoutMs` 0..60000), `boolean`, `string_array` (`snapshotStringArray`), `env_record` (`snapshotRunnerEnv`), `declarative_record` (`validateDeclarativeFixtureValue` + `clonePlainData`), `string_or_binary`, `abort_signal` (non-Proxy `AbortSignal`), `any_rejected_callback`, and registered capability handles (`trusted_transport`, `trusted_offline_dispatcher`, `trusted_admin_client`, `trusted_inventory`, `trusted_run_context`).
+2. **R10-02 (`PRRT_kwDOVtCmZc672m_0` P1, `PRRT_kwDOVtCmZc672pRQ` High, `PRRT_kwDOVtCmZc672pRX` Med) — Effective Dispatcher Capability Correlation:** `createHostedDispatcher()` binds `factoryBoundRunId` from factory `inventory`/`runContext`. On every `hostedDispatcher(rawItem, rawCallOptions)` call, `effInv = options.inventory ?? inventory` and `effCtx = options.runContext ?? runContext` are BOTH revalidated via `assertTrustedRunInventory()` and `assertTrustedRunContext()` (even when overrides are omitted, rejecting cleared `RunContext` and `FINALIZED` inventory BEFORE any transport or `protectSeedIdentity()` call), `options.projectRef` is pinned to `normRef`, `options.runId` is pinned to `factoryBoundRunId` when bound, and `effInv.runId` / `effCtx.runId` must correlate identically. `trustedOfflineDispatcher()` similarly enforces `probeItem`, `offlineDispatcherCallOptions`, `options.projectRef`, and `options.runId`.
+
+### Source-Backed Typed Admission & Correlation Matrix (R10)
+
+| Entry point | Field | Declared type | Actual validator | Binding check | Negative test |
+|---|---|---|---|---|---|
+| `runHostedProbeRunner` / `runOfflineProbeSimulation` | `probeTimeoutMs` | `number` (`1..60000`) | `admitValidatedInput(..., 'runnerOptions')` | `Number.isFinite` + range | Test 135 (`valueOf`, `NaN`, `Infinity`, `0`, `-5`, `60001`) |
+| `runHostedProbeRunner` / `createHostedDispatcher` | `projectRef` | `string` | `admitValidatedInput()` | `typeof === 'string'` + `HARDCODED_TEMP_REF` | Test 135 (`{ trim() }`), Test 136 |
+| `hostedDispatcher` | `rawItem` / `id` | `probeItem` (`id` required `string`) | `admitValidatedInput(..., 'probeItem')` | Required `id`, rejects unknown keys | Test 135 (`{}`), Test 137 |
+| `hostedDispatcher` | `inventory`, `runContext`, `runId`, `projectRef`, `signal` | `dispatcherCallOptions` | `admitValidatedInput()` + `effInv`/`effCtx` revalidation | Single `factoryBoundRunId` + non-cleared/non-finalized + `normRef` | Tests 135, 136 |
+| `trustedOfflineDispatcher` | `rawItem`, `rawOptions` | `probeItem`, `offlineDispatcherCallOptions` | `admitValidatedInput()` + `assertTrustedOfflineDispatcher` | `normRef` + `boundRunId` | Test 135 |
+| `createRunContext` / `TestRunInventory` / `createHostedAdminClient` | Options records | Schema-specific | `admitValidatedInput()` | Rejects unknown keys + bad types | Test 135 |
+| `executeCleanup` / `provisionStorageProbeFixture` / `verifyStorageObjectAbsenceDetailed` | `settlementTimeoutMs`, `ownershipTimeoutMs`, `failClosed`, `projectRef`, `runId` | Schema-specific | `admitValidatedInput()` | Range `0..60000` / `1..60000`, `boolean`, `string` | Tests 135, 137 |
+| `validateSelectedProbeIds` / `planProbeExecution` | Options + `selectedProbeIds` | `validateSelectedProbeIdsOptions`, `planProbeExecutionOptions` | `admitValidatedInput()` + `snapshotStringArray()` | Rejects unknown keys, iterators/Proxies | Tests 133, 135 |
+
+### R10 Verification Matrix
+
+| Check Executed | Result / Exit Code |
+|---|---|
+| `node --test experiments/task06i/hosted-probe-runner.test.mjs` | **141/141 PASS**, exit 0 (includes Tests 135–137) |
+| Docker `node:24-bookworm --network none --pull never` runner suite | **141/141 PASS**, exit 0 |
+| `node --test experiments/task06i/*.test.mjs` | **209/209 PASS**, exit 0 |
+| `node experiments/task06i/sql-contract-parity.mjs` | **POSTGRES_VERIFIED** on PostgreSQL 17.11, exit 0 |
+| `node --test experiments/task06h/*.test.mjs` | **115/115 PASS**, exit 0 |
+| `npm run verify` | Tokens guard, `tsc --noEmit`, `eslint --max-warnings=0`, **22/22 shell tests PASS**, exit 0 |
+| `git diff --check` & `git diff --check origin/main...HEAD` | **CLEAN**, exit 0 |
+
+### Final R10 Decisions
+
+- **H3 Subset Runner:** `IMPLEMENTED_OFFLINE_TESTED / BLOCKED`
+- **H3 Storage Lifecycle:** `IMPLEMENTED_OFFLINE_TESTED / BLOCKED`
+- **Durable Recovery:** `NOT IMPLEMENTED`
+- **Run-Created Seed Support:** `NOT IMPLEMENTED`
+- **Hosted Verification:** `0/18`
+- **Hosted LIVE:** `NOT AUTHORIZED`
+- **Production Real Auth:** `STRICT NO-GO`
+- **Hosted Mutations:** `0`
+- **Cost:** `$0`
+- **Merge:** `NOT AUTHORIZED`

@@ -12123,3 +12123,227 @@ test('134. H3-R9-04: createHostedDispatcher and per-call overrides enforce trust
   assert.equal(getterCalls, 0);
   assert.equal(trapCalls, 0);
 });
+
+test('135. H3-R10-01: Enforced typed admission rejects coercive objects (valueOf/trim), unknown keys, numeric bounds, and schema tampering', async () => {
+  let sentinelCalls = 0;
+  const transport = createDeterministicFixtureTransport({
+    routes: [{ method: 'POST', urlIncludes: '/auth/v1/otp', status: 422, body: { error: 'blocked' } }]
+  });
+  const adminClient = createHostedAdminClient({
+    projectRef: HARDCODED_TEMP_REF,
+    serviceRoleKey: validTestServiceRoleKey,
+    runId: 'r10-01-run',
+    fetchFn: transport
+  });
+  const inv = new TestRunInventory('r10-01-run');
+  const ctx = createRunContext({ runId: 'r10-01-run', testEmail: 'r10-01@proof.invalid' });
+
+  // 1. Coercive objects with valueOf / trim must never be invoked
+  await assert.rejects(
+    () => runOfflineProbeSimulation({
+      projectRef: HARDCODED_TEMP_REF,
+      runId: 'r10-01-run',
+      adminClient,
+      inventory: inv,
+      runContext: ctx,
+      offlineDispatcher: createTrustedOfflineDispatcher({ projectRef: HARDCODED_TEMP_REF, runId: 'r10-01-run', defaultOutcome: { status: 200, passed: true } }),
+      probeTimeoutMs: { valueOf() { sentinelCalls++; return 10; } }
+    }),
+    /INVALID_ADMISSION_TYPE/
+  );
+  await assert.rejects(
+    () => runOfflineProbeSimulation({
+      projectRef: { trim() { sentinelCalls++; return HARDCODED_TEMP_REF; } },
+      runId: 'r10-01-run'
+    }),
+    /INVALID_ADMISSION_TYPE/
+  );
+  assert.throws(
+    () => createHostedDispatcher({
+      projectRef: { trim() { sentinelCalls++; return HARDCODED_TEMP_REF; } },
+      anonKey: validTestAnonKey,
+      fetchFn: transport
+    }),
+    /INVALID_ADMISSION_TYPE/
+  );
+
+  // 2. Numeric bounds & non-finite numbers rejected
+  for (const badTimeout of [NaN, Infinity, -Infinity, 0, -5, 60001, '100']) {
+    await assert.rejects(
+      () => runOfflineProbeSimulation({ projectRef: HARDCODED_TEMP_REF, probeTimeoutMs: badTimeout }),
+      /INVALID_ADMISSION_TYPE|INVALID_ADMISSION_RANGE/
+    );
+  }
+  await assert.rejects(
+    () => inv.executeCleanup({ adminClient, failClosed: false, settlementTimeoutMs: -1 }),
+    /INVALID_ADMISSION_RANGE/
+  );
+  await assert.rejects(
+    () => inv.executeCleanup({ adminClient, failClosed: 'yes', settlementTimeoutMs: 10 }),
+    /INVALID_ADMISSION_TYPE/
+  );
+
+  // 3. Unknown fields & missing required fields rejected across schemas
+  assert.throws(
+    () => createRunContext({ runId: 'r10-01-run', unexpectedHook: () => { sentinelCalls++; } }),
+    /UNTRUSTED_ADMISSION_KEY/
+  );
+  assert.throws(
+    () => new TestRunInventory('r10-01-run', { unknownSeedProp: 'x' }),
+    /UNTRUSTED_ADMISSION_KEY/
+  );
+  assert.throws(
+    () => createHostedAdminClient({
+      projectRef: HARDCODED_TEMP_REF,
+      serviceRoleKey: validTestServiceRoleKey,
+      fetchFn: transport,
+      extraOption: true
+    }),
+    /UNTRUSTED_ADMISSION_KEY/
+  );
+  assert.throws(
+    () => planProbeExecution(HARDCODED_TEMP_REF, { unknownFlag: true }),
+    /UNTRUSTED_ADMISSION_KEY/
+  );
+  assert.throws(
+    () => validateSelectedProbeIds(['BYPASS-01'], { unknownOpt: 1 }),
+    /UNTRUSTED_ADMISSION_KEY/
+  );
+
+  const disp = createHostedDispatcher({
+    projectRef: HARDCODED_TEMP_REF,
+    anonKey: validTestAnonKey,
+    fetchFn: transport,
+    inventory: inv,
+    runContext: ctx
+  });
+  await assert.rejects(() => disp({}), /MISSING_REQUIRED_ADMISSION_FIELD/);
+  await assert.rejects(() => disp({ id: 'BYPASS-01' }, { unknownCallOpt: 'bad' }), /UNTRUSTED_ADMISSION_KEY/);
+  await assert.rejects(() => disp({ id: 'BYPASS-01' }, { signal: { aborted: false } }), /INVALID_ADMISSION_TYPE/);
+
+  const offlineDisp = createTrustedOfflineDispatcher({
+    projectRef: HARDCODED_TEMP_REF,
+    runId: 'r10-01-run',
+    defaultOutcome: { status: 200, passed: true }
+  });
+  await assert.rejects(() => offlineDisp({ id: 'BYPASS-01' }, { unknownCallOpt: 'bad' }), /UNTRUSTED_ADMISSION_KEY/);
+
+  // 4. Deep-frozen UNIFIED_ADMISSION_SCHEMAS cannot be mutated
+  assert.equal(Object.isFrozen(UNIFIED_ADMISSION_SCHEMAS), true);
+  assert.equal(Object.isFrozen(UNIFIED_ADMISSION_SCHEMAS.runnerOptions), true);
+  assert.equal(Object.isFrozen(UNIFIED_ADMISSION_SCHEMAS.runnerOptions.probeTimeoutMs), true);
+  assert.throws(() => {
+    UNIFIED_ADMISSION_SCHEMAS.runnerOptions.injectedField = { type: 'string' };
+  }, TypeError);
+  assert.throws(() => {
+    UNIFIED_ADMISSION_SCHEMAS.runnerOptions.probeTimeoutMs.type = 'object';
+  }, TypeError);
+
+  assert.equal(transport.calls.length, 0);
+  assert.equal(sentinelCalls, 0);
+});
+
+test('136. H3-R10-02: Effective dispatcher capability correlation enforces one immutable run across factory defaults, overrides, cleared contexts, and finalized inventories', async () => {
+  const transport = createDeterministicFixtureTransport({
+    routes: [{ method: 'POST', urlIncludes: '/auth/v1/otp', status: 422, body: { error: 'blocked' } }]
+  });
+  const anonKey = validTestAnonKey;
+  const serviceRoleKey = validTestServiceRoleKey;
+
+  const runA = 'r10-02-run-a';
+  const runB = 'r10-02-run-b';
+  const invA = new TestRunInventory(runA);
+  const ctxA = createRunContext({ runId: runA, testEmail: 'a@proof.invalid' });
+  const adminA = createHostedAdminClient({ projectRef: HARDCODED_TEMP_REF, serviceRoleKey, runId: runA, fetchFn: transport });
+  const invB = new TestRunInventory(runB);
+  const ctxB = createRunContext({ runId: runB, testEmail: 'b@proof.invalid' });
+
+  // 1. Factory bound to Run A rejects any Run B partial or full override
+  const dispBoundA = createHostedDispatcher({
+    projectRef: HARDCODED_TEMP_REF,
+    anonKey,
+    fetchFn: transport,
+    inventory: invA,
+    runContext: ctxA
+  });
+
+  await assert.rejects(() => dispBoundA({ id: 'BYPASS-01' }, { runContext: ctxB }), /ADMIN_CLIENT_RUN_MISMATCH|DISPATCHER_RUN_MISMATCH/);
+  await assert.rejects(() => dispBoundA({ id: 'BYPASS-01' }, { inventory: invB }), /INVENTORY_RUN_ID_MISMATCH|DISPATCHER_RUN_MISMATCH/);
+  await assert.rejects(() => dispBoundA({ id: 'BYPASS-01' }, { inventory: invB, runContext: ctxB }), /INVENTORY_RUN_ID_MISMATCH|DISPATCHER_RUN_MISMATCH/);
+  await assert.rejects(() => dispBoundA({ id: 'BYPASS-01' }, { runId: runB }), /DISPATCHER_RUN_MISMATCH/);
+  await assert.rejects(() => dispBoundA({ id: 'BYPASS-01' }, { projectRef: 'zzzzzzzzzzzzzzzzzzzz' }), /CRITICAL_SECURITY_VIOLATION/);
+  assert.equal(transport.calls.length, 0);
+
+  // 2. Factory bound only to ctxA rejects invB override
+  const dispCtxOnlyA = createHostedDispatcher({
+    projectRef: HARDCODED_TEMP_REF,
+    anonKey,
+    fetchFn: transport,
+    runContext: ctxA
+  });
+  await assert.rejects(() => dispCtxOnlyA({ id: 'BYPASS-01' }, { inventory: invB }), /INVENTORY_RUN_ID_MISMATCH|DISPATCHER_RUN_MISMATCH/);
+  assert.equal(transport.calls.length, 0);
+
+  // 3. Unbound factory rejects mismatched invA + ctxB or runId + invA
+  const dispUnbound = createHostedDispatcher({
+    projectRef: HARDCODED_TEMP_REF,
+    anonKey,
+    fetchFn: transport
+  });
+  await assert.rejects(() => dispUnbound({ id: 'BYPASS-01' }, { inventory: invA, runContext: ctxB }), /ADMIN_CLIENT_RUN_MISMATCH|DISPATCHER_RUN_MISMATCH/);
+  await assert.rejects(() => dispUnbound({ id: 'BYPASS-01' }, { runId: runB, inventory: invA }), /INVENTORY_RUN_ID_MISMATCH|DISPATCHER_RUN_MISMATCH/);
+  assert.equal(transport.calls.length, 0);
+
+  // 4. Valid same-run call succeeds
+  const okOut = await dispBoundA({ id: 'BYPASS-01', testUser: 'a@proof.invalid' }, { runId: runA });
+  assert.equal(okOut.status, 422);
+  assert.equal(transport.calls.length, 1);
+
+  // 5. Cleared factory RunContext is rejected on subsequent default call (no overrides)
+  ctxA.clear();
+  await assert.rejects(() => dispBoundA({ id: 'BYPASS-01' }), /UNTRUSTED_RUN_CONTEXT/);
+  assert.equal(transport.calls.length, 1);
+
+  // 6. Finalized factory Inventory is rejected on subsequent default call BEFORE any transport or seed mutation
+  const ctxA2 = createRunContext({ runId: runA, testEmail: 'a2@proof.invalid' });
+  const dispInvOnlyA = createHostedDispatcher({
+    projectRef: HARDCODED_TEMP_REF,
+    anonKey,
+    fetchFn: transport,
+    inventory: invA,
+    runContext: ctxA2
+  });
+  await invA.executeCleanup({ adminClient: adminA, failClosed: false, settlementTimeoutMs: 0 });
+  assert.equal(invA.runLifecycleState, INVENTORY_RUN_STATE.FINALIZED);
+  await assert.rejects(
+    () => dispInvOnlyA({ id: 'BYPASS-01' }, { seedUserId: '00000000-0000-4000-8000-000000000001' }),
+    /RUN_FINALIZED_ADMISSION_BLOCKED/
+  );
+  assert.equal(invA.protectedSeedIdentities.size, 0);
+  assert.equal(transport.calls.length, 1);
+});
+
+test('137. H3-R10-03: Schema completeness covers all public option contracts and preserves zero side effects on rejection', async () => {
+  const expectedSchemas = [
+    'runnerOptions',
+    'planProbeExecutionOptions',
+    'validateSelectedProbeIdsOptions',
+    'createHostedDispatcherOptions',
+    'dispatcherCallOptions',
+    'offlineDispatcherCallOptions',
+    'probeItem',
+    'createRunContextOptions',
+    'TestRunInventoryOptions',
+    'createHostedAdminClientOptions',
+    'provisionStorageProbeFixtureOptions',
+    'executeCleanupOptions',
+    'verifyStorageObjectAbsenceOptions'
+  ];
+  for (const name of expectedSchemas) {
+    assert.ok(UNIFIED_ADMISSION_SCHEMAS[name], `Missing schema '${name}'`);
+    assert.equal(Object.isFrozen(UNIFIED_ADMISSION_SCHEMAS[name]), true);
+  }
+  const absRes = await verifyStorageObjectAbsenceDetailed(null, 'bucket', 'path', { unexpectedFlag: true });
+  assert.equal(absRes.isAbsent, false);
+  assert.match(absRes.reason, /UNTRUSTED_ADMISSION_KEY/);
+});

@@ -596,90 +596,342 @@ function snapshotStringArray(
  * Every public execution path admits inputs through extractValidatedPlainOptions() + schema field contracts
  * before any subsequent property read or capability invocation.
  */
-export const UNIFIED_ADMISSION_SCHEMAS = Object.freeze({
-  runnerOptions: Object.freeze({
-    projectRef: { type: 'string', required: false, kind: 'inert_data', binding: 'project' },
-    tempRef: { type: 'string', required: false, kind: 'inert_data', binding: 'project' },
-    argv: { type: 'string_array', required: false, kind: 'inert_data', binding: 'none' },
-    env: { type: 'env_record', required: false, kind: 'inert_data', binding: 'none' },
-    testEmail: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
-    testUser: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
-    seedEmail: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
-    seedUserId: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
-    targetUserId: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
-    runId: { type: 'string', required: false, kind: 'inert_data', binding: 'run' },
-    selectedProbeIds: { type: 'string_array', required: false, kind: 'inert_data', binding: 'none' },
-    timing: { type: 'declarative_record', required: false, kind: 'inert_data', binding: 'offline_only' },
-    mockDispatcher: { type: 'trusted_offline_dispatcher', required: false, kind: 'registered_capability', binding: 'project+run' },
-    offlineDispatcher: { type: 'trusted_offline_dispatcher', required: false, kind: 'registered_capability', binding: 'project+run' },
-    adminClient: { type: 'trusted_admin_client', required: false, kind: 'registered_capability', binding: 'project+run' },
-    inventory: { type: 'trusted_inventory', required: false, kind: 'registered_capability', binding: 'project+run' },
-    runContext: { type: 'trusted_run_context', required: false, kind: 'registered_capability', binding: 'project+run' },
-    executionMode: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
-    probeTimeoutMs: { type: 'number', required: false, kind: 'inert_data', binding: 'none' }
-  }),
-  planProbeExecutionOptions: Object.freeze({
-    testEmail: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
-    tempRef: { type: 'string', required: false, kind: 'inert_data', binding: 'project' },
-    isLive: { type: 'boolean', required: false, kind: 'inert_data', binding: 'none' },
-    selectedProbeIds: { type: 'string_array', required: false, kind: 'inert_data', binding: 'none' },
-    runId: { type: 'string', required: false, kind: 'inert_data', binding: 'run' },
-    allowIsolatedTestRef: { type: 'boolean', required: false, kind: 'inert_data', binding: 'none' }
-  }),
-  createHostedDispatcherOptions: Object.freeze({
-    projectRef: { type: 'string', required: false, kind: 'inert_data', binding: 'project' },
-    anonKey: { type: 'string', required: true, kind: 'inert_data', binding: 'project' },
-    serviceRoleKey: { type: 'string', required: false, kind: 'inert_data', binding: 'project' },
-    fetchFn: { type: 'trusted_transport', required: true, kind: 'registered_capability', binding: 'offline_transport' },
-    inventory: { type: 'trusted_inventory', required: false, kind: 'registered_capability', binding: 'project+run' },
-    runContext: { type: 'trusted_run_context', required: false, kind: 'registered_capability', binding: 'project+run' },
-    testEmail: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
-    seedEmail: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
-    seedUserId: { type: 'string', required: false, kind: 'inert_data', binding: 'none' }
-  }),
-  dispatcherCallOptions: Object.freeze({
-    signal: { type: 'abort_signal', required: false, kind: 'trusted_internal_object', binding: 'none' },
-    projectRef: { type: 'string', required: false, kind: 'inert_data', binding: 'project' },
-    runId: { type: 'string', required: false, kind: 'inert_data', binding: 'run' },
-    inventory: { type: 'trusted_inventory', required: false, kind: 'registered_capability', binding: 'project+run' },
-    runContext: { type: 'trusted_run_context', required: false, kind: 'registered_capability', binding: 'project+run' },
-    testPassword: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
-    testEmail: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
-    testUser: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
-    seedEmail: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
-    seedUserId: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
-    activeRefreshToken: { type: 'string', required: false, kind: 'inert_data', binding: 'none' }
-  }),
-  createRunContextOptions: Object.freeze({
-    runId: { type: 'string', required: false, kind: 'inert_data', binding: 'run' },
-    storageFixturePath: { type: 'string', required: false, kind: 'inert_data', binding: 'run' },
-    testPassword: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
-    testEmail: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
-    testUser: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
-    seedUserId: { type: 'string', required: false, kind: 'inert_data', binding: 'none' },
-    seedEmail: { type: 'string', required: false, kind: 'inert_data', binding: 'none' }
-  })
-});
-
-function admitValidatedInput(rawInput, schemaName, { allowNullUndefined = true } = {}) {
-  const snapshot = extractValidatedPlainOptions(rawInput, schemaName, { allowNullUndefined });
-  const schema = UNIFIED_ADMISSION_SCHEMAS[schemaName];
-  if (schema) {
-    for (const key of Object.getOwnPropertyNames(snapshot)) {
-      const val = snapshot[key];
-      if (val === undefined || val === null) continue;
-      const spec = schema[key];
-      if (typeof val === 'function' && (!spec || spec.kind === 'inert_data')) {
-        if (schemaName === 'runnerOptions' && (key === 'sleepFn' || key === 'timing')) {
-          continue; // Rejected in _runHostedProbeRunnerInternal admission try/catch so valid inventory residual obligations are preserved on error.cleanupReport (R7-01)
-        }
-        throw new Error(
-          `BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_EXECUTABLE_INPUT: Function value rejected at '${schemaName}.${key}' (R9 Sec 6)`
-        );
-      }
+function deepFreeze(obj) {
+  if (obj === null || typeof obj !== 'object') return obj;
+  Object.freeze(obj);
+  for (const key of Object.getOwnPropertyNames(obj)) {
+    const val = obj[key];
+    if (val !== null && typeof val === 'object' && !Object.isFrozen(val)) {
+      deepFreeze(val);
     }
   }
-  return snapshot;
+  return obj;
+}
+
+const INTERNAL_ADMISSION_SCHEMAS = deepFreeze({
+  runnerOptions: {
+    projectRef: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'project' },
+    tempRef: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'project' },
+    argv: { type: 'string_array', required: false, nullable: true, allowEmpty: true, trimNonEmpty: false, errorCode: 'INVALID_RUNNER_ARGV', kind: 'inert_data', binding: 'none' },
+    env: { type: 'env_record', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    testEmail: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    testUser: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    seedEmail: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    seedUserId: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    targetUserId: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    testPassword: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    runId: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'run' },
+    storageFixturePath: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'run' },
+    selectedProbeIds: { type: 'string_array', required: false, nullable: true, allowEmpty: true, trimNonEmpty: false, errorCode: 'INVALID_PROBE_SELECTION', kind: 'inert_data', binding: 'none' },
+    timing: { type: 'declarative_record', required: false, nullable: true, kind: 'inert_data', binding: 'offline_only', deferRunnerRejection: true },
+    sleepFn: { type: 'any_rejected_callback', required: false, nullable: true, kind: 'inert_data', binding: 'none', deferRunnerRejection: true },
+    mockDispatcher: { type: 'trusted_offline_dispatcher', required: false, nullable: true, kind: 'registered_capability', binding: 'project+run', deferRunnerRejection: true },
+    offlineDispatcher: { type: 'trusted_offline_dispatcher', required: false, nullable: true, kind: 'registered_capability', binding: 'project+run', deferRunnerRejection: true },
+    adminClient: { type: 'trusted_admin_client', required: false, nullable: true, kind: 'registered_capability', binding: 'project+run', deferRunnerRejection: true },
+    inventory: { type: 'trusted_inventory', required: false, nullable: true, kind: 'registered_capability', binding: 'project+run', deferRunnerRejection: true },
+    runContext: { type: 'trusted_run_context', required: false, nullable: true, kind: 'registered_capability', binding: 'project+run', deferRunnerRejection: true },
+    executionMode: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    probeTimeoutMs: { type: 'number', required: false, nullable: false, min: 1, max: 60000, kind: 'inert_data', binding: 'none' },
+    allowIsolatedTestRef: { type: 'boolean', required: false, nullable: false, kind: 'inert_data', binding: 'none' },
+    liveHostedDispatch: { type: 'boolean', required: false, nullable: false, kind: 'inert_data', binding: 'none' },
+    enforceDurableRecoveryGate: { type: 'boolean', required: false, nullable: false, kind: 'inert_data', binding: 'none' },
+    requireSelection: { type: 'boolean', required: false, nullable: false, kind: 'inert_data', binding: 'none' }
+  },
+  planProbeExecutionOptions: {
+    testEmail: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    tempRef: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'project' },
+    isLive: { type: 'boolean', required: false, nullable: false, kind: 'inert_data', binding: 'none' },
+    selectedProbeIds: { type: 'string_array', required: false, nullable: true, allowEmpty: true, trimNonEmpty: false, errorCode: 'INVALID_PROBE_SELECTION', kind: 'inert_data', binding: 'none' },
+    runId: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'run' },
+    allowIsolatedTestRef: { type: 'boolean', required: false, nullable: false, kind: 'inert_data', binding: 'none' }
+  },
+  validateSelectedProbeIdsOptions: {
+    isLive: { type: 'boolean', required: false, nullable: false, kind: 'inert_data', binding: 'none' }
+  },
+  createHostedDispatcherOptions: {
+    projectRef: { type: 'string', required: false, nullable: false, kind: 'inert_data', binding: 'project' },
+    anonKey: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'project' },
+    serviceRoleKey: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'project' },
+    fetchFn: { type: 'trusted_transport', required: false, nullable: true, kind: 'registered_capability', binding: 'offline_transport' },
+    inventory: { type: 'trusted_inventory', required: false, nullable: true, kind: 'registered_capability', binding: 'project+run' },
+    runContext: { type: 'trusted_run_context', required: false, nullable: true, kind: 'registered_capability', binding: 'project+run' },
+    testEmail: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    seedEmail: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    seedUserId: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' }
+  },
+  dispatcherCallOptions: {
+    signal: { type: 'abort_signal', required: false, nullable: true, kind: 'trusted_internal_object', binding: 'none' },
+    projectRef: { type: 'string', required: false, nullable: false, kind: 'inert_data', binding: 'project' },
+    runId: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'run' },
+    inventory: { type: 'trusted_inventory', required: false, nullable: true, kind: 'registered_capability', binding: 'project+run' },
+    runContext: { type: 'trusted_run_context', required: false, nullable: true, kind: 'registered_capability', binding: 'project+run' },
+    testPassword: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    testEmail: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    testUser: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    seedEmail: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    seedUserId: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    activeRefreshToken: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' }
+  },
+  offlineDispatcherCallOptions: {
+    signal: { type: 'abort_signal', required: false, nullable: true, kind: 'trusted_internal_object', binding: 'none' },
+    projectRef: { type: 'string', required: false, nullable: false, kind: 'inert_data', binding: 'project' },
+    runId: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'run' },
+    inventory: { type: 'trusted_inventory', required: false, nullable: true, kind: 'registered_capability', binding: 'project+run' },
+    runContext: { type: 'trusted_run_context', required: false, nullable: true, kind: 'registered_capability', binding: 'project+run' },
+    testPassword: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    testEmail: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    testUser: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    seedEmail: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    seedUserId: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    activeRefreshToken: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' }
+  },
+  probeItem: {
+    id: { type: 'string', required: true, nullable: false, kind: 'inert_data', binding: 'none' },
+    category: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    target: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    expectedResponse: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    plannedAction: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    testUser: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    status: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    readinessStatus: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    layer: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' }
+  },
+  createRunContextOptions: {
+    runId: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'run' },
+    storageFixturePath: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'run' },
+    testPassword: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    testEmail: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    testUser: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    seedUserId: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    seedEmail: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' }
+  },
+  TestRunInventoryOptions: {
+    seedEmail: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    seedUserId: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' }
+  },
+  createHostedAdminClientOptions: {
+    serviceRoleKey: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'project' },
+    anonKey: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'project' },
+    projectRef: { type: 'string', required: false, nullable: false, kind: 'inert_data', binding: 'project' },
+    runId: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'run' },
+    fetchFn: { type: 'trusted_transport', required: false, nullable: true, kind: 'registered_capability', binding: 'offline_transport' }
+  },
+  provisionStorageProbeFixtureOptions: {
+    projectRef: { type: 'string', required: false, nullable: false, kind: 'inert_data', binding: 'project' },
+    runId: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'run' },
+    seedUserId: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    userAccessToken: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    anonKey: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'project' },
+    serviceRoleKey: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'project' },
+    adminClient: { type: 'trusted_admin_client', required: false, nullable: true, kind: 'registered_capability', binding: 'project+run' },
+    ownershipLookupFn: { type: 'any_rejected_callback', required: false, nullable: true, kind: 'inert_data', binding: 'none' },
+    fetchFn: { type: 'trusted_transport', required: false, nullable: true, kind: 'registered_capability', binding: 'offline_transport' },
+    inventory: { type: 'trusted_inventory', required: false, nullable: true, kind: 'registered_capability', binding: 'project+run' },
+    probeContent: { type: 'string_or_binary', required: false, nullable: false, kind: 'inert_data', binding: 'none' },
+    ownershipTimeoutMs: { type: 'number', required: false, nullable: false, min: 1, max: 60000, kind: 'inert_data', binding: 'none' }
+  },
+  executeCleanupOptions: {
+    adminClient: { type: 'trusted_admin_client', required: false, nullable: true, kind: 'registered_capability', binding: 'project+run', deferRunnerRejection: true },
+    failClosed: { type: 'boolean', required: false, nullable: false, kind: 'inert_data', binding: 'none' },
+    settlementTimeoutMs: { type: 'number', required: false, nullable: false, min: 0, max: 60000, kind: 'inert_data', binding: 'none' }
+  },
+  verifyStorageObjectAbsenceOptions: {
+    projectRef: { type: 'string', required: false, nullable: false, kind: 'inert_data', binding: 'project' },
+    runId: { type: 'string', required: false, nullable: true, kind: 'inert_data', binding: 'run' }
+  }
+});
+
+export const UNIFIED_ADMISSION_SCHEMAS = INTERNAL_ADMISSION_SCHEMAS;
+
+function admitValidatedInput(rawInput, schemaName, { allowNullUndefined = true } = {}) {
+  const schema = Object.prototype.hasOwnProperty.call(INTERNAL_ADMISSION_SCHEMAS, schemaName)
+    ? INTERNAL_ADMISSION_SCHEMAS[schemaName]
+    : null;
+  if (!schema) {
+    throw new Error(`UNKNOWN_ADMISSION_SCHEMA: Admission schema '${schemaName}' is not registered (R10-01)`);
+  }
+  const snapshot = extractValidatedPlainOptions(rawInput, schemaName, { allowNullUndefined });
+  const admitted = {};
+
+  for (const key of Object.getOwnPropertyNames(snapshot)) {
+    const spec = Object.prototype.hasOwnProperty.call(schema, key) ? schema[key] : null;
+    if (!spec) {
+      throw new Error(
+        `UNTRUSTED_ADMISSION_KEY: Unknown field '${key}' rejected at '${schemaName}' (R10-01)`
+      );
+    }
+    const val = snapshot[key];
+    if (val === undefined) continue;
+    if (val === null) {
+      if (spec.nullable) {
+        admitted[key] = null;
+        continue;
+      }
+      throw new Error(
+        `INVALID_ADMISSION_TYPE: Null value rejected at '${schemaName}.${key}' (expected ${spec.type}) (R10-01)`
+      );
+    }
+
+    if (typeof val === 'function' && spec.kind === 'inert_data') {
+      if (spec.deferRunnerRejection) {
+        admitted[key] = val;
+        continue;
+      }
+      throw new Error(
+        `BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_EXECUTABLE_INPUT: Function value rejected at '${schemaName}.${key}' (R9 Sec 6)`
+      );
+    }
+
+    switch (spec.type) {
+      case 'string': {
+        if (typeof val !== 'string') {
+          throw new Error(
+            `INVALID_ADMISSION_TYPE: Expected string at '${schemaName}.${key}', received ${typeof val} (R10-01)`
+          );
+        }
+        admitted[key] = val;
+        break;
+      }
+      case 'number': {
+        if (typeof val !== 'number' || !Number.isFinite(val)) {
+          throw new Error(
+            `INVALID_ADMISSION_TYPE: Expected finite number at '${schemaName}.${key}' (R10-01)`
+          );
+        }
+        if (spec.integer && !Number.isInteger(val)) {
+          throw new Error(
+            `INVALID_ADMISSION_TYPE: Expected integer at '${schemaName}.${key}' (R10-01)`
+          );
+        }
+        if (typeof spec.min === 'number' && val < spec.min) {
+          throw new Error(
+            `INVALID_ADMISSION_RANGE: Value ${val} at '${schemaName}.${key}' is below minimum ${spec.min} (R10-01)`
+          );
+        }
+        if (typeof spec.max === 'number' && val > spec.max) {
+          throw new Error(
+            `INVALID_ADMISSION_RANGE: Value ${val} at '${schemaName}.${key}' exceeds maximum ${spec.max} (R10-01)`
+          );
+        }
+        admitted[key] = val;
+        break;
+      }
+      case 'boolean': {
+        if (typeof val !== 'boolean') {
+          throw new Error(
+            `INVALID_ADMISSION_TYPE: Expected boolean at '${schemaName}.${key}', received ${typeof val} (R10-01)`
+          );
+        }
+        admitted[key] = val;
+        break;
+      }
+      case 'string_array': {
+        admitted[key] = snapshotStringArray(val, `${schemaName}.${key}`, {
+          allowEmpty: spec.allowEmpty !== false,
+          trimNonEmpty: Boolean(spec.trimNonEmpty),
+          errorCode: spec.errorCode || 'INVALID_ADMISSION_TYPE'
+        });
+        break;
+      }
+      case 'env_record': {
+        admitted[key] = snapshotRunnerEnv(val);
+        break;
+      }
+      case 'declarative_record': {
+        if (spec.deferRunnerRejection) {
+          admitted[key] = val;
+        } else {
+          validateDeclarativeFixtureValue(val, `${schemaName}.${key}`);
+          admitted[key] = clonePlainData(val);
+        }
+        break;
+      }
+      case 'string_or_binary': {
+        if (typeof val !== 'string' && !(val instanceof Uint8Array) && !Buffer.isBuffer(val)) {
+          throw new Error(
+            `INVALID_ADMISSION_TYPE: Expected string or binary buffer at '${schemaName}.${key}' (R10-01)`
+          );
+        }
+        admitted[key] = val;
+        break;
+      }
+      case 'abort_signal': {
+        if (utilTypes.isProxy(val) || !(val instanceof AbortSignal)) {
+          throw new Error(
+            `INVALID_ADMISSION_TYPE: Expected non-Proxy AbortSignal at '${schemaName}.${key}' (R10-01)`
+          );
+        }
+        admitted[key] = val;
+        break;
+      }
+      case 'trusted_transport': {
+        assertOfflineMockTransport(val);
+        admitted[key] = val;
+        break;
+      }
+      case 'trusted_offline_dispatcher': {
+        if (spec.deferRunnerRejection) {
+          admitted[key] = val;
+        } else {
+          assertTrustedOfflineDispatcher(val, { requireRunBinding: false });
+          admitted[key] = val;
+        }
+        break;
+      }
+      case 'trusted_admin_client': {
+        if (spec.deferRunnerRejection) {
+          admitted[key] = val;
+        } else {
+          assertTrustedAdminClient(val, { requireRunBinding: false });
+          admitted[key] = val;
+        }
+        break;
+      }
+      case 'trusted_inventory': {
+        if (spec.deferRunnerRejection) {
+          admitted[key] = val;
+        } else {
+          assertTrustedRunInventory(val, {});
+          admitted[key] = val;
+        }
+        break;
+      }
+      case 'trusted_run_context': {
+        if (spec.deferRunnerRejection) {
+          admitted[key] = val;
+        } else {
+          assertTrustedRunContext(val, {});
+          admitted[key] = val;
+        }
+        break;
+      }
+      case 'any_rejected_callback': {
+        if (spec.deferRunnerRejection) {
+          admitted[key] = val;
+        } else {
+          throw new Error(
+            `BLOCKED_PENDING_DURABLE_RECOVERY: UNTRUSTED_EXECUTABLE_INPUT: Callback override '${schemaName}.${key}' is strictly prohibited (R10-01)`
+          );
+        }
+        break;
+      }
+      default:
+        throw new Error(
+          `UNKNOWN_ADMISSION_FIELD_TYPE: Unsupported schema type '${spec.type}' at '${schemaName}.${key}' (R10-01)`
+        );
+    }
+  }
+
+  for (const fieldName of Object.getOwnPropertyNames(schema)) {
+    const spec = schema[fieldName];
+    if (spec.required && !Object.prototype.hasOwnProperty.call(admitted, fieldName)) {
+      throw new Error(
+        `MISSING_REQUIRED_ADMISSION_FIELD: Required field '${schemaName}.${fieldName}' is missing (R10-01)`
+      );
+    }
+  }
+
+  return admitted;
 }
 
 function internalThrottleWait(ms) {
@@ -1087,9 +1339,19 @@ export function createTrustedOfflineDispatcher(rawSpec = {}) {
   const calls = [];
 
   const dispatcher = async function trustedOfflineDispatcher(rawItem, rawOptions = {}) {
-    const item = extractValidatedPlainOptions(rawItem, 'probeItem');
-    const options = extractValidatedPlainOptions(rawOptions, 'offlineDispatcherCallOptions');
+    const item = admitValidatedInput(rawItem, 'probeItem');
+    const options = admitValidatedInput(rawOptions, 'offlineDispatcherCallOptions');
     assertTrustedOfflineDispatcher(dispatcher, { projectRef: normRef, runId: boundRunId });
+    if (options.projectRef !== undefined && options.projectRef.trim().toLowerCase() !== normRef) {
+      throw new Error(
+        `CRITICAL_SECURITY_VIOLATION: Per-call projectRef '${options.projectRef}' does not match offline dispatcher project '${normRef}' (R10-02)`
+      );
+    }
+    if (boundRunId !== null && options.runId !== undefined && options.runId !== null && options.runId !== boundRunId) {
+      throw new Error(
+        `DISPATCHER_RUN_MISMATCH: Per-call runId '${options.runId}' does not match offline dispatcher bound run '${boundRunId}' (R10-02)`
+      );
+    }
     if (options.inventory !== undefined && options.inventory !== null) {
       assertTrustedRunInventory(options.inventory, { projectRef: normRef, expectedRunId: boundRunId });
     }
@@ -1554,7 +1816,7 @@ export function getStorageProbeObjectKey(runId) {
  * and live-mode support (H3-01).
  */
 export function validateSelectedProbeIds(selectedProbeIds, rawOptions = {}) {
-  extractValidatedPlainOptions(rawOptions, 'validateSelectedProbeIdsOptions');
+  admitValidatedInput(rawOptions, 'validateSelectedProbeIdsOptions');
   const safeIds = snapshotStringArray(selectedProbeIds, 'selectedProbeIds', {
     allowEmpty: false,
     trimNonEmpty: true,
@@ -4104,7 +4366,7 @@ export async function verifyStorageObjectAbsenceDetailed(adminClient, bucket, pa
   let projectRef = HARDCODED_TEMP_REF;
   let runId = null;
   try {
-    const opts = extractValidatedPlainOptions(rawOptions, 'verifyStorageObjectAbsenceOptions');
+    const opts = admitValidatedInput(rawOptions, 'verifyStorageObjectAbsenceOptions');
     if (opts.projectRef !== undefined) projectRef = opts.projectRef;
     if (opts.runId !== undefined) runId = opts.runId;
   } catch (optErr) {
@@ -4358,7 +4620,7 @@ export function assertTrustedRunContext(ctx, { projectRef = HARDCODED_TEMP_REF, 
  */
 export class TestRunInventory {
   constructor(runId = null, rawSeedOptions = {}) {
-    const seedOpts = extractValidatedPlainOptions(rawSeedOptions, 'TestRunInventoryOptions');
+    const seedOpts = admitValidatedInput(rawSeedOptions, 'TestRunInventoryOptions');
     const seedEmail = seedOpts.seedEmail !== undefined ? seedOpts.seedEmail : null;
     const seedUserId = seedOpts.seedUserId !== undefined ? seedOpts.seedUserId : null;
     if (runId !== null && runId !== undefined) {
@@ -5595,7 +5857,7 @@ export class TestRunInventory {
    * Resolves PRRT_kwDOVtCmZc66lOOU, PRRT_kwDOVtCmZc66lo-q, PRRT_kwDOVtCmZc66lq3S, PRRT_kwDOVtCmZc66mPVg (R5-02), PRRT_kwDOVtCmZc66mPVn (R5-03), PRRT_kwDOVtCmZc66mP9a (R5-06), PRRT_kwDOVtCmZc66vvky (R13-02), and PRRT_kwDOVtCmZc66_0zI (R16-02).
    */
   async executeCleanup(rawOptions = {}) {
-    const options = extractValidatedPlainOptions(rawOptions, 'executeCleanupOptions');
+    const options = admitValidatedInput(rawOptions, 'executeCleanupOptions');
     if (this._cleanupInProgress || this._activeCleanupPromise) {
       throw new Error(
         'CLEANUP_CONCURRENT_REENTRY_BLOCKED: Concurrent executeCleanup() invocation rejected while cleanup is already executing (R3-04)'
@@ -6415,7 +6677,7 @@ export class TestRunInventory {
  * 10. Grant RUN_CREATED_VERIFIED + deletionEligible: true ONLY after full verification passes
  */
 export async function provisionStorageProbeFixture(rawOptions = {}) {
-  const opts = extractValidatedPlainOptions(rawOptions, 'provisionStorageProbeFixtureOptions');
+  const opts = admitValidatedInput(rawOptions, 'provisionStorageProbeFixtureOptions');
   const {
     projectRef = HARDCODED_TEMP_REF,
     runId,
@@ -7672,7 +7934,7 @@ export function createHostedDispatcher(rawOptions = {}) {
   // 5. Structural Fail-Closed Transport / Durable Recovery Gate BEFORE touching inventory/context (R1-01, R2 Sec 6, R9-04)
   assertOfflineMockTransport(fetchFn);
 
-  // 6. Mandatory trusted inventory and runContext capability validation + immutable project/run correlation (R9-04)
+  // 6. Mandatory trusted inventory and runContext capability validation + immutable project/run correlation (R9-04, R10-02)
   if (inventory !== null && inventory !== undefined) {
     assertTrustedRunInventory(inventory, { projectRef: normRef, expectedRunId: null });
   }
@@ -7682,6 +7944,7 @@ export function createHostedDispatcher(rawOptions = {}) {
       expectedRunId: inventory ? inventory.runId : null
     });
   }
+  const factoryBoundRunId = inventory ? inventory.runId : (runContext ? runContext.runId : null);
 
   const factorySeedEmail = seedEmail || null;
   const factorySeedUserId = seedUserId || (runContext ? runContext.seedUserId : null) || null;
@@ -7713,22 +7976,44 @@ export function createHostedDispatcher(rawOptions = {}) {
         'BLOCKED_PENDING_DURABLE_RECOVERY: Hosted network dispatcher cannot execute inside LIVE runner while durable crash recovery is not implemented'
       );
     }
-    const item = extractValidatedPlainOptions(rawItem, 'probeItem', { allowNullUndefined: false });
+    const item = admitValidatedInput(rawItem, 'probeItem', { allowNullUndefined: false });
     const options = admitValidatedInput(rawCallOptions, 'dispatcherCallOptions');
-    const expectedCallRunId = options.runId || (inventory ? inventory.runId : (runContext ? runContext.runId : null));
-    if (options.inventory !== undefined && options.inventory !== null) {
-      assertTrustedRunInventory(options.inventory, { projectRef: normRef, expectedRunId: expectedCallRunId });
+    if (options.projectRef !== undefined && options.projectRef.trim().toLowerCase() !== normRef) {
+      throw new Error(
+        `CRITICAL_SECURITY_VIOLATION: Per-call projectRef '${options.projectRef}' does not match dispatcher project '${normRef}' (R10-02)`
+      );
     }
-    if (options.runContext !== undefined && options.runContext !== null) {
-      const ctxExpectedRun = (options.inventory ? options.inventory.runId : null) || expectedCallRunId;
-      assertTrustedRunContext(options.runContext, { projectRef: normRef, expectedRunId: ctxExpectedRun });
+    const effInv = options.inventory !== undefined && options.inventory !== null ? options.inventory : inventory;
+    const effCtx = options.runContext !== undefined && options.runContext !== null ? options.runContext : runContext;
+    if (factoryBoundRunId !== null && options.runId !== undefined && options.runId !== null && options.runId !== factoryBoundRunId) {
+      throw new Error(
+        `DISPATCHER_RUN_MISMATCH: Per-call runId '${options.runId}' does not match factory-bound run '${factoryBoundRunId}' (R10-02)`
+      );
+    }
+    const expectedCallRunId = factoryBoundRunId || (options.runId !== undefined && options.runId !== null ? options.runId : null);
+    if (effInv !== null && effInv !== undefined) {
+      assertTrustedRunInventory(effInv, { projectRef: normRef, expectedRunId: expectedCallRunId });
+      if (effInv.runLifecycleState === INVENTORY_RUN_STATE.FINALIZED) {
+        throw new Error(
+          `RUN_FINALIZED_ADMISSION_BLOCKED: Inventory for run '${effInv.runId}' is already FINALIZED; dispatch rejected before transport/mutation (R10-02)`
+        );
+      }
+    }
+    const ctxExpectedRun = effInv ? effInv.runId : expectedCallRunId;
+    if (effCtx !== null && effCtx !== undefined) {
+      assertTrustedRunContext(effCtx, { projectRef: normRef, expectedRunId: ctxExpectedRun });
+      if (effInv && effCtx.runId !== effInv.runId) {
+        throw new Error(
+          `DISPATCHER_RUN_MISMATCH: Effective runContext runId '${effCtx.runId}' does not match inventory runId '${effInv.runId}' (R10-02)`
+        );
+      }
     }
     const callCtx = { trappedRecoveryError: null };
     const outcome = await DISPATCHER_CALL_CONTEXT.run(callCtx, async () => {
       const signal = options.signal;
       const probeId = item.id;
-      const ctx = options.runContext || runContext;
-      const inv = options.inventory || inventory;
+      const ctx = effCtx;
+      const inv = effInv;
       const testPassword = options.testPassword || ctx?.testPassword || getRunTestPassword(options);
       const testUser = item?.testUser || options.testEmail || options.testUser || ctx?.testEmail || factorySeedEmail || 'tio-test-user-06i@proof.invalid';
 
@@ -9577,7 +9862,7 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
  * Resolves PRRT_kwDOVtCmZc66sBa5 (R7-01).
  */
 export function createHostedAdminClient(rawOptions = {}) {
-  const opts = extractValidatedPlainOptions(rawOptions, 'createHostedAdminClientOptions');
+  const opts = admitValidatedInput(rawOptions, 'createHostedAdminClientOptions');
   let {
     serviceRoleKey,
     anonKey,
