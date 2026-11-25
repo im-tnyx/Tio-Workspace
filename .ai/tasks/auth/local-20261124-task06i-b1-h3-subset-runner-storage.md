@@ -1,6 +1,6 @@
 # Task 06I-B1-H3 — Controlled Subset Dispatch & Run-Scoped Storage Implementation
 
-**Task ID:** `06I-B1-H3` (Revision `R4`)<br>
+**Task ID:** `06I-B1-H3` (Revision `R5`)<br>
 **Creation Date:** 2026-11-24<br>
 **Revision Date:** 2026-11-25<br>
 **Author:** Santosh Jangid (`im-tnyx`)<br>
@@ -8,7 +8,7 @@
 **Branch:** `feat/task06i-b1-h3-subset-runner-storage`<br>
 **Base:** `main` at `4569479e8fe2caa6659fe1cc6c7a484596a01bbc` (PR #43 merge commit)<br>
 **PR Reference:** https://github.com/im-tnyx/Tio-Workspace/pull/44<br>
-**Prior Audited HEAD:** `42b87f04dd3d4ed5876bad1863d60f991d75220b`<br>
+**Prior Audited HEAD:** `b06ab2993658aefb8d48de2d9a337392f2599bbb`<br>
 **Cost Ceiling:** $0.00 (Free-Tier Only)<br>
 **Mode:** Local Implementation, Mocked Transport Tests & Offline Verification ONLY<br>
 **Hosted LIVE Dispatch:** **NOT AUTHORIZED**<br>
@@ -280,7 +280,7 @@ Inspected upstream Supabase Storage (`supabase/storage` tag `v1.98.9`: `getObjec
 
 ---
 
-## 5. Verification Test Suite Results
+## 5. Historical R4 Verification Test Suite Results
 
 ```powershell
 # 1. Hosted Probe Runner Suite (Host + Docker node:24-bookworm --network none)
@@ -333,11 +333,93 @@ git diff --check origin/main...HEAD
 
 ---
 
-## 7. Next Actions
+## 7. R5 Authorization, Ownership & Current Contracts
 
-1. Review security-sensitive diff (`git diff`), run `git diff --check`, and commit all H3-R4 code, tests, and documentation to `feat/task06i-b1-h3-subset-runner-storage` without AI `Co-Authored-By` trailers.
-2. Push branch to `origin feat/task06i-b1-h3-subset-runner-storage`.
-3. Verify exact new remote HEAD and required CI checks.
-4. Reply individually with exact commit SHA and observed verification evidence to all 4 unresolved PR #44 review threads (`PRRT_kwDOVtCmZc67v-7-`, `PRRT_kwDOVtCmZc67v-xG`, `PRRT_kwDOVtCmZc67v-xA`, `PRRT_kwDOVtCmZc67v-xN`) and resolve all 4 via GraphQL.
-5. Request re-review from `im-tio`, Codex (`@codex review`), and Bugbot where configured.
-6. Stop before merge; wait for explicit owner authorization.
+**Owner authorization:** 2026-11-25 bounded H3-R5 local remediation, offline verification, commit/push to existing PR #44, individual review replies/resolution where demonstrated, and re-review requests. No merge, hosted endpoint, hosted SQL, Management API, email, paid service or H4 implementation is authorized.
+
+| Ownership field | Record |
+|---|---|
+| Implementation owner | Codex root agent, current H3-R5 chat |
+| Previous agent | H3-R4 author at verified HEAD `b06ab2993658aefb8d48de2d9a337392f2599bbb` |
+| Bounded test handoff | `migrate_admin_tests`, only `experiments/task06i/hosted-probe-runner.test.mjs`; no source, Git or external writes |
+| Independent reviewer | `security_review`, read-only local diff assessment; GitHub review separately requested from `im-tio` |
+| Last implementation commit agent / verified SHA | Codex root / `3542e23777bceb3461959fa708a588ef9adf7d11` (R5 source and tests); documentation follow-up records this verified implementation HEAD |
+
+### R5-01: Mandatory Admin execution boundary
+
+All executing Admin dependencies must originate from `createHostedAdminClient`, be registered in the private `TRUSTED_ADMIN_CLIENTS` WeakMap, use a registered deterministic transport, and match the exact TEMP project and applicable inventory/run-owned path. Adapter objects and every public capability function are frozen. Private identity is checked before reading an unregistered object's properties; marker getters, callback methods, clones and Proxies cannot establish trust. Capability calls use `Reflect.apply` and reject borrowed receivers.
+
+| Boundary | Enforced behavior |
+|---|---|
+| Runner admission | Validate project/inventory/run and registered Admin before probe callback dispatch. Rejected admission produces report-only residual evidence; even an adapter matching a different inventory cannot mutate it. DRY_RUN returns before executing dependencies. |
+| Storage provisioning | Validate registered transport and run-bound Admin before reservation/provider calls; privileged ownership and absence use registered capabilities only. |
+| Public and direct internal cleanup | Require registered Admin with `runId === inventory.runId` before any table/Storage/session/user/restoration capability. Missing Admin is allowed only for empty, non-executing inventory reporting. |
+| Detailed / boolean absence | Validate project and explicit run or run-owned path, return structured non-absence on integrity failure, never execute a custom boolean verifier. |
+| Session reconciliation | Use only registered `invalidateSession` / `signOut`; original token-context, provider-result and minted-session obligations remain active. |
+| Credential restoration | Use registered `updateUserById`, `verifyUserCredentials`, and `signOut`; remove nested arbitrary SDK fallback; preserve ownership, unresolved mutation and verification-session gates. |
+| Direct factory capabilities | Verify registered receiver/capability identity and transport; enforce inventory or Storage path run binding before method body. |
+| CLI / hosted dispatcher | Existing registered deterministic transport checks and durable recovery gate remain active. No real hosted dispatch is enabled. |
+
+`mockDispatcher` remains the existing in-process orchestration test seam; it is executable test code, not a sandbox. The capability guarantees concern Admin/transport dependencies. Container `--network none` supplies OS network isolation during full-suite verification; no claim is made that a global fetch trap constrains arbitrary JavaScript APIs.
+
+### Storage creation provenance during the unified audit
+
+Path-only `registerStorageObject` records are unresolved obligations, not permission to delete. Cleanup preserves them as `UNVERIFIED_STORAGE_OWNERSHIP` and blocks user deletion. Public `registerStorageFixture` lifecycle labels also cannot grant deletion authority: private `VERIFIED_STORAGE_CREATIONS` receipts are issued only by successful `provisionStorageProbeFixture` after upload, exact payload/digest and authoritative ownership verification. Receipts bind inventory, record identity, run/key and immutable ownership facts. Both deletion and SESSION-05 require this provenance. Positive tests use the actual provisioning path; fabricated verified creation records are negative cases. These receipts are process-local and provide no H4 crash recovery.
+
+### R5-02: Cleanup idempotency and authentic terminal evidence
+
+Only a private receipt created after successful registered deletion plus authoritative absence can settle a `DELETION_VERIFIED` record. The receipt binds inventory identity, run, key, record identity, original ownership fields, and the complete terminal evidence snapshot. Descriptor-value comparison rejects modified fields, accessors, callbacks and caller `toJSON` without treating a caller-written terminal label as evidence. The same receipt check governs repeated cleanup, `isClean()`, and the pre-user-deletion audit.
+
+For an intact receipt, repeated cleanup preserves ownership/absence evidence, sends no further DELETE, and cannot manufacture a Storage residual. New unresolved operations, late settlements and post-finalization mutations remain blockers even when the Storage receipt is authentic. Prior failures retain their unresolved obligations.
+
+### R5-03 / R5-04: Structured failure evidence
+
+- Invalid or missing Admin with outstanding obligations always prevents execution and finalizes the run as `RESIDUAL_BLOCKED`.
+- `failClosed: false` returns `CLEANUP_FAILED_RESIDUAL_RESOURCES` with the sanitized integrity reason and outstanding user, Storage, table, session, credential, unresolved-operation and late-mutation obligations.
+- `failClosed: true` throws an Error with `code: CLEANUP_FAILED_RESIDUAL_RESOURCES` and sanitized `error.cleanupReport`. Ordinary residual cleanup errors use the same supported report contract.
+- Runner cleanup preserves `error.cleanupReport` instead of collapsing it into a generic failure. Admission rejection also carries this report without provider operations.
+- Detailed absence integrity rejection returns `isAbsent: false`, `INDETERMINATE`, `status: 0`, `providerResponseObtained: false`, and a sanitized reason. The boolean wrapper returns false. Status 0 represents no provider response, never a fabricated HTTP 404.
+
+### H2 acceptance traceability correction
+
+The table in section 4 records historical offline sub-behavior coverage, not durable recovery or Option B completion. **AC-01 and AC-09 remain partial**: simulated creation/ownership is tested, but actual run-created seed support is NOT IMPLEMENTED. **AC-05, AC-06 and AC-12 remain partial**: in-memory failure/quarantine/absence behavior is tested, but process-crash journal rehydration and operator recovery are NOT IMPLEMENTED. R5 strengthens AC-02/03/07/08/10/11/12 via mandatory Admin admission, terminal evidence and retained structured residuals. No H2 scenario is evidence of hosted acceptance; hosted verification remains 0/18.
+
+## 8. R5 Verification & Review Evidence
+
+Historical section 5 counts belong to R4. Current R5 results on the source/test diff based on `b06ab2993658aefb8d48de2d9a337392f2599bbb`:
+
+| Check actually executed | Result / exit code |
+|---|---|
+| `node --test experiments/task06i/hosted-probe-runner.test.mjs` | 125/125 PASS, exit 0 |
+| `node --test experiments/task06i/*.test.mjs` | 193/193 PASS, exit 0 |
+| `node --test --test-name-pattern='H3-R5' experiments/task06i/hosted-probe-runner.test.mjs` | 9/9 PASS, exit 0; Tests 113-121 |
+| `node experiments/task06i/sql-contract-parity.mjs` | POSTGRES_VERIFIED, 18/18, PostgreSQL 17.11, exit 0; local Docker context desktop-linux |
+| `node --test experiments/task06h/*.test.mjs` | 115/115 PASS, exit 0 |
+| `npm run verify` | Token self-test/check, TypeScript, ESLint and 22/22 shell tests PASS, exit 0 |
+| Full runner in `node:24-bookworm`, `--network none`, read-only experiments mount | 125/125 PASS, exit 0; `--pull never`, no published ports |
+| Separate OS network sentinel in `--network none` | Non-Supabase `https://example.com` rejected with EAI_AGAIN, exit 0 |
+| Ownership RPC privilege assertions in `public.ecr.aws/supabase/postgres:17.11.0.018` | PASS, exit 0; network none, zero published ports; PUBLIC/anon/authenticated denied, service_role allowed; exact owner row and wrong-bucket denial; SECURITY DEFINER + empty search_path verified |
+| `git diff --check` / `git diff --check origin/main...HEAD` | PASS, exit 0 |
+| Changed Markdown relative links and code fences | PASS, exit 0 |
+| `node --check experiments/task06i/hosted-probe-runner.mjs` | PASS, exit 0 |
+| Guard-integrity fixture tests | 14/14 PASS, exit 0 |
+| Commit-attribution fixture tests | 142/142 PASS, exit 0 |
+| Added-line credential literal scan | PASS, exit 0; private-key/GitHub/Supabase-secret/Brevo-key patterns; synthetic fixtures only |
+
+RPC setup limitation: the bare PostgreSQL image does not include the Storage service schema. Full `testbed-fixtures.sql` load stopped at missing `storage.buckets`; a fixture table initially failed under the restricted local `postgres` role. The final successful RPC verification used a synthetic local `storage.objects` table and the exact unchanged RPC/grants from the repository under the container administrator. This is RPC/privilege evidence, not deployment or full Supabase Storage integration. The disposable container was stopped and removed. No tracked SQL changed.
+
+The pinned Supabase CLI version check could not finish because its telemetry write was denied by the sandbox; no CLI hosted command was used. Docker access and Git Bash MSYS fixture execution required approved sandbox escalation; subsequent Docker/fixture checks ran successfully.
+
+Legacy migration: approximately 66 callback Admin declarations became declarative provider fixtures; callback observation assertions now inspect real registered transport calls, including exact URL/body and logout retry counts. Twelve manually verified Storage positive cases and three raw-path positive cases now provision actual offline fixtures. Missing-method cases reject unregistered clients, while provider-error and missing-token negative assertions remain. No legacy compatibility flag or executable trust bypass exists.
+
+R5 regressions prove zero invalid callback/getter invocations and zero unauthorized transport calls, direct public/internal cleanup and both absence interfaces, invalid runner admission with all obligations retained, both reporting modes, three consecutive Storage cleanups with optional sessions, residual retry, late operations, forged creation/terminal evidence, and frozen/borrowed capability methods. Additional cleanup calls issue zero extra DELETEs and preserve the exact original terminal evidence.
+
+Independent local review: `security_review`, read-only assessment of base `b06ab299...` against the final uncommitted R5 source/tests/docs, verdict **PASS**. Reviewer ran syntax check, 9/9 R5 tests and diff whitespace check; did not rerun full suites/Docker. Initial findings (terminal serialization, admission mutation, mutable capability functions, raw-path and forged-creation deletion) were corrected and rechecked. This assessment is not GitHub APPROVED. GitHub `im-tio` decision at the baseline remains CHANGES_REQUESTED until exact-new-HEAD re-review. No review was dismissed.
+
+Remote bootstrap checks: six SUCCESS, Cursor Bugbot NEUTRAL; baseline review threads 31 total / 27 resolved / 4 unresolved. New commit/remote HEAD/CI and replies will be recorded on PR #44 after push.
+
+## 9. Remaining Gates & Next Authorized Action
+
+H3 Subset Runner and H3 Storage Lifecycle: `IMPLEMENTED_OFFLINE_TESTED / BLOCKED` after the verified R5 offline results above. Durable Recovery: NOT IMPLEMENTED. Run-Created Seed Support: NOT IMPLEMENTED. Hosted Verification: 0/18. Hosted LIVE: NOT AUTHORIZED. Production Real Auth: STRICT NO-GO. Hosted Mutations: 0. Cost: $0. Merge: NOT AUTHORIZED.
+
+Offline verification and independent diff review are complete for implementation `3542e23777bceb3461959fa708a588ef9adf7d11`. Commit the continuity evidence, push to PR #44, verify exact remote HEAD/CI, individually reply to the four R5 threads and resolve only demonstrated corrections, then request Codex/Bugbot and `im-tio` exact-HEAD re-review. No further implementation slice is authorized.
