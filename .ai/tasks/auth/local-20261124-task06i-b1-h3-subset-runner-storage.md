@@ -1,6 +1,6 @@
 # Task 06I-B1-H3 — Controlled Subset Dispatch & Run-Scoped Storage Implementation
 
-**Task ID:** `06I-B1-H3` (Revision `R13`)<br>
+**Task ID:** `06I-B1-H3` (Revision `R14`)<br>
 **Creation Date:** 2026-11-24<br>
 **Revision Date:** 2026-11-25<br>
 **Author:** Santosh Jangid (`im-tnyx`)<br>
@@ -8,7 +8,7 @@
 **Branch:** `feat/task06i-b1-h3-subset-runner-storage`<br>
 **Base:** `main` at `4569479e8fe2caa6659fe1cc6c7a484596a01bbc` (PR #43 merge commit)<br>
 **PR Reference:** https://github.com/im-tnyx/Tio-Workspace/pull/44<br>
-**Prior Audited HEAD:** `49b187e90ca8f8ab49b5ca08f30051573c67aad2` (R12)<br>
+**Prior Audited HEAD:** `250aac82480d99494c6647a800ef7580e439f8a3` (R13)<br>
 **Cost Ceiling:** $0.00 (Free-Tier Only)<br>
 **Mode:** Local Implementation, Mocked Transport Tests & Offline Verification ONLY<br>
 **Hosted LIVE Dispatch:** **NOT AUTHORIZED**<br>
@@ -871,3 +871,74 @@ Prototype mutation tests run in an explicitly non-concurrent test scope. Saved O
 **Review / publication:** separate `r13_review` local read-only assessment of R12 baseline49b187e against the R13 source/tests/architecture diff returned PASS. Reviewer ran targeted5/5, syntax and diff checks; did not rerun full host/Docker/PostgreSQL suites. All confirmed local findings were corrected. This is not GitHub APPROVED. The documentation follow-up references the exact implementation SHA above; source/tests remain unchanged. Final remote HEAD, individual R13 replies/resolution and CI/re-review evidence are published on PR#44, whose live status remains authoritative. Re-review on GitHub must use the final published HEAD; the baseline im-tio CHANGES_REQUESTED review is retained. No owner merge authorization exists.
 
 **Final gates:** H3 Subset Runner and H3 Storage Lifecycle IMPLEMENTED_OFFLINE_TESTED / BLOCKED; Durable Recovery NOT IMPLEMENTED; Run-Created Seed Support NOT IMPLEMENTED; Hosted Verification0/18; Hosted LIVE NOT AUTHORIZED; Production Real Auth STRICT NO-GO; Hosted Mutations0; Cost$0; Merge NOT AUTHORIZED. Remaining prerequisites include durable recovery, separately approved seed support and provider/testbed preparation/authorization.
+
+
+## 18. Revision R14 — Typed Effects, Atomic Offline Cleanup & Request Accounting
+
+Bootstrap verified local/remote HEAD250aac82480d99494c6647a800ef7580e439f8a3 and main4569479e8fe2caa6659fe1cc6c7a484596a01bbc, clean worktree. PR44 has53 inline threads,50 resolved and3 unresolved; review-body request-budget finding is a fourth independent obligation. Independent im-tio review at2026-11-25T12:56:36Z is CHANGES_REQUESTED. Latest named check summary reports7 SUCCESS contexts (the review reported8 runs); no check count is inferred to close findings.
+
+Implementation owner: Codex root R14. Explicit bounded handoffs: r14_effects owns new typed-effect module/tests and direct inventory/effect admission sections; r14_conditional owns atomic fixture module/tests, cleanup/Admin capability and inner provider transition integration plus existing test migration; r14_budget owns new budget module/tests and outer request-boundary/runner accounting integration. Root owns fixture timing admission, documentation and final review/validation. No competing ownership or external writes delegated.
+
+Architecture retains R13 LayersA/B/C: recursively admitted inert batches, trusted internal operations with atomic provider-state transition, and OS network isolation remain distinct. A private registry/historical receipt is not current object ownership proof. No worker migration or H4 recovery is included.
+
+### Provider capability boundary
+
+Actual hosted atomic conditional deletion remains UNVERIFIED. The [Supabase delete guide](https://supabase.com/docs/guides/storage/management/delete-objects) documents API deletion and warns metadata SQL deletion does not remove object bytes. The [S3 compatibility matrix](https://supabase.com/docs/guides/storage/s3/compatibility) lists DeleteObject but does not establish this task's atomic comparison of immutable provider object ID plus owner/run receipt; the [remove reference](https://supabase.com/docs/reference/javascript/file-buckets-remove) describes paths/version IDs, which alone are not evidence of the required multi-field atomic authorization. No provider experiment/deployment was performed. Therefore actual capability cannot be asserted; unavailable capability must preserve residuals and block related user deletion. No SQL metadata-delete substitute is authorized.
+
+### Cleanup request allowance decision
+
+Retain the existing hard limit of25 total request attempts across probe, provisioning, auxiliary and cleanup work. Cleanup receives no silent exemption or extra quota. A reserved split could reduce probe capacity and needs an explicit policy decision; a separate recovery allowance could exceed25 and requires new owner authorization. R14 chooses no extra quota (reserved cleanup allowance0), with fail-closed recovery-required residuals if mandatory cleanup has no capacity. Simulated recorded-zero-wait pacing must be reported explicitly; it is not proof of elapsed1000ms/provider compliance. Registry reuse must not reset a run's allowance.
+
+### Timing admission
+
+All consumed delayMs/rejectAfterAbortMs controls on routes, defaults/fallbacks, dispatcher outcomes/sequences/defaults are validated at factory admission, before registration, route consumption, request evidence, state/barrier effects or timers. Primitive finite0..2147483647 milliseconds only; ignoreAbort is primitive boolean. No invalid-value string coercion. Fixture-timing-admission tests independently passed2/2; final integrated verification is recorded below.
+
+Current R14 status: offline implementation/verification PASS, GitHub exact-HEAD re-review pending; no merge approval. All protected projects untouched; hosted0/18, mutations0, cost$0; LIVE and merge NOT AUTHORIZED; Production Real Auth STRICT NO-GO.
+
+
+### R14 implemented contracts and source-backed audit
+
+| Boundary | Owning source / enforced contract | Evidence currently executed |
+|---|---|---|
+| Recursive effects | inventory-effect-admission.mjs: complete typed batch, recursive descriptor-only null-prototype snapshots, supported-effect field/evidence schemas, no executable/Proxy/accessor input. Direct inventory methods snapshot before destructuring. |9/9 module/integration tests PASS; invalid later effect causes zero earlier mutation; genuine runtime identity failure preserves earlier effect/unresolved operation. |
+| Atomic offline deletion | conditional-storage-fixture.mjs + runner private one-use authorization: project/run/bucket/path/object ID/owner + authentic creation receipt, then synchronous compare/delete in the same controlled provider Map. | 12/12 conditional integration tests PASS. No lookup+unconditional-delete authorization. |
+| Independent absence | Bound provider state is re-read after response awaits; a static absent response cannot hide a current replacement or unknown committed identity. | Independent reviewer deterministic check: replacement present200, unknown identity503; no network. |
+| Residual evidence | Fixture/report retains expected/current identity, conditional result class and recoverable obligation. Capability unavailable/indeterminate, mismatch and budget exhaustion block related Auth deletion. | Existing cleanup obligation mechanisms preserved; final runner151/151 and Task06I249/249 PASS. |
+| Fixture timing | Factory validates routes/default/fallback/outcome/sequence delayMs and rejectAfterAbortMs, booleanignoreAbort before registration/route/state/barrier/timer effects. |2/2 targeted tests PASS. |
+| Request boundary | run-request-budget.mjs private shared registry by exact TEMP project/run; synchronous reservation before any await; fixed25 across all adapters/transports and all request categories. |7/7 tests PASS, including30 concurrent contenders, exactcap, failed/cancelled requests and shared transports. |
+| Pacing | Serial actual dispatch starts at minimum1000ms; explicit recorded_zero_wait records simulated intervals. No executable scheduler injection. | Real pacing test>=1000ms PASS; simulated mode explicitly reported. |
+| Provisioning/cleanup accounting | Actual request attempts separately reported from planned/attempted/completed probe counts; auxiliary and cleanup requests consume same allowance. Existing effective trusted per-call dispatcher bindings are retained. | Actual provisioning + capacity exhaustion test PASS:25 attempts total, cleanup0DELETE, residual remains. |
+
+Report definitions: requestCount is simulated transport attempts; attemptedProbeCount is probe invocations. requestBudget reports probe/auxiliary/cleanup counts, blocked admissions, failed HTTP/transport attempts, pre-dispatch versus post-dispatch cancellation, pending reservations, remaining capacity, pacing mode/intervals and actualHostedRequests0. Standalone fixture routing without run/resource authority is a local declarative fixture operation, not a provider run. No new adapter can reset an existing run budget or change its pacing mode.
+
+Existing test migrations explicitly declare recorded-zero-wait, use distinct run IDs for independent experiments, and provision synthetic atomic providers for positive cleanup. Negative binding/ownership/admission assertions remain direct and are not silently rebound. Tests concerning genuine abort-effect exceptions now use a valid batch that fails during an authorized inventory operation; syntactically invalid batches reject before any effect.
+
+Independent read-only source assessment r14_review: PASS on current runner/newmodules. Reviewer executed effects/budget/timing18/18, whitespace check, and separate provider GET consistency check; final acceptance is recorded below. This is not GitHub approval or hosted provider evidence.
+
+
+**Last R14 implementation commit agent / verified SHA:** Codex root / `b9b70bcad18776b33afcba3df9ef77fa510663cc`. Source/tests were verified before this commit; the documentation follow-up changes no runtime behavior.
+
+### Final R14 offline acceptance
+
+| Actual check | Result / exit code |
+|---|---|
+| node --test experiments/task06i/hosted-probe-runner.test.mjs |151/151 PASS /0 |
+| node --test experiments/task06i/*.test.mjs |249/249 PASS /0 |
+| Independent effect / atomic / timing / budget test-file executions |9/9,12/12,2/2,7/7 PASS /0 each |
+| Existing node:24-bookworm --network none --pull never runner |151/151 PASS /0; read-only experiments mount, cap-drop ALL, no-new-privileges, no supplied hosted credentials/socket |
+| node experiments/task06i/sql-contract-parity.mjs |POSTGRES_VERIFIED18/18 PostgreSQL17.11 /0 |
+| node --test experiments/task06h/*.test.mjs |115/115 PASS /0 |
+| npm run verify |tokens/typecheck/lint +22/22 shell tests PASS /0 |
+| git diff --check; git diff --check origin/main...HEAD |PASS /0 |
+
+The final independent r14_review assessment returned PASS after reviewing the current source/modules/tests against baseline250aac8. Reviewer ran atomic12/12, effects/timing/budget18/18, syntax/diff checks and delayed-provider-state sentinels; full249/Docker were not independently repeated. No formal GitHub approval is claimed.
+
+All13 mandatory atomic scenarios are covered in12 actual provision/cleanup tests using the same bound provider through upload and replacement. Unknown/missing/malformed/lost conditional evidence never authorizes an unconditional fallback. Original known-absent DELETE text/JSON response forms remain supported only when the authoritative provider state is known empty, followed by independent GET. Repeated blocked cleanup retains exact expected/current identity evidence. Replacement during DELETE delay cannot be hidden by stale GET404. Auth deletion is blocked when obligations remain.
+
+All151 prior runner regressions pass after explicit fixture migration. Independent experiments use unique run IDs rather than resetting shared capacity. Legacy per-probe counter assertions now use attemptedProbeCount; actual transport attempts use requestCount. Valid runtime partial-effect failure remains tested; invalid later batches reject before their first mutation.
+
+Environment limits: synthetic offline provider/metadata evidence is not full hosted Storage integration. Actual hosted atomic conditional deletion remains UNVERIFIED. No CLI hosted commands, hosted requests, SQL/RPC deployment, email, project lifecycle action, paid service, worker migration or H4 implementation occurred. Existing nonfatal Node module-type warning is unchanged. Supabase skill and official changelog/delete documentation were read during final review; no relevant provider atomic identity contract was established. Earlier partial test counts are historical progress checkpoints.
+
+Final publication/review evidence belongs on PR44 after normal push. Next authorized action: inspect final-HEAD CI and requested independent reviews, addressing only bounded R14 findings. Three inline resolutions and the separate budget review-body response must each have demonstrated evidence; zero unresolved inline threads alone does not close the review-body finding. Do not dismiss existing blocking reviews or merge.
+
+Final decisions: H3 Subset Runner IMPLEMENTED_OFFLINE_TESTED / BLOCKED; H3 Storage Lifecycle IMPLEMENTED_OFFLINE_TESTED / BLOCKED; Atomic Hosted Conditional Deletion UNVERIFIED; Durable Recovery NOT IMPLEMENTED; Run-Created Seed Support NOT IMPLEMENTED; Hosted Verification0/18; Hosted LIVE NOT AUTHORIZED; Production Real Auth STRICT NO-GO; Hosted Mutations0; Cost$0; Merge NOT AUTHORIZED. Additional cleanup allowance/reserved split remains a future explicit owner policy decision, not authorization to exceed25 or disable cleanup accounting.
