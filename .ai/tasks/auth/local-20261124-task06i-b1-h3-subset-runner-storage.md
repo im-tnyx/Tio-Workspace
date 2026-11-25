@@ -1,6 +1,6 @@
 # Task 06I-B1-H3 — Controlled Subset Dispatch & Run-Scoped Storage Implementation
 
-**Task ID:** `06I-B1-H3` (Revision `R14`)<br>
+**Task ID:** `06I-B1-H3` (Revision `R15`)<br>
 **Creation Date:** 2026-11-24<br>
 **Revision Date:** 2026-11-25<br>
 **Author:** Santosh Jangid (`im-tnyx`)<br>
@@ -8,7 +8,7 @@
 **Branch:** `feat/task06i-b1-h3-subset-runner-storage`<br>
 **Base:** `main` at `4569479e8fe2caa6659fe1cc6c7a484596a01bbc` (PR #43 merge commit)<br>
 **PR Reference:** https://github.com/im-tnyx/Tio-Workspace/pull/44<br>
-**Prior Audited HEAD:** `250aac82480d99494c6647a800ef7580e439f8a3` (R13)<br>
+**Prior Audited HEAD:** `c8a504c5142d1eca789b91f2950833b5e536aed3` (R14)<br>
 **Cost Ceiling:** $0.00 (Free-Tier Only)<br>
 **Mode:** Local Implementation, Mocked Transport Tests & Offline Verification ONLY<br>
 **Hosted LIVE Dispatch:** **NOT AUTHORIZED**<br>
@@ -942,3 +942,55 @@ Environment limits: synthetic offline provider/metadata evidence is not full hos
 Final publication/review evidence belongs on PR44 after normal push. Next authorized action: inspect final-HEAD CI and requested independent reviews, addressing only bounded R14 findings. Three inline resolutions and the separate budget review-body response must each have demonstrated evidence; zero unresolved inline threads alone does not close the review-body finding. Do not dismiss existing blocking reviews or merge.
 
 Final decisions: H3 Subset Runner IMPLEMENTED_OFFLINE_TESTED / BLOCKED; H3 Storage Lifecycle IMPLEMENTED_OFFLINE_TESTED / BLOCKED; Atomic Hosted Conditional Deletion UNVERIFIED; Durable Recovery NOT IMPLEMENTED; Run-Created Seed Support NOT IMPLEMENTED; Hosted Verification0/18; Hosted LIVE NOT AUTHORIZED; Production Real Auth STRICT NO-GO; Hosted Mutations0; Cost$0; Merge NOT AUTHORIZED. Additional cleanup allowance/reserved split remains a future explicit owner policy decision, not authorization to exceed25 or disable cleanup accounting.
+
+
+## 19. Revision R15 — Fail-Closed Storage Upload Identity Admission
+
+Implementation owner: Codex root R15; previous owner Codex root R14. Baseline local/remote c8a504c5142d1eca789b91f2950833b5e536aed3, main4569479e8fe2caa6659fe1cc6c7a484596a01bbc, clean worktree verified. PR44:54 threads/53 resolved/one Medium Bugbot finding PRRT_kwDOVtCmZc68CVVY. Named check summary6 SUCCESS + Bugbot NEUTRAL (eight raw runs include repeated attribution runner). Independent im-tio CHANGES_REQUESTED at250aac8 remains; R14 four-finding disposition, including review-body budget finding, requires independent acceptance.
+
+Root cause: upload observer used ordinary decoded claims.sub, and allowed malformed IDs into provider.putObject after simulated HTTP success. Own subject absence could consult Object.prototype; invalid committed identity could be misreported as transport failure.
+
+Contract: decodeOfflineJwtClaims accepts a three-segment nonempty base64url structure, canonical UTF-8 JSON record header/payload, own nonempty alg (none/unsupported critical or detached-payload structures rejected); claims copied to a null-prototype record. Signature bytes are not authenticated; decoding is not cryptographic verification. Subject is read through an own data descriptor and must be a primitive UUID. Object Id/id fields must be own primitive UUIDs; missing/invalid/conflicting aliases are indeterminate. Project URL, private provider project/run binding, bucket and exact run/probe.txt path must match before putObject. Unknown state is registered first and cleared only by complete identity admission. Expected invalid evidence returns a structured indeterminate observation; only expected JSON/UTF-8/URL decoding errors are classified, while unrelated implementation/provider errors propagate.
+
+HTTP2xx remains2xx with its original body. Provisioning writes the committed residual obligation before rejecting invalid identity evidence and never issues its private verified-creation receipt for that upload. Existing no-provider missing-upload-ID compatibility may still correlate independent authoritative metadata; this does not grant conditional provider capability. R14 unknown-upload regression is strengthened: provisioning now rejects before receipt issuance, both deletes remain0, and repeated cleanup retains quarantine/residual evidence.
+
+### Related-path audit
+
+| Source / call path | Validation / evidence / failure behavior |
+|---|---|
+| conditional-storage-fixture.mjs decodeOfflineJwtClaims -> uploadIdentity -> observer | Own subject descriptor, primitive UUIDs, alias agreement, exact private binding; invalid evidence retains unknown and original HTTP response. No signature-verification claim. |
+| Provider identity/boundIdentity -> putObject/conditionalDelete | Exact TEMP/run/bucket/path + UUID validation remains; synchronous identity compare/delete and current replacement preservation unchanged. |
+| Runner JWT observations, provisioning claims, parseAndValidateJwt, credential binding | Parsed claim records snapshot to null prototype; null/arrays cannot supply inherited subject/session fields. Provisioning requires own matching subject before dispatch. |
+| Runner upload response -> committed fixture -> private creation receipt | Own Id/id parser rejects invalid/conflicting explicit identity; offline indeterminate observation blocks before receipt; committed residual retained. |
+| Admin authoritative metadata -> provisioning correlation | Own first array row, non-array record, recursive own-data metadata snapshot; own Auth identity response ID; exact bucket/name/project/object/owner correlation before private receipt. |
+| Cleanup authorization/evidence | Private one-use receipt-bound current identity; unknown or mismatch remains residual; no unconditional fallback; Storage-before-user ordering and terminal idempotence unchanged. |
+
+R14 shared25 cap, concurrent reservation, standard1000ms pacing, explicit simulated mode, cleanup included/reserve0 and recoveryRequired exhaustion remain unchanged. LayersA/B/C distinction and isolated-worker recommendation remain; no migration/H4 implementation.
+
+Initial targeted verification: conditional36/36 and runner151/151 PASS/exit0. Complete final verification and exact implementation SHA recorded below after execution. Hosted projects untouched; actual hosted atomic conditional deletion UNVERIFIED; verification0/18, mutations0, cost$0; LIVE/merge NOT AUTHORIZED; Production Real Auth STRICT NO-GO.
+
+
+**Last R15 implementation commit agent / verified SHA:** Codex root / `0319c5265bed27f31f972b2e5be1104d6709ef2b`. Documentation follow-up changes no runtime behavior.
+
+### R15 final offline verification
+
+| Check actually executed | Final result / exit |
+|---|---|
+| node --test experiments/task06i/conditional-storage-fixture.test.mjs |38/38 PASS /0 (12 retained R14 scenarios +26 R15 tests) |
+| node --test experiments/task06i/hosted-probe-runner.test.mjs |151/151 PASS /0 |
+| node --test experiments/task06i/*.test.mjs |275/275 PASS /0 |
+| Existing node:24-bookworm hardened network-none runner + conditional/effects/timing/budget modules |207/207 PASS /0 =151+38+9+2+7; read-only experiments mount, pull never, cap-drop ALL, no-new-privileges; no supplied hosted credentials/socket |
+| node experiments/task06i/sql-contract-parity.mjs |POSTGRES_VERIFIED18/18 PostgreSQL17.11 /0 |
+| node --test experiments/task06h/*.test.mjs |115/115 PASS /0 |
+| npm run verify |tokens/typecheck/lint +shell22/22 PASS /0 |
+| Both requested git diff checks; source syntax |PASS /0 |
+
+Source audit anchors: conditional-storage-fixture.mjs L174 decodeOfflineJwtClaims, L199 object alias admission, L209 uploadIdentity, L230 observer; runner L28 snapshotJwtRecord, L7141 provisioning subject gate, L7537 committed upload identity, L7673 own metadata snapshot, L10820 own first-row admission. Existing private receipt correlation/conditional-delete contract remains the final destructive authorization boundary.
+
+Sentinels: inherited sub value/function/getter and valid own subject under pollution execute0 inherited code; malicious object-ID getter/function/Proxy traps0. Missing/null/numeric/object/array/empty/non-UUID subjects; malformed/null/non-record JWT; unsupported JOSE structure; invalid/missing/nonstring/conflicting object IDs; exact project/run/bucket/path mismatches preserve2xx and unknown provider state. Actual provisioning invalid-identity cases retain hasCommittedUpload=true, verifiedOwnerId=null, deletionEligible=false, repeated storage residual; Storage DELETE0/Auth DELETE0. Missing authoritative owner cannot resolve inherited owner_id or issue a verified creation receipt. Valid identities retain successful atomic cleanup and Storage-before-user ordering. Saved prototype descriptors are restored in finally; tests run in controlled non-concurrent scope. Genuine internal contract failure still throws, never becomes an affirmative observation.
+
+All151 runner and retained R14 atomic replacement/capability/absence/idempotence assertions pass. R14 unknown-upload test now rejects earlier before any private receipt and verifies zero DELETE rather than allowing a later conditional attempt; this strengthens the required fail-closed contract. Request-budget policy source/tests were not changed. No skipped/cancelled tests. An initial Python console encoding error was corrected with UTF-8 output; no test failure was hidden. Existing nonfatal Node module-type warning is unchanged.
+
+Self-review of full security-sensitive diff complete. External exact-HEAD review is requested after publication; self-review is not an independent approval. Prior im-tio CHANGES_REQUESTED and R14 budget review-body acceptance gate remain outstanding until independently recorded. Live PR44 holds final remote SHA, individual R15 reply/resolution, CI and re-review evidence. No review dismissal or merge.
+
+Final gates: H3 Subset Runner IMPLEMENTED_OFFLINE_TESTED / BLOCKED; H3 Storage Lifecycle IMPLEMENTED_OFFLINE_TESTED / BLOCKED; Atomic Hosted Conditional Deletion UNVERIFIED; Durable Recovery NOT IMPLEMENTED; Run-Created Seed Support NOT IMPLEMENTED; Hosted Verification0/18; Hosted LIVE NOT AUTHORIZED; Production Real Auth STRICT NO-GO; Hosted Mutations0; Cost$0; Merge NOT AUTHORIZED. Synthetic provider tests/local SQL parity do not establish full hosted Storage integration.
