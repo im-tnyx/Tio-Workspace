@@ -1,6 +1,6 @@
 # Task 06I-B1-H3 — Controlled Subset Dispatch & Run-Scoped Storage Implementation
 
-**Task ID:** `06I-B1-H3` (Revision `R9`)<br>
+**Task ID:** `06I-B1-H3` (Revision `R13`)<br>
 **Creation Date:** 2026-11-24<br>
 **Revision Date:** 2026-11-25<br>
 **Author:** Santosh Jangid (`im-tnyx`)<br>
@@ -8,7 +8,7 @@
 **Branch:** `feat/task06i-b1-h3-subset-runner-storage`<br>
 **Base:** `main` at `4569479e8fe2caa6659fe1cc6c7a484596a01bbc` (PR #43 merge commit)<br>
 **PR Reference:** https://github.com/im-tnyx/Tio-Workspace/pull/44<br>
-**Prior Audited HEAD:** `d82ef6bb44b16ab9774d5536464e738b2849a947` (R8)<br>
+**Prior Audited HEAD:** `49b187e90ca8f8ab49b5ca08f30051573c67aad2` (R12)<br>
 **Cost Ceiling:** $0.00 (Free-Tier Only)<br>
 **Mode:** Local Implementation, Mocked Transport Tests & Offline Verification ONLY<br>
 **Hosted LIVE Dispatch:** **NOT AUTHORIZED**<br>
@@ -793,3 +793,81 @@ Offline verification and independent diff review are complete for implementation
 - **Hosted Mutations:** `0`
 - **Cost:** `$0`
 - **Merge:** `NOT AUTHORIZED`
+
+
+## 17. Revision R13 — Architecture Boundary Review & Bounded Remediation
+
+**Pre-edit checkpoint (2026-11-25):** Local/remote HEAD `49b187e90ca8f8ab49b5ca08f30051573c67aad2`, clean worktree, main `4569479e8fe2caa6659fe1cc6c7a484596a01bbc`; PR #44 OPEN, 50 threads / 48 resolved / 2 unresolved. Six SUCCESS checks; Bugbot NEUTRAL. Independent `im-tio` review at `2026-11-25T12:20:39Z` is CHANGES_REQUESTED (R13-01 P1, R13-02 P3).
+
+Implementation owner: Codex root, bounded R13. Previous owner: Antigravity R12 at the verified baseline above. Separate `r13_review` agent performs read-only architecture/diff assessment; no competing file writes. Owner authorized local remediation, offline checks, commit/push and review workflow on existing PR #44 only. No worker migration, H4, hosted operation or merge.
+
+### Architecture decision before editing
+
+- **Layer A — application admission:** typed inert data, descriptor-first snapshots, null-prototype option/schema records and private immutable project/run-bound capabilities are input guarantees. Snapshotting public inputs does not protect a downstream helper that reads inherited defaults.
+- **Layer B — internal execution:** module-owned operations need explicit arguments, own-only configuration, synchronous module-owned abort effects, and settlement/resource ownership protected on every exception path. No caller callback API will be added.
+- **Layer C — process isolation:** full offline suite runs in an existing image with network none, no hosted credential environment, no Docker socket, read-only experiments mount and no unnecessary capabilities. JavaScript validation is not a full sandbox.
+- **Recommendation:** a later separately approved small offline worker should accept a versioned declarative request, project/run IDs, fixture bytes/descriptors and cancellation messages; return inert outcomes/inventory evidence. Keep provider authority and hosted credentials out of that worker. Prefer a separate OS process/container with denied network; worker_threads alone is not an OS security boundary. This would reduce in-process global/prototype surface, but requires contract/compatibility and resource-lifecycle work. R13 retains the existing architecture and fixes the reachable bounded gaps.
+
+### Pre-edit source-backed audit matrix
+
+Locations below refer to the inspected R12 HEAD; final function names remain navigable in source.
+
+| Consumer / location | Reachable path and protection/gap | Minimal R13 action / regression |
+|---|---|---|
+| `waitWithTrustedSignal` L207, L215/L242 | Direct transport L1415 omits options; normal default reads inherited onAbort/ignoreAbort; effect can throw before cleanup | Explicit positional module-owned effect/boolean; exception-safe settlement; direct delayed transport prototypes/races plus failing internal effects |
+| `transportRequestOptions` L963 → transport L1354 → `matchesRoute` L1300 | Nullable header admission retains null; matcher indexes null | Normalize missing/null to empty null-prototype map; own-only header matching/fallback tests |
+| `admitValidatedInput` L990; `extractValidatedPlainOptions` L718 | Normal default destructures allowNullUndefined; omitted internal options execute inherited getter | Positional validated boolean; prototype sentinel tests |
+| `snapshotStringArray` L756 | All three call sites L1083/L2062/L2745 supply own allowEmpty/trimNonEmpty/errorCode | Preserve existing string-array validation; replace destructured internal config with explicit args to keep future omission safe |
+| Compiled route controls L1260 / matcher L1298 | Plain clone/spread reintroduces inherited headersMatch/fixture controls | Own-only null-prototype execution configs, preserving response payload prototypes; control getter sentinels |
+| Offline descriptor / abort effects L1687–1720 | Descriptor controls require own-only consumption; delay abort-effect exception must preserve inventory and reject | Own-only execution descriptors/effect records and module-owned effects; failure/race/ignore-abort tests |
+| `createOfflineBarrier` wait/waitForArrivals L317/L349 | Positional signal; trusted intrinsic listeners; terminal release accounting already covered | Preserve Tests110/139 and inspect teardown; no broad barrier rewrite |
+| Ownership RPC timeout L10532–10602; provisioning / runner deadlines | Typed bounds before setup, try/finally timer/listener ownership | Preserve R1–R12 regression coverage; no hosted calls |
+| Error/report construction | Existing sanitization/residual contracts; delay error formats String(delayMs), invoking invalid input coercion | Static validation/abort-effect error codes, no unsafe formatting of invalid values |
+
+Verification and final source locations/results will be recorded after implementation. Synthetic metadata evidence remains distinct from full Storage integration; hosted verification stays0/18.
+
+
+### R13 final contracts and audit disposition
+
+1. **Prototype-safe cancellation:** private `waitWithTrustedSignal(delayMs, signal, onAbort = null, ignoreAbort = false)` uses positional defaults. Finite timer-range delay and primitive boolean validation have static errors, with no coercion of invalid inputs. All three actual callers are module-owned: transport delay (no effect/ignore flag), delayed offline outcome (synchronous module-owned inventory effect + explicit primitive flag), and never-settling outcome's post-abort rejection delay (no effect). No caller callback entry point was added. Signal validation/intrinsic reads remain mandatory.
+2. **Exception-safe effects:** one-shot abort handling detaches its listener, executes the module-owned effect, and rejects `INTERNAL_ABORT_EFFECT_FAILED` with `inventoryEffectsMayBePartial: true` if the effect fails. Timer/listener cleanup precedes settlement. Cleanup failures have a separate structured error. Successful explicit ignore-abort detaches the listener, applies the effect once, and keeps only the owned completion timer. Already-aborted signals do not arm an unnecessary timer for rejecting paths. Partial inventory changes and unresolved operations are preserved, never replaced by success. The adjacent intentionally never-settling fixture branch uses the same error contract; its deliberately pending simulation semantics remain intact.
+3. **Header normalization:** admitted missing or explicit-null headers become an empty null-prototype map. Existing record/intrinsic Headers lowercase normalization remains. Missing required header is a normal non-match; without fallback the existing `DETERMINISTIC_TRANSPORT_UNMATCHED_ROUTE` error remains, and a declarative fallback is returned when configured. No fabricated provider status is added.
+4. **Adjacent confirmed internal gaps:** admission helper `allowNullUndefined` and string-array flags now use explicit primitive arguments. Compiled routes, selected responses, offline descriptors, nested requests/error/effect configs use own-only snapshots. Module-owned event-listener option records are null-prototype. Request body subsets and whenState use `Object.hasOwn`, so inherited properties cannot execute getters or satisfy routes. Declarative state updates define own data properties rather than invoking inherited setters. Provider response/body payload prototypes are preserved; no global plain-data representation refactor occurred.
+
+| Final source (hosted-probe-runner.mjs) | Disposition / targeted evidence |
+|---|---|
+| `internalAbortEffectFailure` L207, `waitWithTrustedSignal` L215 | Positional/default/boolean/range + structured effect rejection; Tests143–145 |
+| Delay call sites L1433, L1730, L1752 | Transport / post-abort timer / module-owned offline effect only; Tests143–145 |
+| `extractValidatedPlainOptions` L736, `snapshotStringArray` L775, `admitValidatedInput` L1009 | No destructured inherited internal configuration; Test143 plus prior typed-admission tests |
+| `compiledRoutes` L1276, transport headers L1371, offline descriptor L1672 | Own-only controls, null headers normalized; Tests143/146 |
+| `deepSubsetMatches` L644 / `matchesRoute` state controls | Own request body/state properties only; define own state data on updates; Test147 |
+| Offline `neverSettle` branch L1708 | Effect exception rejects after listener cleanup, no post-failure timer; Test145 |
+| `createOfflineBarrier` L295 / trusted signal helpers L148–205 | Existing terminal release/listener guarantees retained; Tests110/139/142 |
+| Ownership helper L10553, provisioning/runner deadlines | Prior typed bounds and resource finalizers unchanged; existing regression suite |
+
+### R13 verification evidence
+
+All listed successful commands exited0 on the final relevant source/environment; no tests skipped or cancelled.
+
+| Command/check actually executed | Result |
+|---|---|
+| `node --test experiments/task06i/hosted-probe-runner.test.mjs` | 151/151 PASS, including all146 previous regressions |
+| `node --test experiments/task06i/*.test.mjs` | 219/219 PASS |
+| `node --test --test-name-pattern='H3-R13' experiments/task06i/hosted-probe-runner.test.mjs` | 5/5 PASS (Tests143–147) |
+| Complete runner using existing node:24-bookworm, network none, pull never | 151/151 PASS; cap-drop ALL, no-new-privileges, read-only experiments-only mount; no credential environment, Docker socket or additional host capabilities supplied |
+| `node experiments/task06i/sql-contract-parity.mjs` | POSTGRES_VERIFIED,18/18, PostgreSQL17.11, local Docker context desktop-linux |
+| `node --test experiments/task06h/*.test.mjs` | 115/115 PASS |
+| `npm run verify` | token checks, TypeScript, ESLint, shell22/22 PASS |
+| `node --check experiments/task06i/hosted-probe-runner.mjs` | PASS |
+| `git diff --check`; `git diff --check origin/main...HEAD` | PASS |
+| Changed Markdown links/fences and added-line credential/machine-tooling-path scan | PASS |
+
+Prototype mutation tests run in an explicitly non-concurrent test scope. Saved Object.prototype descriptors and instrumented timers/global sentinels are restored in guaranteed finally blocks. Direct deterministic transport covers inherited callback/getter/ignore options, both inherited fields, pre-aborted and in-delay cancellation. Additional coverage includes overlapping operations, completion races, normal completion, explicit legitimate ignore-abort, failing module-owned effects in both delay and neverSettle paths, invalid timing/flags, header records/intrinsic Headers/fallbacks, and inherited route body/state matching plus state setter avoidance. Assertions show zero sentinel callback/getter/native network executions, zero remaining timers/listeners, no duplicate effects and no unhandled rejections. Failing effects preserve one earlier inventory effect and unresolved operation evidence.
+
+**Environment disclosures:** pinned Docker binary/context and existing Node image were used; no Supabase CLI hosted command was necessary. PostgreSQL parity is a local hook-contract check. Prior synthetic ownership metadata evidence is historical and is not full Storage integration; that integration was not run in R13. The previously available Supabase skill path and GitHub connector were unavailable; authenticated GitHub CLI handled authorized review operations. No secret stores/configuration were inspected. The nonfatal Node MODULE_TYPELESS_PACKAGE_JSON warning during shell tests is unchanged.
+
+**Last implementation commit agent / verified SHA:** Codex root / `bf2853c1ec1105d5af55e0f9aedc239a393caacd`.
+
+**Review / publication:** separate `r13_review` local read-only assessment of R12 baseline49b187e against the R13 source/tests/architecture diff returned PASS. Reviewer ran targeted5/5, syntax and diff checks; did not rerun full host/Docker/PostgreSQL suites. All confirmed local findings were corrected. This is not GitHub APPROVED. The documentation follow-up references the exact implementation SHA above; source/tests remain unchanged. Final remote HEAD, individual R13 replies/resolution and CI/re-review evidence are published on PR#44, whose live status remains authoritative. Re-review on GitHub must use the final published HEAD; the baseline im-tio CHANGES_REQUESTED review is retained. No owner merge authorization exists.
+
+**Final gates:** H3 Subset Runner and H3 Storage Lifecycle IMPLEMENTED_OFFLINE_TESTED / BLOCKED; Durable Recovery NOT IMPLEMENTED; Run-Created Seed Support NOT IMPLEMENTED; Hosted Verification0/18; Hosted LIVE NOT AUTHORIZED; Production Real Auth STRICT NO-GO; Hosted Mutations0; Cost$0; Merge NOT AUTHORIZED. Remaining prerequisites include durable recovery, separately approved seed support and provider/testbed preparation/authorization.
