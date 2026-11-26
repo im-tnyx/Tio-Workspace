@@ -156,9 +156,14 @@ async function child(kind, directory, runId) {
   if (kind === 'before-intent' || kind === 'after-reserve') {
     interruptWrite(directory, 'reserve', 1, kind === 'after-reserve', () => ({ calls }));
     await request(handle, 'storage_upload', () => { calls++; });
-  } else if (kind === 'direct-inventory') {
+  } else if (kind === 'direct-inventory' || kind === 'direct-operation') {
     const inventory = new TestRunInventory(handle.runId);
-    inventory.registerSession(ownerId);
+    if (kind === 'direct-inventory') {
+      inventory.registerSession(ownerId);
+    } else {
+      inventory.registerInFlightOperation({ canMintSession: true }, Symbol('module-owned transport operation'));
+      assert.ok(inventory.hasUnresolvedOperations());
+    }
     writeFileSync(join(directory, 'provider-witness.json'), JSON.stringify({ calls }), { flush: true });
     process.kill(process.pid, 'SIGKILL');
   } else {
@@ -579,5 +584,14 @@ if (process.argv[2] === '--h4-child') {
     assert.equal(result.status, 'RECOVERY_REQUIRED');
     assert.deepEqual(result.residual.volatileKinds, ['auth']);
     assert.equal(result.reason, 'TRANSIENT_AUTH_CREDENTIALS_OR_PROOF_UNAVAILABLE');
+  });
+
+  test('H4 direct in-flight effect survives a crash without a transport attempt', async t => {
+    const { handle, witness } = crash(t, 'direct-operation');
+    assert.equal(witness.calls, 0);
+    const result = await recoverOfflineProbeRun({ handle });
+    assert.equal(result.consumed, 0);
+    assert.equal(result.status, 'RECOVERY_REQUIRED');
+    assert.deepEqual(result.residual.volatileKinds, ['auth']);
   });
 }

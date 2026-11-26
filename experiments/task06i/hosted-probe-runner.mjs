@@ -138,6 +138,7 @@ function requireCanonicalStorageUuid(value) {
 
 const RUN_REQUEST_BUDGET_CONTEXT = new AsyncLocalStorage();
 const TRANSPORT_REQUEST_BUDGET_MODES = new WeakMap();
+const JOURNALLED_TRANSPORT_OPERATION = Symbol('module-owned transport operation');
 function withRunRequestBudget(runId, category, operation, mode = undefined) {
   const existing = RUN_REQUEST_BUDGET_CONTEXT.getStore();
   if (!runId) throw new Error('REQUEST_BUDGET_BINDING_REQUIRED: Executing run operations require exact run ID');
@@ -1759,7 +1760,6 @@ function applyDeclarativeInventoryEffects(inv, effects) {
     inv.registerSeedPasswordModification(effects.registerSeedPasswordModification);
   }
   if (effects.registerInFlightOperation) {
-    journalForRun(inv.runId)?.volatile('other');
     const op = inv.registerInFlightOperation(effects.registerInFlightOperation);
     if (op && effects.settleInFlightOperation) {
       inv.settleInFlightOperation(op.opId, effects.settleInFlightOperation);
@@ -6323,7 +6323,7 @@ export class TestRunInventory {
    * Registers an in-flight operation before network dispatch begins (R13-02, R14-01, R14-02).
    * Lifecycle states: REGISTERED -> IN_FLIGHT -> SETTLED | TIMED_OUT_UNRESOLVED -> CLEANUP_REQUIRED -> CLEANUP_VERIFIED
    */
-  registerInFlightOperation(raw = {}) {
+  registerInFlightOperation(raw = {}, reservationAuthority = null) {
     const {
     probeId = 'unknown',
     endpoint = null,
@@ -6359,6 +6359,17 @@ export class TestRunInventory {
       );
     }
 
+    // Internal registrations are preflight only. Their provider dispatch has
+    // its own write-ahead attempt. Direct IN_FLIGHT imports are obligations.
+    if (reservationAuthority !== JOURNALLED_TRANSPORT_OPERATION) {
+      const journal = journalForRun(this.runId);
+      if (journal) {
+        const route = typeof endpoint === 'string' ? endpoint : '';
+        const kind = canMintSession || canCreateUser || route.includes('/auth/v1/') ? 'auth'
+          : route.includes('/storage/v1/') ? 'storage' : 'other';
+        journal.volatile(kind);
+      }
+    }
     const opId = `op-${this.runId}-${++this._opSequence}`;
     const op = {
       opId,
@@ -7674,7 +7685,7 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
         requiresCleanupReconciliation: true,
         targetUserId: validSeedUserId,
         description: `Run-scoped Storage fixture provisioning (${fullKey})`
-      })
+      }, JOURNALLED_TRANSPORT_OPERATION)
     : null;
 
   let reservation;
@@ -8980,7 +8991,7 @@ export function createHostedDispatcher(rawOptions = {}) {
               requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
               description: 'OTP probe dispatch (BYPASS-01)',
               metadata: { email: testUser }
-            })
+            }, JOURNALLED_TRANSPORT_OPERATION)
           : null;
 
         let res;
@@ -9066,7 +9077,7 @@ export function createHostedDispatcher(rawOptions = {}) {
               requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
               description: 'Signup probe dispatch (BYPASS-02)',
               metadata: { email: testUser }
-            })
+            }, JOURNALLED_TRANSPORT_OPERATION)
           : null;
 
         let res;
@@ -9150,7 +9161,7 @@ export function createHostedDispatcher(rawOptions = {}) {
               canModifyProviderState: cap.canModifyProviderState,
               requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
               description: 'Verify probe dispatch (BYPASS-03)'
-            })
+            }, JOURNALLED_TRANSPORT_OPERATION)
           : null;
 
         // Direct verify with fake/unverified token returns 400 before hook execution (R3-06).
@@ -9267,7 +9278,7 @@ export function createHostedDispatcher(rawOptions = {}) {
               requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
               description: 'Recover probe dispatch (BYPASS-05)',
               metadata: { email: testUser }
-            })
+            }, JOURNALLED_TRANSPORT_OPERATION)
           : null;
 
         let res;
@@ -9339,7 +9350,7 @@ export function createHostedDispatcher(rawOptions = {}) {
               requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
               description: 'Password token grant dispatch (HOOK-01)',
               metadata: { email: testUser }
-            })
+            }, JOURNALLED_TRANSPORT_OPERATION)
           : null;
 
         let res;
@@ -9508,7 +9519,7 @@ export function createHostedDispatcher(rawOptions = {}) {
               canModifyProviderState: cap.canModifyProviderState,
               requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
               description: 'Token refresh dispatch (HOOK-02)'
-            })
+            }, JOURNALLED_TRANSPORT_OPERATION)
           : null;
 
         let res;
@@ -9889,7 +9900,7 @@ export function createHostedDispatcher(rawOptions = {}) {
               targetUserId: String(userId),
               description: 'Admin password update dispatch (SESSION-02)',
               metadata: { userId: String(userId), email: seedEmail }
-            })
+            }, JOURNALLED_TRANSPORT_OPERATION)
           : null;
 
         let res;
@@ -10757,7 +10768,7 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
             requiresCleanupReconciliation: reqReconcile,
             targetUserId: item.id === 'SESSION-02' && activeRunContext?.activeUserId ? String(activeRunContext.activeUserId) : null,
             description: `Runner execution for probe ${item.id}`
-          })
+          }, JOURNALLED_TRANSPORT_OPERATION)
         : null;
 
       // Enforce bounded per-probe deadline with AbortController (PRRT_kwDOVtCmZc66jOw5, R13-02)
@@ -11014,7 +11025,7 @@ export function createHostedAdminClient(rawOptions = {}) {
             requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
             description: 'Seed password restoration credential verification',
             _internalCleanupOperation: inv?.runLifecycleState === INVENTORY_RUN_STATE.CLEANUP_ACTIVE
-          })
+          }, JOURNALLED_TRANSPORT_OPERATION)
         : null;
 
       const keyToUse = anonKey || serviceRoleKey;

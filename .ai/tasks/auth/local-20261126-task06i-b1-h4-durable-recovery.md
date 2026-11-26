@@ -5,7 +5,7 @@
 | Status | Ready for review |
 | Implementation owner | Codex root |
 | Previous agent | None for H4 |
-| Last commit agent | Codex root. First verified H4 implementation commit `80f8507ab92bb744a55b753439ec0434004643bf`. The PR records the reviewed correction HEAD. |
+| Last commit agent | Codex root. First verified H4 implementation `80f8507ab92bb744a55b753439ec0434004643bf`, first correction `640c7b18e89ef743be5f125ef0e7497840a14b43`. The PR records the final reviewed HEAD. |
 | Tracking / approval | Owner task brief dated 2026-11-26, offline Task 06I-B1-H4. |
 | Branch | `feat/task06i-b1-h4-durable-recovery` |
 | Base / previous and aligned local HEAD / fetched remote main | `5809dddf456cea3b8dfec1164034cf63fc392eb1` |
@@ -38,7 +38,8 @@
 - Run the 22 H4 fault and regression scenarios from the owner brief, including actual process termination and reentry. Run retained 06I/06H, PostgreSQL parity, repository verification and hardened network-disabled Docker synthetic tests where supported.
 - Record exact implementation HEAD and independent security review, dispositions, GitHub required checks and review request in the H4 PR. Merge requires separate owner authorization.
 - Independent verifier `h4_security_review` reviewed `80f8507ab92bb744a55b753439ec0434004643bf`. Initial verdict was `CHANGES_REQUESTED`. Two P1 findings reproduced false cleanup success after a direct inventory registration and an indeterminate Storage snapshot round-trip. A P3 finding identified inflated dispatch counts after a reservation-only crash. The correction writes typed inventory obligations in the admitting methods, requires complete synthetic snapshots with the indeterminate bit, and reports consumed slots separately from dispatch markers. Regression coverage includes a second independent process crash and both Storage snapshot cases.
-- Windows H4: **26/26**. Hardened Linux Docker Task 06I: **358/358**. Standalone local PostgreSQL contract parity: **18/18**. Task 06H regression: **115/115**. Repository verify: token checks, typecheck, lint and **22/22** shell tests. Attribution and guard fixtures: **142/142** and **14/14**. All listed commands exited 0. Linux synthetic tests ran with no Docker socket, and PostgreSQL execution was verified separately against the cached local image.
+- The re-review at `640c7b18e89ef743be5f125ef0e7497840a14b43` confirmed those corrections and reproduced one adjacent P1 on direct `registerInFlightOperation()`. Direct operation imports now persist a typed unresolved marker. Module-owned preflight registrations carry private provenance and still rely on the subordinate write-ahead transport gate. A process-termination test demonstrates that an imported operation stays unresolved even with zero transport attempts.
+- Windows H4: **27/27**. Hardened Linux Docker Task 06I: **359/359**. Standalone local PostgreSQL contract parity: **18/18**. Task 06H regression: **115/115**. Repository verify: token checks, typecheck, lint and **22/22** shell tests. Attribution and guard fixtures: **142/142** and **14/14**. All listed commands exited 0. Linux synthetic tests ran with no Docker socket, and PostgreSQL execution was verified separately against the cached local image.
 
 ## Local operation
 
