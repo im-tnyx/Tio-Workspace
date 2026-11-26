@@ -112,10 +112,13 @@ export function createConditionalStorageFixtureProvider(rawSpec) {
   const unknownObjects = new Set();
   const creationOrdinals = new Map();
   const recoverySnapshot = safeHasOwn(spec, 'recoverySnapshot')
-    ? record(spec.recoverySnapshot, ['objects', 'indeterminate', 'creationOrdinal'])
+    ? record(spec.recoverySnapshot, ['projectRef', 'runId', 'objects', 'indeterminate', 'creationOrdinal'])
     : null;
   if (recoverySnapshot && (safeHasOwn(spec, 'objects') || typeof recoverySnapshot.indeterminate !== 'boolean')) {
     throw new Error('INVALID_RECOVERY_PROVIDER_SNAPSHOT');
+  }
+  if (recoverySnapshot && (recoverySnapshot.projectRef !== spec.projectRef || recoverySnapshot.runId !== spec.runId)) {
+    throw new Error('RECOVERY_PROVIDER_SNAPSHOT_SCOPE_MISMATCH');
   }
   const attempts = [];
   const key = item => `${item.bucket}/${item.path}`;
@@ -243,10 +246,10 @@ function recoveryStorageState(provider, runId) {
 // that distinguishes a known empty location from an indeterminate one.
 export function snapshotRecoveryStorageFixture(provider) {
   assertConditionalStorageFixtureProvider(provider);
-  const { runId } = PROVIDER_BINDINGS.get(provider);
+  const { projectRef, runId } = PROVIDER_BINDINGS.get(provider);
   const { current, indeterminate, creationOrdinal } = recoveryStorageState(provider, runId);
   return Object.freeze({
-    objects: Object.freeze(current ? [current] : []), indeterminate, creationOrdinal
+    projectRef, runId, objects: Object.freeze(current ? [current] : []), indeterminate, creationOrdinal
   });
 }
 

@@ -65,7 +65,7 @@ function object(runId, id = objectId) {
 function provider(runId, options = {}) {
   const { objects = [], indeterminate = false, creationOrdinal = null, ...fixtureControls } = options;
   return createConditionalStorageFixtureProvider({
-    projectRef, runId, recoverySnapshot: { objects, indeterminate, creationOrdinal }, ...fixtureControls
+    projectRef, runId, recoverySnapshot: { projectRef, runId, objects, indeterminate, creationOrdinal }, ...fixtureControls
   });
 }
 
@@ -199,8 +199,8 @@ function crash(t, kind) {
 }
 
 function fromWitness(runId, witness) {
-  const { objects, creationOrdinal, indeterminate } = witness;
-  return createConditionalStorageFixtureProvider({ projectRef, runId, recoverySnapshot: { objects, creationOrdinal, indeterminate } });
+  const { calls: _calls, ...recoverySnapshot } = witness;
+  return createConditionalStorageFixtureProvider({ projectRef, runId, recoverySnapshot });
 }
 
 async function seedStorage(t, options = {}) {
@@ -339,6 +339,8 @@ if (process.argv[2] === '--h4-child') {
     original.close();
     copyFileSync(journalPath(directory, original.runId), journalPath(directory, other.runId));
     assert.throws(() => reopen(directory, other.runId), /RECOVERY_SCOPE_MISMATCH/);
+    const originalEmpty = createConditionalStorageFixtureProvider({ projectRef, runId: original.runId });
+    assert.throws(() => fromWitness(other.runId, snapshotRecoveryStorageFixture(originalEmpty)), /RECOVERY_PROVIDER_SNAPSHOT_SCOPE_MISMATCH/);
     for (const forbidden of [HARDCODED_REAL_REF, HARDCODED_TIO_WORLD_REF, 'unapproved-project']) {
       assert.throws(() => reopenOfflineRecoveryJournal({ directory, projectRef: forbidden, runId: original.runId }), /RECOVERY_SCOPE_MISMATCH/);
     }
@@ -393,7 +395,7 @@ if (process.argv[2] === '--h4-child') {
     const original = createConditionalStorageFixtureProvider({ projectRef, runId: handle.runId });
     original.markIndeterminateObject({ bucket: expected.bucket, path: expected.path });
     const snapshot = snapshotRecoveryStorageFixture(original);
-    assert.deepEqual(snapshot, { objects: [], indeterminate: true, creationOrdinal: null });
+    assert.deepEqual(snapshot, { projectRef, runId: handle.runId, objects: [], indeterminate: true, creationOrdinal: null });
     const simulated = fromWitness(handle.runId, snapshot);
     const result = await recoverOfflineProbeRun({ handle, provider: simulated });
     assert.equal(result.reason, 'STORAGE_OWNERSHIP_UNKNOWN');
@@ -505,7 +507,7 @@ if (process.argv[2] === '--h4-child') {
     const inactive = createConditionalStorageFixtureProvider({ projectRef, runId: handle.runId });
     assert.throws(() => createConditionalStorageFixtureProvider({ projectRef, runId: handle.runId, recoverySnapshot: true }), /INVALID_CONDITIONAL_STORAGE_RECORD/);
     assert.throws(() => createConditionalStorageFixtureProvider({
-      projectRef, runId: handle.runId, recoverySnapshot: { objects: [], creationOrdinal: null }
+      projectRef, runId: handle.runId, recoverySnapshot: { projectRef, runId: handle.runId, objects: [], creationOrdinal: null }
     }), /MISSING_CONDITIONAL_STORAGE_FIELD/);
     assert.equal((await recoverOfflineProbeRun({ handle, provider: inactive })).reason, 'RECOVERY_PROVIDER_SNAPSHOT_REQUIRED');
     assert.equal(handle.report().consumed, 1);
