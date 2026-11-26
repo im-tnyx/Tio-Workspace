@@ -43,6 +43,9 @@ BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'authenticated') THEN
     CREATE ROLE authenticated;
   END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'service_role') THEN
+    CREATE ROLE service_role;
+  END IF;
 END $$;
 
 -- 1. Custom Access Token Hook
@@ -243,6 +246,60 @@ CREATE POLICY task06i_probe_storage_policy ON storage.objects
 --    Pre-existing bucket assets are strictly preserved.
 -- Note: Missing object (404), wrong owner (403), or incomplete upload fails closed as
 -- STORAGE_FIXTURE_MISSING / PROVIDER_PRECONDITION_MISSING, preventing false auth passes.
+
+-- -----------------------------------------------------------------------------
+-- 4b. NARROWLY SCOPED SERVER-SIDE STORAGE OWNERSHIP LOOKUP (Task 06I-B1-H3-R2)
+-- Authoritative replacement for nonexistent GET download owner headers.
+-- Keeps storage schema unexposed and storage.objects RLS intact.
+-- Executable ONLY by service_role; strictly scoped to 'task06i_probe_bucket'.
+-- -----------------------------------------------------------------------------
+
+CREATE OR REPLACE FUNCTION public.task06i_lookup_storage_object_owner(
+  p_bucket_id text,
+  p_object_name text
+)
+RETURNS TABLE (
+  id uuid,
+  bucket_id text,
+  name text,
+  owner_id text,
+  version text,
+  created_at timestamptz,
+  updated_at timestamptz
+)
+LANGUAGE plpgsql
+SECURITY DEFINER
+SET search_path = ''
+AS $$
+BEGIN
+  IF p_bucket_id IS DISTINCT FROM 'task06i_probe_bucket' THEN
+    RAISE EXCEPTION 'task06i_lookup_storage_object_owner: unauthorized bucket %', p_bucket_id
+      USING ERRCODE = '42501';
+  END IF;
+
+  IF p_object_name IS NULL OR trim(p_object_name) = '' THEN
+    RAISE EXCEPTION 'task06i_lookup_storage_object_owner: invalid object name'
+      USING ERRCODE = '22023';
+  END IF;
+
+  RETURN QUERY
+  SELECT
+    o.id,
+    o.bucket_id,
+    o.name,
+    o.owner_id,
+    o.version,
+    o.created_at,
+    o.updated_at
+  FROM storage.objects o
+  WHERE o.bucket_id = p_bucket_id
+    AND o.name = p_object_name
+  LIMIT 1;
+END;
+$$;
+
+REVOKE ALL ON FUNCTION public.task06i_lookup_storage_object_owner(text, text) FROM PUBLIC, anon, authenticated;
+GRANT EXECUTE ON FUNCTION public.task06i_lookup_storage_object_owner(text, text) TO service_role;
 
 -- -----------------------------------------------------------------------------
 -- 5. SEED USER PROVISIONING SPECIFICATION (Compatible with disable_signup=true)
