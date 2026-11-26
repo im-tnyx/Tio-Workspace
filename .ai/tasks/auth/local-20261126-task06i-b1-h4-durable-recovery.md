@@ -2,10 +2,10 @@
 
 | Field | Value |
 |---|---|
-| Status | In progress |
+| Status | Ready for review |
 | Implementation owner | Codex root |
 | Previous agent | None for H4 |
-| Last commit agent | Pending H4 publication. Verified baseline is the PR #46 squash below. |
+| Last commit agent | Codex root. First verified H4 implementation commit `80f8507ab92bb744a55b753439ec0434004643bf`. The PR records the reviewed correction HEAD. |
 | Tracking / approval | Owner task brief dated 2026-11-26, offline Task 06I-B1-H4. |
 | Branch | `feat/task06i-b1-h4-durable-recovery` |
 | Base / previous and aligned local HEAD / fetched remote main | `5809dddf456cea3b8dfec1164034cf63fc392eb1` |
@@ -37,12 +37,14 @@
 
 - Run the 22 H4 fault and regression scenarios from the owner brief, including actual process termination and reentry. Run retained 06I/06H, PostgreSQL parity, repository verification and hardened network-disabled Docker synthetic tests where supported.
 - Record exact implementation HEAD and independent security review, dispositions, GitHub required checks and review request in the H4 PR. Merge requires separate owner authorization.
+- Independent verifier `h4_security_review` reviewed `80f8507ab92bb744a55b753439ec0434004643bf`. Initial verdict was `CHANGES_REQUESTED`. Two P1 findings reproduced false cleanup success after a direct inventory registration and an indeterminate Storage snapshot round-trip. A P3 finding identified inflated dispatch counts after a reservation-only crash. The correction writes typed inventory obligations in the admitting methods, requires complete synthetic snapshots with the indeterminate bit, and reports consumed slots separately from dispatch markers. Regression coverage includes a second independent process crash and both Storage snapshot cases.
+- Windows H4: **26/26**. Hardened Linux Docker Task 06I: **358/358**. Standalone local PostgreSQL contract parity: **18/18**. Task 06H regression: **115/115**. Repository verify: token checks, typecheck, lint and **22/22** shell tests. Attribution and guard fixtures: **142/142** and **14/14**. All listed commands exited 0. Linux synthetic tests ran with no Docker socket, and PostgreSQL execution was verified separately against the cached local image.
 
 ## Local operation
 
 1. Allocate a private local directory on NTFS or a local Linux filesystem with SQLite-compatible locking. Pass its canonical absolute path to `createOfflineRecoveryJournal`. Use its returned `runId` in the existing run-bound inventory, transport, Admin and dispatcher factories. Select explicit `runOfflineProbeSimulation`; when using recorded zero wait, select it in the journal and corresponding fixtures/timing.
 2. Keep the journal handle open through provisioning and cleanup. Read `handle.report()` for consumed attempts and outstanding obligations; close the handle when no request or reconciliation is in flight.
-3. Restart with `reopenOfflineRecoveryJournal` and the original directory, project and run ID. For a Storage obligation, pass a registered synthetic recovery snapshot derived independently from the simulated provider. The snapshot's creation ordinal must come from that provider's fixture state, never be reconstructed from the journal. Run `recoverOfflineProbeRun`. Absence, matching creation witness and a replacement take distinct paths; mismatches and exhausted allowance retain the original obligation.
+3. Restart with `reopenOfflineRecoveryJournal` and the original directory, project and run ID. For a Storage obligation, pass a registered provider rebuilt with the synthetic state exported by `snapshotRecoveryStorageFixture`. The snapshot carries `objects`, `indeterminate` and `creationOrdinal`. Supply these independently from the journal. Run `recoverOfflineProbeRun`. Absence, a matching creation witness, a replacement and indeterminate state take distinct paths. Exhausted allowance retains the original obligation.
 4. Keep unresolved records for operator review. Cold Auth reconciliation and unclassified effects have no supported provider proof path in this slice. Journal-backed runs retain them conservatively, including when the process-local H3 inventory alone reports clean. The existing process-local H3 entry points remain supported for legacy runs.
 
 The local filesystem trust boundary assumes an owner-controlled directory and ACL, stable paths and working local file locks and flush semantics. SQLite handles incomplete transactions and journal replay after process crashes. This implementation does not attest ACLs on Windows, support network filesystems or defend against a privileged actor substituting an internally consistent prior copy. Verification covers process termination on Windows and a Linux Docker volume. It does not demonstrate power-loss behavior.

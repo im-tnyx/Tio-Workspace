@@ -13,7 +13,7 @@ import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 
 import {
-  createConditionalStorageFixtureProvider, getConditionalStorageFixtureProvider, readObservedStorageCreation
+  createConditionalStorageFixtureProvider, getConditionalStorageFixtureProvider, snapshotRecoveryStorageFixture
 } from './conditional-storage-fixture.mjs';
 import {
   createCreationProof, createDeterministicFixtureTransport, createHostedAdminClient, createMockProjectKey,
@@ -63,7 +63,10 @@ function object(runId, id = objectId) {
 }
 
 function provider(runId, options = {}) {
-  return createConditionalStorageFixtureProvider({ projectRef, runId, recoverySnapshot: true, ...options });
+  const { objects = [], indeterminate = false, creationOrdinal = null, ...fixtureControls } = options;
+  return createConditionalStorageFixtureProvider({
+    projectRef, runId, recoverySnapshot: { objects, indeterminate, creationOrdinal }, ...fixtureControls
+  });
 }
 
 function journalTransport(handle) {
@@ -153,13 +156,17 @@ async function child(kind, directory, runId) {
   if (kind === 'before-intent' || kind === 'after-reserve') {
     interruptWrite(directory, 'reserve', 1, kind === 'after-reserve', () => ({ calls }));
     await request(handle, 'storage_upload', () => { calls++; });
+  } else if (kind === 'direct-inventory') {
+    const inventory = new TestRunInventory(handle.runId);
+    inventory.registerSession(ownerId);
+    writeFileSync(join(directory, 'provider-witness.json'), JSON.stringify({ calls }), { flush: true });
+    process.kill(process.pid, 'SIGKILL');
   } else {
     const fixture = journalTransport(handle);
     const storage = getConditionalStorageFixtureProvider(fixture.transport);
     const snapshot = () => ({
       calls: fixture.transport.calls.length,
-      objects: storage.getSnapshot().objects,
-      creationOrdinal: readObservedStorageCreation(fixture.transport, handle.runId, 3) ? 3 : null
+      ...snapshotRecoveryStorageFixture(storage)
     });
     if (kind === 'cleanup') {
       await fixture.provision();
@@ -178,6 +185,7 @@ function crash(t, kind) {
   const result = spawnSync(process.execPath, [file, '--h4-child', kind, directory], { encoding: 'utf8', timeout: 10000 });
   assert.ifError(result.error);
   assert.notEqual(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stderr, /Crash point was never reached|Process termination did not take effect/);
   const runId = readFileSync(join(directory, 'run-id'), 'utf8');
   const witness = JSON.parse(readFileSync(join(directory, 'provider-witness.json'), 'utf8'));
   const handle = reopen(directory, runId);
@@ -186,8 +194,8 @@ function crash(t, kind) {
 }
 
 function fromWitness(runId, witness) {
-  const { objects, creationOrdinal } = witness;
-  return provider(runId, { objects, ...(creationOrdinal === null ? {} : { creationOrdinal }) });
+  const { objects, creationOrdinal, indeterminate } = witness;
+  return createConditionalStorageFixtureProvider({ projectRef, runId, recoverySnapshot: { objects, creationOrdinal, indeterminate } });
 }
 
 async function seedStorage(t, options = {}) {
@@ -241,7 +249,13 @@ if (process.argv[2] === '--h4-child') {
     assert.equal(witness.calls, 0);
     assert.equal(attempt.dispatchedAt, null);
     assert.equal(attempt.outcome, 'pending');
-    assert.equal(budget(handle).report().remainingCapacity, 24);
+    const accounting = budget(handle).report();
+    assert.equal(accounting.remainingCapacity, 24);
+    assert.equal(accounting.consumedAttempts, 1);
+    assert.equal(accounting.reservedWithoutDispatch, 1);
+    assert.equal(accounting.durableDispatchMarkers, 0);
+    assert.equal(accounting.simulatedTransportRequests, 0);
+    assert.equal(accounting.auxiliaryRequests, 0);
     assert.equal((await recoverOfflineProbeRun({ handle })).status, 'CLEANUP_VERIFIED_SUCCESS');
   });
 
@@ -371,8 +385,11 @@ if (process.argv[2] === '--h4-child') {
   test('H4-14 indeterminate provider ownership remains residual', async t => {
     const { handle } = await seedStorage(t);
     const expected = object(handle.runId);
-    const simulated = provider(handle.runId, { objects: [expected], creationOrdinal: 1 });
-    simulated.markIndeterminateObject({ bucket: expected.bucket, path: expected.path });
+    const original = createConditionalStorageFixtureProvider({ projectRef, runId: handle.runId });
+    original.markIndeterminateObject({ bucket: expected.bucket, path: expected.path });
+    const snapshot = snapshotRecoveryStorageFixture(original);
+    assert.deepEqual(snapshot, { objects: [], indeterminate: true, creationOrdinal: null });
+    const simulated = fromWitness(handle.runId, snapshot);
     const result = await recoverOfflineProbeRun({ handle, provider: simulated });
     assert.equal(result.reason, 'STORAGE_OWNERSHIP_UNKNOWN');
     assert.deepEqual(result.residual.storage, [1]);
@@ -481,6 +498,10 @@ if (process.argv[2] === '--h4-child') {
   test('H4-21 same IDs or an ordinary empty provider do not supply fresh creation proof', async t => {
     const { handle } = await seedStorage(t);
     const inactive = createConditionalStorageFixtureProvider({ projectRef, runId: handle.runId });
+    assert.throws(() => createConditionalStorageFixtureProvider({ projectRef, runId: handle.runId, recoverySnapshot: true }), /INVALID_CONDITIONAL_STORAGE_RECORD/);
+    assert.throws(() => createConditionalStorageFixtureProvider({
+      projectRef, runId: handle.runId, recoverySnapshot: { objects: [], creationOrdinal: null }
+    }), /MISSING_CONDITIONAL_STORAGE_FIELD/);
     assert.equal((await recoverOfflineProbeRun({ handle, provider: inactive })).reason, 'RECOVERY_PROVIDER_SNAPSHOT_REQUIRED');
     assert.equal(handle.report().consumed, 1);
     const simulated = provider(handle.runId, { objects: [object(handle.runId)] });
@@ -548,5 +569,15 @@ if (process.argv[2] === '--h4-child') {
     assert.equal(result.actualHostedRequests, 0);
     assert.equal(handle.report().status, 'CLEANUP_VERIFIED_SUCCESS');
     assert.deepEqual(handle.report().attempts.map(attempt => attempt.category), ['probe']);
+  });
+
+  test('H4 crash before cleanup preserves a directly registered inventory obligation', async t => {
+    const { handle, witness } = crash(t, 'direct-inventory');
+    assert.equal(witness.calls, 0);
+    const result = await recoverOfflineProbeRun({ handle });
+    assert.equal(result.consumed, 0);
+    assert.equal(result.status, 'RECOVERY_REQUIRED');
+    assert.deepEqual(result.residual.volatileKinds, ['auth']);
+    assert.equal(result.reason, 'TRANSIENT_AUTH_CREDENTIALS_OR_PROOF_UNAVAILABLE');
   });
 }

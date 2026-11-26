@@ -94,13 +94,14 @@ export function getRunRequestBudget(rawOptions) {
   const mode = journal?.mode ?? options.mode ?? 'standard';
   const history = journal?.state.attempts ?? [];
   let reserved = 0;
-  let attempted = history.length;
+  let consumed = history.length;
+  let dispatched = history.filter(entry => entry.dispatchedAt !== null).length;
   let blocked = 0;
   let failed = history.filter(entry => entry.outcome === 'failed' || entry.outcome === 'cancelled_after_dispatch').length;
   let cancelledBefore = 0;
   let cancelledAfter = history.filter(entry => entry.outcome === 'cancelled_after_dispatch').length;
-  let cleanupAttempts = history.filter(entry => entry.category === 'cleanup').length;
-  let auxiliaryAttempts = history.filter(entry => entry.category === 'auxiliary').length;
+  let cleanupAttempts = history.filter(entry => entry.dispatchedAt !== null && entry.category === 'cleanup').length;
+  let auxiliaryAttempts = history.filter(entry => entry.dispatchedAt !== null && entry.category === 'auxiliary').length;
   let lastDispatch = history.at(-1)?.dispatchedAt ?? history.at(-1)?.reservedAt ?? null;
   // On reopen wait a full interval on a fresh monotonic clock. Persisted wall
   // time still constrains ordering, including a system clock rollback.
@@ -119,7 +120,7 @@ export function getRunRequestBudget(rawOptions) {
       const rejectCancelled = () => { blocked++; cancelledBefore++; const error = abortError(); error._counted = true; PRE_DISPATCH_FAILURES.set(error, options.runId); throw error; };
       if (signal && abortedGet.call(signal)) return rejectCancelled();
       // Synchronous reservation occurs before the first await, so concurrent callers cannot oversubscribe.
-      if (attempted + reserved >= LIMIT) {
+      if (consumed + reserved >= LIMIT) {
         blocked++;
         const error = new Error('REQUEST_BUDGET_EXHAUSTED: Shared run request limit reached; outstanding resources require recovery');
         error.code = 'REQUEST_BUDGET_EXHAUSTED';
@@ -156,22 +157,23 @@ export function getRunRequestBudget(rawOptions) {
         }
         if (signal && abortedGet.call(signal)) return rejectCancelled();
         const reservedAt = Date.now();
-        journal?.reserve(attempted + 1, category, request.kind, reservedAt);
+        journal?.reserve(consumed + 1, category, request.kind, reservedAt);
         lastDispatch = reservedAt;
-        attempted++;
-        if (category === 'cleanup') cleanupAttempts++;
-        if (category === 'auxiliary') auxiliaryAttempts++;
+        consumed++;
         const ticket = Object.freeze(Object.create(null));
-        const entry = { ordinal: attempted, category, dispatchedAt: journal ? null : lastDispatch, outcome: 'pending' };
+        const entry = { ordinal: consumed, category, dispatchedAt: journal ? null : lastDispatch, outcome: 'pending' };
         if (journal) entry.reservedAt = reservedAt;
         attempts.push(entry);
         if (journal) {
           const dispatchedAt = Date.now();
-          journal.dispatch(attempted, dispatchedAt);
+          journal.dispatch(consumed, dispatchedAt);
           lastAdmission = performance.now();
           lastDispatch = dispatchedAt;
           entry.dispatchedAt = dispatchedAt;
         }
+        dispatched++;
+        if (category === 'cleanup') cleanupAttempts++;
+        if (category === 'auxiliary') auxiliaryAttempts++;
         TICKETS.set(ticket, { budget, entry, settled: false });
         admitted = true;
         return ticket;
@@ -213,12 +215,15 @@ export function getRunRequestBudget(rawOptions) {
       return {
         projectRef: options.projectRef, runId: options.runId, maxTotalRequests: LIMIT,
         minIntervalMs: INTERVAL, pacingMode: mode, simulatedPacing: mode === 'recorded_zero_wait',
-        simulatedTransportRequests: attempted, actualHostedRequests: 0, pendingReservations: reserved,
+        simulatedTransportRequests: dispatched, actualHostedRequests: 0, pendingReservations: reserved,
         blockedRequests: blocked, failedRequestAttempts: failed, cancelledBeforeDispatch: cancelledBefore,
         cancelledAfterDispatch: cancelledAfter, auxiliaryRequests: auxiliaryAttempts, cleanupRequests: cleanupAttempts,
-        probeTransportRequests: attempted - auxiliaryAttempts - cleanupAttempts,
+        probeTransportRequests: dispatched - auxiliaryAttempts - cleanupAttempts,
         cleanupPolicy: 'SHARED_TOTAL_LIMIT_NO_EXTRA_ALLOWANCE', reservedCleanupCapacity: 0,
-        remainingCapacity: LIMIT - attempted - reserved, intervalsMs: intervals.slice(), attempts: attempts.map(entry => ({ ...entry }))
+        remainingCapacity: LIMIT - consumed - reserved, intervalsMs: intervals.slice(), attempts: attempts.map(entry => ({ ...entry })),
+        ...(journal ? {
+          consumedAttempts: consumed, reservedWithoutDispatch: consumed - dispatched, durableDispatchMarkers: dispatched
+        } : {})
       };
     }
   });

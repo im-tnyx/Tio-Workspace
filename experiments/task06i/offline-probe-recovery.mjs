@@ -56,7 +56,8 @@ export async function recoverOfflineProbeRun(rawOptions) {
     }
     if (journal.finish()) return report();
     status = handle.report();
-    return report(status.residual.credentialDependent.length ? 'TRANSIENT_AUTH_CREDENTIALS_OR_PROOF_UNAVAILABLE' : 'PROVIDER_EFFECT_UNRECONCILED');
+    const missingAuthProof = status.residual.credentialDependent.length || status.residual.volatileKinds.includes('auth');
+    return report(missingAuthProof ? 'TRANSIENT_AUTH_CREDENTIALS_OR_PROOF_UNAVAILABLE' : 'PROVIDER_EFFECT_UNRECONCILED');
   } finally {
     journal.endReconciliation();
   }

@@ -23,6 +23,7 @@ const categories = ['probe', 'auxiliary', 'cleanup'];
 const outcomes = ['success', 'failed', 'cancelled_after_dispatch'];
 const modes = ['standard', 'recorded_zero_wait'];
 const storageKinds = ['storage_upload', 'storage_delete', 'recovery_delete'];
+const inventoryKinds = ['auth', 'storage', 'other'];
 
 function fail(code) {
   return Object.assign(new Error(code), { code });
@@ -103,14 +104,14 @@ function residuals(state) {
   return {
     storage: pendingStorage(state),
     other: effects,
-    volatileInventory: state.volatileInventory
+    volatileInventory: state.inventoryKinds.size > 0
   };
 }
 
 // Replaying the closed set of events validates on-disk transitions before any
 // budget or provider capability can use them. Sequence is the array index.
 function replay(events, mode) {
-  const state = { attempts: [], absentThrough: 0, ownership: null, terminal: false, volatileInventory: false, recovery: false };
+  const state = { attempts: [], absentThrough: 0, ownership: null, terminal: false, inventoryKinds: new Set(), recovery: false };
   const invalid = () => { throw fail('INVALID_RECOVERY_TRANSITION'); };
   if (!Array.isArray(events) || events.length > MAX_EVENTS) invalid();
   for (const event of events) {
@@ -128,7 +129,7 @@ function replay(events, mode) {
             (state.recovery !== second.startsWith('recovery_')) ||
             (second.startsWith('recovery_') && first !== 'cleanup') ||
             (second === 'recovery_delete' && state.ownership?.lookupOrdinal !== ordinal - 1) ||
-            (second === 'auth_delete' && pendingStorage(state).length)) invalid();
+            (second === 'auth_delete' && (pendingStorage(state).length || state.inventoryKinds.has('storage')))) invalid();
         if (mode === 'standard' && state.attempts.length &&
             third - (state.attempts.at(-1).dispatchedAt ?? state.attempts.at(-1).reservedAt) < REQUEST_INTERVAL_MS) invalid();
         state.attempts.push({
@@ -140,7 +141,7 @@ function replay(events, mode) {
         if (event.length !== 3 || !attempt || ordinal !== state.attempts.length ||
             attempt.dispatchedAt !== null || !validTime(first) || first < attempt.reservedAt ||
             (state.recovery !== attempt.kind.startsWith('recovery_')) ||
-            (attempt.kind === 'auth_delete' && pendingStorage(state).length)) invalid();
+            (attempt.kind === 'auth_delete' && (pendingStorage(state).length || state.inventoryKinds.has('storage')))) invalid();
         attempt.dispatchedAt = first;
         break;
       case 'outcome':
@@ -164,8 +165,8 @@ function replay(events, mode) {
         state.ownership = { attemptOrdinal: ordinal, lookupOrdinal: first, objectId: second, ownerId: third };
         break;
       case 'volatile':
-        if (event.length !== 1 || state.volatileInventory || state.recovery) invalid();
-        state.volatileInventory = true;
+        if (event.length !== 2 || !inventoryKinds.includes(ordinal) || state.inventoryKinds.has(ordinal) || state.recovery) invalid();
+        state.inventoryKinds.add(ordinal);
         break;
       case 'absence':
         if (event.length !== 2 || ordinal !== state.attempts.length || !attempt ||
@@ -280,7 +281,8 @@ function openJournal(rawOptions, creating) {
             storage: pendingStorage(state).map(a => a.ordinal),
             credentialDependent: state.attempts.filter(a => a.dispatchedAt !== null && ['auth_effect', 'auth_delete'].includes(a.kind)).map(a => a.ordinal),
             unclassified: state.attempts.filter(a => a.dispatchedAt !== null && a.kind === 'other_effect').map(a => a.ordinal),
-            volatileInventory: state.volatileInventory
+            volatileInventory: state.inventoryKinds.size > 0,
+            volatileKinds: [...state.inventoryKinds]
           }
         };
       },
@@ -309,10 +311,10 @@ function openJournal(rawOptions, creating) {
             !validIdentity(candidate.objectId, candidate.ownerId))) throw fail('INVALID_RECOVERY_STORAGE_CANDIDATE');
         append(['outcome', ordinal, outcome, candidate?.objectId ?? null, candidate?.ownerId ?? null]);
       },
-      volatile() {
+      volatile(kind) {
         requireUsable();
         if (state.recovery || state.terminal) throw fail('RECOVERY_INVENTORY_MUTATION_BLOCKED');
-        if (!state.volatileInventory) append(['volatile']);
+        if (!state.inventoryKinds.has(kind)) append(['volatile', kind]);
       },
       observeOwnership(lookupOrdinal, observation) {
         assertRecoveryStorageObservation(observation, RECOVERY_PROJECT, runId);

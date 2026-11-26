@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Status | **H3 and PR #45 follow-up MERGED / OFFLINE TESTED. Formal `im-tio` approval at feature HEAD `8ab4c0e2fc80e940f94d1bee443db8fad0f82efc`; 8/8 review threads resolved. Post-merge security CI succeeded; the merge receipt reports 332/332 PASS. See [H3 section 21.7](archive/2026/local-20261124-task06i-b1-h3-subset-runner-storage.md#217-pr-45-post-merge-receipt). Hosted atomic deletion UNVERIFIED; hosted verification 0/18; Hosted LIVE NOT AUTHORIZED; Production Real Auth STRICT NO-GO.** |
-| Active Task | [Task 06I-B1-H4](tasks/auth/local-20261126-task06i-b1-h4-durable-recovery.md) — offline durable crash recovery, in progress. |
+| Active Task | [Task 06I-B1-H4](tasks/auth/local-20261126-task06i-b1-h4-durable-recovery.md) — offline durable crash recovery, ready for review. |
 | Active Scope / Owner | Codex root: owner-approved H4 journal, recovery, offline synthetic verification and focused PR review. Hosted operations, H5 and merge remain separately gated. |
 | Last H3 follow-up commit | Codex root / approved feature HEAD `8ab4c0e2fc80e940f94d1bee443db8fad0f82efc` (historical PR #45 head, not a mutable current-HEAD pointer). |
 | Branch | `feat/task06i-b1-h4-durable-recovery`. PR #44–#46 source branches were already absent locally and remotely. |

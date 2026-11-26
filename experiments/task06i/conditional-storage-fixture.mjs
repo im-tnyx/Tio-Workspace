@@ -102,7 +102,7 @@ function result(status, expected, current = null, deleted = false) {
  * authorization for any hosted operation.
  */
 export function createConditionalStorageFixtureProvider(rawSpec) {
-  const spec = record(rawSpec, ['projectRef', 'runId', 'objects', 'available', 'responseMode', 'recoverySnapshot', 'creationOrdinal'], ['projectRef', 'runId']);
+  const spec = record(rawSpec, ['projectRef', 'runId', 'objects', 'available', 'responseMode', 'recoverySnapshot'], ['projectRef', 'runId']);
   if (spec.projectRef !== TEMP_REF || typeof spec.runId !== 'string' || !safeTest(/^[a-zA-Z0-9_-]+$/, spec.runId)) throw new Error('CONDITIONAL_STORAGE_SCOPE_MISMATCH');
   const available = safeHasOwn(spec, 'available') ? spec.available : true;
   if (typeof available !== 'boolean') throw new Error('INVALID_CONDITIONAL_STORAGE_AVAILABILITY');
@@ -111,6 +111,12 @@ export function createConditionalStorageFixtureProvider(rawSpec) {
   const objects = new Map();
   const unknownObjects = new Set();
   const creationOrdinals = new Map();
+  const recoverySnapshot = safeHasOwn(spec, 'recoverySnapshot')
+    ? record(spec.recoverySnapshot, ['objects', 'indeterminate', 'creationOrdinal'])
+    : null;
+  if (recoverySnapshot && (safeHasOwn(spec, 'objects') || typeof recoverySnapshot.indeterminate !== 'boolean')) {
+    throw new Error('INVALID_RECOVERY_PROVIDER_SNAPSHOT');
+  }
   const attempts = [];
   const key = item => `${item.bucket}/${item.path}`;
   function boundIdentity(raw) {
@@ -118,22 +124,27 @@ export function createConditionalStorageFixtureProvider(rawSpec) {
     if (item.runId !== spec.runId || item.projectRef !== spec.projectRef) throw new Error('CONDITIONAL_STORAGE_BINDING_MISMATCH');
     return item;
   }
-  if (safeHasOwn(spec, 'objects')) {
-    if (!safeIsArray(spec.objects) || safeIsProxy(spec.objects) || safePrototype(spec.objects) !== safeArrayPrototype) throw new Error('INVALID_CONDITIONAL_STORAGE_OBJECTS');
-    for (let index = 0; index < spec.objects.length; index++) {
-      const descriptor = safeDescriptor(spec.objects, String(index));
+  if (recoverySnapshot || safeHasOwn(spec, 'objects')) {
+    const rows = recoverySnapshot ? recoverySnapshot.objects : spec.objects;
+    if (!safeIsArray(rows) || safeIsProxy(rows) || safePrototype(rows) !== safeArrayPrototype) throw new Error('INVALID_CONDITIONAL_STORAGE_OBJECTS');
+    for (let index = 0; index < rows.length; index++) {
+      const descriptor = safeDescriptor(rows, String(index));
       if (!descriptor || !safeHasOwn(descriptor, 'value')) throw new Error('INVALID_CONDITIONAL_STORAGE_OBJECTS');
       const item = boundIdentity(descriptor.value);
       if (objects.has(key(item))) throw new Error('DUPLICATE_CONDITIONAL_STORAGE_OBJECT');
       objects.set(key(item), item);
     }
   }
-  const recoverySnapshot = safeHasOwn(spec, 'recoverySnapshot') ? spec.recoverySnapshot : false;
-  if (typeof recoverySnapshot !== 'boolean') throw new Error('INVALID_RECOVERY_PROVIDER_SNAPSHOT');
-  if (safeHasOwn(spec, 'creationOrdinal')) {
-    if (!recoverySnapshot || objects.size !== 1 || !Number.isSafeInteger(spec.creationOrdinal) ||
-        spec.creationOrdinal < 1 || spec.creationOrdinal > 25) throw new Error('INVALID_RECOVERY_PROVIDER_WITNESS');
-    creationOrdinals.set(objects.keys().next().value, spec.creationOrdinal);
+  if (recoverySnapshot) {
+    const locationKey = `${BUCKET}/${spec.runId}/probe.txt`;
+    if (recoverySnapshot.indeterminate) unknownObjects.add(locationKey);
+    const ordinal = recoverySnapshot.creationOrdinal;
+    if (ordinal !== null) {
+      if (objects.size !== 1 || !Number.isSafeInteger(ordinal) || ordinal < 1 || ordinal > 25) {
+        throw new Error('INVALID_RECOVERY_PROVIDER_WITNESS');
+      }
+      creationOrdinals.set(locationKey, ordinal);
+    }
   }
   const provider = {
     // Provisioning and declarative replacement transitions share exactly this Map.
@@ -222,13 +233,28 @@ export function assertRecoveryStorageFixture(provider, projectRef, runId) {
   }
 }
 
-export function readRecoveryStorageFixture(provider, projectRef, runId) {
-  assertRecoveryStorageFixture(provider, projectRef, runId);
+function recoveryStorageState(provider, runId) {
   const path = `${runId}/probe.txt`;
   const state = provider.getObjectState({ bucket: BUCKET, path });
+  return { ...state, creationOrdinal: RECOVERY_WITNESSES.get(provider).get(`${BUCKET}/${path}`) ?? null };
+}
+
+// Fixture control for the separate simulation environment. Preserve all state
+// that distinguishes a known empty location from an indeterminate one.
+export function snapshotRecoveryStorageFixture(provider) {
+  assertConditionalStorageFixtureProvider(provider);
+  const { runId } = PROVIDER_BINDINGS.get(provider);
+  const { current, indeterminate, creationOrdinal } = recoveryStorageState(provider, runId);
+  return Object.freeze({
+    objects: Object.freeze(current ? [current] : []), indeterminate, creationOrdinal
+  });
+}
+
+export function readRecoveryStorageFixture(provider, projectRef, runId) {
+  assertRecoveryStorageFixture(provider, projectRef, runId);
+  const { current, indeterminate, creationOrdinal } = recoveryStorageState(provider, runId);
   const observation = Object.freeze({
-    current: state.current, indeterminate: state.indeterminate,
-    creationOrdinal: RECOVERY_WITNESSES.get(provider).get(`${BUCKET}/${path}`) ?? null
+    current, indeterminate, creationOrdinal
   });
   RECOVERY_OBSERVATIONS.set(observation, { projectRef, runId });
   return observation;

@@ -1736,7 +1736,6 @@ function assertNoForgedDispatcherMarkers(candidate) {
 function applyDeclarativeInventoryEffects(inv, effects) {
   if (!inv || !effects || typeof effects !== 'object') return;
   effects = admitInventoryEffects(effects);
-  journalForRun(inv.runId)?.volatile();
   if (effects.protectSeedIdentity) {
     inv.protectSeedIdentity(effects.protectSeedIdentity);
   }
@@ -1760,6 +1759,7 @@ function applyDeclarativeInventoryEffects(inv, effects) {
     inv.registerSeedPasswordModification(effects.registerSeedPasswordModification);
   }
   if (effects.registerInFlightOperation) {
+    journalForRun(inv.runId)?.volatile('other');
     const op = inv.registerInFlightOperation(effects.registerInFlightOperation);
     if (op && effects.settleInFlightOperation) {
       inv.settleInFlightOperation(op.opId, effects.settleInFlightOperation);
@@ -5480,6 +5480,7 @@ export class TestRunInventory {
       });
     }
 
+    journalForRun(this.runId)?.volatile('auth');
     const record = {
       id: cleanId,
       email: normEmail,
@@ -5531,6 +5532,7 @@ export class TestRunInventory {
       ? USER_OWNERSHIP.CREATION_INDETERMINATE
       : USER_OWNERSHIP.OWNERSHIP_UNKNOWN;
 
+    journalForRun(this.runId)?.volatile('auth');
     const record = {
       id: cleanId,
       email: normEmail,
@@ -5600,6 +5602,7 @@ export class TestRunInventory {
 
   registerSessionReconciliationObligation(rawObligation = {}) {
     const obligation = snapshotDirectInventoryInput(rawObligation, 'sessionReconciliationObligation');
+    journalForRun(this.runId)?.volatile('auth');
     if (this.finalized) {
       this.postFinalizationMutations.push({
         action: 'registerSessionReconciliationObligation',
@@ -5659,6 +5662,7 @@ export class TestRunInventory {
 
     if (!sessionId) return { registered: false };
 
+    journalForRun(this.runId)?.volatile('auth');
     this.trackedSessions.add(sessionId);
     const trimmedToken = typeof accessToken === 'string' && accessToken.trim().length > 0 ? accessToken.trim() : null;
     if (!trimmedToken) {
@@ -5764,6 +5768,7 @@ export class TestRunInventory {
     }
     const t = table.trim();
     const rowId = id.trim();
+    journalForRun(this.runId)?.volatile('other');
     if (!this.trackedTableRows.has(t)) {
       this.trackedTableRows.set(t, new Set());
     }
@@ -5808,6 +5813,7 @@ export class TestRunInventory {
         `STORAGE_LIFECYCLE_BYPASS_VIOLATION: Cannot bypass Storage fixture lifecycle via registerStorageObject('${fixtureKey}') while fixture is tracked in state '${existingFixture.lifecycleState}' (R3-03)`
       );
     }
+    journalForRun(this.runId)?.volatile('storage');
     if (!this.trackedStorageObjects.has(b)) {
       this.trackedStorageObjects.set(b, new Set());
     }
@@ -5957,6 +5963,9 @@ export class TestRunInventory {
     }
 
     const state = lifecycleState || STORAGE_LIFECYCLE_STATE.CREATION_PENDING;
+    if (hasCommittedUpload || !neverDispatched || state !== STORAGE_LIFECYCLE_STATE.CREATION_PENDING) {
+      journalForRun(this.runId)?.volatile('storage');
+    }
     const canDelete = deletionEligible === true && state === STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED;
     const cleanObjectId = providerObjectId ? String(providerObjectId).trim() : null;
     const assignedOpId = reservationOpId && typeof reservationOpId === 'string' && reservationOpId.trim()
@@ -6066,6 +6075,18 @@ export class TestRunInventory {
       throw new Error(
         `INVENTORY_STATE_MONOTONICITY_VIOLATION: Committed upload '${key}' cannot transition to '${nextState}'; must remain residual/unverified (R2-02)`
       );
+    }
+
+    if (updates.hasCommittedUpload === true || [
+      STORAGE_LIFECYCLE_STATE.CREATION_INDETERMINATE,
+      STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED,
+      STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED
+    ].includes(nextState)) {
+      const journal = journalForRun(this.runId);
+      if (journal && (fixture.bucket !== STORAGE_PROBE_BUCKET || fixture.path !== `${this.runId}/probe.txt` ||
+          !journal.state.attempts.some(attempt => attempt.kind === 'storage_upload' && attempt.dispatchedAt !== null))) {
+        journal.volatile('storage');
+      }
     }
 
     if (this.cleanupStarted && !isInternalCleanup) {
@@ -6190,6 +6211,7 @@ export class TestRunInventory {
     }
 
     const existing = this.seedCredentialRestorations.find(r => r.userId === uid && r.state !== 'restored');
+    journalForRun(this.runId)?.volatile('auth');
     if (existing) {
       if (!existing.email) existing.email = resolvedEmail;
       if (targetPassword || newPassword) existing.targetPassword = targetPassword || newPassword;
@@ -6231,6 +6253,7 @@ export class TestRunInventory {
   }
 
   registerUntrackedSession() {
+    journalForRun(this.runId)?.volatile('auth');
     if (this.finalized) {
       this.postFinalizationMutations.push({
         action: 'registerUntrackedSession',
@@ -6241,6 +6264,7 @@ export class TestRunInventory {
   }
 
   registerUntrackedUser() {
+    journalForRun(this.runId)?.volatile('auth');
     if (this.finalized) {
       this.postFinalizationMutations.push({
         action: 'registerUntrackedUser',
@@ -6623,18 +6647,6 @@ export class TestRunInventory {
       throw new Error(
         'CLEANUP_CONCURRENT_REENTRY_BLOCKED: Concurrent executeCleanup() invocation rejected while cleanup is already executing (R3-04)'
       );
-    }
-    if (options.adminClient && /^h4-/i.test(this.runId)) {
-      // Obligations supplied directly to the legacy inventory must survive a
-      // crash even when they did not originate in a journalled transport.
-      const journal = journalForRun(this.runId);
-      const summary = this.getSummary();
-      if (summary.createdUsersCount || summary.unverifiedUsersCount || summary.trackedSessionsCount ||
-          summary.trackedTableRowsCount || summary.untrackedSessionsCount || summary.untrackedUsersCount ||
-          summary.seedCredentialRestorationsCount || summary.sessionReconciliationObligationsCount ||
-          (summary.storageFixturesCount && !journal.state.attempts.some(attempt => attempt.kind === 'storage_upload'))) {
-        journal.volatile();
-      }
     }
     this._cleanupInProgress = true;
     const cleanupRun = withRunRequestBudget(this.runId, 'cleanup', () => this._executeCleanupInternal(options));
