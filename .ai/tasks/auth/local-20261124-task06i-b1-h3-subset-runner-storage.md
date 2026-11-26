@@ -1,14 +1,14 @@
 # Task 06I-B1-H3 — Controlled Subset Dispatch & Run-Scoped Storage Implementation
 
-**Task ID:** `06I-B1-H3` (Revision `R15`)<br>
+**Task ID:** `06I-B1-H3` (Revision `R16`)<br>
 **Creation Date:** 2026-11-24<br>
-**Revision Date:** 2026-11-25<br>
+**Revision Date:** 2026-11-26<br>
 **Author:** Santosh Jangid (`im-tnyx`)<br>
 **Reviewer:** `im-tio` (Independent Reviewer), Codex, Cursor Bugbot, Cursor Security Reviewer<br>
 **Branch:** `feat/task06i-b1-h3-subset-runner-storage`<br>
 **Base:** `main` at `4569479e8fe2caa6659fe1cc6c7a484596a01bbc` (PR #43 merge commit)<br>
 **PR Reference:** https://github.com/im-tnyx/Tio-Workspace/pull/44<br>
-**Prior Audited HEAD:** `c8a504c5142d1eca789b91f2950833b5e536aed3` (R14)<br>
+**Prior Audited HEAD:** `91ee328a32a5941555f52ea4e438a410a97a2b93` (R15)<br>
 **Cost Ceiling:** $0.00 (Free-Tier Only)<br>
 **Mode:** Local Implementation, Mocked Transport Tests & Offline Verification ONLY<br>
 **Hosted LIVE Dispatch:** **NOT AUTHORIZED**<br>
@@ -994,3 +994,64 @@ All151 runner and retained R14 atomic replacement/capability/absence/idempotence
 Self-review of full security-sensitive diff complete. External exact-HEAD review is requested after publication; self-review is not an independent approval. Prior im-tio CHANGES_REQUESTED and R14 budget review-body acceptance gate remain outstanding until independently recorded. Live PR44 holds final remote SHA, individual R15 reply/resolution, CI and re-review evidence. No review dismissal or merge.
 
 Final gates: H3 Subset Runner IMPLEMENTED_OFFLINE_TESTED / BLOCKED; H3 Storage Lifecycle IMPLEMENTED_OFFLINE_TESTED / BLOCKED; Atomic Hosted Conditional Deletion UNVERIFIED; Durable Recovery NOT IMPLEMENTED; Run-Created Seed Support NOT IMPLEMENTED; Hosted Verification0/18; Hosted LIVE NOT AUTHORIZED; Production Real Auth STRICT NO-GO; Hosted Mutations0; Cost$0; Merge NOT AUTHORIZED. Synthetic provider tests/local SQL parity do not establish full hosted Storage integration.
+
+
+## 20. Revision R16 — Storage Identity Integrity and Evidence Propagation
+
+Implementation owner: Codex root R16; previous owner Codex root R15. Verified clean local/remote91ee328a32a5941555f52ea4e438a410a97a2b93; main4569479e8fe2caa6659fe1cc6c7a484596a01bbc. PR44 bootstrap58 threads/54 resolved/4 unresolved. Independent im-tio CHANGES_REQUESTED review at2026-11-25T18:38:50Z on91ee328: [recorded review](https://github.com/im-tnyx/Tio-Workspace/pull/44#pullrequestreview-6063022690). It confirms substantive implementation of all four R14 blockers, including the request-budget review-body finding. This supersedes earlier pending R14 disposition notes; it is source/CI assessment of offline architecture, not hosted capability/pacing or independent local test execution. Overall approval remains withheld for R16 findings. Named latest checks6 SUCCESS + Bugbot NEUTRAL; raw8 runs include duplicate attribution runner.
+
+### Bounded remediation decisions
+
+- Evidence publication uses explicit immutable/non-configurable own data descriptors and recursive own-only snapshots. Private response provenance binds each evidence object to the actual transport response; caller response markers alone are insufficient. Expected upload availability comes from trusted provider registration. Observed, indeterminate, missing-required and legitimately non-applicable cases are distinct. A provider-backed missing marker blocks after committed obligation registration, before metadata/receipt issuance. Valid absence of provider capability remains non-applicable and never grants conditional deletion.
+- Fixed Id/id own-descriptor checks replace filter/map/some. Present aliases each require primitive UUID and canonical equality. Module-captured Array/String/RegExp/buffer/UTF-8 operations plus explicit indexed iteration protect adjacent prototype, JWT, claims, path and provider admission. This assumes trusted module initialization and is not a complete JavaScript sandbox.
+- Canonical base64url byte decoder validates all three signed-fixture JWT segments; only header/payload receive strict UTF-8 and JSON-record parsing. Signature is nonempty binary data, not UTF-8/JSON and not cryptographically verified. Existing alg/critical/unencoded-payload restrictions remain.
+- Storage-only canonicalStorageUuid requires primitive UUID strings and yields lowercase. Shared validateUuid export retains its original case/trim behavior; all four actual internal consumers were provisioning identity boundaries and now call the narrow canonical helper. Project/run/bucket/path/token identifiers are not UUID-normalized. Provider initial/replacement/expected identity, metadata, inventory proof/receipt and SESSION-05 owner comparison now agree; genuine owner/object mismatch remains blocked.
+
+### Unified source-backed lifecycle matrix
+
+| Boundary / trusted source | Admission and canonical form | Failure / residual / destructive authority |
+|---|---|---|
+| Raw deterministic upload / registered transport | Own Id/id fixed descriptors, independent UUID checks, exact alias agreement; typed own JWT subject | Original2xx/body retained; invalid observation unknown, no new affirmative identity |
+| Structural token / module decoder | Canonical bytes for header/payload/signature, strict record/UTF-8 on JSON segments, own claims snapshot, lowercase UUID subject | Malformed signature/JOSE -> indeterminate; decoding is not authentication |
+| Scoped provider registration | Private exact TEMP/run binding plus bucket/path; UUIDs canonicalized at initial/put/expected comparison | Mismatch/unknown never authorizes atomic deletion; replacement preserved |
+| Response observation / private provenance | Null-prototype typed frozen snapshot, immutable own property, response+transport private registry | Required-but-missing and indeterminate -> committed residual before lookup/receipt; caller markers cannot supply authority |
+| Authoritative registered Admin metadata | Own record snapshot, exact project/bucket/path, lowercase object/owner correlation | Invalid/genuine mismatch -> residual, no private receipt |
+| Inventory and private creation receipt | Canonical owner/object/proof plus exact payload/hash and immutable run association | Only complete verification issues private receipt; mutation invalidates snapshot |
+| Conditional delete / private one-use authorization | Canonical expected identity, same synchronous provider Map comparison/delete; equivalent immutable response evidence | Unavailable/unknown/mismatch -> structured residual; no path-only fallback |
+| Independent absence / provider state | Re-read current/unknown state after awaits; existing authenticated absence verification | Current replacement/unknown blocks terminal receipt and dependent Auth cleanup |
+| Dependent Auth cleanup | Existing Storage-before-user gate; canonical Storage owner comparison avoids false case-only residual | Unresolved Storage blocks users; seed preservation and NOT IMPLEMENTED run-created seed support remain |
+
+Four R16 regression groups were added to existing conditional test file. Prototype mutation uses controlled non-concurrent scope with finally descriptor restoration; missing-required internal-observer fault uses an isolated Node module-mock process, no production skip-marker setting. No R14 budget/effect/timing implementation reopened. Shared25 total attempts, atomic reservations, standard1000ms pacing, explicit simulation, cleanup reserve0 and recoveryRequired exhaustion unchanged. LayersA/B/C remain distinct, no worker migration/H4.
+
+Initial targeted acceptance: conditional62/62 (retained38 +24 R16) and prior runner151/151 PASS. Final host/Docker/parity/verify evidence and exact implementation SHA recorded after execution. Hosted operations0, cost$0; LIVE/merge NOT AUTHORIZED, Production Real Auth STRICT NO-GO.
+
+
+**Last R16 implementation commit agent / verified SHA:** Codex root / `bb62a57f5253ec0525fd415e7dd6f329482e1037`. Documentation follow-up changes no runtime behavior.
+
+### R16 final offline verification
+
+| Actual command/check | Result / exit |
+|---|---|
+| node --test experiments/task06i/conditional-storage-fixture.test.mjs |62/62 PASS /0; all38 R15 cases retained plus24 R16 tests |
+| node --test experiments/task06i/hosted-probe-runner.test.mjs |151/151 PASS /0 |
+| node --test experiments/task06i/*.test.mjs |299/299 PASS /0 |
+| Separate --test-name-pattern R16-01 / R16-02 / R16-03 / R16-04 executions |7/7,5/5,8/8,4/4 PASS /0 each |
+| Existing node:24-bookworm hardened network-none runner + conditional/effects/timing/budget |231/231 PASS /0 =151+62+9+2+7; pull never, read-only experiments, cap-drop ALL, no-new-privileges; no supplied credentials/socket |
+| node experiments/task06i/sql-contract-parity.mjs |POSTGRES_VERIFIED18/18 on local PostgreSQL17.11 /0 |
+| node --test experiments/task06h/*.test.mjs |115/115 PASS /0 |
+| npm run verify |tokens/typecheck/lint +shell22/22 PASS /0 |
+| Source syntax; git diff --check; git diff --check origin/main...HEAD |PASS /0 |
+
+Source audit locations: conditional-storage-fixture.mjs canonicalStorageUuid L205, canonicalBytes L215, fixed Id/id L248, observer L281; runner publishConditionalEvidence L35, private read L87, mandatory availability gate L7613, canonical SESSION-05 correlation L9779. Public validateUuid remains unchanged and is explicitly covered by mixed-case tests.
+
+Evidence sentinels cover inherited upload/deletion setters/getters separately and combined: executions0. Response evidence is own, non-writable, non-configurable, frozen and null-prototype. Invalid/missing provider-backed upload IDs cannot be rescued by matching metadata; committed upload remains true, verified owner null, deletion eligibility false, repeated residual cleanup and both deletes0. Isolated missing-observer module fault proves metadata is not reached and no production bypass configuration was added. Explicit provider absence is legitimately non-applicable, with unavailable conditional deletion and no unconditional fallback.
+
+Array filter/map/some/includes mutations separately/combined cause callback executions0; own accessors and Proxies execute0. Null and invalid present aliases remain invalid, equivalent case aliases valid, conflicting aliases blocked. Adjacent claims/path/provider transitions use captured intrinsics and fixed iteration. Signature tests reject one-character/invalid-length/empty/invalid-character/trailing-bit/padded encodings while preserving original2xx/body and unknown provider state. Canonical binary signature with non-UTF8 bytes is accepted structurally without cryptographic claims. Malformed committed replacement preserves residual and blocks dependent Auth deletion.
+
+Uppercase/mixed-case subject, upload aliases, metadata owner/object, provider state, inventory proof/private receipt and expected deletion identity complete the full atomic lifecycle without false residual; repeated cleanup remains idempotent. Genuinely different owner/object replacements remain preserved and Auth deletion blocked. All R1–R15 runner/conditional assertions remain; no weakening of accepted R14 implementations.
+
+Environment disclosures: Node host24.17.0. Initial Node test worker attempt hit sandbox EPERM and succeeded with permitted process spawning. Docker Desktop engine was initially stopped; Docker/parity attempts exited1 with runtime unavailable/POSTGRES_NOT_EXECUTED, not a contract mismatch. Existing local Docker Desktop was started, readiness verified, then final hardened Docker231/231 and parity18/18 repeated successfully. No Supabase hosted CLI command or provider experiment was needed. Existing nonfatal MODULE_TYPELESS_PACKAGE_JSON warning unchanged. Synthetic/local SQL evidence is not full hosted Storage integration.
+
+Full security-sensitive source/test diff self-reviewed. Request exact-HEAD Codex/Bugbot/im-tio review after publication; self-review is not independent approval. Prior im-tio review confirms previous R14 implementations including budget, but remains CHANGES_REQUESTED for these four R16 findings; no blocking review dismissed. Final published SHA/individual replies/thread resolution/CI are recorded on PR44, whose live state is authoritative.
+
+Final gates: H3 Subset Runner IMPLEMENTED_OFFLINE_TESTED / BLOCKED; H3 Storage Lifecycle IMPLEMENTED_OFFLINE_TESTED / BLOCKED; Atomic Hosted Conditional Deletion UNVERIFIED; Durable Recovery NOT IMPLEMENTED; Run-Created Seed Support NOT IMPLEMENTED; Hosted Verification0/18; Hosted LIVE NOT AUTHORIZED; Production Real Auth STRICT NO-GO; Hosted Mutations0; Cost$0; Merge NOT AUTHORIZED. Future prerequisites remain actual provider atomic contract verification, separately authorized testbed/hosted work, durable recovery and run-created seed support. No worker migration or budget allowance change.
