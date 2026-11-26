@@ -70,7 +70,7 @@ function provider(runId, options = {}) {
   });
 }
 
-function journalTransport(handle) {
+function journalTransport(handle, { postDeleteResponse = null, authCleanup = false } = {}) {
   const { runId } = handle;
   const location = object(runId);
   const transport = createDeterministicFixtureTransport({
@@ -85,7 +85,12 @@ function journalTransport(handle) {
       { method: 'POST', pathEquals: '/rest/v1/rpc/task06i_lookup_storage_object_owner', status: 200,
         json: [{ id: objectId, bucket_id: location.bucket, name: location.path, owner_id: ownerId }] },
       { method: 'DELETE', urlIncludes: '/storage/v1/object/', setsState: { deleted: true }, status: 200, json: {} },
-      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { deleted: true }, status: 400, json: { code: 'NoSuchKey', statusCode: '404' } }
+      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { deleted: true },
+        ...(postDeleteResponse || { status: 400, json: { code: 'NoSuchKey', statusCode: '404' } }) },
+      ...(authCleanup ? [
+        { method: 'DELETE', pathIncludes: '/auth/v1/admin/users/', status: 200, json: {} },
+        { method: 'GET', pathIncludes: '/auth/v1/admin/users/', status: 404, json: { message: 'User not found' } }
+      ] : [])
     ]
   });
   const adminClient = createHostedAdminClient({ serviceRoleKey: createMockProjectKey(projectRef, 'service_role'), runId, fetchFn: transport });
@@ -103,6 +108,18 @@ function journalTransport(handle) {
       fetchFn: transport, probeContent: content
     })
   };
+}
+
+async function provisionKeyedStorage(fixture, handle) {
+  const provisioning = fixture.provision();
+  const key = STORAGE_PROBE_BUCKET + '/' + handle.runId + '/probe.txt';
+  const reservation = fixture.inventory.storageFixtures.get(key);
+  assert.ok(reservation);
+  fixture.inventory.updateStorageFixture(key, {
+    ownerOpId: reservation.reservationOpId, lifecycleState: 'CREATION_INDETERMINATE'
+  });
+  assert.deepEqual(handle.report().residual.volatileKinds, ['storage']);
+  return provisioning;
 }
 
 function runnerFixture(handle) {
@@ -223,7 +240,12 @@ async function child(kind, directory, runId) {
   const handle = create(directory);
   writeFileSync(join(directory, 'run-id'), handle.runId, { flush: true });
   let calls = 0;
-  if (kind === 'before-resolution' || kind === 'after-resolution') {
+  if (kind === 'before-storage-resolution' || kind === 'after-storage-resolution') {
+    const fixture = journalTransport(handle);
+    await provisionKeyedStorage(fixture, handle);
+    interruptWrite(directory, 'resolution', 7, kind === 'after-storage-resolution', () => ({ calls: fixture.transport.calls.length }));
+    await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient });
+  } else if (kind === 'before-resolution' || kind === 'after-resolution') {
     const fixture = resolutionFixture(handle);
     fixture.inventory.registerTableRow('task06i_rows', ownerId);
     interruptWrite(directory, 'resolution', 2, kind === 'after-resolution', () => ({ calls: fixture.transport.calls.length }));
@@ -893,6 +915,104 @@ if (process.argv[2] === '--h4-child') {
     assert.equal(cleanup.status, 'CLEANUP_VERIFIED_SUCCESS', JSON.stringify({ cleanup: cleanup.residualResources, journal: handle.report() }));
     assert.equal(handle.report().status, 'CLEANUP_VERIFIED_SUCCESS');
     assert.equal(handle.report().consumed, 7);
+  });
+
+  test('H4-R3 authentic keyed Storage cleanup commits absence before resolution and replays terminal', async t => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    const fixture = journalTransport(handle);
+    // Public inventory transition during the admitted provisioning window:
+    // this writes a keyed obligation before the real upload has dispatched.
+    await provisionKeyedStorage(fixture, handle);
+    const result = await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient, failClosed: false });
+    assert.equal(result.status, 'CLEANUP_VERIFIED_SUCCESS', JSON.stringify(result.residualResources));
+    const before = handle.report();
+    assert.deepEqual(before.residual.storage, []);
+    assert.equal(before.residual.volatileInventory, false);
+    assert.equal(before.consumed, 7);
+    assert.equal(before.lastVerifiedStorageAbsenceOrdinal, 7);
+    handle.close();
+    const db = new DatabaseSync(journalPath(directory, handle.runId));
+    const envelope = JSON.parse(db.prepare('SELECT payload FROM journal WHERE id=1').get().payload);
+    db.close();
+    const events = envelope[4];
+    assert.ok(events.findIndex(event => event[0] === 'absence') < events.findIndex(event => event[0] === 'resolution'));
+    assert.ok(events.find(event => event[0] === 'resolution')[3].includes(6));
+    for (const mutate of [
+      records => records.splice(records.findIndex(event => event[0] === 'absence'), 1),
+      records => records.splice(-1, 0, records.find(event => event[0] === 'resolution')),
+      records => { records.find(event => event[0] === 'resolution')[3] = [5]; }
+    ]) {
+      const alternate = testDirectory();
+      copyFileSync(journalPath(directory, handle.runId), journalPath(alternate, handle.runId));
+      rewrite(alternate, handle.runId, envelope => mutate(envelope[4]));
+      assert.throws(() => reopen(alternate, handle.runId), /INVALID_RECOVERY_TRANSITION/);
+    }
+    const restarted = reopen(directory, handle.runId);
+    t.after(() => restarted.close());
+    assert.deepEqual(await recoverOfflineProbeRun({ handle: restarted }), before);
+    assert.deepEqual(await recoverOfflineProbeRun({ handle: restarted }), before);
+  });
+
+  for (const absent of [true, false]) {
+    test('H4-R3 keyed Storage ' + (absent ? 'absence admits dependent Auth and mixed terminal' : 'DELETE without absence blocks Auth'), async t => {
+      const handle = create(testDirectory());
+      t.after(() => handle.close());
+      const fixture = journalTransport(handle, { authCleanup: true,
+        postDeleteResponse: absent ? null : { status: 503, json: {} } });
+      await provisionKeyedStorage(fixture, handle);
+      fixture.inventory.registerCreatedUser({ id: replacementId, email: 'r3-created@proof.invalid', creationProof: createCreationProof('before_after_check') });
+      const result = await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient, failClosed: false });
+      assert.equal(result.status, absent ? 'CLEANUP_VERIFIED_SUCCESS' : 'CLEANUP_FAILED_RESIDUAL_RESOURCES', JSON.stringify(result.residualResources));
+      assert.equal(fixture.transport.calls.filter(call => call.method === 'DELETE' && call.pathname.includes('/auth/v1/admin/users/')).length, absent ? 1 : 0);
+      assert.equal(handle.report().consumed, absent ? 9 : 7);
+      assert.equal(handle.report().residual.volatileInventory, !absent);
+      if (!absent) assert.ok(handle.report().residual.storage.length > 0);
+    });
+  }
+
+  test('H4-R3 additional indeterminate upload is not cleared by exact keyed cleanup', async t => {
+    const handle = create(testDirectory());
+    t.after(() => handle.close());
+    const fixture = journalTransport(handle);
+    await provisionKeyedStorage(fixture, handle);
+    await assert.rejects(request(handle, 'storage_upload', () => { throw new Error('indeterminate'); }), /indeterminate/);
+    const result = await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient, failClosed: false });
+    assert.equal(result.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(handle.report().lastVerifiedStorageAbsenceOrdinal, null);
+    assert.ok(handle.report().residual.storage.includes(6));
+    assert.equal(handle.report().consumed, 8);
+  });
+
+  for (const after of [false, true]) {
+    test('H4-R3 process crash ' + (after ? 'after' : 'before') + ' keyed Storage resolution', async t => {
+      const { handle } = crash(t, after ? 'after-storage-resolution' : 'before-storage-resolution');
+      assert.equal(handle.report().consumed, 7);
+      assert.equal(handle.report().lastVerifiedStorageAbsenceOrdinal, 7);
+      const result = await recoverOfflineProbeRun({ handle });
+      assert.equal(result.status, after ? 'CLEANUP_VERIFIED_SUCCESS' : 'RECOVERY_REQUIRED');
+      assert.equal(result.consumed, 7);
+    });
+  }
+
+  test('H4-R3 keyed resolution persistence failure cannot finish despite verified absence', async t => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    t.after(() => handle.close());
+    const fixture = journalTransport(handle);
+    await provisionKeyedStorage(fixture, handle);
+    const restore = interruptWrite(directory, 'resolution', 7, false, () => ({}), 'fail');
+    try {
+      const result = await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient, failClosed: false });
+      assert.equal(result.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+      assert.throws(() => handle.report(), /RECOVERY_JOURNAL_UNAVAILABLE/);
+    } finally { restore(); }
+    handle.close();
+    const restarted = reopen(directory, handle.runId);
+    t.after(() => restarted.close());
+    assert.equal(restarted.report().status, 'RECOVERY_REQUIRED');
+    assert.equal(restarted.report().residual.volatileInventory, true);
+    assert.equal(restarted.report().consumed, 7);
   });
 
   test('H4 standard pacing and cancellation survive restart', async t => {
