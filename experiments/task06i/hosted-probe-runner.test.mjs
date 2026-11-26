@@ -1,4 +1,7 @@
-import { getConditionalStorageFixtureProvider } from './conditional-storage-fixture.mjs';
+import {
+  getConditionalStorageFixtureProvider, MAX_OFFLINE_JWT_TOKEN_LENGTH,
+  MAX_OFFLINE_JWT_CLAIM_DEPTH, MAX_OFFLINE_JWT_CLAIM_NODES
+} from './conditional-storage-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -2309,7 +2312,7 @@ test('39. Task 06I-B1-H1-R2 (R2-03): Run-scoped refresh token propagation & AMR 
         urlIncludes: 'grant_type=password',
         status: 200,
         json: {
-          access_token: createMockJwt(),
+          access_token: createMockJwt({ sub: 'usr-1', session_id: 'sess-1' }),
           refresh_token: 'fresh-refresh-token-xyz',
           user: { id: 'usr-1' },
           session_id: 'sess-1'
@@ -2320,7 +2323,7 @@ test('39. Task 06I-B1-H1-R2 (R2-03): Run-scoped refresh token propagation & AMR 
         bodyMatch: { refresh_token: 'fresh-refresh-token-xyz' },
         status: 200,
         json: {
-          access_token: createMockJwt({ exp: Math.floor(Date.now() / 1000) + 600 }),
+          access_token: createMockJwt({ sub: 'usr-1', session_id: 'sess-1', exp: Math.floor(Date.now() / 1000) + 600 }),
           refresh_token: 'refreshed-token-2'
         }
       },
@@ -2676,7 +2679,7 @@ test('51. Task 06I-B1-H1-R3 (R3-08): Strict JWT parsing without bypass; non-JSON
     amr_authenticated: true
   });
   assert.equal(resNotJson.passed, false);
-  assert.match(resNotJson.reason, /JWT_CLAIM_VIOLATION: HOOK-01 TOKEN_PARSE_ERROR/);
+  assert.match(resNotJson.reason, /JWT_CLAIM_VIOLATION: HOOK-01 TOKEN_FORMAT_INVALID/);
 
   // 2. Missing dot-separated parts fails closed
   const resFormat = validateProbeOutcome(hook01, {
@@ -3378,7 +3381,7 @@ test('66. Task 06I-B1-H1-R5 (R5-04): Successful password grant mints session tha
 
   // 1. Dispatcher rejected token for authorization because of JWT claim violation
   assert.equal(outcome.passed, false);
-  assert.equal(outcome.jwt_claims_verified, false);
+  assert.equal(outcome.jwt_claim_policy_validated, false);
   assert.match(outcome.error, /JWT_CLAIM_VIOLATION/);
 
   // 2. BUT minted session was immediately captured and registered in inventory for cleanup!
@@ -3592,8 +3595,8 @@ test('70. Task 06I-B1-H1-R5 (R5-08): Edge Function contract rejects false revoca
 
 test('71. Task 06I-B1-H1-R6 (R6-01): Supported session revocation for cleanup preserves token context and uses GoTrue sign-out', async () => {
   const inv = new TestRunInventory('test-run-session-r6-01');
-  const testToken = createMockJwt({ exp: Math.floor(Date.now() / 1000) + 3600 });
   const testSessionId = 'sess-cleanup-r6-01';
+  const testToken = createMockJwt({ session_id: testSessionId, exp: Math.floor(Date.now() / 1000) + 3600 });
 
   // 1. registerSession preserves both sessionId and accessToken
   inv.registerSession(testSessionId, { accessToken: testToken });
@@ -3824,7 +3827,7 @@ test('74. Task 06I-B1-H1-R7 (R7-01): createHostedAdminClient adapter implements 
   // Verify signOut takes (token, scope) and is NOT shadowed by (sessionId)
   // Calling invalidateSession(sessionId, token) must invoke signOut(token, 'local')
   let prevCallsCount = mockFetch.calls.length;
-  const testToken = createMockJwt();
+  const testToken = createMockJwt({ session_id: 'sess-r7-01' });
   const resInvalidate = await adminClient.invalidateSession('sess-r7-01', testToken);
   assert.equal(resInvalidate.error, null);
   assert.equal(resInvalidate.data?.scope, 'local');
@@ -3871,7 +3874,7 @@ test('74. Task 06I-B1-H1-R7 (R7-01): createHostedAdminClient adapter implements 
 
   // 3. Integration with executeCleanup: executeCleanup with actual createHostedAdminClient
   const inv = new TestRunInventory('inv-r7-01');
-  const sessToken = createMockJwt();
+  const sessToken = createMockJwt({ session_id: 'sess-tracked-01' });
   inv.registerSession('sess-tracked-01', { accessToken: sessToken });
   inv.registerCreatedUser({
     id: 'u-created-01',
@@ -4762,7 +4765,7 @@ test('79. Task 06I-B1-H1-R9 (R9-02): Controlled authentication verification, adv
 
   // Successful verification triggers login AND immediate local signout
   let preCalls = testClientTransport.calls.length;
-  const verifyRes = await testClient.verifyUserCredentials(seedEmail, origPassword);
+  const verifyRes = await testClient.verifyUserCredentials(seedEmail, origPassword, { expectedUserId: seedUserId });
   assert.equal(verifyRes.error, null);
   assert.equal(verifyRes.data.verified, true);
   assert.equal(verifyRes.data.userId, seedUserId);
@@ -4875,7 +4878,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     })
   });
 
-  const resImmediate = await bindFixtureAdmin(invImmediate, adminClientImmediate).verifyUserCredentials(seedEmail, initialPassword, { inventory: invImmediate });
+  const resImmediate = await bindFixtureAdmin(invImmediate, adminClientImmediate).verifyUserCredentials(seedEmail, initialPassword, { inventory: invImmediate, expectedUserId: seedUserId });
   assert.equal(resImmediate.error, null);
   assert.equal(resImmediate.data.verified, true);
   assert.equal(invImmediate.trackedSessions.has(sessId), true, 'Minted verification session must be registered in inventory');
@@ -4915,7 +4918,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
   });
 
   // verifyUserCredentials returns sessionRevocationFailed: true
-  const res503 = await bindFixtureAdmin(inv503, adminClient503).verifyUserCredentials(seedEmail, initialPassword, { inventory: inv503 });
+  const res503 = await bindFixtureAdmin(inv503, adminClient503).verifyUserCredentials(seedEmail, initialPassword, { inventory: inv503, expectedUserId: seedUserId });
   assert.equal(res503.data, null);
   assert.equal(res503.sessionRevocationFailed, true);
   assert.equal(res503.error.code, 'LOGOUT_FAILED');
@@ -5033,7 +5036,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     })
   });
 
-  const resThrows = await bindFixtureAdmin(invThrows, adminClientThrows).verifyUserCredentials(seedEmail, initialPassword, { inventory: invThrows });
+  const resThrows = await bindFixtureAdmin(invThrows, adminClientThrows).verifyUserCredentials(seedEmail, initialPassword, { inventory: invThrows, expectedUserId: seedUserId });
   assert.equal(resThrows.data, null);
   assert.equal(resThrows.sessionRevocationFailed, true);
   assert.equal(resThrows.error.code, 'LOGOUT_EXCEPTION');
@@ -5064,7 +5067,8 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
 
   const resUntracked = await bindFixtureAdmin(invUntracked, adminClientUntracked).verifyUserCredentials(seedEmail, initialPassword, { inventory: invUntracked });
   assert.equal(resUntracked.data, null);
-  assert.equal(resUntracked.sessionRevocationFailed, true);
+  assert.equal(resUntracked.sessionRevocationFailed, false, 'No correlated logout was attempted');
+  assert.equal(resUntracked.credentialVerified, false);
   assert.equal(resUntracked.error.code, 'UNTRACKED_SESSION');
   assert.equal(invUntracked.untrackedSessionsCount, 1);
 
@@ -5366,7 +5370,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
     fetchFn: transport1
   });
 
-  const res1 = await bindFixtureAdmin(inv1, client1).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv1 });
+  const res1 = await bindFixtureAdmin(inv1, client1).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv1, expectedUserId: seedUserId });
   assert.equal(res1.error, null);
   assert.equal(res1.data?.verified, true);
   assert.equal(res1.data?.userId, seedUserId);
@@ -5390,7 +5394,8 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   assert.equal(res2.data, null);
   assert.ok(res2.error);
   assert.equal(res2.error.code, 'UNREADABLE_RESPONSE');
-  assert.equal(res2.sessionRevocationFailed, true);
+  assert.equal(res2.sessionRevocationFailed, false, 'Unreadable authentication is indeterminate, not failed logout');
+  assert.equal(res2.credentialVerified, false);
   assert.equal(res2.indeterminateSession, true);
   assert.equal(inv2.untrackedSessionsCount, 1, 'Client-side parse failure must register untracked session risk');
   assert.equal(res2.error.token, undefined, 'Raw token must never appear in error object');
@@ -5428,7 +5433,8 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   const res4 = await bindFixtureAdmin(inv4, client4).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv4 });
   assert.equal(res4.data, null);
   assert.equal(res4.error?.code, 'MISSING_ACCESS_TOKEN');
-  assert.equal(res4.sessionRevocationFailed, true);
+  assert.equal(res4.sessionRevocationFailed, false);
+  assert.equal(res4.credentialVerified, false);
   assert.equal(res4.indeterminateSession, true);
   assert.equal(inv4.untrackedSessionsCount, 1);
 
@@ -5482,7 +5488,8 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   const res7 = await bindFixtureAdmin(inv7, client7).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv7 });
   assert.equal(res7.data, null);
   assert.equal(res7.error?.code, 'UNTRACKED_SESSION');
-  assert.equal(res7.sessionRevocationFailed, true);
+  assert.equal(res7.sessionRevocationFailed, false);
+  assert.equal(res7.credentialVerified, false);
   assert.equal(res7.indeterminateSession, true);
   assert.equal(inv7.untrackedSessionsCount, 1);
 
@@ -5541,7 +5548,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
     })
   });
 
-  const res12 = await bindFixtureAdmin(inv12, client12).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv12 });
+  const res12 = await bindFixtureAdmin(inv12, client12).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv12, expectedUserId: seedUserId });
   assert.equal(res12.data, null);
   assert.equal(res12.sessionRevocationFailed, true);
   assert.equal(res12.error?.code, 'LOGOUT_FAILED');
@@ -5564,7 +5571,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
     })
   });
 
-  const res13 = await bindFixtureAdmin(inv13, client13).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv13 });
+  const res13 = await bindFixtureAdmin(inv13, client13).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv13, expectedUserId: seedUserId });
   assert.equal(res13.data, null);
   assert.equal(res13.sessionRevocationFailed, true);
   assert.equal(res13.error?.code, 'LOGOUT_EXCEPTION');
@@ -5743,7 +5750,8 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
   });
   const res1 = await disp1({ id: 'HOOK-01', category: 'Token Hook' });
   assert.equal(res1.passed, true);
-  assert.equal(res1.jwt_claims_verified, true);
+  assert.equal(res1.jwt_claim_policy_validated, true);
+  assert.equal(res1.cryptographically_authenticated, false);
   assert.equal(res1.session_id, sess1);
   assert.equal(inv1.trackedSessions.has(sess1), true);
   assert.equal(runCtx1.activeAccessToken, token1);
@@ -5843,7 +5851,7 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
   });
   const res6 = await disp6({ id: 'HOOK-01', category: 'Token Hook' });
   assert.equal(res6.passed, false);
-  assert.equal(res6.jwt_claims_verified, false);
+  assert.equal(res6.jwt_claim_policy_validated, false);
   assert.equal(runCtx6.activeAccessToken, null, 'Unverified JWT must not be stored in activeAccessToken');
   assert.equal(inv6.trackedSessions.has(sess6), true, 'Session must be tracked for cleanup');
 
@@ -13273,4 +13281,1429 @@ test('147. H3-R13 audit: route body and state matching ignore inherited properti
   });
   assert.equal(stateGetters, 0);
   assert.equal(stateSetters, 0);
+});
+test('SR-01/SR-02: canonical JWT admission and own option defaults resist ambient mutation', () => {
+  const valid = createMockJwt();
+  const [header, payload, signature] = valid.split('.');
+  const encode = value => Buffer.from(JSON.stringify(value)).toString('base64url');
+  for (const token of [
+    `${encode({ alg: 'none' })}.${payload}.`,
+    `${header}.${payload}.`,
+    `${header}.${payload}.***`,
+    `${header}.${payload}.A`,
+    `${header}.${payload}.AB`,
+    `${encode({ alg: 'HS256', crit: ['unknown'] })}.${payload}.${signature}`
+  ]) assert.equal(parseAndValidateJwt(token).valid, false);
+  const binarySignature = `${header}.${payload}.${Buffer.from([0xff, 0x80, 0x00]).toString('base64url')}`;
+  assert.equal(parseAndValidateJwt(binarySignature).valid, true);
+  assert.equal(parseAndValidateJwt(valid).cryptographicallyAuthenticated, false);
+  const expired = createMockJwt({ aud: 'anon', exp: Math.floor(Date.now() / 1000) - 120 });
+  const previousAudience = Object.getOwnPropertyDescriptor(Object.prototype, 'expectedAudience');
+  const previousIssuer = Object.getOwnPropertyDescriptor(Object.prototype, 'expectedIssuer');
+  const previousClock = Object.getOwnPropertyDescriptor(Object.prototype, 'clockToleranceSeconds');
+  const previousSplit = Object.getOwnPropertyDescriptor(String.prototype, 'split');
+  let getters = 0;
+  try {
+    Object.defineProperty(Object.prototype, 'expectedAudience', { configurable: true, get() { getters++; return 'anon'; } });
+    Object.defineProperty(Object.prototype, 'expectedIssuer', { configurable: true, get() { getters++; return 'wrong'; } });
+    Object.defineProperty(Object.prototype, 'clockToleranceSeconds', { configurable: true, get() { getters++; return 3600; } });
+    for (const options of [undefined, {}, { expectedIssuer: `https://${HARDCODED_TEMP_REF}.supabase.co` }]) {
+      assert.equal(parseAndValidateJwt(expired, options).valid, false);
+    }
+    assert.equal(getters, 0);
+    assert.equal(parseAndValidateJwt(valid, {}).valid, true);
+    assert.equal(parseAndValidateJwt(valid, { expectedAudience: 'anon' }).valid, false);
+    assert.equal(parseAndValidateJwt(valid, { clockToleranceSeconds: -1 }).valid, false);
+    assert.equal(parseAndValidateJwt(valid, Object.defineProperty({}, 'expectedAudience', { get() { getters++; return 'authenticated'; } })).valid, false);
+    const proxy = new Proxy({}, { get() { getters++; throw Error('trap'); }, getOwnPropertyDescriptor() { getters++; throw Error('trap'); } });
+    assert.equal(parseAndValidateJwt(valid, proxy).valid, false);
+    assert.equal(getters, 0);
+    Object.defineProperty(String.prototype, 'split', { configurable: true, value() { getters++; return [header, payload, signature]; } });
+    assert.equal(parseAndValidateJwt('forged', {}).valid, false);
+    assert.equal(getters, 0);
+  } finally {
+    for (const [name, descriptor] of [['expectedAudience', previousAudience], ['expectedIssuer', previousIssuer], ['clockToleranceSeconds', previousClock]]) {
+      if (descriptor) Object.defineProperty(Object.prototype, name, descriptor); else delete Object.prototype[name];
+    }
+    if (previousSplit) Object.defineProperty(String.prototype, 'split', previousSplit); else delete String.prototype.split;
+  }
+});
+
+test('SR-01: HOOK-01/02 reject conflicting or invalid token identity and retain observed session cleanup', async () => {
+  const observedUser = 'user-observed-sr01';
+  const observedSession = 'session-observed-sr01';
+  for (const [probeId, token] of [
+    ['HOOK-01', createMockJwt({ sub: 'user-conflicting-sr01', session_id: 'session-conflicting-sr01' })],
+    ['HOOK-01', createMockJwt().replace(/[^.]+$/, '')],
+    ['HOOK-02', createMockJwt({ sub: 'user-conflicting-sr01', session_id: 'session-conflicting-sr01' })]
+  ]) {
+    const inventory = new TestRunInventory(`test-${probeId}-${token.length}`);
+    const context = createRunContext({ runId: inventory.runId });
+    if (probeId === 'HOOK-02') {
+      context.activeRefreshToken = 'refresh-existing-sr01';
+      context.activeUserId = observedUser;
+      context.activeSessionId = 'session-prior-sr01';
+      context.activeAccessToken = 'prior-access-token-sr01';
+    }
+    const dispatcher = createHostedDispatcher({
+      anonKey: validTestAnonKey,
+      inventory,
+      runContext: context,
+      fetchFn: staticTransport({ status: 200, json: {
+        access_token: token, refresh_token: 'refresh-new-sr01', session_id: observedSession,
+        user: { id: observedUser, email: 'proof-sr01@proof.invalid' }
+      } })
+    });
+    const result = await dispatcher({ id: probeId, category: 'Token Hook' });
+    assert.equal(result.passed, false);
+    assert.match(result.error, /JWT_IDENTITY_MISMATCH|JWT_CLAIM_VIOLATION/);
+    assert.equal(context.activeAccessToken, probeId === 'HOOK-02' ? 'prior-access-token-sr01' : null);
+    assert.equal(context.activeUserId, probeId === 'HOOK-02' ? observedUser : null);
+    assert.equal(context.activeSessionId, probeId === 'HOOK-02' ? 'session-prior-sr01' : null);
+    assert.equal(inventory.trackedSessions.has(observedSession), true);
+    assert.equal(result.session_cleanup_registered, true);
+  }
+  for (const probeId of ['HOOK-01', 'HOOK-02']) {
+    const result = validateProbeOutcome({ id: probeId, category: 'Token Hook' }, {
+      passed: true, status: 200, access_token: createMockJwt().replace(/[^.]+$/, ''),
+      session_id: observedSession, amr_authenticated: true, amr_preserved: true
+    });
+    assert.equal(result.passed, false);
+    assert.match(result.reason, /JWT_CLAIM_VIOLATION/);
+  }
+  const inventory = new TestRunInventory('test-hook02-no-session-sr01');
+  const context = createRunContext({ runId: inventory.runId });
+  context.activeRefreshToken = 'refresh-prior-sr01';
+  context.activeAccessToken = 'access-prior-sr01';
+  context.activeUserId = 'user-prior-sr01';
+  context.activeSessionId = 'session-prior-sr01';
+  const dispatcher = createHostedDispatcher({
+    anonKey: validTestAnonKey, inventory, runContext: context,
+    fetchFn: staticTransport({ status: 200, json: {
+      access_token: createMockJwt({ session_id: null }), user: { id: 'user-new-sr01' }
+    } })
+  });
+  const result = await dispatcher({ id: 'HOOK-02', category: 'Token Hook' });
+  assert.equal(result.passed, false);
+  assert.equal(result.indeterminate_session, true);
+  assert.equal(inventory.untrackedSessionsCount, 1);
+  assert.equal(context.activeAccessToken, 'access-prior-sr01');
+  assert.equal(context.activeUserId, 'user-prior-sr01');
+  assert.equal(context.activeSessionId, 'session-prior-sr01');
+});
+
+test('PR45-P2-A: parseAndValidateJwt enforces recursive own-only AMR admission without invoking inherited getters', () => {
+  const prevMethod = Object.getOwnPropertyDescriptor(Object.prototype, 'method');
+  const prevIter = Object.getOwnPropertyDescriptor(Array.prototype, Symbol.iterator);
+  const prevIncludes = Object.getOwnPropertyDescriptor(Array.prototype, 'includes');
+  const prevJoin = Object.getOwnPropertyDescriptor(Array.prototype, 'join');
+  const prevStrTrim = Object.getOwnPropertyDescriptor(String.prototype, 'trim');
+  const prevStrIncludes = Object.getOwnPropertyDescriptor(String.prototype, 'includes');
+  let sentinelCalls = 0;
+  const missingAmrMethodJwt = createMockJwt({ amr: [{}] });
+  const emptyAmrMethodJwt = createMockJwt({ amr: [{ method: '   ' }] });
+  const numericAmrMethodJwt = createMockJwt({ amr: [{ method: 123 }] });
+  const prohibitedAmrJwt = createMockJwt({ amr: [{ method: 'otp' }] });
+  const objectExpJwt = createMockJwt({ exp: {} });
+  const objectAudJwt = createMockJwt({ aud: {} });
+  const mismatchAudArrayJwt = createMockJwt({ aud: ['anon'] });
+  const validJwt = createMockJwt({
+    iss: `https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1`,
+    aud: ['anon', 'authenticated'],
+    amr: [{ method: 'password', timestamp: 1700000000 }]
+  });
+  try {
+    Object.defineProperty(Object.prototype, 'method', {
+      configurable: true,
+      get() { sentinelCalls++; return 'password'; }
+    });
+    Object.defineProperty(Array.prototype, Symbol.iterator, {
+      configurable: true,
+      value() { sentinelCalls++; return [][Symbol.iterator](); }
+    });
+    Object.defineProperty(Array.prototype, 'includes', {
+      configurable: true,
+      value() { sentinelCalls++; return true; }
+    });
+    Object.defineProperty(Array.prototype, 'join', {
+      configurable: true,
+      value() { sentinelCalls++; return 'hijacked'; }
+    });
+    Object.defineProperty(String.prototype, 'trim', {
+      configurable: true,
+      value() { sentinelCalls++; return 'password'; }
+    });
+    Object.defineProperty(String.prototype, 'includes', {
+      configurable: true,
+      value() { sentinelCalls++; return true; }
+    });
+
+    const resMissing = parseAndValidateJwt(missingAmrMethodJwt);
+    assert.equal(resMissing.valid, false);
+    assert.match(resMissing.reason, /MALFORMED_AMR_METHOD/);
+
+    const resEmpty = parseAndValidateJwt(emptyAmrMethodJwt);
+    assert.equal(resEmpty.valid, false);
+    assert.match(resEmpty.reason, /MALFORMED_AMR_METHOD/);
+
+    const resNumeric = parseAndValidateJwt(numericAmrMethodJwt);
+    assert.equal(resNumeric.valid, false);
+    assert.match(resNumeric.reason, /MALFORMED_AMR_METHOD/);
+
+    const resProhibited = parseAndValidateJwt(prohibitedAmrJwt);
+    assert.equal(resProhibited.valid, false);
+    assert.match(resProhibited.reason, /PROHIBITED_AMR_METHOD/);
+
+    const resObjExp = parseAndValidateJwt(objectExpJwt);
+    assert.equal(resObjExp.valid, false);
+    assert.match(resObjExp.reason, /INVALID_EXP/);
+
+    const resObjAud = parseAndValidateJwt(objectAudJwt);
+    assert.equal(resObjAud.valid, false);
+    assert.match(resObjAud.reason, /AUDIENCE_MISMATCH/);
+
+    const resAudArray = parseAndValidateJwt(mismatchAudArrayJwt);
+    assert.equal(resAudArray.valid, false);
+    assert.match(resAudArray.reason, /AUDIENCE_MISMATCH/);
+
+    const resValid = parseAndValidateJwt(validJwt, { expectedIssuer: HARDCODED_TEMP_REF, expectedAudience: 'authenticated' });
+    assert.equal(resValid.valid, true);
+    assert.equal(Object.getPrototypeOf(resValid.payload.amr[0]), null);
+    assert.equal(Object.isFrozen(resValid.payload.amr[0]), true);
+    assert.equal(sentinelCalls, 0);
+  } finally {
+    if (prevMethod) Object.defineProperty(Object.prototype, 'method', prevMethod); else delete Object.prototype.method;
+    if (prevIter) Object.defineProperty(Array.prototype, Symbol.iterator, prevIter); else delete Array.prototype[Symbol.iterator];
+    if (prevIncludes) Object.defineProperty(Array.prototype, 'includes', prevIncludes); else delete Array.prototype.includes;
+    if (prevJoin) Object.defineProperty(Array.prototype, 'join', prevJoin); else delete Array.prototype.join;
+    if (prevStrTrim) Object.defineProperty(String.prototype, 'trim', prevStrTrim); else delete String.prototype.trim;
+    if (prevStrIncludes) Object.defineProperty(String.prototype, 'includes', prevStrIncludes); else delete String.prototype.includes;
+  }
+});
+
+test('PR45-P2-B: HOOK-02 correlates refreshed claims with active user/session, retains cleanup, and blocks stale revocation', async () => {
+  const user1 = 'user-p2b-1';
+  const sess1 = 'sess-p2b-1';
+  const sess2 = 'sess-p2b-2';
+  const tok1 = createMockJwt({ sub: user1, session_id: sess1 });
+  const tokSameUserDiffSess = createMockJwt({ sub: user1, session_id: sess2 });
+  const tokValidRefresh = createMockJwt({ sub: user1, session_id: sess1, exp: Math.floor(Date.now() / 1000) + 900 });
+
+  // 1. Same-user / different-session refresh is rejected, keeps ctx bound to sess-1, retains sess-2 cleanup, and SESSION-02 only revokes sess-1
+  {
+    const inv = new TestRunInventory('test-p2b-diff-sess');
+    const ctx = createRunContext({ runId: inv.runId, testEmail: 'p2b@proof.invalid' });
+    const transport = createDeterministicFixtureTransport({
+      requestBudgetMode: 'recorded_zero_wait',
+      routes: [
+        {
+          urlIncludes: 'grant_type=password',
+          status: 200,
+          json: {
+            access_token: tok1,
+            refresh_token: 'refresh-p2b-1',
+            session_id: sess1,
+            user: { id: user1, email: 'p2b@proof.invalid' }
+          }
+        },
+        {
+          urlIncludes: 'grant_type=refresh_token',
+          status: 200,
+          json: {
+            access_token: tokSameUserDiffSess,
+            refresh_token: 'refresh-p2b-2',
+            session_id: sess2,
+            user: { id: user1, email: 'p2b@proof.invalid' }
+          }
+        },
+        {
+          urlIncludes: '/auth/v1/admin/users/',
+          method: 'PUT',
+          status: 200,
+          setsState: { passwordReset: true },
+          json: { id: user1 }
+        },
+        {
+          urlIncludes: '/auth/v1/user',
+          method: 'GET',
+          headersMatch: { authorization: `Bearer ${tok1}` },
+          whenState: { passwordReset: true },
+          status: 401,
+          json: { error_code: 'session_not_found' }
+        },
+        {
+          urlIncludes: '/auth/v1/user',
+          method: 'GET',
+          headersMatch: { authorization: `Bearer ${tok1}` },
+          status: 200,
+          json: { id: user1 }
+        }
+      ],
+      defaultResponse: { status: 404, json: {} }
+    });
+    const disp = createHostedDispatcher({
+      anonKey: validTestAnonKey,
+      serviceRoleKey: validTestServiceRoleKey,
+      inventory: inv,
+      runContext: ctx,
+      fetchFn: transport
+    });
+    const h1 = await disp({ id: 'HOOK-01', category: 'Token Hook' });
+    assert.equal(h1.passed, true);
+
+    const h2 = await disp({ id: 'HOOK-02', category: 'Token Hook' });
+    assert.equal(h2.passed, false);
+    assert.match(h2.error, /JWT_IDENTITY_MISMATCH/);
+    assert.equal(h2.session_id, sess2);
+    assert.equal(h2.session_cleanup_registered, true);
+    assert.equal(ctx.activeAccessToken, tok1);
+    assert.equal(ctx.activeRefreshToken, 'refresh-p2b-1');
+    assert.equal(ctx.activeUserId, user1);
+    assert.equal(ctx.activeSessionId, sess1);
+    assert.equal(inv.trackedSessions.has(sess1), true);
+    assert.equal(inv.trackedSessions.has(sess2), true);
+
+    const s1 = await disp({ id: 'SESSION-01', category: 'Session Invalidation' });
+    assert.equal(s1.passed, true);
+    assert.equal(s1.session_id, sess1);
+    const s2 = await disp({ id: 'SESSION-02', category: 'Session Invalidation' });
+    assert.equal(s2.passed, true);
+    assert.equal(s2.session_id, sess1);
+    assert.equal(inv.revokedSessions.has(sess1), true);
+    assert.equal(inv.revokedSessions.has(sess2), false);
+    assert.equal(inv.isClean(), false);
+    const userCalls = transport.calls.filter(c => c.url.includes('/auth/v1/user'));
+    assert.equal(userCalls.length, 2);
+    assert.equal(userCalls.every(c => c.headers.authorization === `Bearer ${tok1}`), true);
+  }
+
+  // 2. Missing required identity claims (missing sub or missing session_id in JWT) and missing active context prerequisite
+  {
+    for (const badToken of [
+      createMockJwt({ sub: undefined, session_id: sess1 }),
+      createMockJwt({ sub: user1, session_id: undefined })
+    ]) {
+      const inv = new TestRunInventory(`test-p2b-missing-${badToken.length}`);
+      const ctx = createRunContext({ runId: inv.runId });
+      ctx.activeAccessToken = tok1;
+      ctx.activeRefreshToken = 'refresh-p2b-1';
+      ctx.activeUserId = user1;
+      ctx.activeSessionId = sess1;
+      const disp = createHostedDispatcher({
+        anonKey: validTestAnonKey,
+        inventory: inv,
+        runContext: ctx,
+        fetchFn: staticTransport({
+          status: 200,
+          json: { access_token: badToken, refresh_token: 'refresh-p2b-new', session_id: sess1, user: { id: user1 } }
+        })
+      });
+      const res = await disp({ id: 'HOOK-02', category: 'Token Hook' });
+      assert.equal(res.passed, false);
+      assert.match(res.error, /MISSING_IDENTITY_CLAIMS/);
+      assert.equal(res.session_cleanup_registered, true);
+      assert.equal(inv.trackedSessions.has(sess1), true);
+      assert.equal(ctx.activeAccessToken, tok1);
+      assert.equal(ctx.activeRefreshToken, 'refresh-p2b-1');
+    }
+
+    const invMissingCtx = new TestRunInventory('test-p2b-missing-ctx');
+    const ctxMissing = createRunContext({ runId: invMissingCtx.runId });
+    ctxMissing.activeRefreshToken = 'refresh-only';
+    const dispMissingCtx = createHostedDispatcher({
+      anonKey: validTestAnonKey,
+      inventory: invMissingCtx,
+      runContext: ctxMissing,
+      fetchFn: staticTransport({ status: 200, json: { access_token: tokValidRefresh } })
+    });
+    const resMissingCtx = await dispMissingCtx({ id: 'HOOK-02', category: 'Token Hook' });
+    assert.equal(resMissingCtx.passed, false);
+    assert.match(resMissingCtx.error, /PREREQUISITE_MISSING/);
+  }
+
+  // 3. Mismatched response identity vs active/token identity
+  {
+    for (const [respUser, respSess] of [
+      [user1, 'sess-p2b-body-mismatch'],
+      ['user-p2b-body-mismatch', sess1]
+    ]) {
+      const inv = new TestRunInventory(`test-p2b-resp-${respSess}`);
+      const ctx = createRunContext({ runId: inv.runId });
+      ctx.activeAccessToken = tok1;
+      ctx.activeRefreshToken = 'refresh-p2b-1';
+      ctx.activeUserId = user1;
+      ctx.activeSessionId = sess1;
+      const disp = createHostedDispatcher({
+        anonKey: validTestAnonKey,
+        inventory: inv,
+        runContext: ctx,
+        fetchFn: staticTransport({
+          status: 200,
+          json: { access_token: tokValidRefresh, refresh_token: 'refresh-p2b-new', session_id: respSess, user: { id: respUser } }
+        })
+      });
+      const res = await disp({ id: 'HOOK-02', category: 'Token Hook' });
+      assert.equal(res.passed, false);
+      assert.match(res.error, /JWT_IDENTITY_MISMATCH/);
+      assert.equal(res.session_cleanup_registered, true);
+      assert.equal(inv.trackedSessions.has(respSess), true);
+      assert.equal(ctx.activeAccessToken, tok1);
+      assert.equal(ctx.activeRefreshToken, 'refresh-p2b-1');
+      assert.equal(ctx.activeUserId, user1);
+      assert.equal(ctx.activeSessionId, sess1);
+    }
+  }
+
+  // 4. Valid same-session refresh updates tokens and preserves correlated active user/session
+  {
+    const inv = new TestRunInventory('test-p2b-valid-refresh');
+    const ctx = createRunContext({ runId: inv.runId });
+    ctx.activeAccessToken = tok1;
+    ctx.activeRefreshToken = 'refresh-p2b-1';
+    ctx.activeUserId = user1;
+    ctx.activeSessionId = sess1;
+    const disp = createHostedDispatcher({
+      anonKey: validTestAnonKey,
+      inventory: inv,
+      runContext: ctx,
+      fetchFn: staticTransport({
+        status: 200,
+        json: { access_token: tokValidRefresh, refresh_token: 'refresh-p2b-2', session_id: sess1, user: { id: user1 } }
+      })
+    });
+    const res = await disp({ id: 'HOOK-02', category: 'Token Hook' });
+    assert.equal(res.passed, true);
+    assert.equal(res.amr_preserved, true);
+    assert.equal(res.user_id, user1);
+    assert.equal(res.session_id, sess1);
+    assert.equal(ctx.activeAccessToken, tokValidRefresh);
+    assert.equal(ctx.activeRefreshToken, 'refresh-p2b-2');
+    assert.equal(ctx.activeUserId, user1);
+    assert.equal(ctx.activeSessionId, sess1);
+  }
+});
+
+test('PR45-P2-C: deeply nested and wide JWT claims reject structurally across parseAndValidateJwt, validateProbeOutcome, and runner without uncaught RangeError', async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const encodeHeader = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const sig = Buffer.from('sig-bound-runner').toString('base64url');
+  const makeJwtFromRawField = (fieldName, rawValueJson) => {
+    const payloadJson = `{"sub":"user-bound-1","session_id":"sess-bound-1","iss":"https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1","aud":"authenticated","iat":${now},"exp":${now + 300},"amr_authenticated":"true","amr":[{"method":"password"}],"${fieldName}":${rawValueJson}}`;
+    return `${encodeHeader}.${Buffer.from(payloadJson).toString('base64url')}.${sig}`;
+  };
+
+  // Exact boundary (leaf at depth MAX_OFFLINE_JWT_CLAIM_DEPTH) passes
+  const exactDepthJwt = makeJwtFromRawField('deep', '['.repeat(MAX_OFFLINE_JWT_CLAIM_DEPTH - 1) + '1' + ']'.repeat(MAX_OFFLINE_JWT_CLAIM_DEPTH - 1));
+  assert.equal(parseAndValidateJwt(exactDepthJwt).valid, true);
+
+  // Over-depth (boundary + 1 and extreme depth 6000), over-width, and over-length all return structured failures
+  const overDepthOneJwt = makeJwtFromRawField('deep', '['.repeat(MAX_OFFLINE_JWT_CLAIM_DEPTH) + '1' + ']'.repeat(MAX_OFFLINE_JWT_CLAIM_DEPTH));
+  const deep6000ObjJwt = makeJwtFromRawField('deep', '{"a":'.repeat(6000) + '1' + '}'.repeat(6000));
+  const deep6000ArrJwt = makeJwtFromRawField('deep', '['.repeat(6000) + '1' + ']'.repeat(6000));
+  const wideArrJwt = makeJwtFromRawField('wide', `[${new Array(MAX_OFFLINE_JWT_CLAIM_NODES).fill('1').join(',')}]`);
+  const overLenJwt = makeJwtFromRawField('pad', JSON.stringify('x'.repeat(MAX_OFFLINE_JWT_TOKEN_LENGTH)));
+
+  for (const badJwt of [overDepthOneJwt, deep6000ObjJwt, deep6000ArrJwt, wideArrJwt, overLenJwt]) {
+    const parsed = parseAndValidateJwt(badJwt);
+    assert.equal(parsed.valid, false);
+    assert.match(parsed.reason, /^TOKEN_FORMAT_INVALID/);
+
+    for (const probeId of ['HOOK-01', 'HOOK-02']) {
+      const outcomeCheck = validateProbeOutcome({ id: probeId, category: 'Token Hook' }, {
+        passed: true,
+        status: 200,
+        session_id: 'sess-bound-1',
+        amr_authenticated: true,
+        amr_preserved: true,
+        tokens: { access_token: badJwt }
+      });
+      assert.equal(outcomeCheck.passed, false);
+      assert.match(outcomeCheck.reason, new RegExp(`JWT_CLAIM_VIOLATION: ${probeId} TOKEN_FORMAT_INVALID`));
+    }
+  }
+
+  // Dispatcher rejects over-depth JWT while retaining observed session cleanup
+  {
+    const inv = new TestRunInventory('test-p2c-disp-cleanup');
+    const ctx = createRunContext({ runId: inv.runId });
+    const disp = createHostedDispatcher({
+      anonKey: validTestAnonKey,
+      inventory: inv,
+      runContext: ctx,
+      fetchFn: staticTransport({
+        status: 200,
+        json: { access_token: deep6000ArrJwt, session_id: 'sess-p2c-disp', user: { id: 'user-p2c-1' } }
+      })
+    });
+    const res = await disp({ id: 'HOOK-01', category: 'Token Hook' });
+    assert.equal(res.passed, false);
+    assert.match(res.error, /JWT_CLAIM_VIOLATION: TOKEN_FORMAT_INVALID/);
+    assert.equal(res.session_id, 'sess-p2c-disp');
+    assert.equal(res.session_cleanup_registered, true);
+    assert.equal(inv.trackedSessions.has('sess-p2c-disp'), true);
+    assert.equal(ctx.activeAccessToken, null);
+  }
+
+  // Runner validateProbeOutcome step returns HALTED_ON_FAILURE (no escaped RangeError) and completes cleanup
+  {
+    const runId = 'r-p2c-runner-halt';
+    const simTransport = createDeterministicFixtureTransport({
+      requestBudgetMode: 'recorded_zero_wait',
+      routes: [
+        { urlIncludes: '/auth/v1/otp', status: 422, json: { error_code: 'email_provider_disabled' } },
+        { urlIncludes: '/auth/v1/logout', status: 204, json: {} }
+      ],
+      defaultResponse: { status: 200, json: {} }
+    });
+    const simAdmin = createHostedAdminClient({
+      serviceRoleKey: validTestServiceRoleKey,
+      anonKey: validTestAnonKey,
+      runId,
+      fetchFn: simTransport
+    });
+    const simDispatcher = createTrustedOfflineDispatcher({
+      runId,
+      fetchFn: simTransport,
+      outcomes: {
+        'BYPASS-01': {
+          transportRequest: { url: `https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/otp`, method: 'POST', body: { email: 'p2c@proof.invalid' } },
+          passed: true,
+          status: 422,
+          route_disabled: true,
+          error_code: 'email_provider_disabled'
+        },
+        'HOOK-01': {
+          passed: true,
+          status: 200,
+          has_token: true,
+          amr_authenticated: true,
+          session_id: 'sess-p2c-runner',
+          tokens: { access_token: deep6000ArrJwt },
+          inventoryEffects: {
+            registerSession: { sessionId: 'sess-p2c-runner', accessToken: createMockJwt({ session_id: 'sess-p2c-runner' }), source: 'HOOK-01_observed' }
+          }
+        }
+      }
+    });
+    const simRes = await runOfflineProbeSimulation({
+      projectRef: HARDCODED_TEMP_REF,
+      runId,
+      adminClient: simAdmin,
+      offlineDispatcher: simDispatcher,
+      selectedProbeIds: ['BYPASS-01', 'HOOK-01'],
+      timing: { mode: 'recorded_zero_wait' }
+    });
+    assert.equal(simRes.status, 'HALTED_ON_FAILURE');
+    assert.match(simRes.abortReason, /CRITICAL_SECURITY_FAILURE: Case HOOK-01.*JWT_CLAIM_VIOLATION: HOOK-01 TOKEN_FORMAT_INVALID/);
+    assert.equal(simRes.cleanupReport.status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(simRes.cleanupReport.sessionsRevoked, 1);
+  }
+
+  // Adjacent credential binding / provisioning paths also reject deeply nested JWTs without RangeError
+  {
+    const deepCredentialJwt = makeJwtFromRawField('ref', `"${HARDCODED_TEMP_REF}","deep":${'['.repeat(6000)}1${']'.repeat(6000)}`);
+    assert.throws(
+      () => validateProjectCredentialBinding(deepCredentialJwt, HARDCODED_TEMP_REF),
+      /INVALID_CREDENTIAL_PAYLOAD/
+    );
+    const invProv = new TestRunInventory('test-p2c-prov-deep');
+    const adminProv = createHostedAdminClient({
+      serviceRoleKey: validTestServiceRoleKey,
+      anonKey: validTestAnonKey,
+      runId: invProv.runId,
+      fetchFn: staticTransport({ status: 200, json: {} })
+    });
+    await assert.rejects(
+      () => provisionStorageProbeFixture({
+        projectRef: HARDCODED_TEMP_REF,
+        runId: invProv.runId,
+        userAccessToken: deepCredentialJwt,
+        seedUserId: '11111111-1111-4111-a111-111111111111',
+        inventory: invProv,
+        adminClient: adminProv,
+        fetchFn: staticTransport({ status: 200, json: {} })
+      }),
+      /INVALID_CREDENTIAL_PAYLOAD|CREDENTIAL_BINDING_ERROR/
+    );
+  }
+});
+
+function verificationIdentityCase(name, { priorUsers = ['verify-user-a'], responseUser = 'verify-user-b' } = {}) {
+  const inv = new TestRunInventory(`verify-admission-${name}`);
+  const email = 'tio-verify-admission@proof.invalid';
+  for (const id of priorUsers) inv.registerReferencedUser({ id, email });
+  const token = createMockJwt({ sub: responseUser, session_id: 'verify-admission-session' });
+  const spec = fixtureSpec({ login: { status: 200, json: {
+    access_token: token, session_id: 'verify-admission-session', user: { id: responseUser, email }
+  } } });
+  return { inv, email, spec, token, admin: bindFixtureAdmin(inv, spec) };
+}
+
+test('PR45-VERIFY-01: inherited expected identity cannot override prior email binding or certify cleanup', async () => {
+  const { inv, email, spec, admin } = verificationIdentityCase('inherited');
+  inv.registerSeedPasswordModification({ userId: 'verify-user-a', email,
+    originalPassword: 'SyntheticVerifyOriginal#1', targetPassword: 'SyntheticVerifyChanged#1', state: 'confirmed' });
+  const previous = Object.getOwnPropertyDescriptor(Object.prototype, 'expectedUserId');
+  let result;
+  try {
+    Object.defineProperty(Object.prototype, 'expectedUserId', { configurable: true, value: 'verify-user-b' });
+    result = await admin.verifyUserCredentials(email, 'SyntheticVerifyOriginal#1', { inventory: inv });
+  } finally {
+    if (previous) Object.defineProperty(Object.prototype, 'expectedUserId', previous);
+    else delete Object.prototype.expectedUserId;
+  }
+  assert.equal(result.credentialVerified, false);
+  assert.equal(result.verifiedUserId, null);
+  assert.equal(result.error.code, 'VERIFICATION_IDENTITY_CONFLICT');
+  assert.equal(fixtureOperationCalls(spec, 'login').length, 1);
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+  assert.equal(inv.isSessionRevoked('verify-admission-session'), true, 'Correlated logout remains independent of intended-user failure');
+  assert.ok(inv.sessionReconciliationObligations.length > 0);
+  const report = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+  assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(inv.seedCredentialRestorations[0].originalPassword, 'SyntheticVerifyOriginal#1');
+});
+
+test('PR45-VERIFY-02: omitted expected identity rejects wrong user consistently without pollution', async () => {
+  const { inv, email, spec, admin } = verificationIdentityCase('wrong-user');
+  const result = await admin.verifyUserCredentials(email, 'SyntheticVerify#1', { inventory: inv });
+  assert.equal(result.credentialVerified, false);
+  assert.equal(result.verifiedUserId, null);
+  assert.equal(result.error.code, 'VERIFICATION_IDENTITY_CONFLICT');
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+  assert.ok(inv.sessionReconciliationObligations.length > 0);
+});
+
+test('PR45-VERIFY-03: omitted own identity uses prior binding and own A ignores inherited getter B', async () => {
+  for (const explicit of [false, true]) {
+    const { inv, email, spec, admin } = verificationIdentityCase(`valid-${explicit}`, { responseUser: 'verify-user-a' });
+    const previous = Object.getOwnPropertyDescriptor(Object.prototype, 'expectedUserId');
+    let getterCalls = 0;
+    let result;
+    try {
+      Object.defineProperty(Object.prototype, 'expectedUserId', { configurable: true, get() { getterCalls++; return 'verify-user-b'; } });
+      const options = explicit ? { inventory: inv, expectedUserId: 'verify-user-a' } : { inventory: inv };
+      result = await admin.verifyUserCredentials(email, 'SyntheticVerify#1', options);
+    } finally {
+      if (previous) Object.defineProperty(Object.prototype, 'expectedUserId', previous);
+      else delete Object.prototype.expectedUserId;
+    }
+    assert.equal(getterCalls, 0);
+    assert.equal(result.credentialVerified, true);
+    assert.equal(result.verifiedUserId, 'verify-user-a');
+    assert.equal(result.error, null);
+    assert.equal(fixtureOperationCalls(spec, 'login').length, 1);
+    assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+    assert.equal(inv.isClean(), true);
+  }
+});
+
+test('PR45-VERIFY-04: invalid own identity and executable or unsupported options reject before dispatch', async () => {
+  const { inv, email, spec, admin } = verificationIdentityCase('invalid');
+  let executions = 0;
+  const accessor = Object.defineProperty({}, 'expectedUserId', { get() { executions++; throw new Error('Must not run'); } });
+  const inventoryAccessor = Object.defineProperty({}, 'inventory', { get() { executions++; throw new Error('Must not run'); } });
+  const proxy = new Proxy({}, { get() { executions++; throw new Error('Must not run'); }, ownKeys() { executions++; throw new Error('Must not run'); }, getPrototypeOf() { executions++; throw new Error('Must not run'); } });
+  const invalid = [null, [], 'options', 1, () => {}, new Date(), Object.create({ expectedUserId: 'verify-user-a' }), accessor, inventoryAccessor, proxy,
+    { inventory: proxy }, { inventory: {} }, { inventory: inv, unsupported: true }, { [Symbol('unknown')]: true },
+    Object.defineProperty({}, 'expectedUserId', { get: undefined, set: undefined }),
+    Object.defineProperty({}, 'inventory', { get: undefined, set: undefined })];
+  for (const expectedUserId of [undefined, null, '', ' ', 0, false, [], {}, proxy]) invalid.push({ inventory: inv, expectedUserId });
+  for (const options of invalid) {
+    const result = await admin.verifyUserCredentials(email, 'SyntheticVerify#1', options);
+    assert.equal(result.credentialVerified, false);
+    assert.equal(result.verifiedUserId, null);
+    assert.equal(result.error.code, 'INVALID_VERIFICATION_OPTIONS');
+  }
+  assert.equal(executions, 0);
+  assert.equal(fixtureCalls(spec).length, 0);
+  assert.equal(inv.trackedSessions.size, 0);
+  assert.equal(inv.inFlightOperations.size, 0);
+  const other = new TestRunInventory('verify-other-run');
+  const mismatch = await admin.verifyUserCredentials(email, 'SyntheticVerify#1', { inventory: other, expectedUserId: 'verify-user-a' });
+  assert.equal(mismatch.error.code, 'INVALID_VERIFICATION_OPTIONS');
+  assert.equal(fixtureCalls(spec).length, 0);
+});
+
+test('PR45-VERIFY-05: explicit identity cannot override known email-to-user binding', async () => {
+  const { inv, email, spec, admin } = verificationIdentityCase('explicit-conflict');
+  const result = await admin.verifyUserCredentials(email, 'SyntheticVerify#1', { inventory: inv, expectedUserId: 'verify-user-b' });
+  assert.equal(result.credentialVerified, false);
+  assert.equal(result.verifiedUserId, null);
+  assert.equal(result.error.code, 'VERIFICATION_IDENTITY_CONFLICT');
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+  assert.ok(inv.sessionReconciliationObligations.length > 0);
+});
+
+test('PR45-VERIFY-06: newly registered response identity cannot manufacture missing prior proof', async () => {
+  const { inv, email, spec, admin } = verificationIdentityCase('missing-prior', { priorUsers: [] });
+  const result = await admin.verifyUserCredentials(email, 'SyntheticVerify#1', { inventory: inv });
+  assert.equal(result.credentialVerified, false);
+  assert.equal(result.verifiedUserId, null);
+  assert.equal(result.error.code, 'VERIFICATION_IDENTITY_UNAVAILABLE');
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+  assert.equal(inv.trackedSessions.has('verify-admission-session'), true);
+  assert.ok(inv.sessionReconciliationObligations.length > 0);
+  assert.equal((await inv.executeCleanup({ adminClient: admin, failClosed: false })).status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+});
+
+test('PR45-VERIFY-07: ambiguous prior binding fails closed even with an explicit candidate', async () => {
+  const { inv, email, spec, admin } = verificationIdentityCase('ambiguous', { priorUsers: ['verify-user-a', 'verify-user-b'], responseUser: 'verify-user-a' });
+  const result = await admin.verifyUserCredentials(email, 'SyntheticVerify#1', { inventory: inv, expectedUserId: 'verify-user-a' });
+  assert.equal(result.credentialVerified, false);
+  assert.equal(result.verifiedUserId, null);
+  assert.equal(result.error.code, 'VERIFICATION_IDENTITY_AMBIGUOUS');
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+  assert.ok(inv.sessionReconciliationObligations.length > 0);
+});
+
+test('PR45-VERIFY-08: inherited inventory is never read and explicit target supports standalone verification', async () => {
+  const { inv, email, spec, admin } = verificationIdentityCase('inherited-inventory', { priorUsers: [], responseUser: 'verify-user-a' });
+  const previous = Object.getOwnPropertyDescriptor(Object.prototype, 'inventory');
+  let getterCalls = 0;
+  let result;
+  try {
+    Object.defineProperty(Object.prototype, 'inventory', { configurable: true, get() { getterCalls++; return inv; } });
+    result = await admin.verifyUserCredentials(email, 'SyntheticVerify#1', { expectedUserId: 'verify-user-a' });
+  } finally {
+    if (previous) Object.defineProperty(Object.prototype, 'inventory', previous);
+    else delete Object.prototype.inventory;
+  }
+  assert.equal(getterCalls, 0);
+  assert.equal(result.credentialVerified, true);
+  assert.equal(result.verifiedUserId, 'verify-user-a');
+  assert.equal(inv.trackedSessions.size, 0);
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+});
+
+test('PR45-VERIFY-09: response-created references remain observations across repeated calls and separate adapters', async () => {
+  const { inv, email, spec, admin } = verificationIdentityCase('repeated-observation', { priorUsers: [] });
+  const first = await admin.verifyUserCredentials(email, 'SyntheticVerify#1', { inventory: inv });
+  assert.equal(first.error.code, 'VERIFICATION_IDENTITY_UNAVAILABLE');
+  assert.equal(inv.referencedUsers.has('verify-user-b'), true, 'Resource tracking is retained');
+  const otherSpec = fixtureSpec({ login: spec.login });
+  const otherAdmin = bindFixtureAdmin(inv, otherSpec);
+  const repeated = await otherAdmin.verifyUserCredentials(email, 'SyntheticVerify#1', { inventory: inv });
+  assert.equal(repeated.credentialVerified, false);
+  assert.equal(repeated.verifiedUserId, null);
+  assert.equal(repeated.error.code, 'VERIFICATION_IDENTITY_UNAVAILABLE');
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+  assert.equal(fixtureOperationCalls(otherSpec, 'logout').length, 1);
+  assert.equal(inv.isClean(), false);
+});
+
+test('PR45-VERIFY-10: omitted third argument ignores inherited numeric data, getter and setter options', async () => {
+  for (const mode of ['data', 'getter', 'setter']) {
+    const { email, spec, admin } = verificationIdentityCase(`argument-slot-${mode}`, { priorUsers: [] });
+    const previous = Object.getOwnPropertyDescriptor(Array.prototype, '2');
+    const inherited = { expectedUserId: 'verify-user-b' };
+    let getterCalls = 0;
+    let setterCalls = 0;
+    let result;
+    try {
+      const descriptor = mode === 'data'
+        ? { __proto__: null, configurable: true, writable: true, value: inherited }
+        : { __proto__: null, configurable: true,
+          get() { getterCalls++; return inherited; },
+          ...(mode === 'setter' ? { set(value) { setterCalls++; Object.defineProperty(this, '2', { __proto__: null, value, configurable: true, writable: true, enumerable: true }); } } : {}) };
+      Object.defineProperty(Array.prototype, '2', descriptor);
+      result = await admin.verifyUserCredentials(email, 'SyntheticVerify#1');
+    } finally {
+      if (previous) Object.defineProperty(Array.prototype, '2', previous);
+      else delete Array.prototype[2];
+    }
+    assert.equal(getterCalls, 0);
+    assert.equal(setterCalls, 0);
+    assert.equal(result.credentialVerified, false);
+    assert.equal(result.verifiedUserId, null);
+    assert.equal(result.error.code, 'VERIFICATION_IDENTITY_UNAVAILABLE');
+    assert.equal(fixtureOperationCalls(spec, 'login').length, 1);
+    assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+  }
+});
+
+test('PR45-VERIFY-11: accessor descriptor is rejected before inherited descriptor value getter executes', async () => {
+  const { email, spec, admin } = verificationIdentityCase('descriptor-value');
+  const options = Object.defineProperty({}, 'expectedUserId', { get: undefined, set: undefined });
+  const previous = Object.getOwnPropertyDescriptor(Object.prototype, 'value');
+  let getterCalls = 0;
+  let result;
+  try {
+    Object.defineProperty(Object.prototype, 'value', { configurable: true, get() { getterCalls++; return 'verify-user-b'; } });
+    result = await admin.verifyUserCredentials(email, 'SyntheticVerify#1', options);
+  } finally {
+    if (previous) Object.defineProperty(Object.prototype, 'value', previous);
+    else delete Object.prototype.value;
+  }
+  assert.equal(getterCalls, 0);
+  assert.equal(result.credentialVerified, false);
+  assert.equal(result.error.code, 'INVALID_VERIFICATION_OPTIONS');
+  assert.equal(fixtureCalls(spec).length, 0);
+});
+
+test('PR45-ARGS-01: omitted required arguments ignore inherited numeric data/getters/setters without request attempts', async () => {
+  const { getRunRequestBudget } = await import('./run-request-budget.mjs');
+  const cases = [[], ['email'], ['email', undefined], [undefined, 'password'], [undefined, undefined]];
+  for (let caseIndex = 0; caseIndex < cases.length; caseIndex++) {
+    for (const mode of ['data', 'getter', 'setter']) {
+      const { inv, email, admin, spec } = verificationIdentityCase(`required-${caseIndex}-${mode}`);
+      const args = cases[caseIndex].map(value => value === 'email' ? email : value === 'password' ? 'SyntheticRequired#1' : value);
+      const inherited = [email, 'SyntheticRequired#1', { expectedUserId: 'verify-user-a' }];
+      const previous = [0, 1, 2].map(index => Object.getOwnPropertyDescriptor(Array.prototype, String(index)));
+      const budget = getRunRequestBudget({ projectRef: HARDCODED_TEMP_REF, runId: inv.runId, mode: 'recorded_zero_wait' });
+      const before = budget.report();
+      let getterCalls = 0;
+      let setterCalls = 0;
+      let pending;
+      try {
+        for (let index = 0; index < 3; index++) {
+          const value = inherited[index];
+          const descriptor = mode === 'data'
+            ? { __proto__: null, configurable: true, writable: true, value }
+            : { __proto__: null, configurable: true,
+              get() { getterCalls++; return value; },
+              ...(mode === 'setter' ? { set(assigned) { setterCalls++; Object.defineProperty(this, String(index), { __proto__: null, configurable: true, writable: true, enumerable: true, value: assigned }); } } : {}) };
+          Object.defineProperty(Array.prototype, String(index), descriptor);
+        }
+        // Forwarding executes synchronously. Restore prototypes before awaiting
+        // transport settlement so unrelated async runtime work stays isolated.
+        pending = Reflect.apply(admin.verifyUserCredentials, admin, args);
+      } finally {
+        for (let index = 0; index < 3; index++) {
+          if (previous[index]) Object.defineProperty(Array.prototype, String(index), previous[index]);
+          else delete Array.prototype[index];
+        }
+      }
+      const result = await pending;
+      assert.equal(getterCalls, 0);
+      assert.equal(setterCalls, 0);
+      assert.equal(result.error.code, caseIndex === 1 || caseIndex === 2 ? 'MISSING_PASSWORD' : 'MISSING_EMAIL');
+      assert.equal(fixtureCalls(spec).length, 0);
+      assert.deepEqual(budget.report(), before);
+      assert.equal(inv.inFlightOperations.size, 0);
+      assert.equal(inv.trackedSessions.size, 0);
+    }
+  }
+});
+
+test('PR45-ARGS-02: invalid required values reject structurally with zero behavior and unchanged budget', async () => {
+  const { getRunRequestBudget } = await import('./run-request-budget.mjs');
+  let executions = 0;
+  const proxy = new Proxy({}, { get() { executions++; throw new Error('Must not execute'); } });
+  const invalid = [undefined, null, '', 0, false, [], {}, proxy, () => { executions++; }];
+  for (let index = 0; index < invalid.length; index++) {
+    for (const field of ['email', 'password']) {
+      const { inv, email, admin, spec } = verificationIdentityCase(`invalid-required-${index}-${field}`);
+      const budget = getRunRequestBudget({ projectRef: HARDCODED_TEMP_REF, runId: inv.runId, mode: 'recorded_zero_wait' });
+      const before = budget.report();
+      const args = field === 'email' ? [invalid[index], 'SyntheticRequired#1'] : [email, invalid[index]];
+      const result = await Reflect.apply(admin.verifyUserCredentials, admin, args);
+      assert.equal(result.error.code, field === 'email' ? 'MISSING_EMAIL' : 'MISSING_PASSWORD');
+      assert.equal(fixtureCalls(spec).length, 0);
+      assert.deepEqual(budget.report(), before);
+    }
+  }
+  const { email, admin, spec } = verificationIdentityCase('blank-email');
+  assert.equal((await admin.verifyUserCredentials('  ', 'SyntheticRequired#1')).error.code, 'MISSING_EMAIL');
+  assert.equal(fixtureCalls(spec).length, 0);
+  assert.equal(executions, 0);
+});
+
+test('PR45-ARGS-03: valid own credentials preserve omitted options, trusted options and cleanup behavior', async () => {
+  const { email, admin, spec } = verificationIdentityCase('valid-two', { responseUser: 'verify-user-a' });
+  const two = await admin.verifyUserCredentials(email, 'SyntheticRequired#1');
+  assert.equal(two.error.code, 'VERIFICATION_IDENTITY_UNAVAILABLE');
+  assert.equal(fixtureOperationCalls(spec, 'login').length, 1);
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+  const valid = verificationIdentityCase('valid-three', { responseUser: 'verify-user-a' });
+  const three = await valid.admin.verifyUserCredentials(valid.email, 'SyntheticRequired#1', { inventory: valid.inv, expectedUserId: 'verify-user-a' });
+  assert.equal(three.error, null);
+  assert.equal(three.credentialVerified, true);
+  assert.equal(valid.inv.isClean(), true);
+  assert.equal((await valid.inv.executeCleanup({ adminClient: valid.admin })).status, 'CLEANUP_VERIFIED_SUCCESS');
+  const rejected = verificationIdentityCase('invalid-own-options');
+  for (const options of [{ expectedUserId: undefined }, { inventory: {} }]) {
+    const result = await rejected.admin.verifyUserCredentials(rejected.email, 'SyntheticRequired#1', options);
+    assert.equal(result.error.code, 'INVALID_VERIFICATION_OPTIONS');
+  }
+  assert.equal(fixtureCalls(rejected.spec).length, 0);
+});
+
+function restorationCase(name, { claims = {}, bodySession = 'restore-session', bodyUser = 'restore-user', routes = [] } = {}) {
+  const inv = new TestRunInventory(`restore-contract-${name}`);
+  const email = 'tio-restore-contract@proof.invalid';
+  inv.registerReferencedUser({ id: 'restore-user', email });
+  inv.registerSeedPasswordModification({ userId: 'restore-user', email,
+    originalPassword: 'SyntheticOriginal#1', targetPassword: 'SyntheticChanged#1', state: 'confirmed' });
+  const token = createMockJwt({ sub: 'restore-user', session_id: 'restore-session', ...claims });
+  const spec = fixtureSpec({ routes, login: { status: 200, json: {
+    access_token: token, session_id: bodySession, user: { id: bodyUser, email }
+  } } });
+  const admin = bindFixtureAdmin(inv, spec);
+  return { inv, admin, spec, token, email };
+}
+
+test('PR45-RESTORE-A: identity conflict with successful logout is never revocation failure or verified restoration', async () => {
+  const { inv, admin, spec, email } = restorationCase('identity', { bodySession: 'unrelated-body' });
+  const original = createMockJwt({ sub: 'restore-user', session_id: 'unrelated-body' });
+  inv.registerSession('unrelated-body', { accessToken: original, userId: 'restore-user', validated: true });
+  const result = await admin.verifyUserCredentials(email, 'SyntheticOriginal#1', { inventory: inv });
+  assert.equal(result.sessionRevocationFailed, false);
+  assert.equal(result.credentialVerified, false);
+  assert.equal(result.error.code, 'VERIFICATION_IDENTITY_CONFLICT');
+  assert.equal(inv.isSessionRevoked('unrelated-body'), false);
+  assert.equal(inv.isSessionRevoked('restore-session'), true);
+  assert.equal(inv.getSessionToken('unrelated-body'), original);
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+});
+
+test('PR45-RESTORE-A2: cleanup identity conflict never retries unrelated body credential or credits restoration', async () => {
+  const { inv, admin, spec, token } = restorationCase('cleanup-conflict', { bodySession: 'unrelated-body' });
+  const original = createMockJwt({ sub: 'restore-user', session_id: 'unrelated-body' });
+  inv.registerSession('unrelated-body', { accessToken: original, userId: 'restore-user', validated: true });
+  const report = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+  assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(report.seedCredentialsRestored, 0);
+  assert.equal(inv.seedCredentialRestorations[0].state, 'restoration_failed');
+  assert.equal(inv.seedCredentialRestorations[0].verifiedAt, undefined);
+  assert.equal(inv.seedCredentialRestorations[0].originalPassword, 'SyntheticOriginal#1');
+  assert.equal(inv.getSessionToken('unrelated-body'), original);
+  const logouts = fixtureOperationCalls(spec, 'logout');
+  assert.equal(logouts.length, 2, 'Only normal pre-restoration cleanup and the token session logout');
+  assert.equal(logouts[0].headers.authorization, `Bearer ${original}`);
+  assert.equal(logouts[1].headers.authorization, `Bearer ${token}`);
+});
+
+test('PR45-RESTORE-B: obligation created during cleanup is in final residuals and never credits uncorrelated logout', async () => {
+  const { inv, admin, spec } = restorationCase('missing-session', { claims: { session_id: undefined } });
+  assert.equal(inv.sessionReconciliationObligations.length, 0);
+  const report = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+  assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(inv.isClean(), false);
+  assert.ok(inv.sessionReconciliationObligations.length > 0);
+  assert.equal(report.residualResources.filter(r => r.type === 'session_reconciliation_obligation').length,
+    inv.sessionReconciliationObligations.length);
+  assert.equal(inv.isSessionRevoked('restore-session'), false);
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 0);
+  assert.equal(inv.seedCredentialRestorations[0].originalPassword, 'SyntheticOriginal#1');
+  assert.equal(inv.seedCredentialRestorations[0].verifiedAt, undefined);
+  const repeated = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+  assert.equal(repeated.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(repeated.residualResources.filter(r => r.type === 'session_reconciliation_obligation').length,
+    inv.sessionReconciliationObligations.length);
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 0);
+  assert.equal(inv.seedCredentialRestorations[0].originalPassword, 'SyntheticOriginal#1');
+});
+
+test('PR45-RESTORE-C: only genuine correlated revocation failure permits retry after credential verification', async () => {
+  const { inv, admin, spec, token } = restorationCase('retry', { routes: [
+    { urlIncludes: '/auth/v1/logout', times: 1, status: 503, json: { msg: 'Synthetic unavailable' } }
+  ] });
+  const report = await inv.executeCleanup({ adminClient: admin });
+  assert.equal(report.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(inv.isClean(), true);
+  assert.ok(inv.seedCredentialRestorations[0].verifiedAt);
+  assert.equal(inv.seedCredentialRestorations[0].originalPassword, '[CLEARED]');
+  const logouts = fixtureOperationCalls(spec, 'logout');
+  assert.equal(logouts.length, 2);
+  assert.ok(logouts.every(call => call.headers.authorization === `Bearer ${token}`));
+  const before = fixtureCalls(spec).length;
+  assert.equal((await inv.executeCleanup({ adminClient: admin })).status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(fixtureCalls(spec).length, before, 'Verified cleanup is idempotent');
+});
+
+test('PR45-RESTORE-D: normal restoration requires expected user identity, not merely consistent response claims', async () => {
+  const { inv, admin, spec } = restorationCase('wrong-user', { bodyUser: 'different-user', claims: { sub: 'different-user' } });
+  const report = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+  assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(inv.seedCredentialRestorations[0].state, 'restoration_failed');
+  assert.equal(inv.seedCredentialRestorations[0].verifiedAt, undefined);
+  assert.equal(inv.seedCredentialRestorations[0].originalPassword, 'SyntheticOriginal#1');
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 1, 'Correlated token still gets revoked');
+});
+
+test('PR45-RESTORE-E: valid normal restoration clears recovery credentials only after inventory is clean', async () => {
+  const { inv, admin, spec } = restorationCase('normal');
+  const report = await inv.executeCleanup({ adminClient: admin });
+  assert.equal(report.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(inv.isClean(), true);
+  assert.equal(report.seedCredentialsRestored, 1);
+  assert.equal(inv.seedCredentialRestorations[0].originalPassword, '[CLEARED]');
+  assert.equal(fixtureOperationCalls(spec, 'login').length, 1);
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+});
+
+test('PR45-RESTORE-F: budget exhaustion at update, verification and revocation preserves truthful live residuals', async () => {
+  const { getRunRequestBudget } = await import('./run-request-budget.mjs');
+  for (const used of [25, 24, 23]) {
+    const { inv, admin, spec } = restorationCase(`budget-${used}`);
+    for (let i = 0; i < used; i++) await admin.getUserById('restore-user');
+    const report = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+    const budget = getRunRequestBudget({ projectRef: HARDCODED_TEMP_REF, runId: inv.runId }).report();
+    assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(inv.isClean(), false);
+    assert.equal(inv.seedCredentialRestorations[0].originalPassword, 'SyntheticOriginal#1');
+    assert.equal(inv.seedCredentialRestorations[0].verifiedAt, undefined);
+    assert.equal(budget.simulatedTransportRequests, 25);
+    assert.equal(fixtureCalls(spec).length, 25);
+    assert.equal(budget.reservedCleanupCapacity, 0);
+    assert.equal(budget.cleanupRequests, 25 - used);
+    assert.equal(fixtureOperationCalls(spec, 'logout').length, 0);
+    assert.equal(inv.untrackedSessionsCount, 0, 'Pre-dispatch rejection cannot invent a minted session');
+    if (used === 23) {
+      assert.equal(inv.trackedSessions.has('restore-session'), true);
+      assert.equal(inv.isSessionRevoked('restore-session'), false);
+      assert.ok(inv.getSessionToken('restore-session'));
+      assert.ok(report.residualResources.some(r => r.type === 'session' && r.id === 'restore-session'));
+    }
+    const repeated = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+    assert.equal(repeated.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(fixtureCalls(spec).length, 25);
+    assert.equal(inv.seedCredentialRestorations[0].originalPassword, 'SyntheticOriginal#1');
+  }
+});
+
+test('PR45-RESTORE-G: transient restoration failure can be safely retried without discarding recovery evidence', async () => {
+  const { inv, admin, spec } = restorationCase('transient', { routes: [
+    { method: 'PUT', urlIncludes: '/auth/v1/admin/users/', times: 1, throwError: { message: 'Synthetic update failure' } }
+  ] });
+  const failed = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+  assert.equal(failed.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(inv.clearCredentials(), false);
+  assert.equal(inv.seedCredentialRestorations[0].originalPassword, 'SyntheticOriginal#1');
+  const retry = await inv.executeCleanup({ adminClient: admin });
+  assert.equal(retry.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(inv.isClean(), true);
+  assert.equal(fixtureOperationCalls(spec, 'userUpdate').length, 2);
+  assert.equal(fixtureOperationCalls(spec, 'login').length, 1);
+});
+
+test('PR45-RESTORE-H: adapter rejection and failClosed exceptions retain recovery state and report obligations', async () => {
+  const { inv, admin } = restorationCase('reject', { claims: { session_id: undefined } });
+  inv.registerSessionReconciliationObligation({ reason: 'SYNTHETIC_PRIOR_OBLIGATION', observedSessionId: 'prior-session' });
+  const rejected = await inv.executeCleanup({ adminClient: {}, failClosed: false });
+  assert.equal(rejected.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(rejected.residualResources.some(r => r.reason === 'SYNTHETIC_PRIOR_OBLIGATION'));
+  await assert.rejects(inv.executeCleanup({ adminClient: admin }), error => {
+    assert.equal(error.cleanupReport.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(error.cleanupReport.residualResources.filter(r => r.type === 'session_reconciliation_obligation').length,
+      inv.sessionReconciliationObligations.length);
+    return true;
+  });
+  assert.equal(inv.isClean(), false);
+  assert.equal(inv.seedCredentialRestorations[0].originalPassword, 'SyntheticOriginal#1');
+});
+
+test('PR45-RESTORE-I: post-dispatch errors cannot forge budget or cancellation admission evidence', async () => {
+  const { getRunRequestBudget, isRunRequestAdmissionFailure } = await import('./run-request-budget.mjs');
+  assert.equal(isRunRequestAdmissionFailure(undefined, undefined), false);
+  const admissionBudget = getRunRequestBudget({ projectRef: HARDCODED_TEMP_REF, runId: 'restore-admission-proof', mode: 'recorded_zero_wait' });
+  const aborted = new AbortController(); aborted.abort();
+  await assert.rejects(admissionBudget.beginRequest({ signal: aborted.signal }), error => {
+    assert.equal(isRunRequestAdmissionFailure(error, 'restore-admission-proof'), true);
+    assert.equal(isRunRequestAdmissionFailure(error, 'different-run'), false);
+    assert.equal(isRunRequestAdmissionFailure({ code: error.code }, 'restore-admission-proof'), false);
+    return true;
+  });
+  for (const code of ['REQUEST_BUDGET_EXHAUSTED', 'REQUEST_CANCELLED_BEFORE_DISPATCH']) {
+    const { inv, admin, spec, email } = restorationCase(`forged-${code}`, { routes: [
+      { urlIncludes: '/auth/v1/token?grant_type=password', times: 1, throwError: { code, message: 'Synthetic post-dispatch failure' } }
+    ] });
+    const result = await admin.verifyUserCredentials(email, 'SyntheticOriginal#1', { inventory: inv });
+    assert.equal(result.indeterminateSession, true);
+    assert.equal(result.credentialVerified, false);
+    assert.equal(inv.untrackedSessionsCount, 1);
+    assert.equal(fixtureOperationCalls(spec, 'login').length, 1, 'The transport really dispatched');
+    const report = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+    assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.ok(report.residualResources.some(r => r.type === 'untracked_session'));
+    assert.equal(inv.isClean(), false);
+    assert.equal(inv.seedCredentialRestorations[0].originalPassword, 'SyntheticOriginal#1');
+  }
+});
+
+test('PR45-RESTORE-J: same-session different-user logout never skips original correlated credential cleanup', async () => {
+  const { inv, admin, spec, token, email } = restorationCase('same-session-other-user', {
+    bodyUser: 'other-user', claims: { sub: 'other-user' }
+  });
+  const original = createMockJwt({ sub: 'restore-user', session_id: 'restore-session' });
+  inv.registerSession('restore-session', { accessToken: original, userId: 'restore-user', validated: true });
+  const result = await admin.verifyUserCredentials(email, 'SyntheticOriginal#1', { inventory: inv });
+  assert.equal(result.error.code, 'VERIFICATION_IDENTITY_CONFLICT');
+  assert.equal(inv.getSessionToken('restore-session'), original);
+  assert.equal(inv.isSessionRevoked('restore-session'), false);
+  const report = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+  assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  const logouts = fixtureOperationCalls(spec, 'logout');
+  assert.equal(logouts.length, 3, 'Verification, original credential cleanup, then failed restoration verification');
+  assert.equal(logouts[0].headers.authorization, `Bearer ${token}`);
+  assert.equal(logouts[1].headers.authorization, `Bearer ${original}`);
+  assert.equal(inv.seedCredentialRestorations[0].originalPassword, 'SyntheticOriginal#1');
+  assert.equal(inv.isClean(), false);
+});
+
+test('PR45-P2-D: conflicting refresh response never overwrites correlated cleanup credentials and blocks false CLEANUP_VERIFIED_SUCCESS', async () => {
+  const userId1 = '11111111-1111-4111-a111-111111111111';
+  const userId2 = '22222222-2222-4222-a222-222222222222';
+  const tok1 = createMockJwt({ sub: userId1, session_id: 'sess-p2d-1', amr: [{ method: 'password' }] });
+  const tokConflict = createMockJwt({ sub: userId1, session_id: 'sess-p2d-2', amr: [{ method: 'password' }] });
+  const tok2Valid = createMockJwt({ sub: userId1, session_id: 'sess-p2d-1', amr: [{ method: 'password' }] });
+  const tokWrongUser = createMockJwt({ sub: userId2, session_id: 'sess-p2d-1', amr: [{ method: 'password' }] });
+  const tokMissingSub = createMockJwt({ sub: undefined, session_id: 'sess-p2d-1', amr: [{ method: 'password' }] });
+  const deep6000Jwt = `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(`{"sub":"${userId1}","session_id":"sess-p2d-1","deep":${'['.repeat(6000)}1${']'.repeat(6000)}}`).toString('base64url')}.sig`;
+
+  // 1. Core #discussion_r4705809422 reproduction:
+  // HOOK-01 establishes sess-p2d-1 with tok1 -> conflicting HOOK-02 returns body session_id='sess-p2d-1'
+  // while JWT carries session_id='sess-p2d-2' (tokConflict).
+  // Must preserve tok1 on sess-p2d-1 and ctx, track sess-p2d-2 -> tokConflict, record reconciliation obligation,
+  // revoke both sessions using their own correlated credentials, and never report CLEANUP_VERIFIED_SUCCESS.
+  {
+    const transport = createDeterministicFixtureTransport({
+      requestBudgetMode: 'recorded_zero_wait',
+      routes: [
+        {
+          urlIncludes: '/auth/v1/token?grant_type=password',
+          status: 200,
+          json: {
+            access_token: tok1,
+            refresh_token: 'ref-p2d-1',
+            session_id: 'sess-p2d-1',
+            user: { id: userId1 }
+          }
+        },
+        {
+          urlIncludes: '/auth/v1/token?grant_type=refresh_token',
+          status: 200,
+          json: {
+            access_token: tokConflict,
+            refresh_token: 'ref-p2d-conflict',
+            session_id: 'sess-p2d-1',
+            user: { id: userId1 }
+          }
+        },
+        { urlIncludes: '/auth/v1/logout', status: 204, json: {} }
+      ],
+      defaultResponse: { status: 200, json: {} }
+    });
+
+    const inv = new TestRunInventory('test-p2d-repro');
+    const ctx = createRunContext({ runId: inv.runId });
+    const disp = createHostedDispatcher({
+      anonKey: validTestAnonKey,
+      inventory: inv,
+      runContext: ctx,
+      fetchFn: transport
+    });
+    const admin = createHostedAdminClient({
+      serviceRoleKey: validTestServiceRoleKey,
+      anonKey: validTestAnonKey,
+      runId: inv.runId,
+      fetchFn: transport
+    });
+
+    const h1 = await disp({ id: 'HOOK-01', category: 'Token Hook' });
+    assert.equal(h1.passed, true);
+    assert.equal(inv.getSessionToken('sess-p2d-1'), tok1);
+    assert.equal(ctx.activeAccessToken, tok1);
+    assert.equal(ctx.activeSessionId, 'sess-p2d-1');
+
+    const h2 = await disp({ id: 'HOOK-02', category: 'Token Hook' });
+    assert.equal(h2.passed, false);
+    assert.match(h2.error, /JWT_IDENTITY_MISMATCH|SESSION_IDENTITY_CONFLICT/);
+
+    // Original correlated token & active context remain intact
+    assert.equal(inv.getSessionToken('sess-p2d-1'), tok1);
+    assert.equal(inv.getSessionToken('sess-p2d-2'), tokConflict);
+    assert.equal(inv.trackedSessions.has('sess-p2d-1'), true);
+    assert.equal(inv.trackedSessions.has('sess-p2d-2'), true);
+    assert.equal(ctx.activeAccessToken, tok1);
+    assert.equal(ctx.activeRefreshToken, 'ref-p2d-1');
+    assert.equal(ctx.activeSessionId, 'sess-p2d-1');
+    assert.equal(ctx.activeUserId, userId1);
+    assert.equal(inv.sessionReconciliationObligations.length > 0, true);
+    assert.equal(inv.isClean(), false);
+
+    const report1 = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+    assert.equal(report1.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(inv.revokedSessions.has('sess-p2d-1'), true);
+    assert.equal(inv.revokedSessions.has('sess-p2d-2'), true);
+    assert.equal(report1.residualResources.some((r) => r.type === 'session_reconciliation_obligation'), true);
+
+    const logoutCalls1 = transport.calls.filter((c) => c.url.includes('/auth/v1/logout'));
+    assert.equal(logoutCalls1.length, 2);
+    const logoutTokens = logoutCalls1.map((c) => c.headers.authorization.replace('Bearer ', ''));
+    assert.deepEqual(logoutTokens.sort(), [tok1, tokConflict].sort());
+
+    // Repeated cleanup makes 0 redundant logout calls while keeping reconciliation unresolved
+    const prevLogoutCount = logoutCalls1.length;
+    const report2 = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+    assert.equal(report2.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(transport.calls.filter((c) => c.url.includes('/auth/v1/logout')).length, prevLogoutCount);
+    assert.equal(inv.isClean(), false);
+  }
+
+  // 2. Direct inventory/admin/cleanup correlation guards reject mismatched session credentials without logout or revoking target session
+  {
+    const transport = createDeterministicFixtureTransport({
+      requestBudgetMode: 'recorded_zero_wait',
+      routes: [{ urlIncludes: '/auth/v1/logout', status: 204, json: {} }],
+      defaultResponse: { status: 200, json: {} }
+    });
+    const inv = new TestRunInventory('test-p2d-direct-guards');
+    const admin = createHostedAdminClient({
+      serviceRoleKey: validTestServiceRoleKey,
+      anonKey: validTestAnonKey,
+      runId: inv.runId,
+      fetchFn: transport
+    });
+
+    // Direct registerSession with valid correlated token succeeds; mismatched replacement is rejected and preserves tok1
+    assert.equal(inv.registerSession('sess-p2d-1', { accessToken: tok1, source: 'HOOK-01', validated: true, replaceExisting: true }).registered, true);
+    const conflictReg = inv.registerSession('sess-p2d-1', { accessToken: tokConflict, source: 'HOOK-02_conflict', validated: true, replaceExisting: true });
+    assert.equal(conflictReg.registered, false);
+    assert.equal(conflictReg.conflict, true);
+    assert.equal(inv.getSessionToken('sess-p2d-1'), tok1);
+    assert.equal(inv.sessionReconciliationObligations.some((ob) => ob.reason === 'SESSION_CREDENTIAL_MISMATCH'), true);
+
+    // Direct admin.invalidateSession rejects mismatched credential without network call
+    const callsBeforeInvalid = transport.calls.length;
+    const mismatchRes = await admin.invalidateSession('sess-p2d-1', tokConflict);
+    assert.ok(mismatchRes.error);
+    assert.equal(mismatchRes.error.code, 'SESSION_CREDENTIAL_MISMATCH');
+    assert.equal(transport.calls.length, callsBeforeInvalid);
+
+    // Direct executeCleanup correlation defense: even if sessionTokens map was polluted directly,
+    // executeCleanup refuses to sign out mismatched token or mark target session revoked.
+    const invPolluted = new TestRunInventory('test-p2d-polluted-map');
+    const adminPolluted = createHostedAdminClient({
+      serviceRoleKey: validTestServiceRoleKey,
+      anonKey: validTestAnonKey,
+      runId: invPolluted.runId,
+      fetchFn: transport
+    });
+    invPolluted.registerSession('sess-p2d-1', { source: 'HOOK-01_pre' });
+    invPolluted.sessionTokens.set('sess-p2d-1', tokConflict);
+    const pollutedReport = await invPolluted.executeCleanup({ adminClient: adminPolluted, failClosed: false });
+    assert.equal(pollutedReport.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(invPolluted.revokedSessions.has('sess-p2d-1'), false);
+    assert.equal(transport.calls.filter((c) => c.url.includes('/auth/v1/logout')).length, 0);
+    assert.equal(pollutedReport.residualResources.some((r) => r.type === 'session' && /SESSION_CREDENTIAL_MISMATCH/.test(r.error)), true);
+  }
+
+  // 3. Same session_id with conflicting user, missing sub, or malformed/over-depth JWT never overwrites tok1 and blocks CLEANUP_VERIFIED_SUCCESS
+  for (const [label, badRefreshToken] of [
+    ['wrong-user', tokWrongUser],
+    ['missing-sub', tokMissingSub],
+    ['malformed-jwt', 'malformed.token.value'],
+    ['over-depth-jwt', deep6000Jwt]
+  ]) {
+    const transport = createDeterministicFixtureTransport({
+      requestBudgetMode: 'recorded_zero_wait',
+      routes: [
+        {
+          urlIncludes: '/auth/v1/token?grant_type=password',
+          status: 200,
+          json: { access_token: tok1, refresh_token: 'ref-1', session_id: 'sess-p2d-1', user: { id: userId1 } }
+        },
+        {
+          urlIncludes: '/auth/v1/token?grant_type=refresh_token',
+          status: 200,
+          json: { access_token: badRefreshToken, refresh_token: 'ref-bad', session_id: 'sess-p2d-1', user: { id: userId1 } }
+        },
+        { urlIncludes: '/auth/v1/logout', status: 204, json: {} }
+      ],
+      defaultResponse: { status: 200, json: {} }
+    });
+    const inv = new TestRunInventory(`test-p2d-${label}`);
+    const ctx = createRunContext({ runId: inv.runId });
+    const disp = createHostedDispatcher({ anonKey: validTestAnonKey, inventory: inv, runContext: ctx, fetchFn: transport });
+    const admin = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, anonKey: validTestAnonKey, runId: inv.runId, fetchFn: transport });
+
+    const h1 = await disp({ id: 'HOOK-01', category: 'Token Hook' });
+    assert.equal(h1.passed, true, `${label}: HOOK-01 must pass`);
+
+    const h2 = await disp({ id: 'HOOK-02', category: 'Token Hook' });
+    assert.equal(h2.passed, false, `${label}: HOOK-02 must fail closed`);
+    assert.equal(inv.getSessionToken('sess-p2d-1'), tok1, `${label}: must preserve tok1`);
+    assert.equal(ctx.activeAccessToken, tok1, `${label}: must preserve activeAccessToken`);
+    assert.equal(inv.sessionReconciliationObligations.length > 0, true, `${label}: must record reconciliation obligation`);
+
+    const rep = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+    assert.equal(rep.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES', `${label}: must block CLEANUP_VERIFIED_SUCCESS`);
+    assert.equal(inv.revokedSessions.has('sess-p2d-1'), true, `${label}: valid sess-p2d-1 credential still signs out`);
+    const logouts = transport.calls.filter((c) => c.url.includes('/auth/v1/logout'));
+    assert.equal(logouts.length, 1);
+    assert.equal(logouts[0].headers.authorization, `Bearer ${tok1}`, `${label}: logout must use preserved tok1`);
+  }
+
+  // 4. Legitimate same-session, same-user refresh updates cleanup credential & context and achieves idempotent CLEANUP_VERIFIED_SUCCESS
+  {
+    const transport = createDeterministicFixtureTransport({
+      requestBudgetMode: 'recorded_zero_wait',
+      routes: [
+        {
+          urlIncludes: '/auth/v1/token?grant_type=password',
+          status: 200,
+          json: { access_token: tok1, refresh_token: 'ref-1', session_id: 'sess-p2d-1', user: { id: userId1 } }
+        },
+        {
+          urlIncludes: '/auth/v1/token?grant_type=refresh_token',
+          status: 200,
+          json: { access_token: tok2Valid, refresh_token: 'ref-2', session_id: 'sess-p2d-1', user: { id: userId1 } }
+        },
+        { urlIncludes: '/auth/v1/logout', status: 204, json: {} }
+      ],
+      defaultResponse: { status: 200, json: {} }
+    });
+    const inv = new TestRunInventory('test-p2d-valid-refresh');
+    const ctx = createRunContext({ runId: inv.runId });
+    const disp = createHostedDispatcher({ anonKey: validTestAnonKey, inventory: inv, runContext: ctx, fetchFn: transport });
+    const admin = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, anonKey: validTestAnonKey, runId: inv.runId, fetchFn: transport });
+
+    assert.equal((await disp({ id: 'HOOK-01', category: 'Token Hook' })).passed, true);
+    assert.equal((await disp({ id: 'HOOK-02', category: 'Token Hook' })).passed, true);
+    assert.equal(inv.getSessionToken('sess-p2d-1'), tok2Valid);
+    assert.equal(ctx.activeAccessToken, tok2Valid);
+    assert.equal(ctx.activeRefreshToken, 'ref-2');
+    assert.equal(inv.sessionReconciliationObligations.length, 0);
+
+    const rep1 = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+    assert.equal(rep1.status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(inv.isClean(), true);
+    const logouts1 = transport.calls.filter((c) => c.url.includes('/auth/v1/logout'));
+    assert.equal(logouts1.length, 1);
+    assert.equal(logouts1[0].headers.authorization, `Bearer ${tok2Valid}`);
+
+    const rep2 = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+    assert.equal(rep2.status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(transport.calls.filter((c) => c.url.includes('/auth/v1/logout')).length, 1);
+  }
+
+  // 5. Conflicting observeAndTrackSessionTokens / non-200 auth observation preserves tok1 and records reconciliation
+  {
+    const inv = new TestRunInventory('test-p2d-non200-observe');
+    const ctx = createRunContext({ runId: inv.runId });
+    ctx.activeUserId = userId1;
+    ctx.activeSessionId = 'sess-p2d-1';
+    ctx.activeAccessToken = tok1;
+    inv.registerSession('sess-p2d-1', { accessToken: tok1, source: 'HOOK-01', validated: true, replaceExisting: true });
+
+    const tracked = observeAndTrackSessionTokens(
+      { session_id: 'sess-p2d-1', access_token: tokConflict, refresh_token: 'ref-x', user: { id: userId1 } },
+      { inv, ctx, probeId: 'HOOK-02' }
+    );
+    assert.equal(tracked.identityConflict, true);
+    assert.equal(inv.getSessionToken('sess-p2d-1'), tok1);
+    assert.equal(inv.getSessionToken('sess-p2d-2'), tokConflict);
+    assert.equal(ctx.activeAccessToken, tok1);
+    assert.equal(inv.sessionReconciliationObligations.length > 0, true);
+
+    const inv2 = new TestRunInventory('test-p2d-non200-observe-409');
+    inv2.registerSession('sess-p2d-1', { accessToken: tok1, source: 'HOOK-01', validated: true, replaceExisting: true });
+    const observedErr = observeAuthResponse({
+      probeId: 'HOOK-02',
+      status: 409,
+      parseStatus: 'parsed',
+      body: { session_id: 'sess-p2d-1', access_token: tokConflict, user: { id: userId1 } },
+      inv: inv2,
+      ctx,
+      expectedOperation: 'token_issuance',
+      canMintSession: true
+    });
+    assert.equal(observedErr.identityConflict, true);
+    assert.equal(inv2.getSessionToken('sess-p2d-1'), tok1);
+    assert.equal(inv2.getSessionToken('sess-p2d-2'), tokConflict);
+    assert.equal(inv2.isClean(), false);
+  }
+
+  // 6. Audit hardening regressions: active ctx binding, uncorrelated/non-3-part/empty-id rejection, and String.prototype immunity
+  {
+    const transport = createDeterministicFixtureTransport({
+      requestBudgetMode: 'recorded_zero_wait',
+      routes: [{ urlIncludes: '/auth/v1/logout', status: 204, json: {} }],
+      defaultResponse: { status: 200, json: {} }
+    });
+    const inv = new TestRunInventory('test-p2d-audit-hardening');
+    const ctx = createRunContext({ runId: inv.runId });
+    ctx.activeUserId = userId1;
+    ctx.activeSessionId = 'sess-p2d-1';
+    ctx.activeAccessToken = tok1;
+    inv.registerSession('sess-p2d-1', { accessToken: tok1, source: 'HOOK-01', validated: true, replaceExisting: true });
+
+    // 6A. Cross-session agreeing body+JWT on active ctx via observeAndTrackSessionTokens must NOT clobber activeSessionId/activeUserId
+    const tokSess3WrongUser = createMockJwt({ sub: userId2, session_id: 'sess-p2d-3', amr: [{ method: 'password' }] });
+    observeAndTrackSessionTokens(
+      { session_id: 'sess-p2d-3', access_token: tokSess3WrongUser, user: { id: userId2 } },
+      { inv, ctx, probeId: 'HOOK-02' }
+    );
+    assert.equal(ctx.activeSessionId, 'sess-p2d-1');
+    assert.equal(ctx.activeUserId, userId1);
+    assert.equal(inv.getSessionToken('sess-p2d-1'), tok1);
+    assert.equal(inv.getSessionToken('sess-p2d-3'), tokSess3WrongUser);
+
+    // 6B. Non-HOOK probe (BYPASS-03) with conflicting or unexpected token must NOT clobber active ctx
+    observeAuthResponse({
+      probeId: 'BYPASS-03',
+      status: 200,
+      parseStatus: 'parsed',
+      body: { session_id: 'sess-p2d-4', access_token: createMockJwt({ sub: userId2, session_id: 'sess-p2d-4' }), user: { id: userId2 } },
+      inv,
+      ctx,
+      expectedOperation: 'rejection',
+      canMintSession: true
+    });
+    assert.equal(ctx.activeSessionId, 'sess-p2d-1');
+    assert.equal(ctx.activeUserId, userId1);
+    assert.equal(ctx.mintedAccessToken ?? null, null);
+
+    // 6C. Missing session_id in 3-part JWT, 2-part malformed JWT, and empty target sessionId reject cleanly
+    const tokMissingSid = createMockJwt({ sub: userId1, session_id: undefined });
+    const regNoSid = inv.registerSession('sess-p2d-nosid', { accessToken: tokMissingSid, source: 'HOOK-01' });
+    assert.equal(regNoSid.registered, false);
+    assert.equal(regNoSid.uncorrelated, true);
+    assert.equal(inv.getSessionToken('sess-p2d-nosid'), null);
+
+    const regTwoPart = inv.registerSession('sess-p2d-1', { accessToken: 'hdr.payload', source: 'HOOK-02', validated: true, replaceExisting: true });
+    assert.equal(regTwoPart.registered, false);
+    assert.equal(inv.getSessionToken('sess-p2d-1'), tok1);
+
+    const admin = createHostedAdminClient({
+      serviceRoleKey: validTestServiceRoleKey,
+      anonKey: validTestAnonKey,
+      runId: inv.runId,
+      fetchFn: transport
+    });
+    const emptyTargetRes = await admin.invalidateSession('', tokConflict);
+    assert.equal(emptyTargetRes.error?.code, 'MISSING_SESSION_ID');
+    const twoPartInvalid = await admin.invalidateSession('sess-p2d-1', 'hdr.payload');
+    assert.equal(twoPartInvalid.error?.code, 'UNCORRELATED_SESSION_CREDENTIAL');
+    assert.equal(transport.calls.length, 0);
+
+    // 6D. String.prototype.split/includes/trim pollution cannot bypass session_id correlation
+    const origSplit = String.prototype.split;
+    const origIncludes = String.prototype.includes;
+    const origTrim = String.prototype.trim;
+    try {
+      // eslint-disable-next-line no-extend-native
+      String.prototype.split = function () { return ['hdr', Buffer.from(JSON.stringify({ sub: userId1, session_id: 'sess-p2d-1' })).toString('base64url'), 'sig']; };
+      // eslint-disable-next-line no-extend-native
+      String.prototype.includes = function () { return false; };
+      const pollutedRes = await admin.invalidateSession('sess-p2d-1', tokConflict);
+      assert.equal(pollutedRes.error?.code, 'SESSION_CREDENTIAL_MISMATCH');
+      assert.equal(transport.calls.length, 0);
+
+      // eslint-disable-next-line no-extend-native
+      String.prototype.trim = function () { return 'sess-p2d-1'; };
+      const pollutedReg = inv.registerSession('sess-p2d-1', { accessToken: tokConflict, source: 'HOOK-02', validated: true, replaceExisting: true });
+      assert.equal(pollutedReg.registered, false);
+      assert.equal(inv.getSessionToken('sess-p2d-1'), tok1);
+    } finally {
+      // eslint-disable-next-line no-extend-native
+      String.prototype.split = origSplit;
+      // eslint-disable-next-line no-extend-native
+      String.prototype.includes = origIncludes;
+      // eslint-disable-next-line no-extend-native
+      String.prototype.trim = origTrim;
+    }
+  }
 });
