@@ -1091,4 +1091,26 @@ Validation after final code/test edit:
 - Local Git Bash (`G:\dev\git\bin\bash.exe`) attribution/guard scripts: `check_guard_integrity_test.sh` **14/14 PASS** (exit 0); `check_commit_attribution_test.sh` 139/142 on Windows Git Bash (3 pre-existing Windows MSYS emoji-grep test fixture mismatches; Linux CI attribution check remains authoritative on push).
 - Independent read-only security review subagent (`d3bf4833`): initial assessment `CHANGES_REQUESTED` identified object-claim `ToPrimitive` / `Array.prototype.join` gap in `INVALID_EXP`/`AUDIENCE_MISMATCH`; re-review after `formatJwtReasonValue` fix returned **PASS** with zero remaining blocking findings (manual assessment, not GitHub `APPROVED`).
 
+### 21.2 PR #45 Bounded JWT Claim Traversal (`#discussion_r4705518900`)
+
+Continuing on PR #45 (`fix/task06i-jwt-validation-evidence`) from verified baseline `ce0e6a62e982e8538d71b92f977aab17a8f5cd2c` (`main` `dd90265d9cdd8d8bd228ae5e7cbf13f8d1fa2c7a`) after independent `im-tio` review `6070584266` (`CHANGES_REQUESTED`, acknowledging SR-01/SR-02/SR-03/P2-A/P2-B as addressed while identifying one new P2 blocking regression).
+
+- **Reproduced baseline (`ce0e6a6`):** Passing a depth-6000 synthetic JWT (`[[...]]`) to `decodeOfflineJwtClaims`, `parseAndValidateJwt`, and `validateProbeOutcome` threw `RangeError: Maximum call stack size exceeded`, escaping `validateProbeOutcome` outside the dispatcher `try/catch` (`hosted-probe-runner.mjs:10380`).
+- **Root cause:** `snapshotJwtClaimValue` (`conditional-storage-fixture.mjs`) traversed arbitrary decoded JSON recursively without depth, node-count, or token-length bounds, and `snapshotJwtRecord` (`hosted-probe-runner.mjs`) delegated to unbounded recursive `snapshotInventoryEffectData`.
+- **Source correction & boundary choices:**
+  - Replaced recursive `snapshotJwtClaimValue` with a strictly iterative null-prototype-stack implementation (`Object.create(null)` stack with `delete stack[--stackTop]`), preserving frozen null-prototype records, non-writable/non-configurable own data descriptors, and `__proto__`/Proxy/accessor/non-finite rejection.
+  - Defined and exported explicit bounds in `conditional-storage-fixture.mjs`: `MAX_OFFLINE_JWT_TOKEN_LENGTH = 32768` (32 KiB pre-decode cap), `MAX_OFFLINE_JWT_CLAIM_DEPTH = 32` (root `claims` = 0; accommodates typical <=6-level JWTs/AMR/metadata with wide margin while bounding traversal), and `MAX_OFFLINE_JWT_CLAIM_NODES = 1024` (bounds wide trees/arrays within depth 32).
+  - Exported `snapshotBoundedJwtClaims` from `conditional-storage-fixture.mjs`; updated `snapshotJwtRecord` in `hosted-probe-runner.mjs` to delegate to `snapshotBoundedJwtClaims`, enforced `MAX_OFFLINE_JWT_TOKEN_LENGTH` in `validateProjectCredentialBinding`, and removed the redundant manual JWT decode in `provisionStorageProbeFixture` (using `uploadClaims` from `decodeOfflineJwtClaims`).
+- **Regression tests:** `JWT-BOUND-01` (`conditional-storage-fixture.test.mjs`) and `PR45-P2-C` (`hosted-probe-runner.test.mjs`) verify legitimate nested claims, exact depth `32` vs `33` (object and array), depth `6000` (`RangeError`-free rejection), node budget `1024` vs `1025`, token length `> 32768`, `parseAndValidateJwt` (`TOKEN_FORMAT_INVALID`), `validateProbeOutcome` (`JWT_CLAIM_VIOLATION`), `createHostedDispatcher` session cleanup retention, `runOfflineProbeSimulation` (`HALTED_ON_FAILURE` + `CLEANUP_VERIFIED_SUCCESS` with `sessionsRevoked: 1`), and `validateProjectCredentialBinding` / `provisionStorageProbeFixture` structured rejection.
+- **Validation after final code/test edit:**
+  - `node --test experiments/task06i/conditional-storage-fixture.test.mjs`: **64/64 PASS** (exit 0).
+  - `node --test experiments/task06i/hosted-probe-runner.test.mjs`: **156/156 PASS** (exit 0).
+  - `node --test experiments/task06i/*.test.mjs`: **306/306 PASS** (exit 0).
+  - `node --test experiments/task06h/*.test.mjs`: **115/115 PASS** (exit 0).
+  - Hardened Docker `node:24-bookworm --network none --pull never --cap-drop ALL --security-opt no-new-privileges` (read-only `experiments` mount): **238/238 PASS** (exit 0).
+  - `node experiments/task06i/sql-contract-parity.mjs`: **POSTGRES_VERIFIED 18/18** on PostgreSQL 17.11 (exit 0).
+  - `npm run verify`: tokens self-test + tokens check + `tsc --noEmit` + `eslint --max-warnings=0` + **22/22** shell contract tests PASS (exit 0).
+  - `node --check` on both modified `.mjs` files, `git diff --check`, and `git diff --check origin/main...HEAD`: **PASS** (exit 0).
+- **Independent read-only review (`8b8df793`):** Initial assessment `CHANGES_REQUESTED` caught remaining `snapshotJwtRecord` recursion in `provisionStorageProbeFixture` / `validateProjectCredentialBinding` and regular array stack assignment; after switching `snapshotJwtRecord` to `snapshotBoundedJwtClaims` and using a null-prototype stack, re-review returned **PASS** with `306/306` Task06I tests and `git diff --check` clean (manual assessment only, not GitHub `APPROVED`).
+
 Hosted atomic conditional deletion remains **UNVERIFIED**; durable recovery **NOT IMPLEMENTED**; run-created seed support **NOT IMPLEMENTED**; hosted verification **0/18**; Hosted LIVE **NOT AUTHORIZED**; Production Real Auth **STRICT NO-GO**; hosted mutations **0**; cost **$0**. H4 preparation remains pending separate approval and merge of PR #45.

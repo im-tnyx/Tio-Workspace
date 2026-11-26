@@ -1,4 +1,7 @@
-import { getConditionalStorageFixtureProvider } from './conditional-storage-fixture.mjs';
+import {
+  getConditionalStorageFixtureProvider, MAX_OFFLINE_JWT_TOKEN_LENGTH,
+  MAX_OFFLINE_JWT_CLAIM_DEPTH, MAX_OFFLINE_JWT_CLAIM_NODES
+} from './conditional-storage-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
@@ -13673,5 +13676,150 @@ test('PR45-P2-B: HOOK-02 correlates refreshed claims with active user/session, r
     assert.equal(ctx.activeRefreshToken, 'refresh-p2b-2');
     assert.equal(ctx.activeUserId, user1);
     assert.equal(ctx.activeSessionId, sess1);
+  }
+});
+
+test('PR45-P2-C: deeply nested and wide JWT claims reject structurally across parseAndValidateJwt, validateProbeOutcome, and runner without uncaught RangeError', async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const encodeHeader = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const sig = Buffer.from('sig-bound-runner').toString('base64url');
+  const makeJwtFromRawField = (fieldName, rawValueJson) => {
+    const payloadJson = `{"sub":"user-bound-1","session_id":"sess-bound-1","iss":"https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1","aud":"authenticated","iat":${now},"exp":${now + 300},"amr_authenticated":"true","amr":[{"method":"password"}],"${fieldName}":${rawValueJson}}`;
+    return `${encodeHeader}.${Buffer.from(payloadJson).toString('base64url')}.${sig}`;
+  };
+
+  // Exact boundary (leaf at depth MAX_OFFLINE_JWT_CLAIM_DEPTH) passes
+  const exactDepthJwt = makeJwtFromRawField('deep', '['.repeat(MAX_OFFLINE_JWT_CLAIM_DEPTH - 1) + '1' + ']'.repeat(MAX_OFFLINE_JWT_CLAIM_DEPTH - 1));
+  assert.equal(parseAndValidateJwt(exactDepthJwt).valid, true);
+
+  // Over-depth (boundary + 1 and extreme depth 6000), over-width, and over-length all return structured failures
+  const overDepthOneJwt = makeJwtFromRawField('deep', '['.repeat(MAX_OFFLINE_JWT_CLAIM_DEPTH) + '1' + ']'.repeat(MAX_OFFLINE_JWT_CLAIM_DEPTH));
+  const deep6000ObjJwt = makeJwtFromRawField('deep', '{"a":'.repeat(6000) + '1' + '}'.repeat(6000));
+  const deep6000ArrJwt = makeJwtFromRawField('deep', '['.repeat(6000) + '1' + ']'.repeat(6000));
+  const wideArrJwt = makeJwtFromRawField('wide', `[${new Array(MAX_OFFLINE_JWT_CLAIM_NODES).fill('1').join(',')}]`);
+  const overLenJwt = makeJwtFromRawField('pad', JSON.stringify('x'.repeat(MAX_OFFLINE_JWT_TOKEN_LENGTH)));
+
+  for (const badJwt of [overDepthOneJwt, deep6000ObjJwt, deep6000ArrJwt, wideArrJwt, overLenJwt]) {
+    const parsed = parseAndValidateJwt(badJwt);
+    assert.equal(parsed.valid, false);
+    assert.match(parsed.reason, /^TOKEN_FORMAT_INVALID/);
+
+    for (const probeId of ['HOOK-01', 'HOOK-02']) {
+      const outcomeCheck = validateProbeOutcome({ id: probeId, category: 'Token Hook' }, {
+        passed: true,
+        status: 200,
+        session_id: 'sess-bound-1',
+        amr_authenticated: true,
+        amr_preserved: true,
+        tokens: { access_token: badJwt }
+      });
+      assert.equal(outcomeCheck.passed, false);
+      assert.match(outcomeCheck.reason, new RegExp(`JWT_CLAIM_VIOLATION: ${probeId} TOKEN_FORMAT_INVALID`));
+    }
+  }
+
+  // Dispatcher rejects over-depth JWT while retaining observed session cleanup
+  {
+    const inv = new TestRunInventory('test-p2c-disp-cleanup');
+    const ctx = createRunContext({ runId: inv.runId });
+    const disp = createHostedDispatcher({
+      anonKey: validTestAnonKey,
+      inventory: inv,
+      runContext: ctx,
+      fetchFn: staticTransport({
+        status: 200,
+        json: { access_token: deep6000ArrJwt, session_id: 'sess-p2c-disp', user: { id: 'user-p2c-1' } }
+      })
+    });
+    const res = await disp({ id: 'HOOK-01', category: 'Token Hook' });
+    assert.equal(res.passed, false);
+    assert.match(res.error, /JWT_CLAIM_VIOLATION: TOKEN_FORMAT_INVALID/);
+    assert.equal(res.session_id, 'sess-p2c-disp');
+    assert.equal(res.session_cleanup_registered, true);
+    assert.equal(inv.trackedSessions.has('sess-p2c-disp'), true);
+    assert.equal(ctx.activeAccessToken, null);
+  }
+
+  // Runner validateProbeOutcome step returns HALTED_ON_FAILURE (no escaped RangeError) and completes cleanup
+  {
+    const runId = 'r-p2c-runner-halt';
+    const simTransport = createDeterministicFixtureTransport({
+      requestBudgetMode: 'recorded_zero_wait',
+      routes: [
+        { urlIncludes: '/auth/v1/otp', status: 422, json: { error_code: 'email_provider_disabled' } },
+        { urlIncludes: '/auth/v1/logout', status: 204, json: {} }
+      ],
+      defaultResponse: { status: 200, json: {} }
+    });
+    const simAdmin = createHostedAdminClient({
+      serviceRoleKey: validTestServiceRoleKey,
+      anonKey: validTestAnonKey,
+      runId,
+      fetchFn: simTransport
+    });
+    const simDispatcher = createTrustedOfflineDispatcher({
+      runId,
+      fetchFn: simTransport,
+      outcomes: {
+        'BYPASS-01': {
+          transportRequest: { url: `https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1/otp`, method: 'POST', body: { email: 'p2c@proof.invalid' } },
+          passed: true,
+          status: 422,
+          route_disabled: true,
+          error_code: 'email_provider_disabled'
+        },
+        'HOOK-01': {
+          passed: true,
+          status: 200,
+          has_token: true,
+          amr_authenticated: true,
+          session_id: 'sess-p2c-runner',
+          tokens: { access_token: deep6000ArrJwt },
+          inventoryEffects: {
+            registerSession: { sessionId: 'sess-p2c-runner', accessToken: deep6000ArrJwt, source: 'HOOK-01_observed' }
+          }
+        }
+      }
+    });
+    const simRes = await runOfflineProbeSimulation({
+      projectRef: HARDCODED_TEMP_REF,
+      runId,
+      adminClient: simAdmin,
+      offlineDispatcher: simDispatcher,
+      selectedProbeIds: ['BYPASS-01', 'HOOK-01'],
+      timing: { mode: 'recorded_zero_wait' }
+    });
+    assert.equal(simRes.status, 'HALTED_ON_FAILURE');
+    assert.match(simRes.abortReason, /CRITICAL_SECURITY_FAILURE: Case HOOK-01.*JWT_CLAIM_VIOLATION: HOOK-01 TOKEN_FORMAT_INVALID/);
+    assert.equal(simRes.cleanupReport.status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(simRes.cleanupReport.sessionsRevoked, 1);
+  }
+
+  // Adjacent credential binding / provisioning paths also reject deeply nested JWTs without RangeError
+  {
+    const deepCredentialJwt = makeJwtFromRawField('ref', `"${HARDCODED_TEMP_REF}","deep":${'['.repeat(6000)}1${']'.repeat(6000)}`);
+    assert.throws(
+      () => validateProjectCredentialBinding(deepCredentialJwt, HARDCODED_TEMP_REF),
+      /INVALID_CREDENTIAL_PAYLOAD/
+    );
+    const invProv = new TestRunInventory('test-p2c-prov-deep');
+    const adminProv = createHostedAdminClient({
+      serviceRoleKey: validTestServiceRoleKey,
+      anonKey: validTestAnonKey,
+      runId: invProv.runId,
+      fetchFn: staticTransport({ status: 200, json: {} })
+    });
+    await assert.rejects(
+      () => provisionStorageProbeFixture({
+        projectRef: HARDCODED_TEMP_REF,
+        runId: invProv.runId,
+        userAccessToken: deepCredentialJwt,
+        seedUserId: '11111111-1111-4111-a111-111111111111',
+        inventory: invProv,
+        adminClient: adminProv,
+        fetchFn: staticTransport({ status: 200, json: {} })
+      }),
+      /INVALID_CREDENTIAL_PAYLOAD|CREDENTIAL_BINDING_ERROR/
+    );
   }
 });

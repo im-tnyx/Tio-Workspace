@@ -4,9 +4,9 @@
 
 | Field | Value |
 |---|---|
-| Status | **H3 merged and offline tested via PR #44. Bounded post-merge JWT admission/evidence correction on `fix/task06i-jwt-validation-evidence` (PR #45) updated with P2 recursive AMR and refresh identity correlation fixes; independent read-only re-review PASS; resolve final PR #45 HEAD, checks, and `im-tio` re-review from GitHub. Hosted atomic deletion UNVERIFIED; hosted verification 0/18; LIVE not authorized; Production Real Auth STRICT NO-GO.** |
+| Status | **H3 merged and offline tested via PR #44. Bounded post-merge JWT admission/evidence correction on `fix/task06i-jwt-validation-evidence` (PR #45) updated with bounded iterative JWT claim traversal (addressing `im-tio` P2 finding `4705518900`); independent read-only re-review PASS; resolve final PR #45 HEAD, checks, and `im-tio` review from GitHub. Hosted atomic deletion UNVERIFIED; hosted verification 0/18; LIVE not authorized; Production Real Auth STRICT NO-GO.** |
 | Active Task | [H3 post-merge security follow-up](tasks/auth/local-20261124-task06i-b1-h3-subset-runner-storage.md#21-post-merge-jwt-admission-and-evidence-follow-up), separate correction on PR #45; H4 preparation follows review and separate owner merge approval. |
-| Active Scope / Owner | Antigravity (PR #45 final P2 security corrections, continuing Codex root follow-up): recursive own-only JWT/AMR admission, HOOK-02 active user/session identity correlation, focused regressions and offline validation. No hosted execution or H4 implementation. |
+| Active Scope / Owner | Antigravity (PR #45 bounded JWT claim traversal correction, continuing Codex root follow-up): iterative null-prototype claim bounds, adjacent caller hardening, focused regressions and offline validation. No hosted execution or H4 implementation. |
 | Last H3 implementation commit | R16 `bb62a57f5253ec0525fd415e7dd6f329482e1037`; resolve final published PR HEAD from GitHub. |
 | Branch | `fix/task06i-jwt-validation-evidence`. |
 | Verified merged `main` | `dd90265d9cdd8d8bd228ae5e7cbf13f8d1fa2c7a` (PR #44 squash commit; fetched `origin/main` 2026-11-26). Prior baseline `4569479e8fe2caa6659fe1cc6c7a484596a01bbc`. |

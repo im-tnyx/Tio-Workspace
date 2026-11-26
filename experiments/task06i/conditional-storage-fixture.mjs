@@ -227,39 +227,66 @@ function jsonRecordBytes(bytes) {
 }
 const safeFreeze = Object.freeze;
 const safeIsFinite = Number.isFinite;
-function snapshotJwtClaimValue(value) {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
-  if (typeof value === 'number') return safeIsFinite(value) ? value : undefined;
-  if (!value || typeof value !== 'object' || safeIsProxy(value)) return undefined;
+// Explicit offline JWT structural bounds: accommodates legitimate Supabase/test payloads
+// (<=6 levels, <50 nodes, <4 KiB) while preventing stack overflow and wide/large claim DoS.
+export const MAX_OFFLINE_JWT_TOKEN_LENGTH = 32768;
+export const MAX_OFFLINE_JWT_CLAIM_DEPTH = 32;
+export const MAX_OFFLINE_JWT_CLAIM_NODES = 1024;
+function admitJwtClaimNode(value, depth, state) {
+  state.nodes += 1;
+  if (state.nodes > MAX_OFFLINE_JWT_CLAIM_NODES || depth > MAX_OFFLINE_JWT_CLAIM_DEPTH) return null;
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') {
+    return { isContainer: false, value };
+  }
+  if (typeof value === 'number') {
+    return safeIsFinite(value) ? { isContainer: false, value } : null;
+  }
+  if (!value || typeof value !== 'object' || safeIsProxy(value)) return null;
   const proto = safePrototype(value);
   if (safeIsArray(value)) {
-    if (proto !== safeArrayPrototype) return undefined;
-    const out = [];
-    for (let index = 0; index < value.length; index++) {
-      const descriptor = safeDescriptor(value, String(index));
-      if (!descriptor || !safeHasOwn(descriptor, 'value')) return undefined;
-      const item = snapshotJwtClaimValue(descriptor.value);
-      if (item === undefined) return undefined;
-      defineData(out, String(index), item);
-    }
-    return safeFreeze(out);
+    if (proto !== safeArrayPrototype || value.length > MAX_OFFLINE_JWT_CLAIM_NODES) return null;
+    return { isContainer: true, isArray: true, source: value, target: [], keys: null, index: 0, depth };
   }
-  if (proto !== null && proto !== safeObjectPrototype) return undefined;
-  const out = Object.create(null);
+  if (proto !== null && proto !== safeObjectPrototype) return null;
   const keys = safeNames(value);
-  for (let index = 0; index < keys.length; index++) {
-    const key = keys[index];
-    if (key === '__proto__') return undefined;
-    const descriptor = safeDescriptor(value, key);
+  if (keys.length > MAX_OFFLINE_JWT_CLAIM_NODES) return null;
+  return { isContainer: true, isArray: false, source: value, target: Object.create(null), keys, index: 0, depth };
+}
+function snapshotJwtClaimValue(rootClaims) {
+  const state = { nodes: 0 };
+  const rootFrame = admitJwtClaimNode(rootClaims, 0, state);
+  if (!rootFrame || !rootFrame.isContainer || rootFrame.isArray) return undefined;
+  const stack = Object.create(null);
+  stack[0] = rootFrame;
+  let stackTop = 1;
+  while (stackTop > 0) {
+    const frame = stack[stackTop - 1];
+    const limit = frame.isArray ? frame.source.length : frame.keys.length;
+    if (frame.index >= limit) {
+      safeFreeze(frame.target);
+      delete stack[--stackTop];
+      continue;
+    }
+    const key = frame.isArray ? String(frame.index++) : frame.keys[frame.index++];
+    if (!frame.isArray && key === '__proto__') return undefined;
+    const descriptor = safeDescriptor(frame.source, key);
     if (!descriptor || !safeHasOwn(descriptor, 'value')) return undefined;
-    const prop = snapshotJwtClaimValue(descriptor.value);
-    if (prop === undefined) return undefined;
-    defineData(out, key, prop);
+    const child = admitJwtClaimNode(descriptor.value, frame.depth + 1, state);
+    if (!child) return undefined;
+    if (!child.isContainer) {
+      defineData(frame.target, key, child.value);
+    } else {
+      defineData(frame.target, key, child.target);
+      stack[stackTop++] = child;
+    }
   }
-  return safeFreeze(out);
+  return rootFrame.target;
+}
+export function snapshotBoundedJwtClaims(value) {
+  return snapshotJwtClaimValue(value) || null;
 }
 export function decodeOfflineJwtClaims(token) {
-  if (typeof token !== 'string') return null;
+  if (typeof token !== 'string' || !token || token.length > MAX_OFFLINE_JWT_TOKEN_LENGTH) return null;
   const parts = safeSplit(token, '.');
   if (parts.length !== 3) return null;
   const headerBytes = canonicalBytes(parts[0]);

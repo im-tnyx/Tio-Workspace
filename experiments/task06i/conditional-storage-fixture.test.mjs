@@ -7,7 +7,12 @@ import {
   createCreationProof, createOfflineBarrier, HARDCODED_TEMP_REF,
   STORAGE_PROBE_BUCKET, STORAGE_LIFECYCLE_STATE, validateUuid, observeAuthResponse, observeAndTrackSessionTokens, parseAndValidateJwt
 } from './hosted-probe-runner.mjs';
-import { getConditionalStorageFixtureProvider, extractOfflineStorageObjectId, observeConditionalStorageUpload, decodeOfflineJwtClaims, canonicalStorageUuid, createConditionalStorageFixtureProvider, registerConditionalStorageFixtureTransport } from './conditional-storage-fixture.mjs';
+import {
+  getConditionalStorageFixtureProvider, extractOfflineStorageObjectId, observeConditionalStorageUpload,
+  decodeOfflineJwtClaims, canonicalStorageUuid, createConditionalStorageFixtureProvider,
+  registerConditionalStorageFixtureTransport, MAX_OFFLINE_JWT_TOKEN_LENGTH,
+  MAX_OFFLINE_JWT_CLAIM_DEPTH, MAX_OFFLINE_JWT_CLAIM_NODES
+} from './conditional-storage-fixture.mjs';
 
 const OWNER = '11111111-1111-4111-a111-111111111114';
 const OTHER_OWNER = '22222222-2222-4222-a222-222222222114';
@@ -606,4 +611,62 @@ test('JWT-AMR-01: decodeOfflineJwtClaims recursively freezes null-prototype nest
     if (prevMethod) Object.defineProperty(Object.prototype, 'method', prevMethod);
     else delete Object.prototype.method;
   }
+});
+
+test('JWT-BOUND-01: decodeOfflineJwtClaims enforces explicit depth, node-budget, and token-length limits without throwing', () => {
+  const encodeHeader = Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url');
+  const sig = Buffer.from('sig-bound-test').toString('base64url');
+  const tokenFromPayloadJson = payloadJson => `${encodeHeader}.${Buffer.from(payloadJson).toString('base64url')}.${sig}`;
+  const nestedObjectJson = depth => '{"a":'.repeat(depth) + '1' + '}'.repeat(depth);
+  const nestedArrayJson = depth => '['.repeat(depth) + '1' + ']'.repeat(depth);
+
+  // 1. Legitimate nested JWT claims within documented limits succeed and stay frozen null-prototype
+  const legitToken = tokenFromPayloadJson(JSON.stringify({
+    sub: OWNER,
+    amr: [{ method: 'password', timestamp: 1700000000 }],
+    app_metadata: { roles: ['member'], flags: { beta: false } }
+  }));
+  const legit = decodeOfflineJwtClaims(legitToken);
+  assert.ok(legit);
+  assert.equal(Object.getPrototypeOf(legit.app_metadata), null);
+  assert.equal(Object.isFrozen(legit.app_metadata.flags), true);
+  assert.equal(legit.app_metadata.flags.beta, false);
+
+  // 2. Exact depth boundary (leaf at MAX_OFFLINE_JWT_CLAIM_DEPTH) passes; depth + 1 rejects deterministically
+  // Root object is depth 0; `deep` is depth 1; wrapping (MAX - 1) levels places leaf at depth MAX.
+  const exactDepthObj = tokenFromPayloadJson(`{"sub":"${OWNER}","deep":${nestedObjectJson(MAX_OFFLINE_JWT_CLAIM_DEPTH - 1)}}`);
+  const overDepthObj = tokenFromPayloadJson(`{"sub":"${OWNER}","deep":${nestedObjectJson(MAX_OFFLINE_JWT_CLAIM_DEPTH)}}`);
+  const exactDepthArr = tokenFromPayloadJson(`{"sub":"${OWNER}","deep":${nestedArrayJson(MAX_OFFLINE_JWT_CLAIM_DEPTH - 1)}}`);
+  const overDepthArr = tokenFromPayloadJson(`{"sub":"${OWNER}","deep":${nestedArrayJson(MAX_OFFLINE_JWT_CLAIM_DEPTH)}}`);
+  assert.ok(decodeOfflineJwtClaims(exactDepthObj));
+  assert.equal(decodeOfflineJwtClaims(overDepthObj), null);
+  assert.ok(decodeOfflineJwtClaims(exactDepthArr));
+  assert.equal(decodeOfflineJwtClaims(overDepthArr), null);
+
+  // 3. Extreme nesting (depth 6000 within token length) rejects cleanly without RangeError
+  const extremeDepth = tokenFromPayloadJson(`{"sub":"${OWNER}","deep":${nestedArrayJson(6000)}}`);
+  assert.ok(extremeDepth.length <= MAX_OFFLINE_JWT_TOKEN_LENGTH);
+  assert.equal(decodeOfflineJwtClaims(extremeDepth), null);
+
+  // 4. Exact node-budget boundary (root + MAX_OFFLINE_JWT_CLAIM_NODES - 1 primitives) passes; +1 rejects
+  const exactWideEntries = [];
+  for (let i = 0; i < MAX_OFFLINE_JWT_CLAIM_NODES - 1; i++) exactWideEntries.push(`"k${i}":1`);
+  const exactWideToken = tokenFromPayloadJson(`{${exactWideEntries.join(',')}}`);
+  const overWideEntries = [...exactWideEntries, `"k${MAX_OFFLINE_JWT_CLAIM_NODES}":1`];
+  const overWideToken = tokenFromPayloadJson(`{${overWideEntries.join(',')}}`);
+  assert.ok(exactWideToken.length <= MAX_OFFLINE_JWT_TOKEN_LENGTH);
+  assert.ok(overWideToken.length <= MAX_OFFLINE_JWT_TOKEN_LENGTH);
+  assert.ok(decodeOfflineJwtClaims(exactWideToken));
+  assert.equal(decodeOfflineJwtClaims(overWideToken), null);
+
+  const overWideArrayEntries = new Array(MAX_OFFLINE_JWT_CLAIM_NODES - 1).fill('1').join(',');
+  const overWideArrayToken = tokenFromPayloadJson(`{"arr":[${overWideArrayEntries}]}`);
+  assert.ok(overWideArrayToken.length <= MAX_OFFLINE_JWT_TOKEN_LENGTH);
+  assert.equal(decodeOfflineJwtClaims(overWideArrayToken), null);
+
+  // 5. Over-length token rejects before traversal
+  const bigPad = 'x'.repeat(MAX_OFFLINE_JWT_TOKEN_LENGTH);
+  const overLenToken = tokenFromPayloadJson(JSON.stringify({ sub: OWNER, pad: bigPad }));
+  assert.ok(overLenToken.length > MAX_OFFLINE_JWT_TOKEN_LENGTH);
+  assert.equal(decodeOfflineJwtClaims(overLenToken), null);
 });

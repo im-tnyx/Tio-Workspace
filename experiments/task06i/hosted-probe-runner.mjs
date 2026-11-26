@@ -1,4 +1,4 @@
-import { registerConditionalStorageFixtureTransport, getConditionalStorageFixtureProvider, observeConditionalStorageUpload, decodeOfflineJwtClaims, extractOfflineStorageObjectId, canonicalStorageUuid } from './conditional-storage-fixture.mjs';
+import { registerConditionalStorageFixtureTransport, getConditionalStorageFixtureProvider, observeConditionalStorageUpload, decodeOfflineJwtClaims, extractOfflineStorageObjectId, canonicalStorageUuid, snapshotBoundedJwtClaims, MAX_OFFLINE_JWT_TOKEN_LENGTH } from './conditional-storage-fixture.mjs';
 import { admitInventoryEffects, snapshotInventoryEffectData, snapshotDirectInventoryInput } from './inventory-effect-admission.mjs';
 // Hosted Probe Runner Specification & Harness for Task 06I-B1-H0-R2
 // Prepares the opt-in, fail-closed hosted test runner for future authorized testing.
@@ -26,8 +26,7 @@ import { types as utilTypes } from 'node:util';
 import { PREFLIGHT_REQUIREMENTS, EXPECTED_REQUIREMENT_IDS } from './preflight-evaluator.mjs';
 
 function snapshotJwtRecord(value) {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
-  return snapshotInventoryEffectData(value, 'jwtClaims');
+  return snapshotBoundedJwtClaims(value);
 }
 
 const CONDITIONAL_RESPONSE_EVIDENCE = new WeakMap();
@@ -7191,15 +7190,6 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
     validateProjectCredentialBinding(serviceRoleKey, normRef);
   }
 
-  let jwtClaims;
-  try {
-    const parts = userAccessToken.trim().split('.');
-    if (parts.length !== 3) throw new Error('JWT must have 3 parts');
-    jwtClaims = snapshotJwtRecord(JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')));
-  } catch (err) {
-    throw new Error(`MALFORMED_CREDENTIAL_JWT: Failed to decode userAccessToken payload: ${err.message}`);
-  }
-
   if (!seedUserId || typeof seedUserId !== 'string' || !seedUserId.trim()) {
     throw new Error('STORAGE_PROVISIONING_FAILED: seedUserId is required to identify fixture owner');
   }
@@ -7403,7 +7393,7 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
       });
       throw new Error(`SEED_IDENTITY_VERIFICATION_FAILED: Provider /auth/v1/user returned invalid user UUID: ${err.message}`);
     }
-    if (validProviderUserId !== validSeedUserId || validProviderUserId !== canonicalStorageUuid(jwtClaims.sub)) {
+    if (validProviderUserId !== validSeedUserId || validProviderUserId !== canonicalStorageUuid(uploadClaims.sub)) {
       safeUpdateFixture({
         lifecycleState: STORAGE_LIFECYCLE_STATE.DEFINITIVE_NON_CREATION,
         status: 'IDENTITY_CHECK_FAILED',
@@ -8146,6 +8136,9 @@ export function validateProjectCredentialBinding(key, expectedProjectRef = HARDC
     throw new Error('MISSING_CREDENTIAL: key must be a non-empty string');
   }
   const trimmed = key.trim();
+  if (trimmed.length > MAX_OFFLINE_JWT_TOKEN_LENGTH) {
+    throw new Error('MALFORMED_CREDENTIAL_JWT: Credential JWT exceeds maximum supported length');
+  }
   const parts = trimmed.split('.');
   if (parts.length !== 3) {
     throw new Error(
