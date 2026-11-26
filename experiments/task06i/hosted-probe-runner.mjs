@@ -1,4 +1,4 @@
-import { registerConditionalStorageFixtureTransport, getConditionalStorageFixtureProvider, observeConditionalStorageUpload, decodeOfflineJwtClaims, extractOfflineStorageObjectId, canonicalStorageUuid, snapshotBoundedJwtClaims, MAX_OFFLINE_JWT_TOKEN_LENGTH } from './conditional-storage-fixture.mjs';
+import { registerConditionalStorageFixtureTransport, getConditionalStorageFixtureProvider, getConditionalStorageFixtureRunId, observeConditionalStorageUpload, readObservedStorageCreation, decodeOfflineJwtClaims, extractOfflineStorageObjectId, canonicalStorageUuid, snapshotBoundedJwtClaims, MAX_OFFLINE_JWT_TOKEN_LENGTH } from './conditional-storage-fixture.mjs';
 import { admitInventoryEffects, snapshotInventoryEffectData, snapshotDirectInventoryInput } from './inventory-effect-admission.mjs';
 // Hosted Probe Runner Specification & Harness for Task 06I-B1-H0-R2
 // Prepares the opt-in, fail-closed hosted test runner for future authorized testing.
@@ -21,7 +21,8 @@ import { admitInventoryEffects, snapshotInventoryEffectData, snapshotDirectInven
 
 import crypto from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { getRunRequestBudget, isRunRequestAdmissionFailure } from './run-request-budget.mjs';
+import { executeRunBudgetRequest, getRunRequestBudget, isRunRequestAdmissionFailure } from './run-request-budget.mjs';
+import { journalForRun } from './offline-recovery-journal.mjs';
 import { types as utilTypes } from 'node:util';
 import { PREFLIGHT_REQUIREMENTS, EXPECTED_REQUIREMENT_IDS } from './preflight-evaluator.mjs';
 
@@ -146,25 +147,34 @@ function withRunRequestBudget(runId, category, operation, mode = undefined) {
   }
   return RUN_REQUEST_BUDGET_CONTEXT.run({ runId, category, mode }, operation);
 }
-async function executeBudgetedRequest(runId, category, operation, signal = null, mode = undefined) {
+async function executeBudgetedRequest(runId, category, operation, signal = null, mode = undefined, kind = undefined) {
   const existing = RUN_REQUEST_BUDGET_CONTEXT.getStore();
   const effectiveRun = existing?.runId || runId;
   if (!effectiveRun || (runId && runId !== effectiveRun)) throw new Error('REQUEST_BUDGET_BINDING_MISMATCH');
   const budget = getRunRequestBudget({ projectRef: 'wvdabiwbaavfggcmpizd', runId: effectiveRun, mode: existing?.mode ?? mode });
-  const ticket = await budget.beginRequest({ category: existing?.category || category, signal });
-  try {
-    const result = await operation();
-    budget.completeRequest(ticket, result?.ok === false ? 'failed' : 'success');
-    return result;
-  } catch (error) {
-    budget.completeRequest(ticket, error?.name === 'AbortError' ? 'cancelled_after_dispatch' : 'failed');
-    throw error;
-  }
+  return executeRunBudgetRequest(budget, { category: existing?.category || category, signal, kind }, operation);
 }
-function executeCurrentTransportRequest(transport, signal, operation) {
+function executeCurrentTransportRequest(transport, signal, operation, kind) {
   const context = RUN_REQUEST_BUDGET_CONTEXT.getStore();
-  if (!context) return operation(); // Standalone fixture routing has no run/resource authority.
-  return executeBudgetedRequest(context.runId, context.category, operation, signal, TRANSPORT_REQUEST_BUDGET_MODES.get(transport));
+  if (!context) return operation(null, () => {}); // Standalone fixture routing has no run/resource authority.
+  return executeBudgetedRequest(context.runId, context.category, operation, signal, TRANSPORT_REQUEST_BUDGET_MODES.get(transport), kind);
+}
+
+function recoveryRequestKind(transport, runId, url, method) {
+  let target;
+  try { target = new URL(url); } catch { return 'other_effect'; }
+  if (target.origin !== `https://${HARDCODED_TEMP_REF}.supabase.co` || target.username || target.password) return 'other_effect';
+  const path = target.pathname;
+  const object = `${STORAGE_PROBE_BUCKET}/${runId}/probe.txt`;
+  if (method === 'POST' && path === `/storage/v1/object/${object}`) return 'storage_upload';
+  if (method === 'DELETE' && path === `/storage/v1/object/${object}` &&
+      CONDITIONAL_DELETE_CONTEXT.getStore()?.transport === transport) return 'storage_delete';
+  if (method === 'GET' && path === `/storage/v1/object/authenticated/${object}`) return 'storage_absence_read';
+  if (method === 'POST' && path === '/rest/v1/rpc/task06i_lookup_storage_object_owner') return 'read';
+  if (method === 'GET' && (path === '/auth/v1/user' || /^\/auth\/v1\/admin\/users(?:\/[\da-f-]+)?$/i.test(path))) return 'read';
+  if (method === 'DELETE' && path.startsWith('/auth/v1/admin/users/')) return 'auth_delete';
+  if (path.startsWith('/auth/v1/')) return 'auth_effect';
+  return 'other_effect';
 }
 
 const REAL_GLOBAL_FETCH = globalThis.fetch;
@@ -1534,16 +1544,24 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
     }
     const opts = admitValidatedInput(rawOpts, 'transportRequestOptions');
     const signal = ownSchemaMeta(opts, 'signal', null);
+    const method = ownSchemaMeta(opts, 'method', 'GET').toUpperCase();
+    const runId = RUN_REQUEST_BUDGET_CONTEXT.getStore()?.runId;
+    const providerRunId = getConditionalStorageFixtureRunId(transport);
+    if (providerRunId && /^h4-/i.test(providerRunId) && runId !== providerRunId) {
+      throw new Error('RECOVERY_TRANSPORT_RUN_SCOPE_REQUIRED');
+    }
+    const journal = journalForRun(runId);
+    const kind = journal ? recoveryRequestKind(transport, runId, urlStr, method) : undefined;
     if (isTrustedSignalAborted(signal)) {
       const abortErr = new Error('The operation was aborted');
       abortErr.name = 'AbortError';
       if (RUN_REQUEST_BUDGET_CONTEXT.getStore()) {
-        return executeCurrentTransportRequest(transport, signal, () => { throw abortErr; });
+        return executeCurrentTransportRequest(transport, signal, () => { throw abortErr; }, kind);
       }
       throw abortErr;
     }
 
-    return executeCurrentTransportRequest(transport, signal, () => runWithBlockedRealFetch(async () => {
+    return executeCurrentTransportRequest(transport, signal, (ordinal, recordCreation) => runWithBlockedRealFetch(async () => {
       let pathname = urlStr;
       try {
         pathname = new URL(urlStr, 'https://localhost').pathname;
@@ -1551,8 +1569,6 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
         pathname = urlStr;
       }
 
-      const rawMethod = ownSchemaMeta(opts, 'method', 'GET');
-      const method = rawMethod.toUpperCase();
       const lowerHeaders = ownSchemaMeta(opts, 'headers', null) ?? Object.create(null);
       const admittedBody = ownSchemaMeta(opts, 'body', undefined);
 
@@ -1642,7 +1658,10 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
         await waitWithTrustedSignal(selected.delayMs, signal);
       }
 
-      const uploadIdentity = observeConditionalStorageUpload(transport, req, selected);
+      const uploadIdentity = observeConditionalStorageUpload(transport, req, selected, kind === 'storage_upload' ? ordinal : null);
+      if (kind === 'storage_upload' && uploadIdentity?.status === 'UPLOAD_IDENTITY_OBSERVED') {
+        recordCreation(readObservedStorageCreation(transport, runId, ordinal));
+      }
       let response = buildDeterministicResponse(selected);
       if (uploadIdentity) publishConditionalEvidence(response, transport, 'conditionalUploadIdentity', uploadIdentity);
       // A declarative absent route cannot override authoritative current provider state.
@@ -1658,7 +1677,7 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
       }
       if (conditionalDeletion) publishConditionalEvidence(response, transport, 'conditionalDeletion', conditionalDeletion);
       return response;
-    }));
+    }), kind);
   };
 
   TRANSPORT_REQUEST_BUDGET_MODES.set(transport, requestBudgetMode);
@@ -1717,6 +1736,7 @@ function assertNoForgedDispatcherMarkers(candidate) {
 function applyDeclarativeInventoryEffects(inv, effects) {
   if (!inv || !effects || typeof effects !== 'object') return;
   effects = admitInventoryEffects(effects);
+  journalForRun(inv.runId)?.volatile();
   if (effects.protectSeedIdentity) {
     inv.protectSeedIdentity(effects.protectSeedIdentity);
   }
@@ -6604,6 +6624,18 @@ export class TestRunInventory {
         'CLEANUP_CONCURRENT_REENTRY_BLOCKED: Concurrent executeCleanup() invocation rejected while cleanup is already executing (R3-04)'
       );
     }
+    if (options.adminClient && /^h4-/i.test(this.runId)) {
+      // Obligations supplied directly to the legacy inventory must survive a
+      // crash even when they did not originate in a journalled transport.
+      const journal = journalForRun(this.runId);
+      const summary = this.getSummary();
+      if (summary.createdUsersCount || summary.unverifiedUsersCount || summary.trackedSessionsCount ||
+          summary.trackedTableRowsCount || summary.untrackedSessionsCount || summary.untrackedUsersCount ||
+          summary.seedCredentialRestorationsCount || summary.sessionReconciliationObligationsCount ||
+          (summary.storageFixturesCount && !journal.state.attempts.some(attempt => attempt.kind === 'storage_upload'))) {
+        journal.volatile();
+      }
+    }
     this._cleanupInProgress = true;
     const cleanupRun = withRunRequestBudget(this.runId, 'cleanup', () => this._executeCleanupInternal(options));
     this._activeCleanupPromise = cleanupRun;
@@ -6986,6 +7018,7 @@ export class TestRunInventory {
           fixture.lifecycleState = nextState;
           fixture.status = 'DELETION_FAILED';
         } else {
+          journalForRun(this.runId)?.liveAbsence(fixture.providerObjectId, fixture.verifiedOwnerId);
           report.storageObjectsDeleted++;
           fixture.lifecycleState = STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED;
           fixture.status = 'DELETED';
@@ -7455,6 +7488,14 @@ export class TestRunInventory {
     if (liveResiduals && !report.residualUsers.length && !report.residualResources.length) {
       report.residualResources.push({ type: 'inventory', error: 'LIVE_INVENTORY_NOT_CLEAN', summary: this.getSummary() });
     }
+    if (!liveResiduals && !report.residualUsers.length && !report.residualResources.length) {
+      try {
+        const journal = journalForRun(this.runId);
+        if (journal && !journal.finish()) report.residualResources.push({ type: 'journal', error: 'RECOVERY_REQUIRED' });
+      } catch (error) {
+        report.residualResources.push({ type: 'journal', error: error.code || 'RECOVERY_PERSISTENCE_FAILED' });
+      }
+    }
     if (liveResiduals || report.residualUsers.length > 0 || report.residualResources.length > 0) {
       report.status = 'CLEANUP_FAILED_RESIDUAL_RESOURCES';
       this.runLifecycleState = INVENTORY_RUN_STATE.RESIDUAL_BLOCKED;
@@ -7537,6 +7578,8 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
 
   // 3. Validate run ID (R1-02)
   const validRunId = validateRunId(runId);
+  const journalState = journalForRun(validRunId)?.state;
+  if (journalState?.recovery || journalState?.terminal) throw new Error('RECOVERY_PROVISIONING_REPLAY_BLOCKED');
 
   // 4. Mandatory inventory tracking & admission gate (R1-08, R3-03, R3-04, R8-01)
   if (!inventory) {
@@ -10607,6 +10650,10 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
       throw new Error(
         'BLOCKED_PENDING_DURABLE_RECOVERY: LIVE hosted execution against Supabase Cloud is blocked pending durable crash recovery and journaled inventory implementation'
       );
+    }
+    const journal = journalForRun(activeInventory.runId);
+    if (journal && (!explicitOfflineSimulation || journal.state.recovery || journal.state.terminal)) {
+      throw new Error('RECOVERY_PROBE_ADMISSION_BLOCKED');
     }
     timingConfig = validateDeclarativeTimingConfig(options.timing, true);
     getRunRequestBudget({ projectRef: validatedRef, runId: activeInventory.runId, mode: timingConfig.mode });
