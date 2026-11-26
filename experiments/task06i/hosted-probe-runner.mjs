@@ -1,4 +1,4 @@
-import { registerConditionalStorageFixtureTransport, getConditionalStorageFixtureProvider, observeConditionalStorageUpload, decodeOfflineJwtClaims, extractOfflineStorageObjectId } from './conditional-storage-fixture.mjs';
+import { registerConditionalStorageFixtureTransport, getConditionalStorageFixtureProvider, observeConditionalStorageUpload, decodeOfflineJwtClaims, extractOfflineStorageObjectId, canonicalStorageUuid } from './conditional-storage-fixture.mjs';
 import { admitInventoryEffects, snapshotInventoryEffectData, snapshotDirectInventoryInput } from './inventory-effect-admission.mjs';
 // Hosted Probe Runner Specification & Harness for Task 06I-B1-H0-R2
 // Prepares the opt-in, fail-closed hosted test runner for future authorized testing.
@@ -28,6 +28,72 @@ import { PREFLIGHT_REQUIREMENTS, EXPECTED_REQUIREMENT_IDS } from './preflight-ev
 function snapshotJwtRecord(value) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
   return snapshotInventoryEffectData(value, 'jwtClaims');
+}
+
+const CONDITIONAL_RESPONSE_EVIDENCE = new WeakMap();
+const defineOwnEvidenceProperty = Object.defineProperty;
+function publishConditionalEvidence(response, transport, key, rawEvidence) {
+  const evidence = snapshotInventoryEffectData(rawEvidence, 'conditionalResponseEvidence');
+  if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence) || typeof evidence.status !== 'string') {
+    throw new Error('INVALID_INTERNAL_CONDITIONAL_EVIDENCE');
+  }
+  const evidenceKeys = Object.keys(evidence);
+  for (let index = 0; index < evidenceKeys.length; index++) {
+    const field = evidenceKeys[index];
+    const allowed = key === 'conditionalUploadIdentity'
+      ? field === 'status' || field === 'reason' || field === 'cryptographicallyVerified'
+      : field === 'status' || field === 'deleted' || field === 'authoritativeAbsent' || field === 'expected' || field === 'current' || field === 'providerContract' || field === 'hostedCapabilityVerified';
+    if (!allowed) throw new Error('INVALID_INTERNAL_CONDITIONAL_EVIDENCE');
+  }
+  if (key === 'conditionalUploadIdentity') {
+    if (evidence.status !== 'UPLOAD_IDENTITY_OBSERVED' && evidence.status !== 'UPLOAD_IDENTITY_INDETERMINATE') throw new Error('INVALID_INTERNAL_UPLOAD_EVIDENCE');
+    if ((evidence.reason !== undefined && typeof evidence.reason !== 'string') || (evidence.status === 'UPLOAD_IDENTITY_INDETERMINATE' && !evidence.reason)) throw new Error('INVALID_INTERNAL_UPLOAD_EVIDENCE');
+    if (evidence.status === 'UPLOAD_IDENTITY_OBSERVED' && evidence.cryptographicallyVerified !== false) throw new Error('INVALID_INTERNAL_UPLOAD_EVIDENCE');
+  }
+  if (key === 'conditionalDeletion') {
+    const status = evidence.status;
+    const success = status === 'EXPECTED_OBJECT_DELETED' || status === 'EXPECTED_OBJECT_ABSENT';
+    if (!success && status !== 'CONDITIONAL_DELETE_UNAVAILABLE' && status !== 'CONDITIONAL_DELETE_MALFORMED' && status !== 'CONDITIONAL_DELETE_INDETERMINATE' && status !== 'OWNER_MISMATCH' && status !== 'OBJECT_ID_MISMATCH') throw new Error('INVALID_INTERNAL_DELETE_EVIDENCE');
+    if ((evidence.authoritativeAbsent !== undefined && typeof evidence.authoritativeAbsent !== 'boolean') ||
+        (evidence.providerContract !== undefined && evidence.providerContract !== 'OFFLINE_ATOMIC_IDENTITY_COMPARE_DELETE_V1') ||
+        (evidence.hostedCapabilityVerified !== undefined && evidence.hostedCapabilityVerified !== false)) throw new Error('INVALID_INTERNAL_DELETE_EVIDENCE');
+    if (typeof evidence.deleted !== 'boolean' ||
+        (success && (evidence.providerContract !== 'OFFLINE_ATOMIC_IDENTITY_COMPARE_DELETE_V1' || evidence.hostedCapabilityVerified !== false)) ||
+        (status === 'EXPECTED_OBJECT_DELETED' && evidence.deleted !== true) ||
+        (status === 'EXPECTED_OBJECT_ABSENT' && (evidence.deleted !== false || evidence.authoritativeAbsent !== true))) throw new Error('INVALID_INTERNAL_DELETE_EVIDENCE');
+    if (success && !evidence.expected) throw new Error('INVALID_INTERNAL_DELETE_EVIDENCE');
+    const identities = [evidence.expected, evidence.current];
+    for (let index = 0; index < identities.length; index++) {
+      const identity = identities[index];
+      if (identity === undefined || identity === null) continue;
+      if (typeof identity !== 'object' || Array.isArray(identity) || identity.projectRef !== 'wvdabiwbaavfggcmpizd' ||
+          typeof identity.runId !== 'string' || !identity.runId || identity.bucket !== 'task06i_probe_bucket' || identity.path !== `${identity.runId}/probe.txt` ||
+          !canonicalStorageUuid(identity.objectId) || !canonicalStorageUuid(identity.ownerId) ||
+          canonicalStorageUuid(identity.objectId) !== identity.objectId || canonicalStorageUuid(identity.ownerId) !== identity.ownerId) throw new Error('INVALID_INTERNAL_DELETE_EVIDENCE');
+    }
+  }
+  if (evidence.expected) Object.freeze(evidence.expected);
+  if (evidence.current) Object.freeze(evidence.current);
+  Object.freeze(evidence);
+  const descriptor = Object.create(null);
+  descriptor.value = evidence; descriptor.enumerable = true;
+  descriptor.writable = false; descriptor.configurable = false;
+  defineOwnEvidenceProperty(response, key, descriptor);
+  let entry = CONDITIONAL_RESPONSE_EVIDENCE.get(response);
+  if (!entry) { entry = Object.create(null); entry.transport = transport; CONDITIONAL_RESPONSE_EVIDENCE.set(response, entry); }
+  entry[key] = evidence;
+  return response;
+}
+function readConditionalEvidence(response, transport, key) {
+  const entry = CONDITIONAL_RESPONSE_EVIDENCE.get(response);
+  if (!entry || entry.transport !== transport) return null;
+  const own = Object.getOwnPropertyDescriptor(response, key);
+  return own && Object.hasOwn(own, 'value') && own.value === entry[key] ? own.value : null;
+}
+function requireCanonicalStorageUuid(value) {
+  const canonical = canonicalStorageUuid(value);
+  if (!canonical) throw new Error('INVALID_UUID: Storage identity requires a primitive UUID string');
+  return canonical;
 }
 
 const RUN_REQUEST_BUDGET_CONTEXT = new AsyncLocalStorage();
@@ -1509,8 +1575,8 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
         timestamp: new Date().toISOString()
       }));
 
-      if (conditionalDeletion && !['EXPECTED_OBJECT_DELETED', 'EXPECTED_OBJECT_ABSENT'].includes(conditionalDeletion.status)) {
-        return Object.assign(buildDeterministicResponse({ status: 409, json: { code: conditionalDeletion.status } }), { conditionalDeletion });
+      if (conditionalDeletion && conditionalDeletion.status !== 'EXPECTED_OBJECT_DELETED' && conditionalDeletion.status !== 'EXPECTED_OBJECT_ABSENT') {
+        return publishConditionalEvidence(buildDeterministicResponse({ status: 409, json: { code: conditionalDeletion.status } }), transport, 'conditionalDeletion', conditionalDeletion);
       }
       if (selected.setsState && typeof selected.setsState === 'object') {
         for (const [sk, sv] of Object.entries(selected.setsState)) {
@@ -1539,7 +1605,7 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
 
       const uploadIdentity = observeConditionalStorageUpload(transport, req, selected);
       let response = buildDeterministicResponse(selected);
-      if (uploadIdentity) response.conditionalUploadIdentity = Object.freeze(uploadIdentity);
+      if (uploadIdentity) publishConditionalEvidence(response, transport, 'conditionalUploadIdentity', uploadIdentity);
       // A declarative absent route cannot override authoritative current provider state.
       // Re-read after awaits so a replacement during DELETE/GET delay is preserved.
       const provider = getConditionalStorageFixtureProvider(transport);
@@ -1551,7 +1617,7 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
         if (current.indeterminate) response = buildDeterministicResponse({ status: 503, json: { code: 'CONDITIONAL_IDENTITY_INDETERMINATE' } });
         else if (current.current) response = buildDeterministicResponse({ status: 200, json: { conditionalObjectPresent: true } });
       }
-      if (conditionalDeletion) response.conditionalDeletion = conditionalDeletion;
+      if (conditionalDeletion) publishConditionalEvidence(response, transport, 'conditionalDeletion', conditionalDeletion);
       return response;
     }));
   };
@@ -7137,9 +7203,9 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
   if (!seedUserId || typeof seedUserId !== 'string' || !seedUserId.trim()) {
     throw new Error('STORAGE_PROVISIONING_FAILED: seedUserId is required to identify fixture owner');
   }
-  const validSeedUserId = validateUuid(seedUserId);
+  const validSeedUserId = requireCanonicalStorageUuid(seedUserId);
   const uploadClaims = decodeOfflineJwtClaims(userAccessToken);
-  if (!uploadClaims || uploadClaims.sub !== validSeedUserId) {
+  if (!uploadClaims || canonicalStorageUuid(uploadClaims.sub) !== validSeedUserId) {
     throw new Error('CREDENTIAL_BINDING_ERROR: userAccessToken sub claim is missing, invalid or does not match seedUserId');
   }
 
@@ -7327,7 +7393,7 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
     }
     let validProviderUserId;
     try {
-      validProviderUserId = validateUuid(providerUserId);
+      validProviderUserId = requireCanonicalStorageUuid(providerUserId);
     } catch (err) {
       safeUpdateFixture({
         lifecycleState: STORAGE_LIFECYCLE_STATE.DEFINITIVE_NON_CREATION,
@@ -7337,7 +7403,7 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
       });
       throw new Error(`SEED_IDENTITY_VERIFICATION_FAILED: Provider /auth/v1/user returned invalid user UUID: ${err.message}`);
     }
-    if (validProviderUserId !== validSeedUserId || validProviderUserId !== jwtClaims.sub) {
+    if (validProviderUserId !== validSeedUserId || validProviderUserId !== canonicalStorageUuid(jwtClaims.sub)) {
       safeUpdateFixture({
         lifecycleState: STORAGE_LIFECYCLE_STATE.DEFINITIVE_NON_CREATION,
         status: 'IDENTITY_CHECK_FAILED',
@@ -7544,11 +7610,13 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
       deletionEligible: false,
       providerObjectId: uploadedObjectId
     });
-    const uploadObservation = Object.getOwnPropertyDescriptor(uploadRes, 'conditionalUploadIdentity')?.value;
-    if ((uploadObservation && uploadObservation.status !== 'UPLOAD_IDENTITY_OBSERVED') ||
+    const observationRequired = Boolean(getConditionalStorageFixtureProvider(fetchFn));
+    const uploadObservation = readConditionalEvidence(uploadRes, fetchFn, 'conditionalUploadIdentity');
+    const uploadObservationStatus = uploadObservation?.status || (observationRequired ? 'UPLOAD_IDENTITY_MISSING_REQUIRED' : 'UPLOAD_IDENTITY_NOT_APPLICABLE');
+    if ((observationRequired && uploadObservationStatus !== 'UPLOAD_IDENTITY_OBSERVED') ||
         (!uploadObjectIdentity.valid && uploadObjectIdentity.reason !== 'OBJECT_ID_MISSING')) {
       safeUpdateFixture({ status: 'UPLOAD_IDENTITY_INDETERMINATE', deletionEligible: false,
-        residualReason: uploadObservation?.reason || uploadObjectIdentity.reason });
+        residualReason: uploadObservation?.reason || (observationRequired ? uploadObservationStatus : uploadObjectIdentity.reason) });
       throw new Error('STORAGE_UPLOAD_IDENTITY_INDETERMINATE: HTTP success retained; no affirmative identity receipt');
     }
 
@@ -7697,7 +7765,7 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
 
     let validProviderObjectId;
     try {
-      validProviderObjectId = validateUuid(meta.id);
+      validProviderObjectId = requireCanonicalStorageUuid(meta.id);
     } catch (err) {
       safeUpdateFixture({
         lifecycleState: STORAGE_LIFECYCLE_STATE.RESIDUAL_OWNERSHIP_BLOCKED,
@@ -7723,7 +7791,7 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
     let validMetaOwnerId = null;
     if (typeof meta.owner_id === 'string' && meta.owner_id.trim()) {
       try {
-        validMetaOwnerId = validateUuid(meta.owner_id);
+        validMetaOwnerId = requireCanonicalStorageUuid(meta.owner_id);
       } catch {
         validMetaOwnerId = null;
       }
@@ -9708,7 +9776,7 @@ export function createHostedDispatcher(rawOptions = {}) {
           }
           const expectedOwner = ctx?.activeUserId || factorySeedUserId || options.seedUserId || null;
           const fixtureOwner = fixture.verifiedOwnerId || fixture.ownerId || null;
-          if (expectedOwner && fixtureOwner && fixtureOwner !== expectedOwner) {
+          if (expectedOwner && fixtureOwner && (canonicalStorageUuid(fixtureOwner) || fixtureOwner) !== (canonicalStorageUuid(expectedOwner) || expectedOwner)) {
             return {
               passed: false,
               status: 0,
@@ -10850,8 +10918,8 @@ export function createHostedAdminClient(rawOptions = {}) {
       const url = `${baseUrl}/storage/v1/object/${encodeURIComponent(expected.bucket)}/${expected.path.split('/').map(encodeURIComponent).join('/')}`;
       try {
         const response = await CONDITIONAL_DELETE_CONTEXT.run({ transport: rawTransportFetch, expected }, () => fetchFn(url, { method: 'DELETE' }));
-        const evidence = response.conditionalDeletion;
-        if (!evidence || !['EXPECTED_OBJECT_DELETED', 'EXPECTED_OBJECT_ABSENT'].includes(evidence.status)) {
+        const evidence = readConditionalEvidence(response, rawTransportFetch, 'conditionalDeletion');
+        if (!evidence || (evidence.status !== 'EXPECTED_OBJECT_DELETED' && evidence.status !== 'EXPECTED_OBJECT_ABSENT')) {
           return { data: null, error: { message: evidence?.status || 'CONDITIONAL_DELETE_INDETERMINATE' }, conditionalDeletion: evidence || null };
         }
         return { data: { bucket: expected.bucket, path: expected.path }, error: null, conditionalDeletion: evidence };

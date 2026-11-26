@@ -1,12 +1,13 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import {
   TestRunInventory, createHostedAdminClient, createMockProjectKey,
   createDeterministicFixtureTransport, provisionStorageProbeFixture,
   createCreationProof, createOfflineBarrier, HARDCODED_TEMP_REF,
-  STORAGE_PROBE_BUCKET, STORAGE_LIFECYCLE_STATE, observeAuthResponse, observeAndTrackSessionTokens, parseAndValidateJwt
+  STORAGE_PROBE_BUCKET, STORAGE_LIFECYCLE_STATE, validateUuid, observeAuthResponse, observeAndTrackSessionTokens, parseAndValidateJwt
 } from './hosted-probe-runner.mjs';
-import { getConditionalStorageFixtureProvider, extractOfflineStorageObjectId, observeConditionalStorageUpload } from './conditional-storage-fixture.mjs';
+import { getConditionalStorageFixtureProvider, extractOfflineStorageObjectId, observeConditionalStorageUpload, decodeOfflineJwtClaims, canonicalStorageUuid, createConditionalStorageFixtureProvider, registerConditionalStorageFixtureTransport } from './conditional-storage-fixture.mjs';
 
 const OWNER = '11111111-1111-4111-a111-111111111114';
 const OTHER_OWNER = '22222222-2222-4222-a222-222222222114';
@@ -17,15 +18,15 @@ const anonKey = createMockProjectKey(HARDCODED_TEMP_REF, 'anon');
 const serviceRoleKey = createMockProjectKey(HARDCODED_TEMP_REF, 'service_role');
 const content = 'r14 deterministic atomic Storage fixture\n';
 let sequence = 0;
-function jwt() {
+function jwt(subject = OWNER) {
   const now = Math.floor(Date.now() / 1000);
-  const claims = { sub: OWNER, session_id: 'r14-fixture-session', iss: `https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1`, aud: 'authenticated', iat: now, exp: now + 300, amr_authenticated: 'true', amr: [{ method: 'password', timestamp: now }] };
+  const claims = { sub: subject, session_id: 'r14-fixture-session', iss: `https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1`, aud: 'authenticated', iat: now, exp: now + 300, amr_authenticated: 'true', amr: [{ method: 'password', timestamp: now }] };
   return [Buffer.from(JSON.stringify({ alg: 'HS256', typ: 'JWT' })).toString('base64url'), Buffer.from(JSON.stringify(claims)).toString('base64url'), Buffer.from('offline_signature').toString('base64url')].join('.');
 }
 
 // Every scenario performs the actual upload and metadata verification. The same
 // registered provider Map observes that upload, fixture replacement and cleanup.
-async function provision(label, { responseMode = 'normal', capability = true, deleteBarrier = null, unknownUploadIdentity = false, uploadBody = undefined, metadataRow = undefined, expectedError = null, createdUser = false } = {}) {
+async function provision(label, { responseMode = 'normal', capability = true, deleteBarrier = null, unknownUploadIdentity = false, uploadBody = undefined, metadataRow = undefined, expectedError = null, createdUser = false, owner = OWNER, objectId = OBJECT, metadataOwner = owner, metadataObject = objectId, validUploadBody = false } = {}) {
   const runId = `r14-atomic-${label}-${++sequence}`;
   const path = `${runId}/probe.txt`;
   const inventory = new TestRunInventory(runId);
@@ -35,11 +36,11 @@ async function provision(label, { responseMode = 'normal', capability = true, de
     ...(capability ? { conditionalStorage: { projectRef: HARDCODED_TEMP_REF, runId, objects: [], responseMode } } : {}),
     initialState: { uploaded: false, deleted: false, userDeleted: false },
     routes: [
-      { method: 'GET', pathEquals: '/auth/v1/user', status: 200, json: { id: OWNER } },
+      { method: 'GET', pathEquals: '/auth/v1/user', status: 200, json: { id: owner } },
       { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: false }, status: 404, json: { code: 'NoSuchKey' } },
-      { method: 'POST', urlIncludes: '/storage/v1/object/', setsState: { uploaded: true }, status: 200, json: uploadBody !== undefined ? uploadBody : unknownUploadIdentity ? {} : { Id: OBJECT } },
+      { method: 'POST', urlIncludes: '/storage/v1/object/', setsState: { uploaded: true }, status: 200, json: uploadBody !== undefined ? uploadBody : unknownUploadIdentity ? {} : { Id: objectId } },
       { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: true, deleted: false }, status: 200, text: content },
-      { method: 'POST', urlIncludes: '/rest/v1/rpc/task06i_lookup_storage_object_owner', status: 200, json: metadataRow !== undefined ? [metadataRow] : [{ id: OBJECT, bucket_id: STORAGE_PROBE_BUCKET, name: path, owner_id: OWNER }] },
+      { method: 'POST', urlIncludes: '/rest/v1/rpc/task06i_lookup_storage_object_owner', status: 200, json: metadataRow !== undefined ? [metadataRow] : [{ id: metadataObject, bucket_id: STORAGE_PROBE_BUCKET, name: path, owner_id: metadataOwner }] },
       { method: 'DELETE', urlIncludes: '/storage/v1/object/', ...(deleteBarrier ? { waitForBarrier: deleteBarrier } : {}), setsState: { deleted: true }, status: 200, json: {} },
       { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { deleted: true }, status: 404, json: { code: 'NoSuchKey' } },
       { method: 'DELETE', urlIncludes: '/auth/v1/admin/users/', setsState: { userDeleted: true }, status: 200, json: {} },
@@ -47,13 +48,13 @@ async function provision(label, { responseMode = 'normal', capability = true, de
     ]
   });
   const adminClient = createHostedAdminClient({ runId, anonKey, serviceRoleKey, fetchFn: transport });
-  const provisioning = provisionStorageProbeFixture({ runId, seedUserId: OWNER, userAccessToken: jwt(), anonKey, adminClient, inventory, fetchFn: transport, probeContent: content });
+  const provisioning = provisionStorageProbeFixture({ runId, seedUserId: owner, userAccessToken: jwt(owner), anonKey, adminClient, inventory, fetchFn: transport, probeContent: content });
   if (expectedError) await assert.rejects(provisioning, expectedError);
-  else if (unknownUploadIdentity || uploadBody !== undefined) await assert.rejects(provisioning, /STORAGE_UPLOAD_IDENTITY_INDETERMINATE/);
+  else if (unknownUploadIdentity || (uploadBody !== undefined && !validUploadBody)) await assert.rejects(provisioning, /STORAGE_UPLOAD_IDENTITY_INDETERMINATE/);
   else await provisioning;
   const provider = getConditionalStorageFixtureProvider(transport);
-  const expected = { projectRef: HARDCODED_TEMP_REF, runId, bucket: STORAGE_PROBE_BUCKET, path, objectId: OBJECT, ownerId: OWNER };
-  if (provider && !unknownUploadIdentity && uploadBody === undefined) assert.deepEqual({ ...provider.getObject({ bucket: STORAGE_PROBE_BUCKET, path }) }, expected, 'actual provisioning populates provider current identity');
+  const expected = { projectRef: HARDCODED_TEMP_REF, runId, bucket: STORAGE_PROBE_BUCKET, path, objectId: canonicalStorageUuid(objectId), ownerId: canonicalStorageUuid(owner) };
+  if (provider && !unknownUploadIdentity && (uploadBody === undefined || validUploadBody)) assert.deepEqual({ ...provider.getObject({ bucket: STORAGE_PROBE_BUCKET, path }) }, expected, 'actual provisioning populates provider current identity');
   return { runId, path, expected, provider, inventory, adminClient, transport };
 }
 const cleanup = f => f.inventory.executeCleanup({ adminClient: f.adminClient, failClosed: false });
@@ -363,5 +364,213 @@ test('R15 authoritative metadata: inherited owner does not mint a creation recei
   } finally {
     if (saved) Object.defineProperty(Object.prototype, 'owner_id', saved);
     else delete Object.prototype.owner_id;
+  }
+});
+
+
+for (const mode of ['upload-setter', 'upload-getter', 'delete-setter', 'delete-getter', 'combined']) {
+  test(`R16-01 evidence: ${mode} cannot intercept immutable own observations`, { concurrency: false }, async () => {
+    const keys = ['conditionalUploadIdentity', 'conditionalDeletion'];
+    const saved = keys.map(key => Object.getOwnPropertyDescriptor(Object.prototype, key));
+    let executions = 0;
+    try {
+      for (let index = 0; index < keys.length; index++) {
+        const upload = index === 0;
+        if (mode !== 'combined' && !mode.startsWith(upload ? 'upload' : 'delete')) continue;
+        const descriptor = { configurable: true };
+        if (mode === 'combined' || mode.endsWith('getter')) descriptor.get = () => { executions++; return { status: 'UPLOAD_IDENTITY_OBSERVED' }; };
+        if (mode === 'combined' || mode.endsWith('setter')) descriptor.set = () => { executions++; };
+        Object.defineProperty(Object.prototype, keys[index], descriptor);
+      }
+      const f = await provision(`r16-${mode}`, { createdUser: true });
+      const observed = await postObserved(f, jwt());
+      const upload = Object.getOwnPropertyDescriptor(observed.response, 'conditionalUploadIdentity');
+      assert.equal(upload.writable, false); assert.equal(upload.configurable, false);
+      assert.equal(Object.isFrozen(upload.value), true);
+      assert.equal(Object.getPrototypeOf(upload.value), null);
+      assert.throws(() => { observed.response.conditionalUploadIdentity = {}; }, TypeError);
+      const refused = await f.transport(`https://${HARDCODED_TEMP_REF}.supabase.co/storage/v1/object/${STORAGE_PROBE_BUCKET}/${f.path}`, { method: 'DELETE' });
+      const deletion = Object.getOwnPropertyDescriptor(refused, 'conditionalDeletion');
+      assert.equal(deletion.writable, false); assert.equal(deletion.configurable, false);
+      assert.equal(Object.isFrozen(deletion.value), true);
+      assert.equal(deletion.value.status, 'CONDITIONAL_DELETE_UNAVAILABLE');
+      const report = await cleanup(f);
+      assert.equal(report.status, 'CLEANUP_VERIFIED_SUCCESS');
+      assert.equal(Object.isFrozen(f.inventory.getStorageFixture(STORAGE_PROBE_BUCKET, f.path).conditionalDeletionEvidence), true);
+      const unknown = await provision(`r16-unknown-${mode}`, { unknownUploadIdentity: true, createdUser: true });
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const residual = await cleanup(unknown);
+        assert.equal(residual.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+        assert.equal(residual.storageObjectsDeleted, 0); assert.equal(residual.usersDeleted, 0);
+        assert.equal(storageDeletes(unknown).length, 0); assert.equal(userDeletes(unknown).length, 0);
+        assert.equal(unknown.inventory.getStorageFixture(STORAGE_PROBE_BUCKET, unknown.path).hasCommittedUpload, true);
+      }
+      assert.equal(executions, 0);
+    } finally {
+      for (let index = 0; index < keys.length; index++) {
+        if (saved[index]) Object.defineProperty(Object.prototype, keys[index], saved[index]);
+        else delete Object.prototype[keys[index]];
+      }
+    }
+    assert.equal(executions, 0);
+  });
+}
+
+test('R16-01 evidence: required internal observation missing blocks matching metadata and keeps committed residual', () => {
+  // Fault injection is isolated in a separate process; no production marker-skip option exists.
+  const script = `
+    import assert from 'node:assert/strict';
+    import { mock } from 'node:test';
+    const fixtureUrl = ${JSON.stringify(new URL('./conditional-storage-fixture.mjs', import.meta.url).href)};
+    const actual = await import(fixtureUrl);
+    mock.module(fixtureUrl, { namedExports: { ...actual, observeConditionalStorageUpload(...args) { actual.observeConditionalStorageUpload(...args); return null; } } });
+    const m = await import(${JSON.stringify(new URL('./hosted-probe-runner.mjs', import.meta.url).href)});
+    const ref = m.HARDCODED_TEMP_REF, runId = 'r16-missing-required', path = runId + '/probe.txt';
+    const owner = ${JSON.stringify(OWNER)}, objectId = ${JSON.stringify(OBJECT)}, created = ${JSON.stringify(CREATED_USER)};
+    const inventory = new m.TestRunInventory(runId);
+    inventory.registerCreatedUser({ id: created, email: 'r16-created@proof.invalid', creationProof: m.createCreationProof('before_after_check') });
+    const transport = m.createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait', conditionalStorage: { projectRef: ref, runId }, routes: [
+      { method: 'GET', pathEquals: '/auth/v1/user', status: 200, json: { id: owner } },
+      { method: 'GET', urlIncludes: '/storage/', status: 404, json: { code: 'NoSuchKey' } },
+      { method: 'POST', urlIncludes: '/storage/', status: 200, json: {} },
+      { method: 'POST', urlIncludes: '/rest/', status: 200, json: [{ id: objectId, owner_id: owner, bucket_id: m.STORAGE_PROBE_BUCKET, name: path }] }
+    ] });
+    const anonKey = m.createMockProjectKey(ref, 'anon'), serviceRoleKey = m.createMockProjectKey(ref, 'service_role');
+    const adminClient = m.createHostedAdminClient({ runId, anonKey, serviceRoleKey, fetchFn: transport });
+    const token = ${JSON.stringify(jwt())};
+    await assert.rejects(m.provisionStorageProbeFixture({ runId, seedUserId: owner, userAccessToken: token, anonKey, adminClient, inventory, fetchFn: transport }), /STORAGE_UPLOAD_IDENTITY_INDETERMINATE/);
+    const item = inventory.getStorageFixture(m.STORAGE_PROBE_BUCKET, path);
+    assert.equal(item.hasCommittedUpload, true); assert.equal(item.deletionEligible, false); assert.equal(item.verifiedOwnerId, null);
+    assert.equal(item.residualReason, 'UPLOAD_IDENTITY_MISSING_REQUIRED');
+    assert.equal(transport.calls.filter(call => call.pathname.startsWith('/rest/')).length, 0);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const report = await inventory.executeCleanup({ adminClient, failClosed: false });
+      assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+      assert.equal(report.storageObjectsDeleted, 0); assert.equal(report.usersDeleted, 0);
+    }
+    assert.equal(transport.calls.filter(call => call.method === 'DELETE').length, 0);
+    mock.restoreAll();
+    process.stdout.write('MISSING_REQUIRED_BLOCKED');
+  `;
+  const output = execFileSync(process.execPath, ['--experimental-test-module-mocks', '--input-type=module', '-e', script], { encoding: 'utf8', timeout: 15000 });
+  assert.equal(output, 'MISSING_REQUIRED_BLOCKED');
+});
+
+test('R16-01 evidence: explicit unavailable registration is non-applicable and cannot authorize deletion', async () => {
+  const f = await provision('r16-not-applicable', { capability: false, createdUser: true });
+  const report = await cleanup(f);
+  assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(storageResidual(report).conditionalDeletion.status, 'CONDITIONAL_DELETE_UNAVAILABLE');
+  assert.equal(storageDeletes(f).length, 0); assert.equal(userDeletes(f).length, 0);
+});
+
+for (const mode of ['filter', 'map', 'some', 'includes', 'combined']) {
+  test(`R16-02 admission: hostile Array.${mode} cannot influence identity decisions`, { concurrency: false }, () => {
+    const names = mode === 'combined' ? ['filter', 'map', 'some', 'includes'] : [mode];
+    const saved = names.map(name => Object.getOwnPropertyDescriptor(Array.prototype, name));
+    const runId = `r16-array-${mode}`, path = `${runId}/probe.txt`;
+    const transport = createDeterministicFixtureTransport({ conditionalStorage: { projectRef: HARDCODED_TEMP_REF, runId } });
+    const provider = getConditionalStorageFixtureProvider(transport);
+    let executions = 0, traps = 0;
+    const accessor = Object.defineProperty({}, 'Id', { get() { executions++; return OBJECT; } });
+    const proxy = new Proxy({}, { ownKeys() { traps++; }, getPrototypeOf() { traps++; }, get() { traps++; } });
+    const rows = [{ Id: null }, { Id: 'bad', id: OBJECT }, { Id: OBJECT, id: null }, { Id: OBJECT, id: REPLACEMENT }, accessor, proxy, { Id() { executions++; } }, Object.create({ Id: OBJECT }), { Id: OBJECT.toUpperCase(), id: OBJECT }, { id: OBJECT }];
+    const results = [], observations = [], counts = [];
+    const token = jwt();
+    try {
+      for (let index = 0; index < names.length; index++) Object.defineProperty(Array.prototype, names[index], { configurable: true, writable: true, value() { executions++; return names[index] === 'some' ? false : names[index] === 'includes' ? true : [OBJECT]; } });
+      for (let index = 0; index < rows.length; index++) {
+        results.push(extractOfflineStorageObjectId(rows[index]));
+        observations.push(observeConditionalStorageUpload(transport, { method: 'POST', pathname: `/storage/v1/object/${STORAGE_PROBE_BUCKET}/${path}`, url: `https://${HARDCODED_TEMP_REF}.supabase.co/storage/v1/object/${STORAGE_PROBE_BUCKET}/${path}`, headers: { authorization: `Bearer ${token}` } }, { status: 201, json: rows[index] }));
+        counts.push(provider.getSnapshot().objects.length);
+      }
+      const canonical = decodeOfflineJwtClaims(token);
+      results.push(canonical.sub);
+      const externalProvider = createConditionalStorageFixtureProvider({ projectRef: HARDCODED_TEMP_REF, runId: `r16-bound-${mode}` });
+      const identity = { projectRef: HARDCODED_TEMP_REF, runId: `r16-bound-${mode}`, bucket: STORAGE_PROBE_BUCKET, path: `r16-bound-${mode}/probe.txt`, ownerId: OWNER.toUpperCase(), objectId: OBJECT.toUpperCase() };
+      externalProvider.putObject(identity);
+      results.push(externalProvider.conditionalDelete({ ...identity, ownerId: OWNER, objectId: OBJECT }).status);
+    } finally {
+      for (let index = 0; index < names.length; index++) Object.defineProperty(Array.prototype, names[index], saved[index]);
+    }
+    assert.equal(executions, 0); assert.equal(traps, 0);
+    for (let index = 0; index < 8; index++) { assert.equal(results[index].valid, false); assert.equal(observations[index].status, 'UPLOAD_IDENTITY_INDETERMINATE'); assert.equal(counts[index], 0); }
+    assert.equal(results[8].objectId, OBJECT); assert.equal(results[9].objectId, OBJECT);
+    assert.equal(observations[8].status, 'UPLOAD_IDENTITY_OBSERVED');
+    assert.equal(results[10], OWNER); assert.equal(results[11], 'EXPECTED_OBJECT_DELETED');
+  });
+}
+
+for (const [label, signature] of [['one-character', 'x'], ['invalid-length', 'abcde'], ['empty', ''], ['invalid-characters', '**'], ['trailing-bits', 'AB'], ['padding', 'YQ==']]) {
+  test(`R16-03 signature: ${label} preserves 2xx but never admits upload identity`, async () => {
+    const runId = `r16-signature-${label}`;
+    const token = jwt().split('.').slice(0, 2).join('.') + '.' + signature;
+    assert.equal(decodeOfflineJwtClaims(token), null);
+    const { response, provider } = await postObserved({ runId, path: `${runId}/probe.txt` }, token);
+    assert.equal(response.status, 201); assert.deepEqual(await response.json(), { Id: OBJECT });
+    assert.equal(response.conditionalUploadIdentity.status, 'UPLOAD_IDENTITY_INDETERMINATE');
+    assert.equal(provider.getSnapshot().objects.length, 0);
+    assert.equal(provider.getObjectState({ bucket: STORAGE_PROBE_BUCKET, path: `${runId}/probe.txt` }).indeterminate, true);
+  });
+}
+
+test('R16-03 signature: canonical binary bytes are accepted without UTF8/JSON or cryptographic claims', async () => {
+  const signature = Buffer.from([0xff, 0x00, 0x80, 0xfe]).toString('base64url');
+  const token = jwt().split('.').slice(0, 2).join('.') + '.' + signature;
+  assert.equal(decodeOfflineJwtClaims(token).sub, OWNER);
+  const f = { runId: 'r16-binary-signature', path: 'r16-binary-signature/probe.txt' };
+  const { response } = await postObserved(f, token);
+  assert.equal(response.conditionalUploadIdentity.status, 'UPLOAD_IDENTITY_OBSERVED');
+  assert.equal(response.conditionalUploadIdentity.cryptographicallyVerified, false);
+  const parts = token.split('.');
+  assert.equal(decodeOfflineJwtClaims(`e30.${parts[1]}.${signature}`), null);
+  assert.equal(decodeOfflineJwtClaims(`${parts[0]}.bnVsbA.${signature}`), null);
+});
+
+test('R16-03 signature: committed malformed replacement remains residual and blocks dependent Auth deletion', async () => {
+  const f = await provision('r16-signature-residual', { createdUser: true });
+  const token = jwt().split('.').slice(0, 2).join('.') + '.x';
+  const response = await f.transport(`https://${HARDCODED_TEMP_REF}.supabase.co/storage/v1/object/${STORAGE_PROBE_BUCKET}/${f.path}`, { method: 'POST', headers: { authorization: `Bearer ${token}` } });
+  assert.equal(response.status, 200);
+  assert.equal(response.conditionalUploadIdentity.status, 'UPLOAD_IDENTITY_INDETERMINATE');
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const report = await cleanup(f);
+    assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(report.storageObjectsDeleted, 0); assert.equal(report.usersDeleted, 0);
+    assert.ok(storageResidual(report)); assert.equal(userDeletes(f).length, 0);
+  }
+});
+
+for (const [label, owner, objectId, metadataOwner, metadataObject] of [
+  ['uppercase', OWNER.toUpperCase(), OBJECT.toUpperCase(), OWNER.toUpperCase(), OBJECT.toUpperCase()],
+  ['mixed', 'aBcDef01-abCD-4abc-aBcD-abcdef012345', 'ABCDef02-aBcd-4abc-abCd-AbCdEf012345', 'AbCdEf01-ABcd-4ABC-ABcd-ABCDEF012345', 'abcdef02-ABCD-4ABC-ABCD-abcdef012345']
+]) test(`R16-04 UUID: ${label} lifecycle uses one canonical identity through repeated atomic cleanup`, async () => {
+  assert.equal(validateUuid(owner), owner, 'general UUID API keeps its original case contract');
+  const f = await provision(`r16-${label}`, { owner, objectId, metadataOwner, metadataObject, uploadBody: { Id: objectId, id: objectId.toLowerCase() }, validUploadBody: true, createdUser: true });
+  const fixture = f.inventory.getStorageFixture(STORAGE_PROBE_BUCKET, f.path);
+  assert.equal(fixture.providerObjectId, objectId.toLowerCase());
+  assert.equal(fixture.verifiedOwnerId, owner.toLowerCase());
+  assert.equal(fixture.ownerId, owner.toLowerCase());
+  assert.equal(fixture.proof.objectId, objectId.toLowerCase());
+  assert.equal(fixture.proof.ownerId, owner.toLowerCase());
+  assert.equal(f.provider.getObject({ bucket: STORAGE_PROBE_BUCKET, path: f.path }).ownerId, owner.toLowerCase());
+  const report = await cleanup(f);
+  assert.equal(report.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(report.storageObjectsDeleted, 1); assert.equal(report.usersDeleted, 1);
+  assert.equal(fixture.conditionalDeletionEvidence.expected.objectId, objectId.toLowerCase());
+  const storageCount = storageDeletes(f).length;
+  assert.equal((await cleanup(f)).status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(storageDeletes(f).length, storageCount);
+});
+
+for (const field of ['ownerId', 'objectId']) test(`R16-04 UUID: genuine ${field} replacement remains blocked after canonicalization`, async () => {
+  const f = await provision(`r16-mismatch-${field}`, { owner: OWNER.toUpperCase(), objectId: OBJECT.toUpperCase(), createdUser: true });
+  const replacement = { ...f.expected, [field]: field === 'ownerId' ? OTHER_OWNER.toUpperCase() : REPLACEMENT.toUpperCase() };
+  f.provider.putObject(replacement);
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const report = await cleanup(f);
+    assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(report.storageObjectsDeleted, 0); assert.equal(userDeletes(f).length, 0);
+    assert.equal(f.provider.getObject({ bucket: STORAGE_PROBE_BUCKET, path: f.path })[field], replacement[field].toLowerCase());
   }
 });
