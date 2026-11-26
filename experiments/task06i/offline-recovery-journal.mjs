@@ -5,12 +5,13 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { types } from 'node:util';
 import { assertRecoveryStorageObservation } from './conditional-storage-fixture.mjs';
+import { consumeLiveCleanupResolution } from './hosted-probe-runner.mjs';
 
 export const RECOVERY_PROJECT = 'wvdabiwbaavfggcmpizd';
 export const REQUEST_LIMIT = 25;
 export const REQUEST_INTERVAL_MS = 1000;
 const VERSION = 1;
-const MAX_EVENTS = 110;
+const MAX_EVENTS = 256;
 const SCHEMA = 'CREATE TABLE journal (id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL, digest TEXT NOT NULL) STRICT';
 const require = createRequire(import.meta.url);
 const active = new Map();
@@ -99,19 +100,23 @@ function pendingStorage(state) {
   return state.attempts.filter(a => a.dispatchedAt !== null && storageKinds.includes(a.kind) && a.ordinal > state.absentThrough);
 }
 
+function hasStorageObligation(state) {
+  return pendingStorage(state).length > 0 || state.inventoryKinds.has('storage') || [...state.obligations.values()].includes('storage');
+}
+
 function residuals(state) {
-  const effects = state.attempts.filter(a => a.dispatchedAt !== null && ['auth_effect', 'auth_delete', 'other_effect'].includes(a.kind));
+  const effects = state.attempts.filter(a => !state.resolvedAttempts.has(a.ordinal) && a.dispatchedAt !== null && ['auth_effect', 'auth_delete', 'other_effect'].includes(a.kind));
   return {
     storage: pendingStorage(state),
     other: effects,
-    volatileInventory: state.inventoryKinds.size > 0
+    volatileInventory: state.inventoryKinds.size > 0 || state.obligations.size > 0
   };
 }
 
 // Replaying the closed set of events validates on-disk transitions before any
 // budget or provider capability can use them. Sequence is the array index.
 function replay(events, mode) {
-  const state = { attempts: [], absentThrough: 0, ownership: null, terminal: false, inventoryKinds: new Set(), recovery: false };
+  const state = { attempts: [], absentThrough: 0, ownership: null, terminal: false, inventoryKinds: new Set(), obligations: new Map(), resolvedAttempts: new Set(), recovery: false };
   const invalid = () => { throw fail('INVALID_RECOVERY_TRANSITION'); };
   if (!Array.isArray(events) || events.length > MAX_EVENTS) invalid();
   for (const event of events) {
@@ -124,24 +129,25 @@ function replay(events, mode) {
         state.recovery = true;
         break;
       case 'reserve':
-        if (event.length !== 5 || ordinal !== state.attempts.length + 1 || ordinal > REQUEST_LIMIT ||
+        if (![5, 6].includes(event.length) || (event.length === 6 && (typeof event[5] !== 'string' || !/^[a-f0-9]{64}$/.test(event[5]))) || ordinal !== state.attempts.length + 1 || ordinal > REQUEST_LIMIT ||
             !categories.includes(first) || !kinds.includes(second) || !validTime(third) ||
             (state.recovery !== second.startsWith('recovery_')) ||
             (second.startsWith('recovery_') && first !== 'cleanup') ||
             (second === 'recovery_delete' && state.ownership?.lookupOrdinal !== ordinal - 1) ||
-            (second === 'auth_delete' && (pendingStorage(state).length || state.inventoryKinds.has('storage')))) invalid();
+            (second === 'auth_delete' && hasStorageObligation(state))) invalid();
         if (mode === 'standard' && state.attempts.length &&
             third - (state.attempts.at(-1).dispatchedAt ?? state.attempts.at(-1).reservedAt) < REQUEST_INTERVAL_MS) invalid();
         state.attempts.push({
           ordinal, category: first, kind: second, reservedAt: third,
-          dispatchedAt: null, outcome: 'pending', objectId: null, ownerId: null
+          dispatchedAt: null, outcome: 'pending', objectId: null, ownerId: null,
+          ...(event.length === 6 ? { resourceKey: event[5] } : {})
         });
         break;
       case 'dispatch':
         if (event.length !== 3 || !attempt || ordinal !== state.attempts.length ||
             attempt.dispatchedAt !== null || !validTime(first) || first < attempt.reservedAt ||
             (state.recovery !== attempt.kind.startsWith('recovery_')) ||
-            (attempt.kind === 'auth_delete' && (pendingStorage(state).length || state.inventoryKinds.has('storage')))) invalid();
+            (attempt.kind === 'auth_delete' && hasStorageObligation(state))) invalid();
         attempt.dispatchedAt = first;
         break;
       case 'outcome':
@@ -165,9 +171,37 @@ function replay(events, mode) {
         state.ownership = { attemptOrdinal: ordinal, lookupOrdinal: first, objectId: second, ownerId: third };
         break;
       case 'volatile':
-        if (event.length !== 2 || !inventoryKinds.includes(ordinal) || state.inventoryKinds.has(ordinal) || state.recovery) invalid();
-        state.inventoryKinds.add(ordinal);
+        if (![2, 3].includes(event.length) || !inventoryKinds.includes(ordinal) || state.recovery) invalid();
+        if (event.length === 2) {
+          if (state.inventoryKinds.has(ordinal)) invalid();
+          state.inventoryKinds.add(ordinal);
+        } else {
+          if (typeof first !== 'string' || !/^[a-f0-9]{64}$/.test(first) || state.obligations.has(first)) invalid();
+          state.obligations.set(first, ordinal);
+        }
         break;
+      case 'resolution': {
+        if (event.length !== 4 || state.recovery || ordinal !== state.attempts.length ||
+            !Array.isArray(first) || !Array.isArray(second) || first.length + second.length === 0) invalid();
+        const seen = new Set();
+        for (const key of first) {
+          if (typeof key !== 'string' || !state.obligations.has(key) || seen.has(key) ||
+              !second.some(index => state.attempts[index - 1]?.resourceKey === key)) invalid();
+          seen.add(key);
+          state.obligations.delete(key);
+        }
+        let previous = 0;
+        for (const index of second) {
+          const effect = state.attempts[index - 1];
+          if (!Number.isSafeInteger(index) || index <= previous || !effect || effect.dispatchedAt === null ||
+              effect.outcome !== 'success' || state.resolvedAttempts.has(index) ||
+              !first.includes(effect.resourceKey) ||
+              !['auth_effect', 'auth_delete', 'other_effect', 'storage_delete', 'storage_absence_read', 'read'].includes(effect.kind)) invalid();
+          previous = index;
+          state.resolvedAttempts.add(index);
+        }
+        break;
+      }
       case 'absence':
         if (event.length !== 2 || ordinal !== state.attempts.length || !attempt ||
             (state.recovery ? attempt.kind !== 'recovery_lookup' || attempt.outcome !== 'success' :
@@ -279,10 +313,10 @@ function openJournal(rawOptions, creating) {
           attempts: state.attempts.map(attempt => ({ ...attempt })),
           residual: {
             storage: pendingStorage(state).map(a => a.ordinal),
-            credentialDependent: state.attempts.filter(a => a.dispatchedAt !== null && ['auth_effect', 'auth_delete'].includes(a.kind)).map(a => a.ordinal),
-            unclassified: state.attempts.filter(a => a.dispatchedAt !== null && a.kind === 'other_effect').map(a => a.ordinal),
-            volatileInventory: state.inventoryKinds.size > 0,
-            volatileKinds: [...state.inventoryKinds]
+            credentialDependent: residuals(state).other.filter(a => ['auth_effect', 'auth_delete'].includes(a.kind)).map(a => a.ordinal),
+            unclassified: residuals(state).other.filter(a => a.kind === 'other_effect').map(a => a.ordinal),
+            volatileInventory: residuals(state).volatileInventory,
+            volatileKinds: [...new Set([...state.inventoryKinds, ...state.obligations.values()])]
           }
         };
       },
@@ -299,9 +333,9 @@ function openJournal(rawOptions, creating) {
       handle, mode,
       enterRequest() { requireUsable(); leases++; },
       leaveRequest() { leases--; },
-      reserve(ordinal, category, kind, time) {
+      reserve(ordinal, category, kind, time, resourceKey = null) {
         if (state.recovery && !reconciling) throw fail('RECOVERY_RECONCILIATION_REQUIRED');
-        append(['reserve', ordinal, category, kind, time]);
+        append(resourceKey === null ? ['reserve', ordinal, category, kind, time] : ['reserve', ordinal, category, kind, time, resourceKey]);
       },
       dispatch(ordinal, time) { append(['dispatch', ordinal, time]); },
       complete(ordinal, outcome, identity) {
@@ -311,10 +345,24 @@ function openJournal(rawOptions, creating) {
             !validIdentity(candidate.objectId, candidate.ownerId))) throw fail('INVALID_RECOVERY_STORAGE_CANDIDATE');
         append(['outcome', ordinal, outcome, candidate?.objectId ?? null, candidate?.ownerId ?? null]);
       },
-      volatile(kind) {
+      volatile(kind, resource = null) {
         requireUsable();
         if (state.recovery || state.terminal) throw fail('RECOVERY_INVENTORY_MUTATION_BLOCKED');
+        if (resource !== null) {
+          if (typeof resource !== 'string' || resource.length > 512) throw fail('INVALID_RECOVERY_RESOURCE');
+          const key = digest(kind + ':' + resource);
+          if (!state.obligations.has(key)) append(['volatile', kind, key]);
+          return key;
+        }
         if (!state.inventoryKinds.has(kind)) append(['volatile', kind]);
+      },
+      resolveLive(receipt) {
+        requireUsable();
+        if (leases || state.recovery || state.terminal) throw fail('RECOVERY_RESOLUTION_BLOCKED');
+        const proof = consumeLiveCleanupResolution(receipt, handle);
+        const keys = proof.keys.filter(key => state.obligations.has(key));
+        const attempts = proof.attempts.filter(index => !state.resolvedAttempts.has(index));
+        if (keys.length || attempts.length) append(['resolution', state.attempts.length, keys, attempts]);
       },
       observeOwnership(lookupOrdinal, observation) {
         assertRecoveryStorageObservation(observation, RECOVERY_PROJECT, runId);

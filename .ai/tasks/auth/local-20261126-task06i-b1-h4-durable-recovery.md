@@ -60,3 +60,33 @@ The owner authorized correction of the [P1 admission thread](https://github.com/
 - Tests compare inventory, transient context and credential obligations, journal report and SQLite files, budget, dispatcher and provider state. They cover repeated invalid entry, explicit LIVE, Storage and Auth obligations, recovery and terminal fences, legacy pacing retry and a valid retry using the same inventory. The Storage retry exercises admitted conditional deletion and independent absence verification.
 - Verification (exit 0): focused R1 **6/6**, Windows H4 and process-crash **33/33**, legacy runner **182/182**, full Windows Task 06I with local PostgreSQL **365/365**, hardened network-disabled Linux Docker Task 06I **365/365**, standalone local PostgreSQL parity **18/18**, Task 06H **115/115**, and `npm run verify` with **22/22** shell tests. Linux synthetic tests had no Docker socket. Parity ran separately in a pinned local Docker context using a cached PostgreSQL image with networking disabled.
 - Independent exact-head re-review, inline disposition and GitHub CI evidence are tracked in [PR #47](https://github.com/im-tnyx/Tio-Workspace/pull/47). H5 remains NOT IMPLEMENTED, hosted atomic deletion remains UNVERIFIED, hosted verification remains 0/18, Hosted LIVE remains NOT AUTHORIZED, and Production Real Auth remains STRICT NO-GO. Hosted mutations 0, additional infrastructure cost $0. Merge requires separate owner authorization.
+
+
+## R2 evidence-bound durable obligation resolution
+
+Implementation owner: Codex root; previous owner: existing local R2 implementation transferred by explicit owner instruction in this session. Bootstrap local/remote HEAD `ab071af4d34c912bb184e2e4d7c0f00040def7f1`, main `5809dddf456cea3b8dfec1164034cf63fc392eb1`. Four in-progress runtime/test files were preserved and completed. [P1 finding](https://github.com/im-tnyx/Tio-Workspace/pull/47#discussion_r4710445981) explains permanent non-Storage effects and volatile markers. An unchanged tracked-baseline runtime in a temporary directory with the new imported table-cleanup regression failed (1/1 FAIL, process exit 1), confirming false RECOVERY_REQUIRED after verified cleanup. Initial taken-over H4 tests were 46/48; the two normal Storage integration failures were corrected before final verification.
+
+### Resolution contract
+
+- Exact resource identifiers are hashed into typed journal obligations and matching admitted request records. Private process-local receipts bind the journal handle and exact successful attempts; serialized caller data cannot mint them. Resolution is emitted only following admitted cleanup and final inventory reconciliation. Table cleanup now independently queries absence after deletion. User deletion requires verified absence; misleading 503 user_not_found bodies cannot supply it. Session revocation retains existing reconciliation guarantees.
+- Replay accepts a closed resolution event, checks corresponding keys, successful dispatched attempts, ordering, duplicates and terminal/recovery fences. Historical attempts and outcomes remain; request slots are never refunded. Version 1 legacy category-only markers remain conservatively unresolved. New optional resource-key fields/events are accepted by this reader; older readers reject unknown resolution transitions rather than claiming clean. Event ceiling is bounded at 256; request ceiling remains 25, pacing 1000 ms, reserve 0.
+- Only pending exact keyed obligations receive a resolution receipt. Normal Storage uses upload/absence proof and needs no keyed event. A supported keyed Storage obligation can resolve only after private conditional deletion plus independent absence; it persists before dependent Auth deletion. Unsupported path-only/unknown Storage markers remain blocked. Unrelated effects of the same category and indeterminate dispatches remain unresolved.
+- SQLite commits resolution before terminal completion and credential disposal. Injected persistence failure retains recovery-required status; subprocess termination immediately before versus after committed resolution replays conservatively versus clean. Cold Auth recovery still blocks missing transient credentials and unknown effects; journal contents grant no destructive capability.
+
+### Current verification (all final commands exit 0)
+
+| Command / environment | Actual result |
+|---|---|
+| node --test --test-name-pattern H4-R2 experiments/task06i/offline-probe-recovery.test.mjs | 15/15 PASS |
+| node --test experiments/task06i/offline-probe-recovery.test.mjs; Windows Node24.17.0 | 48/48 PASS, actual subprocess crash/restart cases |
+| node --test experiments/task06i/hosted-probe-runner.test.mjs | 182/182 PASS, retained PR45/JWT cases |
+| node --test experiments/task06i/*.test.mjs | 380/380 PASS |
+| Full Task06I in cached node:24-bookworm; network none, pull never, cap-drop ALL, no-new-privileges, read-only experiments mount, no credentials/socket | 380/380 PASS, Linux subprocess crash/restart |
+| node experiments/task06i/sql-contract-parity.mjs | POSTGRES_VERIFIED 18/18, local PostgreSQL17.11 |
+| node --test experiments/task06h/*.test.mjs | 115/115 PASS |
+| npm run verify | PASS, shell22/22 |
+| Attribution / guard integrity fixtures; syntax, diff, sensitive-literal scan | 142/142 and 14/14 PASS; all remaining checks PASS |
+
+Independent agent h4r2_review read the complete runtime/test diff, independently ran focused R2 15/15 and diff checks, final re-review PASS. No confirmed false terminal or unrelated-obligation clearing defect remains in its scoped assessment. This is not GitHub formal approval; exact published HEAD, thread disposition, formal review and CI are tracked on existing PR47. Last commit agent: Codex root; resolve immutable published implementation SHA from PR47 rather than caching a mutable current head.
+
+H4: IMPLEMENTED_OFFLINE_TESTED / REVIEW_PENDING. H5 NOT IMPLEMENTED. Hosted atomic deletion UNVERIFIED; hosted verification0/18; Hosted LIVE NOT AUTHORIZED / BLOCKED; Production Real Auth STRICT NO-GO; hosted mutations0; additional infrastructure cost$0. Merge needs separate owner authorization. No power-loss or privileged filesystem tampering attestation is added.

@@ -1,5 +1,5 @@
 import { types as utilTypes } from 'node:util';
-import { journalForRun, RECOVERY_PROJECT, REQUEST_LIMIT, REQUEST_INTERVAL_MS } from './offline-recovery-journal.mjs';
+import { journalForRun } from './offline-recovery-journal.mjs';
 
 const RUN_BUDGETS = new Map();
 const DURABLE_BUDGETS = new WeakMap();
@@ -7,9 +7,9 @@ const TRUSTED_BUDGETS = new WeakSet();
 const TICKETS = new WeakMap();
 const PRE_DISPATCH_FAILURES = new WeakMap();
 const CANCELLATION_ERRORS = new WeakSet();
-const TEMP_PROJECT = RECOVERY_PROJECT;
-const LIMIT = REQUEST_LIMIT;
-const INTERVAL = REQUEST_INTERVAL_MS;
+const TEMP_PROJECT = 'wvdabiwbaavfggcmpizd';
+const LIMIT = 25;
+const INTERVAL = 1000;
 const signalProto = AbortSignal.prototype;
 const abortedGet = Object.getOwnPropertyDescriptor(signalProto, 'aborted').get;
 const addListener = signalProto.addEventListener;
@@ -113,7 +113,7 @@ export function getRunRequestBudget(rawOptions) {
   }));
   const budget = Object.freeze({
     async beginRequest(rawRequest = Object.create(null)) {
-      const request = record(rawRequest, ['category', 'signal', 'kind']);
+      const request = record(rawRequest, ['category', 'signal', 'kind', 'resourceKey']);
       const category = request.category ?? 'probe';
       if (!['probe', 'auxiliary', 'cleanup'].includes(category)) throw new Error('INVALID_REQUEST_BUDGET_CATEGORY');
       const signal = trustedSignal(request.signal);
@@ -157,7 +157,7 @@ export function getRunRequestBudget(rawOptions) {
         }
         if (signal && abortedGet.call(signal)) return rejectCancelled();
         const reservedAt = Date.now();
-        journal?.reserve(consumed + 1, category, request.kind, reservedAt);
+        journal?.reserve(consumed + 1, category, request.kind, reservedAt, request.resourceKey ?? null);
         lastDispatch = reservedAt;
         consumed++;
         const ticket = Object.freeze(Object.create(null));

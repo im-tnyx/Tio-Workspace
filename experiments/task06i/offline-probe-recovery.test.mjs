@@ -22,6 +22,7 @@ import {
 } from './hosted-probe-runner.mjs';
 import { createOfflineRecoveryJournal, recoverOfflineProbeRun, reopenOfflineRecoveryJournal } from './offline-probe-recovery.mjs';
 import { executeRunBudgetRequest, getRunRequestBudget } from './run-request-budget.mjs';
+import { journalForRun } from './offline-recovery-journal.mjs';
 
 const file = fileURLToPath(import.meta.url);
 const projectRef = HARDCODED_TEMP_REF;
@@ -124,6 +125,22 @@ function runnerFixture(handle) {
   };
 }
 
+function resolutionFixture(handle, { partial = false } = {}) {
+  const transport = createDeterministicFixtureTransport({
+    requestBudgetMode: mode,
+    routes: [
+      { method: 'DELETE', pathEquals: '/rest/v1/task06i_rows', status: 204 },
+      { method: 'GET', pathEquals: '/rest/v1/task06i_rows', status: 200, json: partial ? [{ id: ownerId }] : [] },
+      { method: 'DELETE', pathIncludes: '/auth/v1/admin/users/', status: 200, json: {} },
+      { method: 'GET', pathIncludes: '/auth/v1/admin/users/', status: 404, json: { message: 'User not found' } },
+      { method: 'POST', pathEquals: '/auth/v1/logout', status: 204 }
+    ]
+  });
+  const inventory = new TestRunInventory(handle.runId);
+  const adminClient = createHostedAdminClient({ runId: handle.runId, fetchFn: transport, serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
+  return { inventory, transport, adminClient };
+}
+
 function admissionSnapshot(handle, directory, fixture, runContext) {
   const file = journalPath(directory, handle.runId);
   const { clear: _clear, ...contextState } = runContext ?? {};
@@ -206,7 +223,12 @@ async function child(kind, directory, runId) {
   const handle = create(directory);
   writeFileSync(join(directory, 'run-id'), handle.runId, { flush: true });
   let calls = 0;
-  if (kind === 'before-intent' || kind === 'after-reserve') {
+  if (kind === 'before-resolution' || kind === 'after-resolution') {
+    const fixture = resolutionFixture(handle);
+    fixture.inventory.registerTableRow('task06i_rows', ownerId);
+    interruptWrite(directory, 'resolution', 2, kind === 'after-resolution', () => ({ calls: fixture.transport.calls.length }));
+    await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient });
+  } else if (kind === 'before-intent' || kind === 'after-reserve') {
     interruptWrite(directory, 'reserve', 1, kind === 'after-reserve', () => ({ calls }));
     await request(handle, 'storage_upload', () => { calls++; });
   } else if (kind === 'direct-inventory' || kind === 'direct-operation') {
@@ -678,6 +700,188 @@ if (process.argv[2] === '--h4-child') {
     assert.deepEqual(structuredClone(fixture.inventory), before);
     assert.equal(fixture.transport.calls.length, 0);
     assert.equal((await runOfflineProbeSimulation(fixture.options)).status, 'COMPLETED');
+  });
+
+  test('H4-R2 verified table cleanup durably resolves its exact obligation', async t => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    t.after(() => handle.close());
+    const transport = createDeterministicFixtureTransport({
+      requestBudgetMode: mode,
+      routes: [
+        { method: 'DELETE', pathEquals: '/rest/v1/task06i_rows', status: 204 },
+        { method: 'GET', pathEquals: '/rest/v1/task06i_rows', status: 200, json: [] }
+      ]
+    });
+    const inventory = new TestRunInventory(handle.runId);
+    const adminClient = createHostedAdminClient({ runId: handle.runId, fetchFn: transport, serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
+    inventory.registerTableRow('task06i_rows', ownerId);
+    const report = await inventory.executeCleanup({ adminClient, failClosed: false });
+    assert.equal(report.status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(handle.report().status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(handle.report().consumed, 2);
+  });
+
+  for (const resources of [['user'], ['session'], ['table', 'user', 'session']]) {
+    test('H4-R2 verified supported cleanup resolves ' + resources.join('/'), async t => {
+      const directory = testDirectory();
+      const handle = create(directory);
+      t.after(() => handle.close());
+      const fixture = resolutionFixture(handle);
+      if (resources.includes('user')) fixture.inventory.registerCreatedUser({
+        id: ownerId, email: 'h4-r2@proof.invalid', creationProof: createCreationProof('before_after_check')
+      });
+      if (resources.includes('session')) fixture.inventory.registerSession(ownerId, journalTransport(handle).userAccessToken);
+      if (resources.includes('table')) fixture.inventory.registerTableRow('task06i_rows', ownerId);
+      const cleanup = await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient, failClosed: false });
+      assert.equal(cleanup.status, 'CLEANUP_VERIFIED_SUCCESS', JSON.stringify(cleanup));
+      const before = handle.report();
+      handle.close();
+      const restarted = reopen(directory, handle.runId);
+      try {
+        assert.deepEqual(await recoverOfflineProbeRun({ handle: restarted }), before);
+        assert.equal(budget(restarted).report().consumedAttempts, before.consumed);
+      } finally { restarted.close(); }
+    });
+  }
+
+  test('H4-R2 partial cleanup and unrelated same-category dispatch remain unresolved', async t => {
+    for (const partial of [false, true]) {
+      const handle = create(testDirectory());
+      t.after(() => handle.close());
+      const fixture = resolutionFixture(handle, { partial });
+      fixture.inventory.registerTableRow('task06i_rows', ownerId);
+      await request(handle, 'other_effect');
+      const cleanup = await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient, failClosed: false });
+      assert.equal(cleanup.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+      assert.ok(handle.report().residual.unclassified.includes(1));
+      if (partial) assert.equal(fixture.inventory.trackedTableRows.get('task06i_rows').size, 1);
+      assert.equal(handle.report().status, 'RECOVERY_REQUIRED');
+    }
+  });
+
+  test('H4-R2 verified resources survive an admitted cleanup retry', async t => {
+    const handle = create(testDirectory());
+    t.after(() => handle.close());
+    const transport = createDeterministicFixtureTransport({ requestBudgetMode: mode, routes: [
+      { method: 'DELETE', pathEquals: '/rest/v1/task06i_rows', status: 204 },
+      { method: 'GET', pathEquals: '/rest/v1/task06i_rows', status: 200, json: [] },
+      { method: 'POST', pathEquals: '/auth/v1/logout', times: 1, status: 503, json: {} },
+      { method: 'POST', pathEquals: '/auth/v1/logout', status: 204 }
+    ] });
+    const inventory = new TestRunInventory(handle.runId);
+    const adminClient = createHostedAdminClient({ runId: handle.runId, fetchFn: transport, serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
+    inventory.registerTableRow('task06i_rows', ownerId);
+    inventory.registerSession(ownerId, journalTransport(handle).userAccessToken);
+    assert.equal((await inventory.executeCleanup({ adminClient, failClosed: false })).status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    // The failed dispatch stays indeterminate. A new successful logout cannot
+    // authorize clearing that separate historical effect.
+    assert.equal((await inventory.executeCleanup({ adminClient, failClosed: false })).status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.ok(handle.report().residual.credentialDependent.length > 0);
+  });
+
+  test('H4-R2 independently verified table retry resolves earlier exact successful effects', async t => {
+    const handle = create(testDirectory());
+    t.after(() => handle.close());
+    const transport = createDeterministicFixtureTransport({ requestBudgetMode: mode, routes: [
+      { method: 'DELETE', pathEquals: '/rest/v1/task06i_rows', status: 204 },
+      { method: 'GET', pathEquals: '/rest/v1/task06i_rows', times: 1, status: 200, json: [{ id: ownerId }] },
+      { method: 'GET', pathEquals: '/rest/v1/task06i_rows', status: 200, json: [] }
+    ] });
+    const inventory = new TestRunInventory(handle.runId);
+    inventory.registerTableRow('task06i_rows', ownerId);
+    const adminClient = createHostedAdminClient({ runId: handle.runId, fetchFn: transport, serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
+    assert.equal((await inventory.executeCleanup({ adminClient, failClosed: false })).status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal((await inventory.executeCleanup({ adminClient, failClosed: false })).status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(handle.report().consumed, 4);
+  });
+
+  test('H4-R2 public journal and recovery modules initialize independently', () => {
+    for (const path of ['./offline-recovery-journal.mjs', './offline-probe-recovery.mjs']) {
+      const result = spawnSync(process.execPath, ['--input-type=module', '-e', 'await import(' + JSON.stringify(new URL(path, import.meta.url).href) + ')'], { encoding: 'utf8' });
+      assert.equal(result.status, 0, result.stderr);
+    }
+  });
+
+  test('H4-R2 unknown Storage volatile registration stays blocked and protects Auth deletion', async t => {
+    const handle = create(testDirectory());
+    t.after(() => handle.close());
+    const fixture = resolutionFixture(handle);
+    fixture.inventory.registerStorageObject(STORAGE_PROBE_BUCKET, handle.runId + '/probe.txt');
+    fixture.inventory.registerCreatedUser({ id: ownerId, email: 'r2@proof.invalid', creationProof: createCreationProof('before_after_check') });
+    const result = await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient, failClosed: false });
+    assert.equal(result.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(fixture.transport.calls.length, 0);
+    assert.ok(handle.report().residual.volatileKinds.includes('storage'));
+  });
+
+  test('H4-R2 legacy category-only journal markers remain conservatively blocked', async t => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    journalForRun(handle.runId).volatile('auth');
+    handle.close();
+    const restarted = reopen(directory, handle.runId);
+    t.after(() => restarted.close());
+    assert.equal((await recoverOfflineProbeRun({ handle: restarted })).status, 'RECOVERY_REQUIRED');
+  });
+
+  test('H4-R2 HTTP 503 with user_not_found never proves user absence', async t => {
+    const handle = create(testDirectory());
+    t.after(() => handle.close());
+    const transport = createDeterministicFixtureTransport({ requestBudgetMode: mode, routes: [
+      { method: 'DELETE', pathIncludes: '/auth/v1/admin/users/', status: 200, json: {} },
+      { method: 'GET', pathIncludes: '/auth/v1/admin/users/', status: 503, json: { code: 'user_not_found', status: 404 } }
+    ] });
+    const inventory = new TestRunInventory(handle.runId);
+    inventory.registerCreatedUser({ id: ownerId, email: 'r2@proof.invalid', creationProof: createCreationProof('before_after_check') });
+    const adminClient = createHostedAdminClient({ runId: handle.runId, fetchFn: transport, serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
+    assert.equal((await inventory.executeCleanup({ adminClient, failClosed: false })).status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(inventory.deletedUsers.size, 0);
+    assert.equal(handle.report().status, 'RECOVERY_REQUIRED');
+  });
+
+  for (const after of [false, true]) {
+    test('H4-R2 process crash ' + (after ? 'after' : 'before') + ' committed resolution', async t => {
+      const { handle } = crash(t, after ? 'after-resolution' : 'before-resolution');
+      assert.equal(handle.report().consumed, 2);
+      const result = await recoverOfflineProbeRun({ handle });
+      assert.equal(result.status, after ? 'CLEANUP_VERIFIED_SUCCESS' : 'RECOVERY_REQUIRED');
+    });
+  }
+
+  test('H4-R2 failed resolution persistence retains a blocked run', async t => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    t.after(() => handle.close());
+    const fixture = resolutionFixture(handle);
+    fixture.inventory.registerTableRow('task06i_rows', ownerId);
+    const restore = interruptWrite(directory, 'resolution', 2, false, () => ({}), 'fail');
+    try {
+      const result = await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient, failClosed: false });
+      assert.equal(result.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+      assert.ok(result.residualResources.some(r => r.error === 'RECOVERY_PERSISTENCE_FAILED'));
+    } finally { restore(); }
+  });
+
+  test('H4-R2 forged, malformed, duplicate and out-of-order resolution is rejected', async t => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    const fixture = resolutionFixture(handle);
+    fixture.inventory.registerTableRow('task06i_rows', ownerId);
+    assert.throws(() => journalForRun(handle.runId).resolveLive({ keys: [], attempts: [] }), /UNTRUSTED/);
+    await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient });
+    handle.close();
+    for (const mutation of [
+      events => { events.splice(-1, 0, events.find(e => e[0] === 'resolution')); },
+      events => { events.find(e => e[0] === 'resolution')[2] = ['a'.repeat(64)]; },
+      events => { events.find(e => e[0] === 'resolution')[1] = 0; },
+      events => { events.find(e => e[0] === 'resolution')[3] = [99]; }
+    ]) {
+      const alternate = testDirectory();
+      copyFileSync(journalPath(directory, handle.runId), journalPath(alternate, handle.runId));
+      rewrite(alternate, handle.runId, envelope => mutation(envelope[4]));
+      assert.throws(() => reopen(alternate, handle.runId), /INVALID_RECOVERY_TRANSITION/);
+    }
   });
 
   test('H4 integration persists normal H3 conditional cleanup and its private absence result', async t => {

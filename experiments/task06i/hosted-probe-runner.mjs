@@ -139,6 +139,58 @@ function requireCanonicalStorageUuid(value) {
 const RUN_REQUEST_BUDGET_CONTEXT = new AsyncLocalStorage();
 const TRANSPORT_REQUEST_BUDGET_MODES = new WeakMap();
 const JOURNALLED_TRANSPORT_OPERATION = Symbol('module-owned transport operation');
+const LIVE_RESOURCE_OBLIGATIONS = new WeakMap();
+const LIVE_RESOLUTION_RECEIPTS = new WeakMap();
+const VERIFIED_LIVE_RESOURCE_CLEANUPS = new WeakMap();
+const RESOURCE_REQUEST_CONTEXT = new AsyncLocalStorage();
+const LIVE_RESOURCE_ATTEMPTS = new WeakMap();
+
+function durableInventoryObligation(inventory, kind, resource) {
+  const journal = journalForRun(inventory.runId);
+  if (!journal) return;
+  const key = journal.volatile(kind, resource);
+  VERIFIED_LIVE_RESOURCE_CLEANUPS.get(inventory)?.delete(resource);
+  let obligations = LIVE_RESOURCE_OBLIGATIONS.get(inventory);
+  if (!obligations) { obligations = new Map(); LIVE_RESOURCE_OBLIGATIONS.set(inventory, obligations); }
+  obligations.set(resource, key);
+}
+
+// The receipt exists only after the admitted cleanup has verified individual
+// resources and audited the live inventory. Deserialization cannot mint it.
+export function consumeLiveCleanupResolution(receipt, handle) {
+  const proof = LIVE_RESOLUTION_RECEIPTS.get(receipt);
+  if (!proof || proof.handle !== handle) throw new Error('UNTRUSTED_LIVE_CLEANUP_RESOLUTION');
+  LIVE_RESOLUTION_RECEIPTS.delete(receipt);
+  return proof;
+}
+
+async function collectResourceCleanup(resource, operation, verified) {
+  const kind = resource.startsWith('table:') ? 'other' : resource.startsWith('storage:') ? 'storage' : 'auth';
+  const entry = { resource, key: crypto.createHash('sha256').update(kind + ':' + resource).digest('hex'), attempts: [] };
+  const result = await RESOURCE_REQUEST_CONTEXT.run(entry, operation);
+  if (verified(result)) return { result, entry };
+  return { result, entry: null };
+}
+function persistVerifiedResourceResolutions(inventory, entries) {
+  const journal = journalForRun(inventory.runId);
+  if (!journal) return;
+  const keys = [];
+  const attempts = [];
+  for (const entry of entries) {
+    if (!entry.attempts.length) continue;
+    const key = LIVE_RESOURCE_OBLIGATIONS.get(inventory)?.get(entry.resource);
+    if (!key || !journal.state.obligations.has(key)) continue;
+    keys.push(key);
+    for (const index of LIVE_RESOURCE_ATTEMPTS.get(journal.handle)?.get(key) ?? []) {
+      const effect = journal.state.attempts[index - 1];
+      if (['auth_effect', 'auth_delete', 'other_effect', 'storage_delete', 'storage_absence_read', 'read'].includes(effect.kind)) attempts.push(index);
+    }
+  }
+  if (!keys.length) return;
+  const receipt = Object.freeze(Object.create(null));
+  LIVE_RESOLUTION_RECEIPTS.set(receipt, { handle: journal.handle, keys: [...new Set(keys)], attempts: [...new Set(attempts)].sort((a, b) => a - b) });
+  journal.resolveLive(receipt);
+}
 function withRunRequestBudget(runId, category, operation, mode = undefined) {
   const existing = RUN_REQUEST_BUDGET_CONTEXT.getStore();
   if (!runId) throw new Error('REQUEST_BUDGET_BINDING_REQUIRED: Executing run operations require exact run ID');
@@ -153,7 +205,23 @@ async function executeBudgetedRequest(runId, category, operation, signal = null,
   const effectiveRun = existing?.runId || runId;
   if (!effectiveRun || (runId && runId !== effectiveRun)) throw new Error('REQUEST_BUDGET_BINDING_MISMATCH');
   const budget = getRunRequestBudget({ projectRef: 'wvdabiwbaavfggcmpizd', runId: effectiveRun, mode: existing?.mode ?? mode });
-  return executeRunBudgetRequest(budget, { category: existing?.category || category, signal, kind }, operation);
+  const resourceContext = RESOURCE_REQUEST_CONTEXT.getStore();
+  return executeRunBudgetRequest(budget, { category: existing?.category || category, signal, kind, resourceKey: resourceContext?.key }, async (ordinal, recordCreation) => {
+    const result = await operation(ordinal, recordCreation);
+    const resource = RESOURCE_REQUEST_CONTEXT.getStore();
+    if (resource && result?.ok === true) {
+      resource.attempts.push(ordinal);
+      const journal = journalForRun(effectiveRun);
+      if (journal) {
+        let byResource = LIVE_RESOURCE_ATTEMPTS.get(journal.handle);
+        if (!byResource) { byResource = new Map(); LIVE_RESOURCE_ATTEMPTS.set(journal.handle, byResource); }
+        let indices = byResource.get(resource.key);
+        if (!indices) { indices = new Set(); byResource.set(resource.key, indices); }
+        indices.add(ordinal);
+      }
+    }
+    return result;
+  });
 }
 function executeCurrentTransportRequest(transport, signal, operation, kind) {
   const context = RUN_REQUEST_BUDGET_CONTEXT.getStore();
@@ -5547,7 +5615,7 @@ export class TestRunInventory {
       });
     }
 
-    journalForRun(this.runId)?.volatile('auth');
+    durableInventoryObligation(this, 'auth', 'user:' + cleanId);
     const record = {
       id: cleanId,
       email: normEmail,
@@ -5729,7 +5797,7 @@ export class TestRunInventory {
 
     if (!sessionId) return { registered: false };
 
-    journalForRun(this.runId)?.volatile('auth');
+    durableInventoryObligation(this, 'auth', 'session:' + sessionId);
     this.trackedSessions.add(sessionId);
     const trimmedToken = typeof accessToken === 'string' && accessToken.trim().length > 0 ? accessToken.trim() : null;
     if (!trimmedToken) {
@@ -5835,7 +5903,7 @@ export class TestRunInventory {
     }
     const t = table.trim();
     const rowId = id.trim();
-    journalForRun(this.runId)?.volatile('other');
+    durableInventoryObligation(this, 'other', 'table:' + JSON.stringify([t, rowId]));
     if (!this.trackedTableRows.has(t)) {
       this.trackedTableRows.set(t, new Set());
     }
@@ -5880,7 +5948,7 @@ export class TestRunInventory {
         `STORAGE_LIFECYCLE_BYPASS_VIOLATION: Cannot bypass Storage fixture lifecycle via registerStorageObject('${fixtureKey}') while fixture is tracked in state '${existingFixture.lifecycleState}' (R3-03)`
       );
     }
-    journalForRun(this.runId)?.volatile('storage');
+    durableInventoryObligation(this, 'storage', 'storage:' + b + '/' + p);
     if (!this.trackedStorageObjects.has(b)) {
       this.trackedStorageObjects.set(b, new Set());
     }
@@ -6031,7 +6099,7 @@ export class TestRunInventory {
 
     const state = lifecycleState || STORAGE_LIFECYCLE_STATE.CREATION_PENDING;
     if (hasCommittedUpload || !neverDispatched || state !== STORAGE_LIFECYCLE_STATE.CREATION_PENDING) {
-      journalForRun(this.runId)?.volatile('storage');
+      durableInventoryObligation(this, 'storage', 'storage:' + cleanBucket + '/' + cleanPath);
     }
     const canDelete = deletionEligible === true && state === STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED;
     const cleanObjectId = providerObjectId ? String(providerObjectId).trim() : null;
@@ -6152,7 +6220,7 @@ export class TestRunInventory {
       const journal = journalForRun(this.runId);
       if (journal && (fixture.bucket !== STORAGE_PROBE_BUCKET || fixture.path !== `${this.runId}/probe.txt` ||
           !journal.state.attempts.some(attempt => attempt.kind === 'storage_upload' && attempt.dispatchedAt !== null))) {
-        journal.volatile('storage');
+        durableInventoryObligation(this, 'storage', 'storage:' + fixture.bucket + '/' + fixture.path);
       }
     }
 
@@ -6313,6 +6381,8 @@ export class TestRunInventory {
 
   clearCredentials() {
     if (inventoryHasResidualResources(this)) return false;
+    const journal = journalForRun(this.runId);
+    if (journal && journal.handle.report().status !== 'CLEANUP_VERIFIED_SUCCESS') return false;
     for (const item of this.seedCredentialRestorations) {
       if (item.originalPassword) item.originalPassword = '[CLEARED]';
       if (item.targetPassword) item.targetPassword = '[CLEARED]';
@@ -6739,6 +6809,10 @@ export class TestRunInventory {
 
   async _executeCleanupInternal({ adminClient, failClosed = true, settlementTimeoutMs = 50 } = {}) {
     const report = createCleanupReport(this);
+    let completedResources = VERIFIED_LIVE_RESOURCE_CLEANUPS.get(this);
+    if (!completedResources) { completedResources = new Map(); VERIFIED_LIVE_RESOURCE_CLEANUPS.set(this, completedResources); }
+    const verifiedResolutions = { push(entry) { completedResources.set(entry.resource, entry); } };
+    const userCleanupAttempts = new Map();
 
     this.cleanupStarted = true;
     // A bounded retry reopens internal cleanup only. Public admission stays
@@ -6877,12 +6951,15 @@ export class TestRunInventory {
       } else {
         for (const id of ids) {
           try {
-            const res = await adminClient.deleteTableRow(table, id);
+            const cleanup = await collectResourceCleanup('table:' + JSON.stringify([table, id]),
+              () => adminClient.deleteTableRow(table, id), res => res && !res.error);
+            const res = cleanup.result;
             if (res && res.error) {
               report.residualResources.push({ type: 'table_row', table, id, error: res.error.message || String(res.error) });
             } else {
               report.tableRowsDeleted++;
               ids.delete(id);
+              if (cleanup.entry) verifiedResolutions.push(cleanup.entry);
             }
           } catch (err) {
             report.residualResources.push({ type: 'table_row', table, id, error: err.message });
@@ -6985,7 +7062,9 @@ export class TestRunInventory {
           projectRef: HARDCODED_TEMP_REF, runId: this.runId, bucket: fixture.bucket, path: fixture.path,
           objectId: fixture.providerObjectId, ownerId: fixture.verifiedOwnerId
         }));
-        const delRes = await adminClient.conditionalDeleteStorageObject(authorization);
+        const deletion = await collectResourceCleanup('storage:' + fixture.bucket + '/' + fixture.path,
+          () => adminClient.conditionalDeleteStorageObject(authorization), res => res && !res.error);
+        const delRes = deletion.result;
         fixture.conditionalDeletionEvidence = delRes?.conditionalDeletion || { status: 'CONDITIONAL_DELETE_INDETERMINATE' };
         const delIsProviderAbsent =
           delRes &&
@@ -7059,9 +7138,13 @@ export class TestRunInventory {
           VERIFIED_STORAGE_DELETIONS.set(fixture, Object.freeze({
             inventory: this, runId: this.runId, fixtureKey, snapshot: JSON.stringify(storageEvidenceSnapshot(fixture))
           }));
+          if (deletion.entry) verifiedResolutions.push(deletion.entry);
           if (this.trackedStorageObjects.has(fixture.bucket)) {
             this.trackedStorageObjects.get(fixture.bucket).delete(fixture.path);
           }
+          // Persist this exact private deletion/absence proof before dependent
+          // Auth cleanup. Other resources and unknown Storage remain pending.
+          if (deletion.entry) persistVerifiedResourceResolutions(this, [deletion.entry]);
         }
       } catch (err) {
         report.residualResources.push({
@@ -7119,8 +7202,9 @@ export class TestRunInventory {
             continue;
           }
           let res;
+          const sessionCleanup = { resource: 'session:' + sessionId, key: crypto.createHash('sha256').update('auth:session:' + sessionId).digest('hex'), attempts: [] };
           if (typeof adminClient.invalidateSession === 'function') {
-            res = await adminClient.invalidateSession(sessionId, token);
+            res = await RESOURCE_REQUEST_CONTEXT.run(sessionCleanup, () => adminClient.invalidateSession(sessionId, token));
           } else if (typeof adminClient.signOut === 'function') {
             if (!token) {
               res = {
@@ -7129,7 +7213,7 @@ export class TestRunInventory {
                 }
               };
             } else {
-              res = await adminClient.signOut(token, 'local');
+              res = await RESOURCE_REQUEST_CONTEXT.run(sessionCleanup, () => adminClient.signOut(token, 'local'));
             }
           }
           if (res && res.error) {
@@ -7137,6 +7221,7 @@ export class TestRunInventory {
           } else {
             this.revokedSessions.add(sessionId);
             report.sessionsRevoked++;
+            verifiedResolutions.push(sessionCleanup);
           }
         } catch (err) {
           report.residualResources.push({ type: 'session', id: sessionId, error: err.message });
@@ -7203,11 +7288,13 @@ export class TestRunInventory {
         }
 
         try {
-          const res = await adminClient.deleteUser(userId);
+          const cleanup = await collectResourceCleanup('user:' + userId, () => adminClient.deleteUser(userId), res => res && !res.error);
+          const res = cleanup.result;
           if (res && res.error) {
             report.residualUsers.push({ id: userId, email: userObj.email, error: res.error.message || String(res.error) });
           } else {
             report.usersDeleted++;
+            if (cleanup.entry) userCleanupAttempts.set(userId, cleanup.entry);
           }
         } catch (err) {
           report.residualUsers.push({ id: userId, email: userObj.email, error: err.message });
@@ -7248,7 +7335,7 @@ export class TestRunInventory {
                   errCode.includes('timeout') ||
                   errCode.includes('econnrefused');
 
-                const isExplicit404 = !is5xxOrNetwork && (errStatus === 404 || errCode === 'user_not_found');
+                const isExplicit404 = !is5xxOrNetwork && (errStatus === 404 || (errStatus === null && errCode === 'user_not_found'));
 
                 if (!isExplicit404) {
                   report.residualUsers.push({
@@ -7283,7 +7370,7 @@ export class TestRunInventory {
                 errCode.includes('unavailable') ||
                 errCode.includes('timeout') ||
                 errCode.includes('econnrefused');
-              const isExplicit404 = !is5xxOrNetwork && (errStatus === 404 || errCode === 'user_not_found');
+              const isExplicit404 = !is5xxOrNetwork && (errStatus === 404 || (errStatus === null && errCode === 'user_not_found'));
               if (!isExplicit404) {
                 report.residualUsers.push({ id: userId, email: userObj.email, error: `VERIFY_FAILED: ${err.message}` });
               }
@@ -7516,6 +7603,7 @@ export class TestRunInventory {
       if (entry) entry.count = count;
       else if (count) report.residualResources.push({ type, count, error: 'CLEANUP_GENERATED_UNRESOLVED_OBLIGATION' });
     }
+    for (const [id, entry] of userCleanupAttempts) if (this.deletedUsers.has(id)) verifiedResolutions.push(entry);
     const liveResiduals = inventoryHasResidualResources(this);
     if (liveResiduals && !report.residualUsers.length && !report.residualResources.length) {
       report.residualResources.push({ type: 'inventory', error: 'LIVE_INVENTORY_NOT_CLEAN', summary: this.getSummary() });
@@ -7523,6 +7611,9 @@ export class TestRunInventory {
     if (!liveResiduals && !report.residualUsers.length && !report.residualResources.length) {
       try {
         const journal = journalForRun(this.runId);
+        if (journal) {
+          persistVerifiedResourceResolutions(this, completedResources.values());
+        }
         if (journal && !journal.finish()) report.residualResources.push({ type: 'journal', error: 'RECOVERY_REQUIRED' });
       } catch (error) {
         report.residualResources.push({ type: 'journal', error: error.code || 'RECOVERY_PERSISTENCE_FAILED' });
@@ -11242,7 +11333,7 @@ export function createHostedAdminClient(rawOptions = {}) {
       if (res.status === 404) return { data: null, error: { message: 'User not found', status: 404 } };
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
-        return { data: null, error: body };
+        return { data: null, error: { ...body, status: res.status } };
       }
       const data = await res.json();
       return { data, error: null };
@@ -11391,6 +11482,13 @@ export function createHostedAdminClient(rawOptions = {}) {
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         return { error: body?.msg || body?.message || `HTTP_${res.status}` };
+      }
+      if (journalForRun(boundRunId)) {
+        const check = await fetchFn(`${baseUrl}/rest/v1/${encodeURIComponent(table)}?id=eq.${encodeURIComponent(id)}&select=id`, {
+          method: 'GET', headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}` }
+        });
+        const rows = await check.json().catch(() => null);
+        if (!check.ok || !Array.isArray(rows) || rows.length !== 0) return { error: 'TABLE_ROW_ABSENCE_UNVERIFIED' };
       }
       return { data: { table, id }, error: null };
     },
