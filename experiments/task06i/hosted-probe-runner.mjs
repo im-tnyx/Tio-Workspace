@@ -144,6 +144,17 @@ const LIVE_RESOLUTION_RECEIPTS = new WeakMap();
 const VERIFIED_LIVE_RESOURCE_CLEANUPS = new WeakMap();
 const RESOURCE_REQUEST_CONTEXT = new AsyncLocalStorage();
 const LIVE_RESOURCE_ATTEMPTS = new WeakMap();
+const VERIFIED_SESSION_REVOCATIONS = new WeakMap();
+const revocationFalseProofTest = Function.prototype.call.bind(RegExp.prototype.test);
+function isFalseRevocationProof(body) {
+  if (!body || typeof body !== 'object' || utilTypes.isProxy(body)) return false;
+  for (const key of ['error_code', 'code', 'msg', 'message', 'error_description', 'error']) {
+    const descriptor = Object.getOwnPropertyDescriptor(body, key);
+    const value = descriptor && Object.hasOwn(descriptor, 'value') ? descriptor.value : null;
+    if (typeof value === 'string' && revocationFalseProofTest(/bad_jwt|jwt_expired|token_expired|invalid_jwt|invalid_token|malformed|expired|invalid[ _]jwt|invalid[ _]token|invalid claim|signature/i, value)) return true;
+  }
+  return false;
+}
 const reservationTrim = Function.prototype.call.bind(String.prototype.trim);
 
 function planStorageOperationId(inventory, rawId) {
@@ -168,6 +179,7 @@ function planStorageOperationId(inventory, rawId) {
 }
 
 function durableInventoryObligation(inventory, kind, resource) {
+  if (resource.startsWith('session:')) VERIFIED_SESSION_REVOCATIONS.get(inventory)?.delete(resource.slice(8));
   const journal = journalForRun(inventory.runId);
   if (!journal) return;
   const key = journal.volatile(kind, resource);
@@ -188,10 +200,41 @@ export function consumeLiveCleanupResolution(receipt, handle) {
 
 async function collectResourceCleanup(resource, operation, verified) {
   const kind = resource.startsWith('table:') ? 'other' : resource.startsWith('storage:') ? 'storage' : 'auth';
-  const entry = { resource, key: crypto.createHash('sha256').update(kind + ':' + resource).digest('hex'), attempts: [] };
+  const entry = { resource, key: crypto.createHash('sha256').update(kind + ':' + resource).digest('hex'), attempts: [], requestOrdinals: [], responses: [] };
   const result = await RESOURCE_REQUEST_CONTEXT.run(entry, operation);
   if (verified(result)) return { result, entry };
   return { result, entry: null };
+}
+function recordVerifiedSessionRevocation(inventory, sessionId, token, expectedUserId, entry) {
+  if (!inventory || !entry || typeof token !== 'string' || !expectedUserId) return false;
+  const claims = extractUnverifiedJwtIdentityClaims(token);
+  if (claims.sessionId !== sessionId || claims.userId !== expectedUserId ||
+      inventory.getSessionToken(sessionId) !== token || inventory.sessionMetadata.get(sessionId)?.userId !== expectedUserId) return false;
+  const journal = journalForRun(inventory.runId);
+  if (journal) {
+    if (!entry.requestOrdinals.length || entry.responses.length !== entry.requestOrdinals.length ||
+        entry.responses.some(response => !(response.status >= 200 && response.status < 300) &&
+          !(response.kind === 'read' && [401, 403].includes(response.status)) &&
+          !(response.kind === 'auth_effect' && [400, 401, 403, 404].includes(response.status)) &&
+          !(response.kind === 'other_effect' && [401, 403, 500].includes(response.status)))) return false;
+    const key = LIVE_RESOURCE_OBLIGATIONS.get(inventory)?.get('session:' + sessionId);
+    if (!key || entry.key !== key) return false;
+    if (journal.state.obligations.has(key)) {
+      const receipt = Object.freeze(Object.create(null));
+      LIVE_RESOLUTION_RECEIPTS.set(receipt, { type: 'session', handle: journal.handle, key, attempts: entry.requestOrdinals });
+      journal.resolveSession(receipt);
+    }
+  }
+  let proofs = VERIFIED_SESSION_REVOCATIONS.get(inventory);
+  if (!proofs) { proofs = new Map(); VERIFIED_SESSION_REVOCATIONS.set(inventory, proofs); }
+  proofs.set(sessionId, { tokenHash: crypto.createHash('sha256').update(token).digest('hex'), userId: expectedUserId });
+  return true;
+}
+function hasVerifiedSessionRevocation(inventory, sessionId) {
+  const proof = VERIFIED_SESSION_REVOCATIONS.get(inventory)?.get(sessionId);
+  const token = inventory.getSessionToken(sessionId);
+  return Boolean(proof && typeof token === 'string' && inventory.sessionMetadata.get(sessionId)?.userId === proof.userId &&
+    crypto.createHash('sha256').update(token).digest('hex') === proof.tokenHash);
 }
 function persistVerifiedResourceResolutions(inventory, entries) {
   const journal = journalForRun(inventory.runId);
@@ -229,7 +272,9 @@ async function executeBudgetedRequest(runId, category, operation, signal = null,
   const budget = getRunRequestBudget({ projectRef: 'wvdabiwbaavfggcmpizd', runId: effectiveRun, mode: existing?.mode ?? mode });
   const resourceContext = RESOURCE_REQUEST_CONTEXT.getStore();
   return executeRunBudgetRequest(budget, { category: existing?.category || category, signal, kind, resourceKey: resourceContext?.key }, async (ordinal, recordCreation) => {
+    resourceContext?.requestOrdinals?.push(ordinal);
     const result = await operation(ordinal, recordCreation);
+    resourceContext?.responses?.push({ ordinal, status: result?.status, kind });
     const resource = RESOURCE_REQUEST_CONTEXT.getStore();
     if (resource && result?.ok === true) {
       resource.attempts.push(ordinal);
@@ -5418,6 +5463,42 @@ export function assertTrustedRunContext(ctx, { projectRef = HARDCODED_TEMP_REF, 
   return meta;
 }
 
+function finalizeAdmittedCleanup(inventory, report, failClosed, completedResources) {
+  const liveResiduals = inventoryHasResidualResources(inventory);
+  if (liveResiduals && !report.residualUsers.length && !report.residualResources.length) {
+    report.residualResources.push({ type: 'inventory', error: 'LIVE_INVENTORY_NOT_CLEAN', summary: inventory.getSummary() });
+  }
+  if (!liveResiduals && !report.residualUsers.length && !report.residualResources.length) {
+    try {
+      const journal = journalForRun(inventory.runId);
+      if (journal) {
+        persistVerifiedResourceResolutions(inventory, completedResources.values());
+      }
+      if (journal && !journal.finish()) report.residualResources.push({ type: 'journal', error: 'RECOVERY_REQUIRED' });
+    } catch (error) {
+      report.residualResources.push({ type: 'journal', error: error.code || 'RECOVERY_PERSISTENCE_FAILED' });
+    }
+  }
+  if (liveResiduals || report.residualUsers.length > 0 || report.residualResources.length > 0) {
+    report.status = 'CLEANUP_FAILED_RESIDUAL_RESOURCES';
+    inventory.runLifecycleState = INVENTORY_RUN_STATE.RESIDUAL_BLOCKED;
+    inventory.finalize();
+    if (failClosed) {
+      const detail = report.residualUsers.length > 0
+        ? `${report.residualUsers.length} synthetic user(s) remain in database after cleanup`
+        : `${report.residualResources.length} residual resource(s) remain after cleanup`;
+      throw cleanupFailure(`CLEANUP_INCOMPLETE: ${detail}`, report);
+    }
+  } else {
+    report.status = 'CLEANUP_VERIFIED_SUCCESS';
+    inventory.runLifecycleState = INVENTORY_RUN_STATE.FINALIZED;
+    inventory.clearCredentials();
+    inventory.finalize();
+  }
+
+  return report;
+}
+
 /**
  * Run-scoped identity and fixture inventory for deterministic cleanup and verification.
  * Distinguishes createdThisRun resources (eligible for deletion) from pre-existing fixture references (NEVER deleted).
@@ -6877,10 +6958,7 @@ export class TestRunInventory {
       this.postFinalizationMutations.length > 0;
 
     if (!hasCleanupEligibleItems && !adminClient) {
-      report.status = 'CLEANUP_VERIFIED_SUCCESS';
-      this.runLifecycleState = INVENTORY_RUN_STATE.FINALIZED;
-      this.finalize();
-      return report;
+      return finalizeAdmittedCleanup(this, report, failClosed, completedResources);
     }
 
     try {
@@ -7216,7 +7294,8 @@ export class TestRunInventory {
     } else {
       for (const sessionId of this.trackedSessions) {
         // Idempotency check: if session is already confirmed revoked, skip redundant duplicate logout (R8-02)
-        if (this.revokedSessions.has(sessionId)) {
+        if (this.revokedSessions.has(sessionId) || hasVerifiedSessionRevocation(this, sessionId)) {
+          this.revokedSessions.add(sessionId);
           report.sessionsRevoked++;
           continue;
         }
@@ -7233,7 +7312,7 @@ export class TestRunInventory {
             continue;
           }
           let res;
-          const sessionCleanup = { resource: 'session:' + sessionId, key: crypto.createHash('sha256').update('auth:session:' + sessionId).digest('hex'), attempts: [] };
+          const sessionCleanup = { resource: 'session:' + sessionId, key: crypto.createHash('sha256').update('auth:session:' + sessionId).digest('hex'), attempts: [], requestOrdinals: [], responses: [] };
           if (typeof adminClient.invalidateSession === 'function') {
             res = await RESOURCE_REQUEST_CONTEXT.run(sessionCleanup, () => adminClient.invalidateSession(sessionId, token));
           } else if (typeof adminClient.signOut === 'function') {
@@ -7250,9 +7329,10 @@ export class TestRunInventory {
           if (res && res.error) {
             report.residualResources.push({ type: 'session', id: sessionId, error: res.error.message || String(res.error) });
           } else {
+            const proven = recordVerifiedSessionRevocation(this, sessionId, token, this.sessionMetadata.get(sessionId)?.userId, sessionCleanup);
+            if (journalForRun(this.runId) && !proven) throw new Error('SESSION_REVOCATION_PROOF_UNAVAILABLE');
             this.revokedSessions.add(sessionId);
             report.sessionsRevoked++;
-            verifiedResolutions.push(sessionCleanup);
           }
         } catch (err) {
           report.residualResources.push({ type: 'session', id: sessionId, error: err.message });
@@ -7521,8 +7601,12 @@ export class TestRunInventory {
                         leakClaims.sessionId === leakSessId && leakClaims.userId === item.userId &&
                         typeof adminClient.invalidateSession === 'function') {
                       try {
-                        const retryRes = await adminClient.invalidateSession(leakSessId, leakToken);
+                        const retry = await collectResourceCleanup('session:' + leakSessId,
+                          () => adminClient.invalidateSession(leakSessId, leakToken), () => true);
+                        const retryRes = retry.result;
                         if (retryRes && !retryRes.error && retryRes.data?.scope === 'local') {
+                          const proven = recordVerifiedSessionRevocation(this, leakSessId, leakToken, item.userId, retry.entry);
+                          if (journalForRun(this.runId) && !proven) throw new Error('SESSION_REVOCATION_PROOF_UNAVAILABLE');
                           retrySucceeded = true;
                           if (leakSessId) this.markSessionRevoked(leakSessId);
                         }
@@ -7635,39 +7719,7 @@ export class TestRunInventory {
       else if (count) report.residualResources.push({ type, count, error: 'CLEANUP_GENERATED_UNRESOLVED_OBLIGATION' });
     }
     for (const [id, entry] of userCleanupAttempts) if (this.deletedUsers.has(id)) verifiedResolutions.push(entry);
-    const liveResiduals = inventoryHasResidualResources(this);
-    if (liveResiduals && !report.residualUsers.length && !report.residualResources.length) {
-      report.residualResources.push({ type: 'inventory', error: 'LIVE_INVENTORY_NOT_CLEAN', summary: this.getSummary() });
-    }
-    if (!liveResiduals && !report.residualUsers.length && !report.residualResources.length) {
-      try {
-        const journal = journalForRun(this.runId);
-        if (journal) {
-          persistVerifiedResourceResolutions(this, completedResources.values());
-        }
-        if (journal && !journal.finish()) report.residualResources.push({ type: 'journal', error: 'RECOVERY_REQUIRED' });
-      } catch (error) {
-        report.residualResources.push({ type: 'journal', error: error.code || 'RECOVERY_PERSISTENCE_FAILED' });
-      }
-    }
-    if (liveResiduals || report.residualUsers.length > 0 || report.residualResources.length > 0) {
-      report.status = 'CLEANUP_FAILED_RESIDUAL_RESOURCES';
-      this.runLifecycleState = INVENTORY_RUN_STATE.RESIDUAL_BLOCKED;
-      this.finalize();
-      if (failClosed) {
-        const detail = report.residualUsers.length > 0
-          ? `${report.residualUsers.length} synthetic user(s) remain in database after cleanup`
-          : `${report.residualResources.length} residual resource(s) remain after cleanup`;
-        throw cleanupFailure(`CLEANUP_INCOMPLETE: ${detail}`, report);
-      }
-    } else {
-      report.status = 'CLEANUP_VERIFIED_SUCCESS';
-      this.runLifecycleState = INVENTORY_RUN_STATE.FINALIZED;
-      this.clearCredentials();
-      this.finalize();
-    }
-
-    return report;
+    return finalizeAdmittedCleanup(this, report, failClosed, completedResources);
   }
 }
 
@@ -10136,6 +10188,7 @@ export function createHostedDispatcher(rawOptions = {}) {
         }
 
         // Affirmative verification of session revocation: pre-reset token MUST be verified as revoked (R4-03, R5-01)
+        let revocationEntry = null;
         let sessionRevocationVerified = false;
         let remainingSessions = null;
         let verifyError = null;
@@ -10143,20 +10196,22 @@ export function createHostedDispatcher(rawOptions = {}) {
 
         if (resetSucceeded && ctx?.activeAccessToken) {
           try {
-            const probeRes = await fetchFn(`${baseUrl}/auth/v1/user`, {
+            const revocation = await collectResourceCleanup('session:' + ctx.activeSessionId, () => fetchFn(`${baseUrl}/auth/v1/user`, {
               method: 'GET',
               headers: {
                 apikey: anonKey,
                 Authorization: `Bearer ${ctx.activeAccessToken}`
               },
               signal
-            });
+            }), () => true);
+            const probeRes = revocation.result;
+            revocationEntry = revocation.entry;
             const probeBody = await parseResponseBody(probeRes);
             probeErrorCode = (probeBody?.error_code || probeBody?.code || '').toLowerCase();
             const probeErrorMsg = (probeBody?.msg || probeBody?.message || probeBody?.error_description || probeBody?.error || '').toLowerCase();
 
             // Distinguish false-proof errors (R5-01): bad_jwt, jwt_expired, token_expired, invalid_jwt, malformed_jwt, etc.
-            const isFalseProof =
+            const isFalseProof = isFalseRevocationProof(probeBody) ||
               probeErrorCode === 'bad_jwt' ||
               probeErrorCode === 'jwt_expired' ||
               probeErrorCode === 'token_expired' ||
@@ -10206,13 +10261,19 @@ export function createHostedDispatcher(rawOptions = {}) {
           verifyError = 'PREREQUISITE_MISSING: Cannot verify session revocation without activeAccessToken from HOOK-01';
         }
 
-        const isRevoked = resetSucceeded && sessionRevocationVerified && remainingSessions === 0;
+        let isRevoked = resetSucceeded && sessionRevocationVerified && remainingSessions === 0;
 
         if (isRevoked) {
           if (inv && ctx?.activeSessionId) {
-            inv.markSessionRevoked(ctx.activeSessionId);
+            const proven = recordVerifiedSessionRevocation(inv, ctx.activeSessionId, ctx.activeAccessToken, ctx.activeUserId, revocationEntry);
+            if (journalForRun(inv.runId) && !proven) {
+              isRevoked = false;
+              sessionRevocationVerified = false;
+              remainingSessions = null;
+              verifyError = 'SESSION_REVOCATION_PROOF_UNAVAILABLE';
+            } else inv.markSessionRevoked(ctx.activeSessionId);
           }
-          if (ctx) {
+          if (ctx && isRevoked) {
             ctx.sessionRevocationConfirmed = true;
             ctx.revokedSessionId = ctx.activeSessionId;
             ctx.revokedAccessToken = ctx.activeAccessToken;
@@ -10257,24 +10318,27 @@ export function createHostedDispatcher(rawOptions = {}) {
           };
         }
 
-        const res = await fetchFn(`${baseUrl}/auth/v1/user`, {
+        const revocation = await collectResourceCleanup('session:' + sessionId, () => fetchFn(`${baseUrl}/auth/v1/user`, {
           method: 'GET',
           headers: { ...headers, Authorization: authHeader },
           signal
-        });
+        }), () => true);
+        const res = revocation.result;
         const body = await parseResponseBody(res);
         const errCode = body?.error_code || body?.code || null;
         const errMsg = (body?.msg || body?.message || body?.error_description || body?.error || '').toLowerCase();
         // Provider-observed revocation error (R4-04): Do NOT synthesize error code for generic 401/403
         const isRevocationError =
-          (res.status === 401 || res.status === 403) &&
+          !isFalseRevocationProof(body) && (res.status === 401 || res.status === 403) &&
           (errCode === 'session_not_found' ||
            errCode === 'AuthSessionMissingError' ||
            (errCode !== 'bad_jwt' && (errMsg.includes('session not found') || errMsg.includes('session is revoked') || errMsg.includes('session_not_found'))));
 
-        const isRevocationSuccess = isRevocationError && ctx?.preInvalidationSessionValid === true && ctx?.passwordResetCompleted === true;
+        let isRevocationSuccess = isRevocationError && ctx?.preInvalidationSessionValid === true && ctx?.passwordResetCompleted === true;
         if (isRevocationSuccess && inv && sessionId) {
-          inv.markSessionRevoked(sessionId);
+          const proven = recordVerifiedSessionRevocation(inv, sessionId, ctx.activeAccessToken, ctx.activeUserId, revocation.entry);
+          if (journalForRun(inv.runId) && !proven) isRevocationSuccess = false;
+          else inv.markSessionRevoked(sessionId);
         }
 
         return {
@@ -10598,12 +10662,13 @@ export function createHostedDispatcher(rawOptions = {}) {
           };
         }
 
-        const res = await fetchFn(`${baseUrl}/functions/v1/auth-user-probe`, {
+        const revocation = await collectResourceCleanup('session:' + sessionId, () => fetchFn(`${baseUrl}/functions/v1/auth-user-probe`, {
           method: 'POST',
           headers: { ...headers, Authorization: authHeader },
           body: JSON.stringify({ probe: 'revoked_session_check' }),
           signal
-        });
+        }), () => true);
+        const res = revocation.result;
         const body = await parseResponseBody(res);
 
         if (res.status === 404) {
@@ -10620,7 +10685,7 @@ export function createHostedDispatcher(rawOptions = {}) {
         const errCodeLower = (errCode || '').toLowerCase();
 
         // Check false-proof errors (R5-08): bad_jwt, jwt_expired, token_expired, invalid_jwt, invalid_token, etc.
-        const isFalseProof =
+        const isFalseProof = isFalseRevocationProof(body) ||
           errCodeLower === 'bad_jwt' ||
           errCodeLower === 'jwt_expired' ||
           errCodeLower === 'token_expired' ||
@@ -10643,9 +10708,11 @@ export function createHostedDispatcher(rawOptions = {}) {
            errMsg.includes('authsessionmissingerror') ||
            errMsg.includes('session not found'));
 
-        const isRevocationSuccess = isRevocationError && ctx?.preInvalidationSessionValid === true && ctx?.passwordResetCompleted === true;
+        let isRevocationSuccess = isRevocationError && ctx?.preInvalidationSessionValid === true && ctx?.passwordResetCompleted === true;
         if (isRevocationSuccess && inv && sessionId) {
-          inv.markSessionRevoked(sessionId);
+          const proven = recordVerifiedSessionRevocation(inv, sessionId, ctx.activeAccessToken, ctx.activeUserId, revocation.entry);
+          if (journalForRun(inv.runId) && !proven) isRevocationSuccess = false;
+          else inv.markSessionRevoked(sessionId);
         }
 
         return {
@@ -11283,18 +11350,26 @@ export function createHostedAdminClient(rawOptions = {}) {
 
       // Immediately revoke verification session so no residual sessions leak (R9-01, R10-01, R11-01)
       let signOutRes;
+      let revocationEntry = null;
       let signOutThrew = false;
       let signOutError = null;
       try {
-        signOutRes = await this.invalidateSession(sessionId, token);
+        const revocation = await collectResourceCleanup('session:' + sessionId,
+          () => this.invalidateSession(sessionId, token), () => true);
+        signOutRes = revocation.result;
+        revocationEntry = revocation.entry;
       } catch (err) {
         signOutThrew = true;
         signOutError = err;
       }
 
-      const revocationSucceeded = !signOutThrew && !signOutRes?.error && signOutRes?.data?.scope === 'local';
+      let revocationSucceeded = !signOutThrew && !signOutRes?.error && signOutRes?.data?.scope === 'local';
       if (revocationSucceeded && inv && claims.userId && (!storedUserId || storedUserId === claims.userId)) {
-        inv.markSessionRevoked(sessionId);
+        if (credentialVerified) {
+          const proven = recordVerifiedSessionRevocation(inv, sessionId, token, expectedUserId, revocationEntry);
+          if (journalForRun(inv.runId) && !proven) revocationSucceeded = false;
+        }
+        if (revocationSucceeded) inv.markSessionRevoked(sessionId);
       }
 
       // A correlated logout may clean up the token session even when identity
@@ -11407,7 +11482,7 @@ export function createHostedAdminClient(rawOptions = {}) {
         const errMsg = (body?.msg || body?.message || body?.error_description || body?.error || '').toString().toLowerCase();
 
         // Disqualify false proofs (R8-02)
-        const isFalseProof =
+        const isFalseProof = isFalseRevocationProof(body) ||
           errCode.includes('bad_jwt') ||
           errCode.includes('jwt_expired') ||
           errCode.includes('token_expired') ||
@@ -11431,7 +11506,7 @@ export function createHostedAdminClient(rawOptions = {}) {
           (errMsg.includes('session') && errMsg.includes('does not exist'))
         );
 
-        if (isSessionAbsence) {
+        if (isSessionAbsence && [400, 401, 403, 404].includes(res.status)) {
           return { data: { scope, alreadyRevoked: true }, error: null, session_not_found: true };
         }
 

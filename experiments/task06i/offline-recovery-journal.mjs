@@ -202,6 +202,21 @@ function replay(events, mode) {
         state.obligations.delete(first);
         state.reservations.delete(first);
         break;
+      case 'session_resolution': {
+        if (event.length !== 4 || state.recovery || ordinal !== state.attempts.length || state.obligations.get(first) !== 'auth' ||
+            !Array.isArray(second) || second.length === 0) invalid();
+        let previous = 0;
+        for (const index of second) {
+          const effect = state.attempts[index - 1];
+          if (!Number.isSafeInteger(index) || index <= previous || !effect || effect.dispatchedAt === null ||
+              !['success', 'failed'].includes(effect.outcome) || state.resolvedAttempts.has(index) || effect.resourceKey !== first ||
+              !['read', 'auth_effect', 'other_effect'].includes(effect.kind)) invalid();
+          previous = index;
+          state.resolvedAttempts.add(index);
+        }
+        state.obligations.delete(first);
+        break;
+      }
       case 'resolution': {
         if (event.length !== 4 || state.recovery || ordinal !== state.attempts.length ||
             !Array.isArray(first) || !Array.isArray(second) || first.length + second.length === 0) invalid();
@@ -401,6 +416,13 @@ function openJournal(rawOptions, creating) {
         const proof = consumeLiveCleanupResolution(receipt, handle);
         if (proof.type !== 'noncreation') throw fail('UNTRUSTED_LIVE_CLEANUP_RESOLUTION');
         append(['noncreation', proof.key, proof.operation]);
+      },
+      resolveSession(receipt) {
+        requireUsable();
+        if (leases || state.recovery || state.terminal) throw fail('RECOVERY_RESOLUTION_BLOCKED');
+        const proof = consumeLiveCleanupResolution(receipt, handle);
+        if (proof.type !== 'session') throw fail('UNTRUSTED_LIVE_CLEANUP_RESOLUTION');
+        append(['session_resolution', state.attempts.length, proof.key, proof.attempts]);
       },
       resolveLive(receipt) {
         requireUsable();

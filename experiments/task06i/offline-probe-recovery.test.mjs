@@ -16,7 +16,7 @@ import {
   createConditionalStorageFixtureProvider, getConditionalStorageFixtureProvider, snapshotRecoveryStorageFixture
 } from './conditional-storage-fixture.mjs';
 import {
-  createCreationProof, createDeterministicFixtureTransport, createHostedAdminClient, createMockProjectKey,
+  createCreationProof, createDeterministicFixtureTransport, createHostedAdminClient, createHostedDispatcher, createMockProjectKey,
   createRunContext, createTrustedOfflineDispatcher, HARDCODED_REAL_REF, HARDCODED_TEMP_REF, HARDCODED_TIO_WORLD_REF,
   provisionStorageProbeFixture, runHostedProbeRunner, runOfflineProbeSimulation, STORAGE_PROBE_BUCKET, TestRunInventory
 } from './hosted-probe-runner.mjs';
@@ -158,6 +158,27 @@ function resolutionFixture(handle, { partial = false } = {}) {
   return { inventory, transport, adminClient };
 }
 
+function revokedSessionFixture(handle, { sessionId = ownerId, tokenUser = ownerId, intendedUser = ownerId, probeId = 'SESSION-03', rejection = { status: 401, json: { code: 'session_not_found' } } } = {}) {
+  const encode = value => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const token = [encode({ alg: 'HS256' }), encode({ sub: tokenUser, session_id: sessionId, ref: projectRef }), 'AA'].join('.');
+  const inventory = new TestRunInventory(handle.runId);
+  inventory.registerSession(sessionId, token);
+  const context = createRunContext({ runId: handle.runId });
+  Object.assign(context, { activeAccessToken: token, activeSessionId: sessionId, activeUserId: intendedUser,
+    preInvalidationSessionValid: true, passwordResetCompleted: true });
+  const transport = createDeterministicFixtureTransport({ requestBudgetMode: mode, routes: [
+    { method: 'GET', pathEquals: '/auth/v1/user', ...rejection },
+    { method: 'PUT', pathIncludes: '/auth/v1/admin/users/', status: 200, json: { id: ownerId } },
+    { method: 'POST', pathEquals: '/functions/v1/auth-user-probe', ...rejection },
+    { method: 'POST', pathEquals: '/auth/v1/logout', status: 204 }
+  ] });
+  const adminClient = createHostedAdminClient({ runId: handle.runId, fetchFn: transport, serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
+  const dispatcher = createHostedDispatcher({ inventory, runContext: context,
+    fetchFn: transport, anonKey: createMockProjectKey(projectRef, 'anon'), serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
+  return { inventory, context, transport, adminClient, token,
+    verify: () => dispatcher({ id: probeId, category: 'Session & Consumer' }) };
+}
+
 function admissionSnapshot(handle, directory, fixture, runContext) {
   const file = journalPath(directory, handle.runId);
   const { clear: _clear, ...contextState } = runContext ?? {};
@@ -240,7 +261,11 @@ async function child(kind, directory, runId) {
   const handle = create(directory);
   writeFileSync(join(directory, 'run-id'), handle.runId, { flush: true });
   let calls = 0;
-  if (kind === 'r4-capacity') {
+  if (kind === 'r6-before-resolution' || kind === 'r6-after-resolution') {
+    const fixture = revokedSessionFixture(handle);
+    interruptWrite(directory, 'session_resolution', 1, kind === 'r6-after-resolution', () => ({ calls: fixture.transport.calls.length }));
+    await fixture.verify();
+  } else if (kind === 'r4-capacity') {
     const inventory = new TestRunInventory(handle.runId);
     let admitted = 0;
     for (; admitted < 512; admitted++) {
@@ -1266,6 +1291,231 @@ if (process.argv[2] === '--h4-child') {
       assert.equal(inventory._reservationSequence, 0);
       assert.equal(inventory.storageFixtures.size, 0);
     } finally { restore(); }
+  });
+
+  test('H4-R6 authentic already-revoked session reaches durable cleanup without redundant logout', async t => {
+    const handle = create(testDirectory());
+    t.after(() => handle.close());
+    const fixture = revokedSessionFixture(handle);
+    const observation = await fixture.verify();
+    assert.equal(observation.passed, true);
+    assert.equal(fixture.inventory.isSessionRevoked(ownerId), true);
+    const result = await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient, failClosed: false });
+    assert.equal(result.status, 'CLEANUP_VERIFIED_SUCCESS', JSON.stringify(result.residualResources));
+    assert.equal(handle.report().status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(handle.report().consumed, 1);
+    assert.equal(fixture.transport.calls.length, 1);
+  });
+
+  test('H4-R6 empty cleanup must finalize the durable journal with zero requests', async t => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    t.after(() => handle.close());
+    const inventory = new TestRunInventory(handle.runId);
+    const result = await inventory.executeCleanup({ adminClient: null });
+    assert.equal(result.status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(handle.report().status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(handle.report().consumed, 0);
+    assert.equal((await inventory.executeCleanup({ adminClient: null })).status, result.status);
+    handle.close();
+    const restarted = reopen(directory, handle.runId);
+    t.after(() => restarted.close());
+    assert.equal((await recoverOfflineProbeRun({ handle: restarted })).status, 'CLEANUP_VERIFIED_SUCCESS');
+  });
+
+  for (const probeId of ['SESSION-02', 'SESSION-06']) {
+    test('H4-R6 ' + probeId + ' persists exact verified session and preserves unrelated reset effects', async t => {
+      const handle = create(testDirectory());
+      t.after(() => handle.close());
+      const fixture = revokedSessionFixture(handle, { probeId });
+      const result = await fixture.verify();
+      assert.equal(result.passed, true, JSON.stringify(result));
+      const key = createHash('sha256').update('auth:session:' + ownerId).digest('hex');
+      assert.equal(journalForRun(handle.runId).state.obligations.has(key), false);
+      assert.equal(handle.report().consumed, probeId === 'SESSION-02' ? 2 : 1);
+      if (probeId === 'SESSION-02') {
+        assert.ok(handle.report().residual.credentialDependent.length > 0);
+        assert.equal(handle.report().status, 'RECOVERY_REQUIRED');
+      } else {
+        assert.equal((await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient })).status, 'CLEANUP_VERIFIED_SUCCESS');
+        assert.equal(fixture.transport.calls.length, 1);
+      }
+    });
+  }
+
+  test('H4-R6 private correlated credential logout resolves session but not its unscoped login effect', async t => {
+    const handle = create(testDirectory());
+    t.after(() => handle.close());
+    const fixture = revokedSessionFixture(handle);
+    const transport = createDeterministicFixtureTransport({ requestBudgetMode: mode, routes: [
+      { method: 'POST', pathEquals: '/auth/v1/token', status: 200, json: { access_token: fixture.token, user: { id: ownerId }, session_id: ownerId } },
+      { method: 'POST', pathEquals: '/auth/v1/logout', status: 204 }
+    ] });
+    const admin = createHostedAdminClient({ runId: handle.runId, fetchFn: transport, serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
+    const result = await admin.verifyUserCredentials('r6@proof.invalid', 'synthetic-password', { inventory: fixture.inventory, expectedUserId: ownerId });
+    assert.equal(result.credentialVerified, true);
+    assert.equal(result.sessionRevocationFailed, false);
+    assert.equal(journalForRun(handle.runId).state.obligations.size, 0);
+    assert.deepEqual(handle.report().residual.credentialDependent, [1]);
+    assert.equal((await fixture.inventory.executeCleanup({ adminClient: admin, failClosed: false })).status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(transport.calls.length, 2, 'No repeated logout for the privately revoked session');
+  });
+
+  for (const hostile of ['public-marker', 'public-set', 'wrong-user', 'wrong-session', 'bad-jwt']) {
+    test('H4-R6 ' + hostile + ' cannot resolve a session obligation', async t => {
+      const handle = create(testDirectory());
+      t.after(() => handle.close());
+      const fixture = revokedSessionFixture(handle, {
+        intendedUser: hostile === 'wrong-user' ? replacementId : ownerId,
+        rejection: hostile === 'bad-jwt' ? { status: 401, json: { code: 'jwt_expired', message: 'JWT expired; session not found' } } : undefined
+      });
+      if (hostile === 'public-marker') fixture.inventory.markSessionRevoked(ownerId);
+      else if (hostile === 'public-set') fixture.inventory.revokedSessions.add(ownerId);
+      else {
+        if (hostile === 'wrong-session') {
+          fixture.inventory.registerSession(replacementId);
+          fixture.context.activeSessionId = replacementId;
+        }
+        await fixture.verify();
+      }
+      const key = createHash('sha256').update('auth:session:' + ownerId).digest('hex');
+      assert.equal(journalForRun(handle.runId).state.obligations.has(key), true);
+      assert.equal(handle.report().status, 'RECOVERY_REQUIRED');
+      assert.throws(() => journalForRun(handle.runId).resolveSession({ type: 'session' }), /UNTRUSTED/);
+    });
+  }
+
+  test('H4-R6 unrelated Auth effects survive verified session and empty-live finalization', async t => {
+    const handle = create(testDirectory());
+    t.after(() => handle.close());
+    await request(handle, 'auth_effect');
+    const fixture = revokedSessionFixture(handle);
+    await fixture.verify();
+    const cleanup = await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient, failClosed: false });
+    assert.equal(cleanup.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.deepEqual(handle.report().residual.credentialDependent, [1]);
+    const emptyInventory = new TestRunInventory(handle.runId);
+    assert.equal((await emptyInventory.executeCleanup({ adminClient: null, failClosed: false })).status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(emptyInventory.runLifecycleState, 'RESIDUAL_BLOCKED');
+    assert.equal(emptyInventory.clearCredentials(), false);
+  });
+
+  for (const after of [false, true]) {
+    test('H4-R6 actual crash ' + (after ? 'after' : 'before') + ' verified session resolution', async t => {
+      const { handle } = crash(t, after ? 'r6-after-resolution' : 'r6-before-resolution');
+      const result = await recoverOfflineProbeRun({ handle });
+      assert.equal(result.status, after ? 'CLEANUP_VERIFIED_SUCCESS' : 'RECOVERY_REQUIRED');
+      assert.equal(result.consumed, 1);
+      assert.deepEqual(await recoverOfflineProbeRun({ handle }), result);
+    });
+  }
+
+  for (const empty of [false, true]) {
+    test('H4-R6 ' + (empty ? 'empty terminal' : 'session resolution') + ' persistence failure retains credentials', async t => {
+      const directory = testDirectory();
+      const handle = create(directory);
+      t.after(() => handle.close());
+      const fixture = empty ? { inventory: new TestRunInventory(handle.runId) } : revokedSessionFixture(handle);
+      fixture.inventory.sessionTokens.set('transient', 'synthetic-transient-credential');
+      const restore = interruptWrite(directory, empty ? 'terminal' : 'session_resolution', empty ? undefined : 1, false, () => ({}), 'fail');
+      try {
+        if (empty) {
+          const result = await fixture.inventory.executeCleanup({ adminClient: null, failClosed: false });
+          assert.equal(result.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+          assert.equal(fixture.inventory.runLifecycleState, 'RESIDUAL_BLOCKED');
+        } else await assert.rejects(fixture.verify(), /RECOVERY_PERSISTENCE_FAILED/);
+        assert.equal(fixture.inventory.sessionTokens.get('transient'), 'synthetic-transient-credential');
+      } finally { restore(); }
+      handle.close();
+      const restarted = reopen(directory, handle.runId);
+      t.after(() => restarted.close());
+      assert.equal(restarted.report().status, 'RECOVERY_REQUIRED');
+    });
+  }
+
+  test('H4-R6 legacy empty cleanup remains idempotent', async () => {
+    const inventory = new TestRunInventory('r6-empty-legacy');
+    assert.equal((await inventory.executeCleanup({ adminClient: null })).status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal((await inventory.executeCleanup({ adminClient: null })).status, 'CLEANUP_VERIFIED_SUCCESS');
+  });
+
+  for (const probeId of ['SESSION-02', 'SESSION-03', 'SESSION-06']) {
+    test('H4-R6 ' + probeId + ' rejects invalid-token text as durable revocation evidence', async t => {
+      const handle = create(testDirectory());
+      t.after(() => handle.close());
+      const fixture = revokedSessionFixture(handle, { probeId, rejection: {
+        status: 401, json: { code: 'invalid_token', message: 'invalid token signature; session not found' }
+      } });
+      assert.equal((await fixture.verify()).passed, false);
+      assert.equal(journalForRun(handle.runId).state.obligations.has(createHash('sha256').update('auth:session:' + ownerId).digest('hex')), true);
+    });
+  }
+
+  test('H4-R6 logout 500 stays blocked while explicit 400 session absence remains supported', async t => {
+    const handle = create(testDirectory());
+    t.after(() => handle.close());
+    const fixture = revokedSessionFixture(handle);
+    const transport = createDeterministicFixtureTransport({ requestBudgetMode: mode, routes: [
+      { method: 'POST', pathEquals: '/auth/v1/logout', status: 500, json: { code: 'session_not_found' } }
+    ] });
+    const admin = createHostedAdminClient({ runId: handle.runId, fetchFn: transport, serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
+    const result = await fixture.inventory.executeCleanup({ adminClient: admin, failClosed: false });
+    assert.equal(result.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(handle.report().status, 'RECOVERY_REQUIRED');
+    assert.equal(handle.report().consumed, 1);
+    const known = create(testDirectory());
+    t.after(() => known.close());
+    const valid = revokedSessionFixture(known);
+    const confirmed = createDeterministicFixtureTransport({ requestBudgetMode: mode, routes: [
+      { method: 'POST', pathEquals: '/auth/v1/logout', status: 400, json: { code: 'AuthSessionMissingError' } }
+    ] });
+    const confirmedAdmin = createHostedAdminClient({ runId: known.runId, fetchFn: confirmed, serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
+    assert.equal((await valid.inventory.executeCleanup({ adminClient: confirmedAdmin })).status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(known.report().consumed, 1);
+  });
+
+  test('H4-R6 generic cleanup resolution cannot bypass a rejected private session proof', async t => {
+    const handle = create(testDirectory());
+    t.after(() => handle.close());
+    const fixture = revokedSessionFixture(handle);
+    fixture.inventory.sessionMetadata.set(ownerId, { ...fixture.inventory.sessionMetadata.get(ownerId), userId: replacementId });
+    const result = await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient, failClosed: false });
+    assert.equal(result.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.ok(result.residualResources.some(item => item.error === 'SESSION_REVOCATION_PROOF_UNAVAILABLE'));
+    assert.equal(journalForRun(handle.runId).state.obligations.size, 1);
+    assert.equal(handle.report().consumed, 1);
+  });
+
+  test('H4-R6 session proof replay rejects forgery, duplicates and later registration reuse', async t => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    t.after(() => handle.close());
+    const fixture = revokedSessionFixture(handle);
+    await fixture.verify();
+    await fixture.verify();
+    assert.equal(handle.report().consumed, 2);
+    assert.equal(journalForRun(handle.runId).state.obligations.size, 0);
+    handle.close();
+    for (const mutate of [
+      events => { events.find(event => event[0] === 'session_resolution')[2] = 'a'.repeat(64); },
+      events => { events.find(event => event[0] === 'session_resolution')[3] = [99]; },
+      events => { events.push(events.find(event => event[0] === 'session_resolution')); }
+    ]) {
+      const alternate = testDirectory();
+      copyFileSync(journalPath(directory, handle.runId), journalPath(alternate, handle.runId));
+      rewrite(alternate, handle.runId, envelope => mutate(envelope[4]));
+      assert.throws(() => reopen(alternate, handle.runId), /INVALID_RECOVERY_TRANSITION/);
+    }
+    const restarted = reopen(directory, handle.runId);
+    t.after(() => restarted.close());
+    assert.equal((await recoverOfflineProbeRun({ handle: restarted })).status, 'CLEANUP_VERIFIED_SUCCESS');
+    const second = create(testDirectory());
+    t.after(() => second.close());
+    const next = revokedSessionFixture(second);
+    await next.verify();
+    next.inventory.registerSession(ownerId, next.token);
+    assert.equal((await next.inventory.executeCleanup({ adminClient: next.adminClient, failClosed: false })).status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(second.report().consumed, 1, 'Public marker reuse cannot consume a hidden logout');
   });
 
   test('H4 standard pacing and cancellation survive restart', async t => {
