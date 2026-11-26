@@ -3979,7 +3979,7 @@ export function validateProbeOutcome(item, rawOutcome) {
       rawOutcome.amr_authenticated === true ||
       jwtCheck.payload?.amr_authenticated === 'true' ||
       jwtCheck.payload?.amr_authenticated === true ||
-      (Array.isArray(jwtCheck.payload?.amr) && jwtCheck.payload.amr.some(a => (typeof a === 'string' ? a : a?.method) === 'password'));
+      hasOwnPasswordAmr(jwtCheck.payload?.amr);
     if (!hasAmrEvidence) {
       return {
         passed: false,
@@ -7976,6 +7976,30 @@ export function createRunContext(rawOptions = {}) {
 const jwtOptionDescriptor = Object.getOwnPropertyDescriptor;
 const jwtOptionPrototype = Object.getPrototypeOf;
 const jwtHasOwn = Object.prototype.hasOwnProperty;
+const jwtStringTrim = Function.prototype.call.bind(String.prototype.trim);
+const jwtStringIncludes = Function.prototype.call.bind(String.prototype.includes);
+function formatJwtReasonValue(value) {
+  if (value === null) return 'null';
+  if (value === undefined) return 'undefined';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
+  return Array.isArray(value) ? '[array]' : '[object]';
+}
+function hasOwnPasswordAmr(amr) {
+  if (!Array.isArray(amr)) return false;
+  for (let index = 0; index < amr.length; index++) {
+    const itemDesc = jwtOptionDescriptor(amr, String(index));
+    const item = itemDesc && jwtHasOwn.call(itemDesc, 'value') ? itemDesc.value : undefined;
+    if (typeof item === 'string' && jwtStringTrim(item) === 'password') return true;
+    if (item && typeof item === 'object' && !Array.isArray(item)) {
+      const methodDesc = jwtOptionDescriptor(item, 'method');
+      if (methodDesc && jwtHasOwn.call(methodDesc, 'value') &&
+          typeof methodDesc.value === 'string' && jwtStringTrim(methodDesc.value) === 'password') {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 function jwtOwnOption(options, name, fallback) {
   const descriptor = jwtOptionDescriptor(options, name);
   if (!descriptor) return fallback;
@@ -8012,7 +8036,7 @@ export function parseAndValidateJwt(token, options = undefined) {
     return { valid: false, reason: 'MISSING_EXP: JWT payload claims lack mandatory exp (expiration) claim', payload };
   }
   if (typeof payload.exp !== 'number' || !Number.isFinite(payload.exp)) {
-    return { valid: false, reason: `INVALID_EXP: JWT exp claim must be a finite number, got ${typeof payload.exp} (${payload.exp})`, payload };
+    return { valid: false, reason: `INVALID_EXP: JWT exp claim must be a finite number, got ${typeof payload.exp} (${formatJwtReasonValue(payload.exp)})`, payload };
   }
 
   // Temporal consistency with iat (R5-05)
@@ -8030,14 +8054,23 @@ export function parseAndValidateJwt(token, options = undefined) {
     return { valid: false, reason: `TOKEN_EXPIRED: JWT expired at unix ${payload.exp}, current ${nowUnix}`, payload };
   }
 
-  if (expectedIssuer && typeof payload.iss === 'string' && !payload.iss.includes(expectedIssuer)) {
+  if (expectedIssuer && typeof payload.iss === 'string' && !jwtStringIncludes(payload.iss, expectedIssuer)) {
     return { valid: false, reason: `ISSUER_MISMATCH: Expected issuer containing '${expectedIssuer}', got '${payload.iss}'`, payload };
   }
 
   if (expectedAudience) {
-    const audMatches = payload.aud === expectedAudience || (Array.isArray(payload.aud) && payload.aud.includes(expectedAudience));
+    let audMatches = payload.aud === expectedAudience;
+    if (!audMatches && Array.isArray(payload.aud)) {
+      for (let index = 0; index < payload.aud.length; index++) {
+        const audDesc = jwtOptionDescriptor(payload.aud, String(index));
+        if (audDesc && jwtHasOwn.call(audDesc, 'value') && audDesc.value === expectedAudience) {
+          audMatches = true;
+          break;
+        }
+      }
+    }
     if (!audMatches) {
-      return { valid: false, reason: `AUDIENCE_MISMATCH: Expected audience '${expectedAudience}', got '${payload.aud}'`, payload };
+      return { valid: false, reason: `AUDIENCE_MISMATCH: Expected audience '${expectedAudience}', got '${formatJwtReasonValue(payload.aud)}'`, payload };
     }
   }
 
@@ -8061,16 +8094,24 @@ export function parseAndValidateJwt(token, options = undefined) {
     return { valid: false, reason: 'MALFORMED_AMR: amr claim must be a non-empty array', payload };
   }
 
-  for (const item of payload.amr) {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+  for (let index = 0; index < payload.amr.length; index++) {
+    const itemDesc = jwtOptionDescriptor(payload.amr, String(index));
+    const item = itemDesc && jwtHasOwn.call(itemDesc, 'value') ? itemDesc.value : undefined;
+    if (!item || typeof item !== 'object' || Array.isArray(item) || utilTypes.isProxy(item) ||
+        (jwtOptionPrototype(item) !== null && jwtOptionPrototype(item) !== Object.prototype)) {
       return { valid: false, reason: 'MALFORMED_AMR_ELEMENT: each amr item must be a JSON object (strings prohibited)', payload };
     }
-    const method = item.method;
-    if (typeof method !== 'string' || !method.trim()) {
+    const methodDesc = jwtOptionDescriptor(item, 'method');
+    if (!methodDesc || !jwtHasOwn.call(methodDesc, 'value')) {
+      return { valid: false, reason: 'MALFORMED_AMR_METHOD: amr element missing non-empty string method property', payload };
+    }
+    const method = methodDesc.value;
+    const trimmedMethod = typeof method === 'string' ? jwtStringTrim(method) : '';
+    if (!trimmedMethod) {
       return { valid: false, reason: 'MALFORMED_AMR_METHOD: amr element missing non-empty string method property', payload };
     }
     // Canonical SQL hook strictly allowlists ONLY 'password' method for password/refresh tokens
-    if (method.trim() !== 'password') {
+    if (trimmedMethod !== 'password') {
       return { valid: false, reason: `PROHIBITED_AMR_METHOD: JWT amr contains disallowed method '${method}' (only 'password' allowed)`, payload };
     }
   }
@@ -9048,6 +9089,13 @@ export function createHostedDispatcher(rawOptions = {}) {
             error: 'PREREQUISITE_MISSING: HOOK-02 requires activeRefreshToken from HOOK-01'
           };
         }
+        if (ctx && (!isNonEmptyString(ctx.activeUserId) || !isNonEmptyString(ctx.activeSessionId))) {
+          return {
+            passed: false,
+            status: 400,
+            error: 'PREREQUISITE_MISSING: HOOK-02 requires activeUserId and activeSessionId from HOOK-01'
+          };
+        }
 
         const cap = getEndpointCapabilities('HOOK-02') || {
           canMintSession: true,
@@ -9130,35 +9178,60 @@ export function createHostedDispatcher(rawOptions = {}) {
             passed: false,
             status: observed.status,
             error: `JWT_CLAIM_VIOLATION: ${jwtCheck.reason}`,
-            refreshed_claim_policy_validated: false
-          };
-        }
-
-        if ((ctx?.activeUserId && jwtCheck.payload.sub && ctx.activeUserId !== jwtCheck.payload.sub) ||
-            (observed.userId && jwtCheck.payload.sub && observed.userId !== jwtCheck.payload.sub) ||
-            (observed.sessionId && jwtCheck.payload.session_id && observed.sessionId !== jwtCheck.payload.session_id)) {
-          return {
-            passed: false,
-            status: observed.status,
-            error: 'JWT_IDENTITY_MISMATCH: refreshed claims conflict with observed identity',
-            refreshed_claim_policy_validated: true,
-            cryptographically_authenticated: false,
+            refreshed_claim_policy_validated: false,
             session_id: observed.sessionId || null,
             session_cleanup_registered: isNonEmptyString(observed.sessionId)
           };
         }
 
+        const claimUserId = isNonEmptyString(jwtCheck.payload.sub) ? jwtStringTrim(jwtCheck.payload.sub) : null;
+        const claimSessionId = isNonEmptyString(jwtCheck.payload.session_id) ? jwtStringTrim(jwtCheck.payload.session_id) : null;
+        const observedUserId = isNonEmptyString(observed.userId) ? jwtStringTrim(observed.userId) : null;
+        const observedSessionId = isNonEmptyString(observed.sessionId) ? jwtStringTrim(observed.sessionId) : null;
+        const activeUserId = isNonEmptyString(ctx?.activeUserId) ? jwtStringTrim(ctx.activeUserId) : null;
+        const activeSessionId = isNonEmptyString(ctx?.activeSessionId) ? jwtStringTrim(ctx.activeSessionId) : null;
+
+        if (!claimUserId || !claimSessionId) {
+          return {
+            passed: false,
+            status: observed.status,
+            error: 'MISSING_IDENTITY_CLAIMS: refreshed JWT must contain non-empty sub and session_id claims',
+            refreshed_claim_policy_validated: true,
+            cryptographically_authenticated: false,
+            session_id: observedSessionId || null,
+            session_cleanup_registered: isNonEmptyString(observedSessionId)
+          };
+        }
+
+        if ((activeUserId && activeUserId !== claimUserId) ||
+            (activeSessionId && activeSessionId !== claimSessionId) ||
+            (observedUserId && observedUserId !== claimUserId) ||
+            (observedSessionId && observedSessionId !== claimSessionId) ||
+            (activeUserId && observedUserId && activeUserId !== observedUserId) ||
+            (activeSessionId && observedSessionId && activeSessionId !== observedSessionId)) {
+          return {
+            passed: false,
+            status: observed.status,
+            error: 'JWT_IDENTITY_MISMATCH: refreshed claims conflict with active or observed identity',
+            refreshed_claim_policy_validated: true,
+            cryptographically_authenticated: false,
+            session_id: observedSessionId || null,
+            session_cleanup_registered: isNonEmptyString(observedSessionId)
+          };
+        }
+
         const amrPreserved =
           (jwtCheck.payload.amr_authenticated === 'true' || jwtCheck.payload.amr_authenticated === true) &&
-          Array.isArray(jwtCheck.payload.amr) &&
-          jwtCheck.payload.amr.some(m => (typeof m === 'string' ? m : m?.method) === 'password');
+          hasOwnPasswordAmr(jwtCheck.payload.amr);
 
         if (!amrPreserved) {
           return {
             passed: false,
             status: observed.status,
             error: 'AMR_PRESERVATION_VIOLATION: Refreshed token did not preserve password-origin AMR',
-            amr_preserved: false
+            amr_preserved: false,
+            session_id: observedSessionId || null,
+            session_cleanup_registered: isNonEmptyString(observedSessionId)
           };
         }
 
@@ -9167,12 +9240,16 @@ export function createHostedDispatcher(rawOptions = {}) {
           if (observed.refreshToken) {
             ctx.activeRefreshToken = observed.refreshToken;
           }
+          ctx.activeUserId = claimUserId;
+          ctx.activeSessionId = claimSessionId;
         }
 
         return {
           passed: true,
           status: observed.status,
           access_token: refreshedAccess,
+          user_id: claimUserId,
+          session_id: claimSessionId,
           amr_preserved: true,
           refreshed_claim_policy_validated: true,
           cryptographically_authenticated: false,

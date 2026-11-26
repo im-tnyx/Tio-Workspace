@@ -574,3 +574,36 @@ for (const field of ['ownerId', 'objectId']) test(`R16-04 UUID: genuine ${field}
     assert.equal(f.provider.getObject({ bucket: STORAGE_PROBE_BUCKET, path: f.path })[field], replacement[field].toLowerCase());
   }
 });
+
+test('JWT-AMR-01: decodeOfflineJwtClaims recursively freezes null-prototype nested claims and rejects __proto__', () => {
+  const encode = value => Buffer.from(JSON.stringify(value)).toString('base64url');
+  const header = encode({ alg: 'HS256', typ: 'JWT' });
+  const sig = Buffer.from('sig-amr-test').toString('base64url');
+  const missingMethodToken = `${header}.${encode({ sub: OWNER, amr: [{}] })}.${sig}`;
+  const validToken = `${header}.${encode({ sub: OWNER, amr: [{ method: 'password', timestamp: 1700000000 }] })}.${sig}`;
+  const protoKeyToken = `${header}.${Buffer.from(`{"sub":"${OWNER}","__proto__":{"method":"password"}}`).toString('base64url')}.${sig}`;
+  const prevMethod = Object.getOwnPropertyDescriptor(Object.prototype, 'method');
+  let getterCalls = 0;
+  try {
+    Object.defineProperty(Object.prototype, 'method', {
+      configurable: true,
+      get() { getterCalls++; return 'password'; }
+    });
+    const decodedMissing = decodeOfflineJwtClaims(missingMethodToken);
+    assert.ok(decodedMissing);
+    assert.equal(Object.getPrototypeOf(decodedMissing), null);
+    assert.equal(Object.isFrozen(decodedMissing.amr), true);
+    assert.equal(Object.getPrototypeOf(decodedMissing.amr[0]), null);
+    assert.equal(Object.isFrozen(decodedMissing.amr[0]), true);
+    assert.equal(decodedMissing.amr[0].method, undefined);
+
+    const decodedValid = decodeOfflineJwtClaims(validToken);
+    assert.equal(Object.getPrototypeOf(decodedValid.amr[0]), null);
+    assert.equal(decodedValid.amr[0].method, 'password');
+    assert.equal(decodeOfflineJwtClaims(protoKeyToken), null);
+    assert.equal(getterCalls, 0);
+  } finally {
+    if (prevMethod) Object.defineProperty(Object.prototype, 'method', prevMethod);
+    else delete Object.prototype.method;
+  }
+});

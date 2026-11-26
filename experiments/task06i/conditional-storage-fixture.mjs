@@ -225,6 +225,39 @@ function jsonRecordBytes(bytes) {
   const value = parseJsonEvidence(text);
   return plainRecord(value) ? value : null;
 }
+const safeFreeze = Object.freeze;
+const safeIsFinite = Number.isFinite;
+function snapshotJwtClaimValue(value) {
+  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value;
+  if (typeof value === 'number') return safeIsFinite(value) ? value : undefined;
+  if (!value || typeof value !== 'object' || safeIsProxy(value)) return undefined;
+  const proto = safePrototype(value);
+  if (safeIsArray(value)) {
+    if (proto !== safeArrayPrototype) return undefined;
+    const out = [];
+    for (let index = 0; index < value.length; index++) {
+      const descriptor = safeDescriptor(value, String(index));
+      if (!descriptor || !safeHasOwn(descriptor, 'value')) return undefined;
+      const item = snapshotJwtClaimValue(descriptor.value);
+      if (item === undefined) return undefined;
+      defineData(out, String(index), item);
+    }
+    return safeFreeze(out);
+  }
+  if (proto !== null && proto !== safeObjectPrototype) return undefined;
+  const out = Object.create(null);
+  const keys = safeNames(value);
+  for (let index = 0; index < keys.length; index++) {
+    const key = keys[index];
+    if (key === '__proto__') return undefined;
+    const descriptor = safeDescriptor(value, key);
+    if (!descriptor || !safeHasOwn(descriptor, 'value')) return undefined;
+    const prop = snapshotJwtClaimValue(descriptor.value);
+    if (prop === undefined) return undefined;
+    defineData(out, key, prop);
+  }
+  return safeFreeze(out);
+}
 export function decodeOfflineJwtClaims(token) {
   if (typeof token !== 'string') return null;
   const parts = safeSplit(token, '.');
@@ -239,10 +272,8 @@ export function decodeOfflineJwtClaims(token) {
   const algorithm = ownData(header, 'alg');
   if (typeof algorithm !== 'string' || !algorithm || safeLower(algorithm) === 'none' ||
       safeHasOwn(header, 'crit') || (safeHasOwn(header, 'b64') && ownData(header, 'b64') !== true)) return null;
-  const snapshot = Object.create(null);
-  const keys = safeKeys(claims);
-  for (let index = 0; index < keys.length; index++) defineData(snapshot, keys[index], ownData(claims, keys[index]));
-  return Object.freeze(snapshot);
+  const snapshot = snapshotJwtClaimValue(claims);
+  return snapshot || null;
 }
 
 export function extractOfflineStorageObjectId(row) {

@@ -13384,3 +13384,294 @@ test('SR-01: HOOK-01/02 reject conflicting or invalid token identity and retain 
   assert.equal(context.activeUserId, 'user-prior-sr01');
   assert.equal(context.activeSessionId, 'session-prior-sr01');
 });
+
+test('PR45-P2-A: parseAndValidateJwt enforces recursive own-only AMR admission without invoking inherited getters', () => {
+  const prevMethod = Object.getOwnPropertyDescriptor(Object.prototype, 'method');
+  const prevIter = Object.getOwnPropertyDescriptor(Array.prototype, Symbol.iterator);
+  const prevIncludes = Object.getOwnPropertyDescriptor(Array.prototype, 'includes');
+  const prevJoin = Object.getOwnPropertyDescriptor(Array.prototype, 'join');
+  const prevStrTrim = Object.getOwnPropertyDescriptor(String.prototype, 'trim');
+  const prevStrIncludes = Object.getOwnPropertyDescriptor(String.prototype, 'includes');
+  let sentinelCalls = 0;
+  const missingAmrMethodJwt = createMockJwt({ amr: [{}] });
+  const emptyAmrMethodJwt = createMockJwt({ amr: [{ method: '   ' }] });
+  const numericAmrMethodJwt = createMockJwt({ amr: [{ method: 123 }] });
+  const prohibitedAmrJwt = createMockJwt({ amr: [{ method: 'otp' }] });
+  const objectExpJwt = createMockJwt({ exp: {} });
+  const objectAudJwt = createMockJwt({ aud: {} });
+  const mismatchAudArrayJwt = createMockJwt({ aud: ['anon'] });
+  const validJwt = createMockJwt({
+    iss: `https://${HARDCODED_TEMP_REF}.supabase.co/auth/v1`,
+    aud: ['anon', 'authenticated'],
+    amr: [{ method: 'password', timestamp: 1700000000 }]
+  });
+  try {
+    Object.defineProperty(Object.prototype, 'method', {
+      configurable: true,
+      get() { sentinelCalls++; return 'password'; }
+    });
+    Object.defineProperty(Array.prototype, Symbol.iterator, {
+      configurable: true,
+      value() { sentinelCalls++; return [][Symbol.iterator](); }
+    });
+    Object.defineProperty(Array.prototype, 'includes', {
+      configurable: true,
+      value() { sentinelCalls++; return true; }
+    });
+    Object.defineProperty(Array.prototype, 'join', {
+      configurable: true,
+      value() { sentinelCalls++; return 'hijacked'; }
+    });
+    Object.defineProperty(String.prototype, 'trim', {
+      configurable: true,
+      value() { sentinelCalls++; return 'password'; }
+    });
+    Object.defineProperty(String.prototype, 'includes', {
+      configurable: true,
+      value() { sentinelCalls++; return true; }
+    });
+
+    const resMissing = parseAndValidateJwt(missingAmrMethodJwt);
+    assert.equal(resMissing.valid, false);
+    assert.match(resMissing.reason, /MALFORMED_AMR_METHOD/);
+
+    const resEmpty = parseAndValidateJwt(emptyAmrMethodJwt);
+    assert.equal(resEmpty.valid, false);
+    assert.match(resEmpty.reason, /MALFORMED_AMR_METHOD/);
+
+    const resNumeric = parseAndValidateJwt(numericAmrMethodJwt);
+    assert.equal(resNumeric.valid, false);
+    assert.match(resNumeric.reason, /MALFORMED_AMR_METHOD/);
+
+    const resProhibited = parseAndValidateJwt(prohibitedAmrJwt);
+    assert.equal(resProhibited.valid, false);
+    assert.match(resProhibited.reason, /PROHIBITED_AMR_METHOD/);
+
+    const resObjExp = parseAndValidateJwt(objectExpJwt);
+    assert.equal(resObjExp.valid, false);
+    assert.match(resObjExp.reason, /INVALID_EXP/);
+
+    const resObjAud = parseAndValidateJwt(objectAudJwt);
+    assert.equal(resObjAud.valid, false);
+    assert.match(resObjAud.reason, /AUDIENCE_MISMATCH/);
+
+    const resAudArray = parseAndValidateJwt(mismatchAudArrayJwt);
+    assert.equal(resAudArray.valid, false);
+    assert.match(resAudArray.reason, /AUDIENCE_MISMATCH/);
+
+    const resValid = parseAndValidateJwt(validJwt, { expectedIssuer: HARDCODED_TEMP_REF, expectedAudience: 'authenticated' });
+    assert.equal(resValid.valid, true);
+    assert.equal(Object.getPrototypeOf(resValid.payload.amr[0]), null);
+    assert.equal(Object.isFrozen(resValid.payload.amr[0]), true);
+    assert.equal(sentinelCalls, 0);
+  } finally {
+    if (prevMethod) Object.defineProperty(Object.prototype, 'method', prevMethod); else delete Object.prototype.method;
+    if (prevIter) Object.defineProperty(Array.prototype, Symbol.iterator, prevIter); else delete Array.prototype[Symbol.iterator];
+    if (prevIncludes) Object.defineProperty(Array.prototype, 'includes', prevIncludes); else delete Array.prototype.includes;
+    if (prevJoin) Object.defineProperty(Array.prototype, 'join', prevJoin); else delete Array.prototype.join;
+    if (prevStrTrim) Object.defineProperty(String.prototype, 'trim', prevStrTrim); else delete String.prototype.trim;
+    if (prevStrIncludes) Object.defineProperty(String.prototype, 'includes', prevStrIncludes); else delete String.prototype.includes;
+  }
+});
+
+test('PR45-P2-B: HOOK-02 correlates refreshed claims with active user/session, retains cleanup, and blocks stale revocation', async () => {
+  const user1 = 'user-p2b-1';
+  const sess1 = 'sess-p2b-1';
+  const sess2 = 'sess-p2b-2';
+  const tok1 = createMockJwt({ sub: user1, session_id: sess1 });
+  const tokSameUserDiffSess = createMockJwt({ sub: user1, session_id: sess2 });
+  const tokValidRefresh = createMockJwt({ sub: user1, session_id: sess1, exp: Math.floor(Date.now() / 1000) + 900 });
+
+  // 1. Same-user / different-session refresh is rejected, keeps ctx bound to sess-1, retains sess-2 cleanup, and SESSION-02 only revokes sess-1
+  {
+    const inv = new TestRunInventory('test-p2b-diff-sess');
+    const ctx = createRunContext({ runId: inv.runId, testEmail: 'p2b@proof.invalid' });
+    const transport = createDeterministicFixtureTransport({
+      requestBudgetMode: 'recorded_zero_wait',
+      routes: [
+        {
+          urlIncludes: 'grant_type=password',
+          status: 200,
+          json: {
+            access_token: tok1,
+            refresh_token: 'refresh-p2b-1',
+            session_id: sess1,
+            user: { id: user1, email: 'p2b@proof.invalid' }
+          }
+        },
+        {
+          urlIncludes: 'grant_type=refresh_token',
+          status: 200,
+          json: {
+            access_token: tokSameUserDiffSess,
+            refresh_token: 'refresh-p2b-2',
+            session_id: sess2,
+            user: { id: user1, email: 'p2b@proof.invalid' }
+          }
+        },
+        {
+          urlIncludes: '/auth/v1/admin/users/',
+          method: 'PUT',
+          status: 200,
+          setsState: { passwordReset: true },
+          json: { id: user1 }
+        },
+        {
+          urlIncludes: '/auth/v1/user',
+          method: 'GET',
+          headersMatch: { authorization: `Bearer ${tok1}` },
+          whenState: { passwordReset: true },
+          status: 401,
+          json: { error_code: 'session_not_found' }
+        },
+        {
+          urlIncludes: '/auth/v1/user',
+          method: 'GET',
+          headersMatch: { authorization: `Bearer ${tok1}` },
+          status: 200,
+          json: { id: user1 }
+        }
+      ],
+      defaultResponse: { status: 404, json: {} }
+    });
+    const disp = createHostedDispatcher({
+      anonKey: validTestAnonKey,
+      serviceRoleKey: validTestServiceRoleKey,
+      inventory: inv,
+      runContext: ctx,
+      fetchFn: transport
+    });
+    const h1 = await disp({ id: 'HOOK-01', category: 'Token Hook' });
+    assert.equal(h1.passed, true);
+
+    const h2 = await disp({ id: 'HOOK-02', category: 'Token Hook' });
+    assert.equal(h2.passed, false);
+    assert.match(h2.error, /JWT_IDENTITY_MISMATCH/);
+    assert.equal(h2.session_id, sess2);
+    assert.equal(h2.session_cleanup_registered, true);
+    assert.equal(ctx.activeAccessToken, tok1);
+    assert.equal(ctx.activeRefreshToken, 'refresh-p2b-1');
+    assert.equal(ctx.activeUserId, user1);
+    assert.equal(ctx.activeSessionId, sess1);
+    assert.equal(inv.trackedSessions.has(sess1), true);
+    assert.equal(inv.trackedSessions.has(sess2), true);
+
+    const s1 = await disp({ id: 'SESSION-01', category: 'Session Invalidation' });
+    assert.equal(s1.passed, true);
+    assert.equal(s1.session_id, sess1);
+    const s2 = await disp({ id: 'SESSION-02', category: 'Session Invalidation' });
+    assert.equal(s2.passed, true);
+    assert.equal(s2.session_id, sess1);
+    assert.equal(inv.revokedSessions.has(sess1), true);
+    assert.equal(inv.revokedSessions.has(sess2), false);
+    assert.equal(inv.isClean(), false);
+    const userCalls = transport.calls.filter(c => c.url.includes('/auth/v1/user'));
+    assert.equal(userCalls.length, 2);
+    assert.equal(userCalls.every(c => c.headers.authorization === `Bearer ${tok1}`), true);
+  }
+
+  // 2. Missing required identity claims (missing sub or missing session_id in JWT) and missing active context prerequisite
+  {
+    for (const badToken of [
+      createMockJwt({ sub: undefined, session_id: sess1 }),
+      createMockJwt({ sub: user1, session_id: undefined })
+    ]) {
+      const inv = new TestRunInventory(`test-p2b-missing-${badToken.length}`);
+      const ctx = createRunContext({ runId: inv.runId });
+      ctx.activeAccessToken = tok1;
+      ctx.activeRefreshToken = 'refresh-p2b-1';
+      ctx.activeUserId = user1;
+      ctx.activeSessionId = sess1;
+      const disp = createHostedDispatcher({
+        anonKey: validTestAnonKey,
+        inventory: inv,
+        runContext: ctx,
+        fetchFn: staticTransport({
+          status: 200,
+          json: { access_token: badToken, refresh_token: 'refresh-p2b-new', session_id: sess1, user: { id: user1 } }
+        })
+      });
+      const res = await disp({ id: 'HOOK-02', category: 'Token Hook' });
+      assert.equal(res.passed, false);
+      assert.match(res.error, /MISSING_IDENTITY_CLAIMS/);
+      assert.equal(res.session_cleanup_registered, true);
+      assert.equal(inv.trackedSessions.has(sess1), true);
+      assert.equal(ctx.activeAccessToken, tok1);
+      assert.equal(ctx.activeRefreshToken, 'refresh-p2b-1');
+    }
+
+    const invMissingCtx = new TestRunInventory('test-p2b-missing-ctx');
+    const ctxMissing = createRunContext({ runId: invMissingCtx.runId });
+    ctxMissing.activeRefreshToken = 'refresh-only';
+    const dispMissingCtx = createHostedDispatcher({
+      anonKey: validTestAnonKey,
+      inventory: invMissingCtx,
+      runContext: ctxMissing,
+      fetchFn: staticTransport({ status: 200, json: { access_token: tokValidRefresh } })
+    });
+    const resMissingCtx = await dispMissingCtx({ id: 'HOOK-02', category: 'Token Hook' });
+    assert.equal(resMissingCtx.passed, false);
+    assert.match(resMissingCtx.error, /PREREQUISITE_MISSING/);
+  }
+
+  // 3. Mismatched response identity vs active/token identity
+  {
+    for (const [respUser, respSess] of [
+      [user1, 'sess-p2b-body-mismatch'],
+      ['user-p2b-body-mismatch', sess1]
+    ]) {
+      const inv = new TestRunInventory(`test-p2b-resp-${respSess}`);
+      const ctx = createRunContext({ runId: inv.runId });
+      ctx.activeAccessToken = tok1;
+      ctx.activeRefreshToken = 'refresh-p2b-1';
+      ctx.activeUserId = user1;
+      ctx.activeSessionId = sess1;
+      const disp = createHostedDispatcher({
+        anonKey: validTestAnonKey,
+        inventory: inv,
+        runContext: ctx,
+        fetchFn: staticTransport({
+          status: 200,
+          json: { access_token: tokValidRefresh, refresh_token: 'refresh-p2b-new', session_id: respSess, user: { id: respUser } }
+        })
+      });
+      const res = await disp({ id: 'HOOK-02', category: 'Token Hook' });
+      assert.equal(res.passed, false);
+      assert.match(res.error, /JWT_IDENTITY_MISMATCH/);
+      assert.equal(res.session_cleanup_registered, true);
+      assert.equal(inv.trackedSessions.has(respSess), true);
+      assert.equal(ctx.activeAccessToken, tok1);
+      assert.equal(ctx.activeRefreshToken, 'refresh-p2b-1');
+      assert.equal(ctx.activeUserId, user1);
+      assert.equal(ctx.activeSessionId, sess1);
+    }
+  }
+
+  // 4. Valid same-session refresh updates tokens and preserves correlated active user/session
+  {
+    const inv = new TestRunInventory('test-p2b-valid-refresh');
+    const ctx = createRunContext({ runId: inv.runId });
+    ctx.activeAccessToken = tok1;
+    ctx.activeRefreshToken = 'refresh-p2b-1';
+    ctx.activeUserId = user1;
+    ctx.activeSessionId = sess1;
+    const disp = createHostedDispatcher({
+      anonKey: validTestAnonKey,
+      inventory: inv,
+      runContext: ctx,
+      fetchFn: staticTransport({
+        status: 200,
+        json: { access_token: tokValidRefresh, refresh_token: 'refresh-p2b-2', session_id: sess1, user: { id: user1 } }
+      })
+    });
+    const res = await disp({ id: 'HOOK-02', category: 'Token Hook' });
+    assert.equal(res.passed, true);
+    assert.equal(res.amr_preserved, true);
+    assert.equal(res.user_id, user1);
+    assert.equal(res.session_id, sess1);
+    assert.equal(ctx.activeAccessToken, tokValidRefresh);
+    assert.equal(ctx.activeRefreshToken, 'refresh-p2b-2');
+    assert.equal(ctx.activeUserId, user1);
+    assert.equal(ctx.activeSessionId, sess1);
+  }
+});
