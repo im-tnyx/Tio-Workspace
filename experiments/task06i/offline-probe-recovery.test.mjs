@@ -1203,6 +1203,71 @@ if (process.argv[2] === '--h4-child') {
     assert.equal(handle.report().consumed, 1);
   });
 
+  for (const durable of [false, true]) {
+    test('H4-R5 normalized operation IDs stay unique and reject unsupported inputs ' + (durable ? 'journal' : 'legacy'), t => {
+      const handle = durable ? create(testDirectory()) : null;
+      if (handle) t.after(() => handle.close());
+      const inventory = new TestRunInventory(handle?.runId || 'r5-legacy-ids');
+      const ids = [];
+      for (const [index, value] of [undefined, null, '', '   ', undefined].entries()) {
+        ids.push(inventory.reserveStorageFixture({ path: 'r5-' + index + '/probe.txt', reservationOpId: value }).reservationOpId);
+      }
+      assert.equal(new Set(ids).size, ids.length);
+      assert.equal(inventory._reservationSequence, 5);
+      const explicit = inventory.reserveStorageFixture({ path: 'r5-explicit/probe.txt', reservationOpId: '  explicit-owner  ' });
+      assert.equal(explicit.reservationOpId, 'explicit-owner');
+      assert.equal(inventory._reservationSequence, 5);
+      for (const value of [123, true, 0, false, {}, () => {}, 'malformed\u0000id', 'x'.repeat(513)]) {
+        for (const method of ['reserveStorageFixture', 'registerStorageFixture']) {
+          const before = handle?.report();
+          const size = inventory.storageFixtures.size;
+          assert.throws(() => inventory[method]({ path: 'rejected/probe.txt', reservationOpId: value }), /INVALID_STORAGE_OPERATION_ID/);
+          assert.equal(inventory.storageFixtures.size, size);
+          assert.equal(inventory._reservationSequence, 5);
+          if (handle) assert.deepEqual(handle.report(), before);
+        }
+      }
+      assert.throws(() => inventory.updateStorageFixture(STORAGE_PROBE_BUCKET + '/r5-0/probe.txt', {
+        ownerOpId: ids[1], status: 'WRONG_OWNER'
+      }), /OWNERSHIP_VIOLATION/);
+    });
+
+    test('H4-R5 explicit/generated collisions and adjacent registration ' + (durable ? 'journal' : 'legacy'), t => {
+      const handle = durable ? create(testDirectory()) : null;
+      if (handle) t.after(() => handle.close());
+      const inventory = new TestRunInventory(handle?.runId || 'r5-legacy-collisions');
+      const firstAuto = 'op-res-' + inventory.runId + '-1';
+      inventory.registerStorageFixture({ path: 'legacy-explicit/probe.txt', reservationOpId: firstAuto });
+      const next = inventory.reserveStorageFixture({ path: 'generated/probe.txt' });
+      assert.notEqual(next.reservationOpId, firstAuto);
+      assert.equal(inventory._reservationSequence, 2);
+      for (const method of ['reserveStorageFixture', 'registerStorageFixture']) {
+        const before = handle?.report();
+        assert.throws(() => inventory[method]({ path: 'conflicting/probe.txt', reservationOpId: next.reservationOpId }), /STORAGE_OPERATION_ID_CONFLICT/);
+        assert.equal(inventory.storageFixtures.has(STORAGE_PROBE_BUCKET + '/conflicting/probe.txt'), false);
+        if (handle) assert.deepEqual(handle.report(), before);
+      }
+      const adjacent = inventory.registerStorageFixture({ path: 'adjacent/probe.txt', reservationOpId: '   ' });
+      assert.notEqual(adjacent.reservationOpId, next.reservationOpId);
+      assert.equal(inventory._reservationSequence, 3);
+    });
+  }
+
+  test('H4-R5 failed reservation persistence never advances normalized auto sequence', t => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    t.after(() => handle.close());
+    const inventory = new TestRunInventory(handle.runId);
+    const path = handle.runId + '/probe.txt';
+    const key = createHash('sha256').update('storage:storage:' + STORAGE_PROBE_BUCKET + '/' + path).digest('hex');
+    const restore = interruptWrite(directory, 'storage_reservation', key, false, () => ({}), 'fail');
+    try {
+      assert.throws(() => inventory.reserveStorageFixture({ path, reservationOpId: '   ' }), /RECOVERY_PERSISTENCE_FAILED/);
+      assert.equal(inventory._reservationSequence, 0);
+      assert.equal(inventory.storageFixtures.size, 0);
+    } finally { restore(); }
+  });
+
   test('H4 standard pacing and cancellation survive restart', async t => {
     const { handle } = await seedStorage(t, { mode: 'standard' });
     const simulated = provider(handle.runId);

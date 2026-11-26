@@ -144,6 +144,28 @@ const LIVE_RESOLUTION_RECEIPTS = new WeakMap();
 const VERIFIED_LIVE_RESOURCE_CLEANUPS = new WeakMap();
 const RESOURCE_REQUEST_CONTEXT = new AsyncLocalStorage();
 const LIVE_RESOURCE_ATTEMPTS = new WeakMap();
+const reservationTrim = Function.prototype.call.bind(String.prototype.trim);
+
+function planStorageOperationId(inventory, rawId) {
+  if (rawId != null && typeof rawId !== 'string') throw new Error('INVALID_STORAGE_OPERATION_ID');
+  const explicitId = rawId == null ? '' : reservationTrim(rawId);
+  if (explicitId.length > 512 || /[\u0000-\u001f\u007f]/.test(explicitId)) throw new Error('INVALID_STORAGE_OPERATION_ID');
+  const used = new Set();
+  for (const fixture of inventory.storageFixtures.values()) used.add(fixture.reservationOpId);
+  let nextSequence = inventory._reservationSequence;
+  if (!Number.isSafeInteger(nextSequence) || nextSequence < 0) throw new Error('INVALID_STORAGE_OPERATION_SEQUENCE');
+  if (explicitId) {
+    if (used.has(explicitId)) throw new Error('STORAGE_OPERATION_ID_CONFLICT');
+    return { assignedOpId: explicitId, nextSequence };
+  }
+  let assignedOpId;
+  do {
+    nextSequence++;
+    if (!Number.isSafeInteger(nextSequence)) throw new Error('INVALID_STORAGE_OPERATION_SEQUENCE');
+    assignedOpId = `op-res-${inventory.runId}-${nextSequence}`;
+  } while (used.has(assignedOpId));
+  return { assignedOpId, nextSequence };
+}
 
 function durableInventoryObligation(inventory, kind, resource) {
   const journal = journalForRun(inventory.runId);
@@ -6015,9 +6037,7 @@ export class TestRunInventory {
       );
     }
 
-    const assignedOpId = reservationOpId && typeof reservationOpId === 'string' && reservationOpId.trim()
-      ? reservationOpId.trim()
-      : `op-res-${this.runId}-${this._reservationSequence + 1}`;
+    const { assignedOpId, nextSequence } = planStorageOperationId(this, reservationOpId);
 
     const journal = journalForRun(this.runId);
     if (journal) {
@@ -6026,7 +6046,7 @@ export class TestRunInventory {
       if (!obligations) { obligations = new Map(); LIVE_RESOURCE_OBLIGATIONS.set(this, obligations); }
       obligations.set('storage:' + fixtureKey, key);
     }
-    if (!reservationOpId) this._reservationSequence++;
+    this._reservationSequence = nextSequence;
 
     const fixtureRecord = {
       bucket: cleanBucket,
@@ -6109,15 +6129,14 @@ export class TestRunInventory {
       );
     }
 
+    const { assignedOpId, nextSequence } = planStorageOperationId(this, reservationOpId);
     const state = lifecycleState || STORAGE_LIFECYCLE_STATE.CREATION_PENDING;
     if (hasCommittedUpload || !neverDispatched || state !== STORAGE_LIFECYCLE_STATE.CREATION_PENDING) {
       durableInventoryObligation(this, 'storage', 'storage:' + cleanBucket + '/' + cleanPath);
     }
     const canDelete = deletionEligible === true && state === STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED;
     const cleanObjectId = providerObjectId ? String(providerObjectId).trim() : null;
-    const assignedOpId = reservationOpId && typeof reservationOpId === 'string' && reservationOpId.trim()
-      ? reservationOpId.trim()
-      : `op-res-${this.runId}-${++this._reservationSequence}`;
+    this._reservationSequence = nextSequence;
 
     if (canDelete) {
       this._syncTrackedObjectForVerifiedFixture(cleanBucket, cleanPath);
