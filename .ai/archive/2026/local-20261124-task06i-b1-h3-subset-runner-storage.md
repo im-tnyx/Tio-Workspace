@@ -1,5 +1,7 @@
 # Task 06I-B1-H3 — Controlled Subset Dispatch & Run-Scoped Storage Implementation
 
+**Lifecycle status:** **Complete — archived 2026-11-26** after verified merges of PR #44 and PR #45. Section 21.7 is the post-merge receipt; earlier branch/review/pending fields below are historical checkpoints. H4 is a separate task, **NOT STARTED**. This completed record is not an active or paused implementation task.
+
 **Task ID:** `06I-B1-H3` (Revision `R16`)<br>
 **Creation Date:** 2026-11-24<br>
 **Revision Date:** 2026-11-26<br>
@@ -1271,4 +1273,12 @@ H3 **MERGED / OFFLINE TESTED**; JWT bounds **32768 / 32 / 1024**; budget **25**,
 
 **Unchanged blockers:** hosted verification **0/18**; hosted atomic conditional deletion **UNVERIFIED**; durable recovery **NOT IMPLEMENTED**; Hosted LIVE **NOT AUTHORIZED / BLOCKED**; Production Real Auth **STRICT NO-GO / BLOCKED**. This change touches only this record and `.ai/current.md`; no runtime code, hosted operations, deployment or docs-PR merge is authorized by the closeout instruction.
 
-**Docs-only closeout checks:** `git diff --check` **PASS**; exactly the two authorized Markdown paths changed; **20 relative links / 2 anchors** and code-fence balance **PASS**; added-line sensitive-string scan **PASS**. Live GitHub metadata, approval, thread state, receipt and CI status were inspected using connected GitHub tooling and `gh`. Runtime/native/hosted tests are **not applicable / not run** for this documentation change. Draft PR review remains **REVIEW_PENDING**; its publication SHA, attribution-check result and review request are recorded in the PR after commit.
+**Initial docs-only closeout checks (commit `1303b0d6de8153b0d4fa5be493322034c85f03bd`):** `git diff --check` **PASS**; exactly the two authorized Markdown paths changed; **20 relative links / 2 anchors** and code-fence balance **PASS**; added-line sensitive-string scan **PASS**. Live GitHub metadata, approval, thread state, receipt and CI status were inspected using connected GitHub tooling and `gh`. Runtime/native/hosted tests were **not applicable / not run**. This initial draft-phase checkpoint preceded the PR #46 review corrections below.
+
+### 21.8 PR #46 documentation review corrections
+
+Codex reviewed closeout HEAD `1303b0d6de8153b0d4fa5be493322034c85f03bd` and raised two P2 findings: [archive the completed H3 task](https://github.com/im-tnyx/Tio-Workspace/pull/46#discussion_r4709185296) and [reconcile the completed-PR inventory](https://github.com/im-tnyx/Tio-Workspace/pull/46#discussion_r4709185299). The owner explicitly extended the original two-path scope to permit the archive move and necessary link/index updates.
+
+- Moved this complete record from `.ai/tasks/auth/` to `.ai/archive/2026/`, preserving the historical implementation and review evidence. Updated both receipt links in `.ai/current.md` to the archived path. The pointer's active objective is PR #46 documentation review, not completed H3; H4 remains **NOT STARTED**. The generic task/archive lifecycle indexes have no H3-specific entry requiring modification, and the record has no relative links requiring rebasing at its new location.
+- Added verified merged PRs #44/#45 to the explicitly selected completed-PR inventory. PR #31 was also verified merged and its stale open label removed. This inventory is selected history, not an exhaustive PR list.
+- Implementation owner / previous agent / last verified docs commit agent: Codex root; review baseline docs commit `1303b0d6de8153b0d4fa5be493322034c85f03bd`. Correction SHA, executed validation, thread responses and exact-HEAD re-review request belong in PR #46 after publication. No merge authorization; no H4/H5/runtime or hosted work.
