@@ -4765,7 +4765,7 @@ test('79. Task 06I-B1-H1-R9 (R9-02): Controlled authentication verification, adv
 
   // Successful verification triggers login AND immediate local signout
   let preCalls = testClientTransport.calls.length;
-  const verifyRes = await testClient.verifyUserCredentials(seedEmail, origPassword);
+  const verifyRes = await testClient.verifyUserCredentials(seedEmail, origPassword, { expectedUserId: seedUserId });
   assert.equal(verifyRes.error, null);
   assert.equal(verifyRes.data.verified, true);
   assert.equal(verifyRes.data.userId, seedUserId);
@@ -4878,7 +4878,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     })
   });
 
-  const resImmediate = await bindFixtureAdmin(invImmediate, adminClientImmediate).verifyUserCredentials(seedEmail, initialPassword, { inventory: invImmediate });
+  const resImmediate = await bindFixtureAdmin(invImmediate, adminClientImmediate).verifyUserCredentials(seedEmail, initialPassword, { inventory: invImmediate, expectedUserId: seedUserId });
   assert.equal(resImmediate.error, null);
   assert.equal(resImmediate.data.verified, true);
   assert.equal(invImmediate.trackedSessions.has(sessId), true, 'Minted verification session must be registered in inventory');
@@ -4918,7 +4918,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
   });
 
   // verifyUserCredentials returns sessionRevocationFailed: true
-  const res503 = await bindFixtureAdmin(inv503, adminClient503).verifyUserCredentials(seedEmail, initialPassword, { inventory: inv503 });
+  const res503 = await bindFixtureAdmin(inv503, adminClient503).verifyUserCredentials(seedEmail, initialPassword, { inventory: inv503, expectedUserId: seedUserId });
   assert.equal(res503.data, null);
   assert.equal(res503.sessionRevocationFailed, true);
   assert.equal(res503.error.code, 'LOGOUT_FAILED');
@@ -5036,7 +5036,7 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
     })
   });
 
-  const resThrows = await bindFixtureAdmin(invThrows, adminClientThrows).verifyUserCredentials(seedEmail, initialPassword, { inventory: invThrows });
+  const resThrows = await bindFixtureAdmin(invThrows, adminClientThrows).verifyUserCredentials(seedEmail, initialPassword, { inventory: invThrows, expectedUserId: seedUserId });
   assert.equal(resThrows.data, null);
   assert.equal(resThrows.sessionRevocationFailed, true);
   assert.equal(resThrows.error.code, 'LOGOUT_EXCEPTION');
@@ -5370,7 +5370,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
     fetchFn: transport1
   });
 
-  const res1 = await bindFixtureAdmin(inv1, client1).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv1 });
+  const res1 = await bindFixtureAdmin(inv1, client1).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv1, expectedUserId: seedUserId });
   assert.equal(res1.error, null);
   assert.equal(res1.data?.verified, true);
   assert.equal(res1.data?.userId, seedUserId);
@@ -5548,7 +5548,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
     })
   });
 
-  const res12 = await bindFixtureAdmin(inv12, client12).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv12 });
+  const res12 = await bindFixtureAdmin(inv12, client12).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv12, expectedUserId: seedUserId });
   assert.equal(res12.data, null);
   assert.equal(res12.sessionRevocationFailed, true);
   assert.equal(res12.error?.code, 'LOGOUT_FAILED');
@@ -5571,7 +5571,7 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
     })
   });
 
-  const res13 = await bindFixtureAdmin(inv13, client13).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv13 });
+  const res13 = await bindFixtureAdmin(inv13, client13).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv13, expectedUserId: seedUserId });
   assert.equal(res13.data, null);
   assert.equal(res13.sessionRevocationFailed, true);
   assert.equal(res13.error?.code, 'LOGOUT_EXCEPTION');
@@ -13826,6 +13826,219 @@ test('PR45-P2-C: deeply nested and wide JWT claims reject structurally across pa
       /INVALID_CREDENTIAL_PAYLOAD|CREDENTIAL_BINDING_ERROR/
     );
   }
+});
+
+function verificationIdentityCase(name, { priorUsers = ['verify-user-a'], responseUser = 'verify-user-b' } = {}) {
+  const inv = new TestRunInventory(`verify-admission-${name}`);
+  const email = 'tio-verify-admission@proof.invalid';
+  for (const id of priorUsers) inv.registerReferencedUser({ id, email });
+  const token = createMockJwt({ sub: responseUser, session_id: 'verify-admission-session' });
+  const spec = fixtureSpec({ login: { status: 200, json: {
+    access_token: token, session_id: 'verify-admission-session', user: { id: responseUser, email }
+  } } });
+  return { inv, email, spec, token, admin: bindFixtureAdmin(inv, spec) };
+}
+
+test('PR45-VERIFY-01: inherited expected identity cannot override prior email binding or certify cleanup', async () => {
+  const { inv, email, spec, admin } = verificationIdentityCase('inherited');
+  inv.registerSeedPasswordModification({ userId: 'verify-user-a', email,
+    originalPassword: 'SyntheticVerifyOriginal#1', targetPassword: 'SyntheticVerifyChanged#1', state: 'confirmed' });
+  const previous = Object.getOwnPropertyDescriptor(Object.prototype, 'expectedUserId');
+  let result;
+  try {
+    Object.defineProperty(Object.prototype, 'expectedUserId', { configurable: true, value: 'verify-user-b' });
+    result = await admin.verifyUserCredentials(email, 'SyntheticVerifyOriginal#1', { inventory: inv });
+  } finally {
+    if (previous) Object.defineProperty(Object.prototype, 'expectedUserId', previous);
+    else delete Object.prototype.expectedUserId;
+  }
+  assert.equal(result.credentialVerified, false);
+  assert.equal(result.verifiedUserId, null);
+  assert.equal(result.error.code, 'VERIFICATION_IDENTITY_CONFLICT');
+  assert.equal(fixtureOperationCalls(spec, 'login').length, 1);
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+  assert.equal(inv.isSessionRevoked('verify-admission-session'), true, 'Correlated logout remains independent of intended-user failure');
+  assert.ok(inv.sessionReconciliationObligations.length > 0);
+  const report = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+  assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(inv.seedCredentialRestorations[0].originalPassword, 'SyntheticVerifyOriginal#1');
+});
+
+test('PR45-VERIFY-02: omitted expected identity rejects wrong user consistently without pollution', async () => {
+  const { inv, email, spec, admin } = verificationIdentityCase('wrong-user');
+  const result = await admin.verifyUserCredentials(email, 'SyntheticVerify#1', { inventory: inv });
+  assert.equal(result.credentialVerified, false);
+  assert.equal(result.verifiedUserId, null);
+  assert.equal(result.error.code, 'VERIFICATION_IDENTITY_CONFLICT');
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+  assert.ok(inv.sessionReconciliationObligations.length > 0);
+});
+
+test('PR45-VERIFY-03: omitted own identity uses prior binding and own A ignores inherited getter B', async () => {
+  for (const explicit of [false, true]) {
+    const { inv, email, spec, admin } = verificationIdentityCase(`valid-${explicit}`, { responseUser: 'verify-user-a' });
+    const previous = Object.getOwnPropertyDescriptor(Object.prototype, 'expectedUserId');
+    let getterCalls = 0;
+    let result;
+    try {
+      Object.defineProperty(Object.prototype, 'expectedUserId', { configurable: true, get() { getterCalls++; return 'verify-user-b'; } });
+      const options = explicit ? { inventory: inv, expectedUserId: 'verify-user-a' } : { inventory: inv };
+      result = await admin.verifyUserCredentials(email, 'SyntheticVerify#1', options);
+    } finally {
+      if (previous) Object.defineProperty(Object.prototype, 'expectedUserId', previous);
+      else delete Object.prototype.expectedUserId;
+    }
+    assert.equal(getterCalls, 0);
+    assert.equal(result.credentialVerified, true);
+    assert.equal(result.verifiedUserId, 'verify-user-a');
+    assert.equal(result.error, null);
+    assert.equal(fixtureOperationCalls(spec, 'login').length, 1);
+    assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+    assert.equal(inv.isClean(), true);
+  }
+});
+
+test('PR45-VERIFY-04: invalid own identity and executable or unsupported options reject before dispatch', async () => {
+  const { inv, email, spec, admin } = verificationIdentityCase('invalid');
+  let executions = 0;
+  const accessor = Object.defineProperty({}, 'expectedUserId', { get() { executions++; throw new Error('Must not run'); } });
+  const inventoryAccessor = Object.defineProperty({}, 'inventory', { get() { executions++; throw new Error('Must not run'); } });
+  const proxy = new Proxy({}, { get() { executions++; throw new Error('Must not run'); }, ownKeys() { executions++; throw new Error('Must not run'); }, getPrototypeOf() { executions++; throw new Error('Must not run'); } });
+  const invalid = [null, [], 'options', 1, () => {}, new Date(), Object.create({ expectedUserId: 'verify-user-a' }), accessor, inventoryAccessor, proxy,
+    { inventory: proxy }, { inventory: {} }, { inventory: inv, unsupported: true }, { [Symbol('unknown')]: true },
+    Object.defineProperty({}, 'expectedUserId', { get: undefined, set: undefined }),
+    Object.defineProperty({}, 'inventory', { get: undefined, set: undefined })];
+  for (const expectedUserId of [undefined, null, '', ' ', 0, false, [], {}, proxy]) invalid.push({ inventory: inv, expectedUserId });
+  for (const options of invalid) {
+    const result = await admin.verifyUserCredentials(email, 'SyntheticVerify#1', options);
+    assert.equal(result.credentialVerified, false);
+    assert.equal(result.verifiedUserId, null);
+    assert.equal(result.error.code, 'INVALID_VERIFICATION_OPTIONS');
+  }
+  assert.equal(executions, 0);
+  assert.equal(fixtureCalls(spec).length, 0);
+  assert.equal(inv.trackedSessions.size, 0);
+  assert.equal(inv.inFlightOperations.size, 0);
+  const other = new TestRunInventory('verify-other-run');
+  const mismatch = await admin.verifyUserCredentials(email, 'SyntheticVerify#1', { inventory: other, expectedUserId: 'verify-user-a' });
+  assert.equal(mismatch.error.code, 'INVALID_VERIFICATION_OPTIONS');
+  assert.equal(fixtureCalls(spec).length, 0);
+});
+
+test('PR45-VERIFY-05: explicit identity cannot override known email-to-user binding', async () => {
+  const { inv, email, spec, admin } = verificationIdentityCase('explicit-conflict');
+  const result = await admin.verifyUserCredentials(email, 'SyntheticVerify#1', { inventory: inv, expectedUserId: 'verify-user-b' });
+  assert.equal(result.credentialVerified, false);
+  assert.equal(result.verifiedUserId, null);
+  assert.equal(result.error.code, 'VERIFICATION_IDENTITY_CONFLICT');
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+  assert.ok(inv.sessionReconciliationObligations.length > 0);
+});
+
+test('PR45-VERIFY-06: newly registered response identity cannot manufacture missing prior proof', async () => {
+  const { inv, email, spec, admin } = verificationIdentityCase('missing-prior', { priorUsers: [] });
+  const result = await admin.verifyUserCredentials(email, 'SyntheticVerify#1', { inventory: inv });
+  assert.equal(result.credentialVerified, false);
+  assert.equal(result.verifiedUserId, null);
+  assert.equal(result.error.code, 'VERIFICATION_IDENTITY_UNAVAILABLE');
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+  assert.equal(inv.trackedSessions.has('verify-admission-session'), true);
+  assert.ok(inv.sessionReconciliationObligations.length > 0);
+  assert.equal((await inv.executeCleanup({ adminClient: admin, failClosed: false })).status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+});
+
+test('PR45-VERIFY-07: ambiguous prior binding fails closed even with an explicit candidate', async () => {
+  const { inv, email, spec, admin } = verificationIdentityCase('ambiguous', { priorUsers: ['verify-user-a', 'verify-user-b'], responseUser: 'verify-user-a' });
+  const result = await admin.verifyUserCredentials(email, 'SyntheticVerify#1', { inventory: inv, expectedUserId: 'verify-user-a' });
+  assert.equal(result.credentialVerified, false);
+  assert.equal(result.verifiedUserId, null);
+  assert.equal(result.error.code, 'VERIFICATION_IDENTITY_AMBIGUOUS');
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+  assert.ok(inv.sessionReconciliationObligations.length > 0);
+});
+
+test('PR45-VERIFY-08: inherited inventory is never read and explicit target supports standalone verification', async () => {
+  const { inv, email, spec, admin } = verificationIdentityCase('inherited-inventory', { priorUsers: [], responseUser: 'verify-user-a' });
+  const previous = Object.getOwnPropertyDescriptor(Object.prototype, 'inventory');
+  let getterCalls = 0;
+  let result;
+  try {
+    Object.defineProperty(Object.prototype, 'inventory', { configurable: true, get() { getterCalls++; return inv; } });
+    result = await admin.verifyUserCredentials(email, 'SyntheticVerify#1', { expectedUserId: 'verify-user-a' });
+  } finally {
+    if (previous) Object.defineProperty(Object.prototype, 'inventory', previous);
+    else delete Object.prototype.inventory;
+  }
+  assert.equal(getterCalls, 0);
+  assert.equal(result.credentialVerified, true);
+  assert.equal(result.verifiedUserId, 'verify-user-a');
+  assert.equal(inv.trackedSessions.size, 0);
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+});
+
+test('PR45-VERIFY-09: response-created references remain observations across repeated calls and separate adapters', async () => {
+  const { inv, email, spec, admin } = verificationIdentityCase('repeated-observation', { priorUsers: [] });
+  const first = await admin.verifyUserCredentials(email, 'SyntheticVerify#1', { inventory: inv });
+  assert.equal(first.error.code, 'VERIFICATION_IDENTITY_UNAVAILABLE');
+  assert.equal(inv.referencedUsers.has('verify-user-b'), true, 'Resource tracking is retained');
+  const otherSpec = fixtureSpec({ login: spec.login });
+  const otherAdmin = bindFixtureAdmin(inv, otherSpec);
+  const repeated = await otherAdmin.verifyUserCredentials(email, 'SyntheticVerify#1', { inventory: inv });
+  assert.equal(repeated.credentialVerified, false);
+  assert.equal(repeated.verifiedUserId, null);
+  assert.equal(repeated.error.code, 'VERIFICATION_IDENTITY_UNAVAILABLE');
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+  assert.equal(fixtureOperationCalls(otherSpec, 'logout').length, 1);
+  assert.equal(inv.isClean(), false);
+});
+
+test('PR45-VERIFY-10: omitted third argument ignores inherited numeric data, getter and setter options', async () => {
+  for (const mode of ['data', 'getter', 'setter']) {
+    const { email, spec, admin } = verificationIdentityCase(`argument-slot-${mode}`, { priorUsers: [] });
+    const previous = Object.getOwnPropertyDescriptor(Array.prototype, '2');
+    const inherited = { expectedUserId: 'verify-user-b' };
+    let getterCalls = 0;
+    let setterCalls = 0;
+    let result;
+    try {
+      const descriptor = mode === 'data'
+        ? { __proto__: null, configurable: true, writable: true, value: inherited }
+        : { __proto__: null, configurable: true,
+          get() { getterCalls++; return inherited; },
+          ...(mode === 'setter' ? { set(value) { setterCalls++; Object.defineProperty(this, '2', { __proto__: null, value, configurable: true, writable: true, enumerable: true }); } } : {}) };
+      Object.defineProperty(Array.prototype, '2', descriptor);
+      result = await admin.verifyUserCredentials(email, 'SyntheticVerify#1');
+    } finally {
+      if (previous) Object.defineProperty(Array.prototype, '2', previous);
+      else delete Array.prototype[2];
+    }
+    assert.equal(getterCalls, 0);
+    assert.equal(setterCalls, 0);
+    assert.equal(result.credentialVerified, false);
+    assert.equal(result.verifiedUserId, null);
+    assert.equal(result.error.code, 'VERIFICATION_IDENTITY_UNAVAILABLE');
+    assert.equal(fixtureOperationCalls(spec, 'login').length, 1);
+    assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+  }
+});
+
+test('PR45-VERIFY-11: accessor descriptor is rejected before inherited descriptor value getter executes', async () => {
+  const { email, spec, admin } = verificationIdentityCase('descriptor-value');
+  const options = Object.defineProperty({}, 'expectedUserId', { get: undefined, set: undefined });
+  const previous = Object.getOwnPropertyDescriptor(Object.prototype, 'value');
+  let getterCalls = 0;
+  let result;
+  try {
+    Object.defineProperty(Object.prototype, 'value', { configurable: true, get() { getterCalls++; return 'verify-user-b'; } });
+    result = await admin.verifyUserCredentials(email, 'SyntheticVerify#1', options);
+  } finally {
+    if (previous) Object.defineProperty(Object.prototype, 'value', previous);
+    else delete Object.prototype.value;
+  }
+  assert.equal(getterCalls, 0);
+  assert.equal(result.credentialVerified, false);
+  assert.equal(result.error.code, 'INVALID_VERIFICATION_OPTIONS');
+  assert.equal(fixtureCalls(spec).length, 0);
 });
 
 function restorationCase(name, { claims = {}, bodySession = 'restore-session', bodyUser = 'restore-user', routes = [] } = {}) {

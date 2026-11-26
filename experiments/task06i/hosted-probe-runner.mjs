@@ -34,6 +34,9 @@ const _jwtStringIncludes = Function.prototype.call.bind(String.prototype.include
 const _jwtStringSplit = Function.prototype.call.bind(String.prototype.split);
 const _jwtJsonParse = JSON.parse;
 const _jwtBufferFrom = Buffer.from;
+// In-process observation provenance only, not a durable recovery journal. A
+// response-created reference cannot become prior identity proof on a later call.
+const VERIFICATION_RESPONSE_USER_RECORDS = new WeakSet();
 
 /**
  * Extracts bounded unverified identity claims (sub, session_id) from a 3-part JWT string
@@ -903,7 +906,7 @@ function extractValidatedPlainOptions(rawInput, label, allowNullUndefined = true
       throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Prototype-sensitive key '__proto__' rejected at '${label}' (R11-01)`);
     }
     const desc = Object.getOwnPropertyDescriptor(rawInput, key);
-    if (!desc || typeof desc.get === 'function' || typeof desc.set === 'function') {
+    if (!desc || !Object.hasOwn(desc, 'value')) {
       throw new Error(`INVALID_DETERMINISTIC_FIXTURE_SPEC: Accessor property rejected at '${label}.${key}' (R7-02)`);
     }
     Object.defineProperty(snapshot, key, {
@@ -10886,15 +10889,53 @@ export function createHostedAdminClient(rawOptions = {}) {
 
   const baseUrl = `https://${projectRef}.supabase.co`;
 
+  function admitVerificationOptions(rawOptions) {
+    // Shallow own-data admission preserves registered inventory capabilities;
+    // recursively cloning this record would destroy their provenance.
+    const admitted = extractValidatedPlainOptions(rawOptions, 'verifyUserCredentials.options', rawOptions === undefined);
+    for (const key of Object.getOwnPropertyNames(admitted)) {
+      if (key !== 'inventory' && key !== 'expectedUserId') throw new Error('UNSUPPORTED_VERIFICATION_OPTION');
+    }
+    if (Object.hasOwn(admitted, 'expectedUserId')) {
+      if (typeof admitted.expectedUserId !== 'string' || !_jwtStringTrim(admitted.expectedUserId)) {
+        throw new Error('INVALID_EXPECTED_USER_ID');
+      }
+      admitted.expectedUserId = _jwtStringTrim(admitted.expectedUserId);
+    }
+    if (admitted.inventory !== undefined && admitted.inventory !== null) {
+      assertTrustedRunInventory(admitted.inventory, { projectRef, expectedRunId: boundRunId });
+    }
+    return Object.freeze(admitted);
+  }
+
   const client = {
     async verifyUserCredentials(email, password, options = {}) {
-      const inv = options?.inventory || null;
+      const inv = options.inventory || null;
       if (!email || typeof email !== 'string' || !email.trim()) {
         return { data: null, error: { message: 'MISSING_EMAIL: verifyUserCredentials requires non-empty email' } };
       }
       if (!password || typeof password !== 'string') {
         return { data: null, error: { message: 'MISSING_PASSWORD: verifyUserCredentials requires string password' } };
       }
+
+      // Capture the intended identity BEFORE dispatch/observation. Only existing
+      // referenced/verified-created bindings count; newly observed or unverified
+      // response users cannot establish their own independent verification target.
+      const priorUserIds = new Set();
+      const normalizedEmail = _jwtStringTrim(email).toLowerCase();
+      if (inv) {
+        for (const users of [inv.referencedUsers, inv.createdUsers]) {
+          for (const [id, user] of users) {
+            if (!VERIFICATION_RESPONSE_USER_RECORDS.has(user) && typeof user.email === 'string' &&
+                _jwtStringTrim(user.email).toLowerCase() === normalizedEmail) priorUserIds.add(id);
+          }
+        }
+      }
+      const priorUserId = priorUserIds.size === 1 ? priorUserIds.values().next().value : null;
+      const expectedUserId = priorUserId || options.expectedUserId || null;
+      const intendedIdentityError = priorUserIds.size > 1 ? 'VERIFICATION_IDENTITY_AMBIGUOUS'
+        : priorUserId && options.expectedUserId && options.expectedUserId !== priorUserId ? 'VERIFICATION_IDENTITY_CONFLICT'
+        : !expectedUserId ? 'VERIFICATION_IDENTITY_UNAVAILABLE' : null;
 
       const cap = getEndpointCapabilities('verify_credentials') || {
         canMintSession: true,
@@ -10941,6 +10982,7 @@ export function createHostedAdminClient(rawOptions = {}) {
       }
 
       const parseEnv = res ? await parseResponseEnvelope(res) : null;
+      const preObservationUsers = inv ? new Set(inv.referencedUsers.values()) : null;
       const observed = observeAuthResponse({
         probeId: 'verify_credentials',
         status: parseEnv?.status || 0,
@@ -10956,6 +10998,11 @@ export function createHostedAdminClient(rawOptions = {}) {
         requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
         testUser: email.trim()
       });
+      if (inv) {
+        for (const user of inv.referencedUsers.values()) {
+          if (!preObservationUsers.has(user)) VERIFICATION_RESPONSE_USER_RECORDS.add(user);
+        }
+      }
 
       if (op && inv?.settleInFlightOperation) {
         inv.settleInFlightOperation(op.opId, { observed, error: transportError });
@@ -10994,12 +11041,10 @@ export function createHostedAdminClient(rawOptions = {}) {
       const sessionId = claims.sessionId;
       const storedClaims = inv ? extractUnverifiedJwtIdentityClaims(inv.getSessionToken(sessionId)) : null;
       const storedUserId = inv?.sessionMetadata.get(sessionId)?.userId || storedClaims?.userId || null;
-      const expectedUserId = options.expectedUserId ||
-        (inv ? [...inv.trackedUsers.values()].find(user => user.email?.toLowerCase() === email.trim().toLowerCase())?.id : null);
       const correlatedSession = claims.isJwtStructure && claims.parseable && Boolean(sessionId);
       const credentialVerified = correlatedSession && Boolean(claims.userId) &&
         !observed.identityConflict && observed.sessionId === sessionId && observed.userId === claims.userId &&
-        (!expectedUserId || claims.userId === expectedUserId) && (!storedUserId || storedUserId === claims.userId);
+        !intendedIdentityError && claims.userId === expectedUserId && (!storedUserId || storedUserId === claims.userId);
       const verificationEvidence = {
         credentialVerified,
         verifiedUserId: credentialVerified ? claims.userId : null,
@@ -11011,6 +11056,8 @@ export function createHostedAdminClient(rawOptions = {}) {
           error: { code: 'VERIFICATION_IDENTITY_UNCORRELATED', message: 'VERIFICATION_IDENTITY_UNCORRELATED: Token lacks correlated session identity' } };
       }
       if (credentialVerified && inv) {
+        const verifiedReference = inv.referencedUsers.get(claims.userId);
+        if (verifiedReference) VERIFICATION_RESPONSE_USER_RECORDS.delete(verifiedReference);
         inv.registerSession(sessionId, { accessToken: token, userId: claims.userId,
           expectedUserId: claims.userId, validated: true, replaceExisting: true, source: 'verify_credentials' });
       }
@@ -11034,9 +11081,14 @@ export function createHostedAdminClient(rawOptions = {}) {
       // A correlated logout may clean up the token session even when identity
       // verification failed. It never repairs a conflicting authentication result.
       if (!credentialVerified) {
+        const identityCode = intendedIdentityError || 'VERIFICATION_IDENTITY_CONFLICT';
+        if (inv) inv.registerSessionReconciliationObligation({
+          reason: identityCode, expectedUserId, tokenUserId: claims.userId,
+          tokenSessionId: sessionId, probeId: 'verify_credentials', source: 'intended_identity_verification'
+        });
         return { data: null, ...verificationEvidence, sessionRevocationFailed: !revocationSucceeded,
-          error: { code: 'VERIFICATION_IDENTITY_CONFLICT', sessionId,
-            message: 'VERIFICATION_IDENTITY_CONFLICT: Verification identity does not match response or intended seed user' } };
+          error: { code: identityCode, sessionId,
+            message: `${identityCode}: Verification requires an unambiguous prior binding or an explicit non-conflicting intended user` } };
       }
 
       if (signOutThrew) {
@@ -11627,7 +11679,18 @@ export function createHostedAdminClient(rawOptions = {}) {
         throw new Error('UNTRUSTED_ADMIN_CLIENT: Admin capability receiver does not match its registered adapter');
       }
       let operationRunId = null;
-      if (name === 'verifyUserCredentials' && args[2]?.inventory) operationRunId = args[2].inventory.runId;
+      if (name === 'verifyUserCredentials') {
+        try {
+          const optionsSlot = Object.getOwnPropertyDescriptor(args, '2');
+          const admitted = admitVerificationOptions(optionsSlot && Object.hasOwn(optionsSlot, 'value') ? optionsSlot.value : undefined);
+          Object.defineProperty(args, '2', { __proto__: null, value: admitted, writable: true, enumerable: true, configurable: true });
+        } catch {
+          return { data: null, credentialVerified: false, verifiedUserId: null,
+            sessionRevocationFailed: false, indeterminateSession: false,
+            error: { code: 'INVALID_VERIFICATION_OPTIONS', message: 'INVALID_VERIFICATION_OPTIONS: Expected own inert options and a trusted run-bound inventory' } };
+        }
+        if (args[2].inventory) operationRunId = args[2].inventory.runId;
+      }
       if (['getStorageObject', 'getStorageObjectOwnership', 'deleteStorageObject'].includes(name) &&
           args[0] === STORAGE_PROBE_BUCKET && typeof args[1] === 'string' && args[1].includes('/')) {
         operationRunId = validateRunId(args[1].split('/')[0]);
