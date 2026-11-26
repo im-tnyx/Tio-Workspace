@@ -5114,6 +5114,73 @@ function cleanupFailure(message, report) {
   return error;
 }
 
+function createCleanupReport(inventory) {
+  return {
+    runId: inventory.runId,
+    createdUsersAttempted: inventory.createdUsers.size,
+    usersDeleted: 0,
+    referencedUsersPreserved: inventory.referencedUsers.size,
+    preservedUsers: Array.from(inventory.referencedUsers.keys()),
+    tableRowsDeleted: 0,
+    storageObjectsDeleted: 0,
+    sessionsRevoked: 0,
+    seedCredentialsRestored: 0,
+    residualUsers: [],
+    residualResources: [],
+    status: 'CLEANUP_PENDING'
+  };
+}
+
+// Copy diagnostics only. Lifecycle transitions belong to admitted cleanup.
+function recordBlockedCleanup(report, inventory, message, unresolvedOps) {
+  report.residualResources.push({ type: 'client', error: sanitizeData(message) });
+  for (const [id] of inventory.createdUsers) {
+    if (!inventory.deletedUsers.has(id)) report.residualUsers.push({ id, reason: 'ADMIN_INTEGRITY_REJECTED' });
+  }
+  for (const [id, user] of inventory.unverifiedUsers) {
+    report.residualResources.push({ type: 'unresolved_user_ownership', userId: id, ownership: user.ownership });
+  }
+  for (const [bucket, paths] of inventory.trackedStorageObjects) {
+    for (const path of paths) report.residualResources.push({ type: 'storage_object', bucket, path });
+  }
+  for (const [key, fixture] of inventory.storageFixtures) {
+    if (!hasVerifiedStorageDeletion(inventory, key, fixture)) {
+      report.residualResources.push({ type: 'storage_fixture', bucket: fixture.bucket, path: fixture.path, lifecycleState: fixture.lifecycleState });
+    }
+  }
+  for (const [table, ids] of inventory.trackedTableRows) {
+    for (const id of ids) report.residualResources.push({ type: 'table_row', table, id });
+  }
+  for (const id of inventory.trackedSessions) {
+    if (!inventory.revokedSessions.has(id)) report.residualResources.push({ type: 'session', id });
+  }
+  for (const item of inventory.seedCredentialRestorations) {
+    if (item.state !== 'restored') report.residualResources.push({ type: 'seed_credential_restoration', userId: item.userId, state: item.state });
+  }
+  for (const op of unresolvedOps) {
+    report.residualResources.push({ type: 'unresolved_in_flight_operation', opId: op.opId, probeId: op.probeId, state: op.state });
+  }
+  if (inventory.untrackedSessionsCount) report.residualResources.push({ type: 'untracked_session', count: inventory.untrackedSessionsCount });
+  if (inventory.untrackedUsersCount) report.residualResources.push({ type: 'unresolved_user_creation_risk', count: inventory.untrackedUsersCount });
+  for (const ob of inventory.sessionReconciliationObligations) {
+    report.residualResources.push({
+      type: 'session_reconciliation_obligation',
+      reason: ob.reason || 'SESSION_RECONCILIATION_OBLIGATION',
+      probeId: ob.probeId || 'unknown',
+      expectedSessionId: ob.expectedSessionId || null,
+      observedSessionId: ob.observedSessionId || null,
+      tokenSessionId: ob.tokenSessionId || null,
+      expectedUserId: ob.expectedUserId || null,
+      observedUserId: ob.observedUserId || null,
+      tokenUserId: ob.tokenUserId || null,
+      source: ob.source || null
+    });
+  }
+  if (inventory.lateSettlementsDuringCleanup.length) report.residualResources.push({ type: 'late_settlement_during_cleanup', count: inventory.lateSettlementsDuringCleanup.length });
+  if (inventory.postFinalizationMutations.length) report.residualResources.push({ type: 'post_finalization_mutations', count: inventory.postFinalizationMutations.length });
+  report.status = 'CLEANUP_FAILED_RESIDUAL_RESOURCES';
+}
+
 // Resource truth shared by the final cleanup gate and public isClean(). Lifecycle
 // fencing remains separate: cleanup must audit resources while CLEANUP_ACTIVE.
 function inventoryHasResidualResources(inv) {
@@ -6671,20 +6738,7 @@ export class TestRunInventory {
   }
 
   async _executeCleanupInternal({ adminClient, failClosed = true, settlementTimeoutMs = 50 } = {}) {
-    const report = {
-      runId: this.runId,
-      createdUsersAttempted: this.createdUsers.size,
-      usersDeleted: 0,
-      referencedUsersPreserved: this.referencedUsers.size,
-      preservedUsers: Array.from(this.referencedUsers.keys()),
-      tableRowsDeleted: 0,
-      storageObjectsDeleted: 0,
-      sessionsRevoked: 0,
-      seedCredentialsRestored: 0,
-      residualUsers: [],
-      residualResources: [],
-      status: 'CLEANUP_PENDING'
-    };
+    const report = createCleanupReport(this);
 
     this.cleanupStarted = true;
     // A bounded retry reopens internal cleanup only. Public admission stays
@@ -6729,52 +6783,7 @@ export class TestRunInventory {
       assertTrustedAdminClient(adminClient, { projectRef: HARDCODED_TEMP_REF, runId: this.runId });
     } catch (integrityErr) {
       // Rejection blocks all execution in both reporting modes. Keep every outstanding obligation visible.
-      report.residualResources.push({ type: 'client', error: sanitizeData(integrityErr.message) });
-      for (const [id] of this.createdUsers) {
-        if (!this.deletedUsers.has(id)) report.residualUsers.push({ id, reason: 'ADMIN_INTEGRITY_REJECTED' });
-      }
-      for (const [id, user] of this.unverifiedUsers) {
-        report.residualResources.push({ type: 'unresolved_user_ownership', userId: id, ownership: user.ownership });
-      }
-      for (const [bucket, paths] of this.trackedStorageObjects) {
-        for (const path of paths) report.residualResources.push({ type: 'storage_object', bucket, path });
-      }
-      for (const [key, fixture] of this.storageFixtures) {
-        if (!hasVerifiedStorageDeletion(this, key, fixture)) {
-          report.residualResources.push({ type: 'storage_fixture', bucket: fixture.bucket, path: fixture.path, lifecycleState: fixture.lifecycleState });
-        }
-      }
-      for (const [table, ids] of this.trackedTableRows) {
-        for (const id of ids) report.residualResources.push({ type: 'table_row', table, id });
-      }
-      for (const id of this.trackedSessions) {
-        if (!this.revokedSessions.has(id)) report.residualResources.push({ type: 'session', id });
-      }
-      for (const item of this.seedCredentialRestorations) {
-        if (item.state !== 'restored') report.residualResources.push({ type: 'seed_credential_restoration', userId: item.userId, state: item.state });
-      }
-      for (const op of unresolvedOps) {
-        report.residualResources.push({ type: 'unresolved_in_flight_operation', opId: op.opId, probeId: op.probeId, state: op.state });
-      }
-      if (this.untrackedSessionsCount) report.residualResources.push({ type: 'untracked_session', count: this.untrackedSessionsCount });
-      if (this.untrackedUsersCount) report.residualResources.push({ type: 'unresolved_user_creation_risk', count: this.untrackedUsersCount });
-      for (const ob of this.sessionReconciliationObligations) {
-        report.residualResources.push({
-          type: 'session_reconciliation_obligation',
-          reason: ob.reason || 'SESSION_RECONCILIATION_OBLIGATION',
-          probeId: ob.probeId || 'unknown',
-          expectedSessionId: ob.expectedSessionId || null,
-          observedSessionId: ob.observedSessionId || null,
-          tokenSessionId: ob.tokenSessionId || null,
-          expectedUserId: ob.expectedUserId || null,
-          observedUserId: ob.observedUserId || null,
-          tokenUserId: ob.tokenUserId || null,
-          source: ob.source || null
-        });
-      }
-      if (this.lateSettlementsDuringCleanup.length) report.residualResources.push({ type: 'late_settlement_during_cleanup', count: this.lateSettlementsDuringCleanup.length });
-      if (this.postFinalizationMutations.length) report.residualResources.push({ type: 'post_finalization_mutations', count: this.postFinalizationMutations.length });
-      report.status = 'CLEANUP_FAILED_RESIDUAL_RESOURCES';
+      recordBlockedCleanup(report, this, integrityErr.message, unresolvedOps);
       this.runLifecycleState = INVENTORY_RUN_STATE.RESIDUAL_BLOCKED;
       this.finalize();
       if (failClosed) throw cleanupFailure(integrityErr.message, report);
@@ -10593,9 +10602,11 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
       validatedInventory = inventory;
     } catch (invErr) {
       // Untrusted inventory MUST NEVER have its properties read or executeCleanup() invoked (R8-01D).
-      throw cleanupFailure(invErr.message, {
+      throw cleanupFailure(sanitizeData(invErr.message), {
         runId: explicitRunId || 'untrusted-inventory',
         status: 'CLEANUP_FAILED_RESIDUAL_RESOURCES',
+        failureStage: 'admission',
+        cleanupExecuted: false,
         inventoryTrusted: false,
         inventoryEvidenceUnavailable: true,
         residualResources: [{ type: 'inventory', error: sanitizeData(invErr.message) }]
@@ -10679,7 +10690,6 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
       throw new Error('RECOVERY_PROBE_ADMISSION_BLOCKED');
     }
     timingConfig = validateDeclarativeTimingConfig(options.timing, true);
-    getRunRequestBudget({ projectRef: validatedRef, runId: activeInventory.runId, mode: timingConfig.mode });
     if (runId && runId !== activeInventory.runId) {
       throw new Error('ADMIN_CLIENT_RUN_MISMATCH: Runner and inventory run IDs differ');
     }
@@ -10691,23 +10701,19 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
       throw new Error('CLEANUP_CAPABILITY_REQUIRED: Executing runner mode requires a registered run-bound Admin client');
     }
     assertTrustedAdminClient(adminClient, { projectRef: validatedRef, runId: activeInventory.runId });
-  } catch (err) {
-    // Admission rejection is report-only, even if an adapter matches the inventory. Never mutate here.
-    const cleanupReport = await activeInventory.executeCleanup({ adminClient: null, failClosed: false, settlementTimeoutMs: 0 });
-    const clientFailure = cleanupReport.residualResources.find(resource => resource.type === 'client');
-    if (clientFailure) clientFailure.error = sanitizeData(err.message);
-    if (cleanupReport.status === 'CLEANUP_VERIFIED_SUCCESS') {
-      cleanupReport.status = 'CLEANUP_FAILED_RESIDUAL_RESOURCES';
-      cleanupReport.residualResources.push({ type: 'client', error: sanitizeData(err.message) });
-      activeInventory.runLifecycleState = INVENTORY_RUN_STATE.RESIDUAL_BLOCKED;
+    if (options.requireSelection === true && (!options.selectedProbeIds || options.selectedProbeIds.length === 0)) {
+      throw new Error('SELECTION_REQUIRED: Executing runner mode strictly requires an explicit, validated selectedProbeIds array');
     }
-    throw cleanupFailure(err.message, cleanupReport);
-  }
-
-  if (isExecuting && options.requireSelection === true && (!options.selectedProbeIds || !Array.isArray(options.selectedProbeIds) || options.selectedProbeIds.length === 0)) {
-    throw new Error(
-      'SELECTION_REQUIRED: Executing runner mode strictly requires an explicit, validated selectedProbeIds array'
-    );
+    // Initialize pacing only after the remaining admission checks pass. An
+    // otherwise rejected legacy run must not pin the mode for a valid retry.
+    getRunRequestBudget({ projectRef: validatedRef, runId: activeInventory.runId, mode: timingConfig.mode });
+  } catch (err) {
+    const cleanupReport = createCleanupReport(activeInventory);
+    cleanupReport.createdUsersAttempted = 0;
+    recordBlockedCleanup(cleanupReport, activeInventory, err.message, activeInventory.getUnresolvedOperations());
+    cleanupReport.failureStage = 'admission';
+    cleanupReport.cleanupExecuted = false;
+    throw cleanupFailure(sanitizeData(err.message), cleanupReport);
   }
 
   const verifiedSeedId = options.seedUserId || options.targetUserId || null;

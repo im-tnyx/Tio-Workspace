@@ -5,8 +5,8 @@
 | Field | Value |
 |---|---|
 | Status | **H3 and PR #45 follow-up MERGED / OFFLINE TESTED. Formal `im-tio` approval at feature HEAD `8ab4c0e2fc80e940f94d1bee443db8fad0f82efc`; 8/8 review threads resolved. Post-merge security CI succeeded; the merge receipt reports 332/332 PASS. See [H3 section 21.7](archive/2026/local-20261124-task06i-b1-h3-subset-runner-storage.md#217-pr-45-post-merge-receipt). Hosted atomic deletion UNVERIFIED; hosted verification 0/18; Hosted LIVE NOT AUTHORIZED; Production Real Auth STRICT NO-GO.** |
-| Active Task | [Task 06I-B1-H4](tasks/auth/local-20261126-task06i-b1-h4-durable-recovery.md) — offline durable crash recovery, ready for review. |
-| Active Scope / Owner | Codex root: owner-approved H4 journal, recovery, offline synthetic verification and focused PR review. Hosted operations, H5 and merge remain separately gated. |
+| Active Task | [Task 06I-B1-H4-R1](tasks/auth/local-20261126-task06i-b1-h4-durable-recovery.md#r1-non-mutating-admission-rejection) — non-mutating admission rejection, offline validated. [PR #47](https://github.com/im-tnyx/Tio-Workspace/pull/47) is the review gate. |
+| Active Scope / Owner | Codex root: owner-approved R1 P1 correction, offline validation and exact-head review on the existing H4 branch. Hosted operations, H5 and merge remain separately gated. |
 | Last H3 follow-up commit | Codex root / approved feature HEAD `8ab4c0e2fc80e940f94d1bee443db8fad0f82efc` (historical PR #45 head, not a mutable current-HEAD pointer). |
 | Branch | `feat/task06i-b1-h4-durable-recovery`. PR #44–#46 source branches were already absent locally and remotely. |
 | Verified merged `main` | `5809dddf456cea3b8dfec1164034cf63fc392eb1` (fetched and aligned 2026-11-26, PR #46 squash). PR #45 squash: `d966f535efba4811c6381377980400e9965e0379`. PR #44 squash: `dd90265d9cdd8d8bd228ae5e7cbf13f8d1fa2c7a`. |

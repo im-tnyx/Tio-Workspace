@@ -10635,13 +10635,24 @@ async function r5ProvisionedFixture(runId, { session = false, logoutFailure = fa
   return { inventory, adminClient, transport, path };
 }
 
-function r5AssertOutstanding(report, inventory) {
+function r5AssertOutstanding(report, inventory, { admissionRejected = false } = {}) {
   assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(report.residualUsers.some(user => user.id === R5_CREATED_USER));
   for (const type of ['client', 'storage_fixture', 'storage_object', 'session', 'table_row', 'seed_credential_restoration']) {
     assert.ok(report.residualResources.some(resource => resource.type === type), type + ' obligation must remain visible');
   }
-  assert.equal(inventory.runLifecycleState, INVENTORY_RUN_STATE.RESIDUAL_BLOCKED);
+  if (admissionRejected) {
+    assert.equal(report.failureStage, 'admission');
+    assert.equal(report.cleanupExecuted, false);
+    assert.equal(report.createdUsersAttempted, 0);
+    assert.equal(inventory.runLifecycleState, INVENTORY_RUN_STATE.ACTIVE);
+    assert.equal(inventory.cleanupStarted, false);
+    assert.equal(inventory.finalized, false);
+  } else {
+    assert.equal(inventory.runLifecycleState, INVENTORY_RUN_STATE.RESIDUAL_BLOCKED);
+    assert.equal(inventory.cleanupStarted, true);
+    assert.equal(inventory.finalized, true);
+  }
   assert.equal(inventory.isClean(), false);
   assert.equal(inventory.deletedUsers.size, 0);
   assert.equal(inventory.revokedSessions.size, 0);
@@ -10751,7 +10762,7 @@ test('115. H3-R5-01/R5-03: runner admission preserves outstanding cleanup eviden
     const inventory = r5OutstandingInventory(runId);
     await assert.rejects(runHostedProbeRunner({ projectRef: HARDCODED_TEMP_REF, runId, inventory, adminClient, argv: ['--live'], env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, selectedProbeIds: ['BYPASS-01'], mockDispatcher: trustedDispatcher }), error => {
       assert.equal(error.code, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
-      r5AssertOutstanding(error.cleanupReport, inventory);
+      r5AssertOutstanding(error.cleanupReport, inventory, { admissionRejected: true });
       return true;
     });
   }
@@ -10759,7 +10770,7 @@ test('115. H3-R5-01/R5-03: runner admission preserves outstanding cleanup eviden
   const mismatchInventory = r5OutstandingInventory(runId);
   await assert.rejects(runHostedProbeRunner({ projectRef: HARDCODED_TEMP_REF, runId: 'r5-runner-requested-b', inventory: mismatchInventory, adminClient: trusted, argv: ['--live'], env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, selectedProbeIds: ['BYPASS-01'], mockDispatcher: trustedDispatcher }), error => {
     assert.match(error.message, /ADMIN_CLIENT_RUN_MISMATCH/);
-    r5AssertOutstanding(error.cleanupReport, mismatchInventory);
+    r5AssertOutstanding(error.cleanupReport, mismatchInventory, { admissionRejected: true });
     return true;
   });
   assert.equal(callbacks, 0);
@@ -11062,13 +11073,13 @@ test('123. H3-R6-01: runHostedProbeRunner admission rejects all untrusted, forge
       error => {
         assert.match(error.message, tc.pattern, `Case ${tc.label} failed pattern`);
         // Case 13: Existing residual obligations preserved in structured cleanupReport
-        r5AssertOutstanding(error.cleanupReport, inv);
+        r5AssertOutstanding(error.cleanupReport, inv, { admissionRejected: true });
         return true;
       }
     );
     // Zero destructive cleanup or probe transport calls
     assert.equal(transport.calls.length, 0, `Case ${tc.label} must dispatch 0 transport calls`);
-    assert.equal(inv.runLifecycleState, INVENTORY_RUN_STATE.RESIDUAL_BLOCKED, `Case ${tc.label} must finalize inventory as RESIDUAL_BLOCKED`);
+    assert.equal(inv.runLifecycleState, INVENTORY_RUN_STATE.ACTIVE, 'Rejected admission must preserve the original lifecycle');
   }
 
   // Case 6: Dispatcher registered for another project rejected at assertTrustedOfflineDispatcher
@@ -11101,7 +11112,7 @@ test('123. H3-R6-01: runHostedProbeRunner admission rejects all untrusted, forge
     }),
     error => {
       assert.match(error.message, /OFFLINE_DISPATCHER_RUN_MISMATCH/);
-      r5AssertOutstanding(error.cleanupReport, invA);
+      r5AssertOutstanding(error.cleanupReport, invA, { admissionRejected: true });
       return true;
     }
   );
@@ -11253,7 +11264,7 @@ test('125. H3-R7-01: sleepFn callbacks/getters/inherited overrides and invalid t
         () => (entry === 'runner' ? runHostedProbeRunner(opts) : runOfflineProbeSimulation(opts)),
         error => {
           assert.match(error.message, /UNTRUSTED_TIMING_OVERRIDE/);
-          r5AssertOutstanding(error.cleanupReport, inv);
+          r5AssertOutstanding(error.cleanupReport, inv, { admissionRejected: true });
           return true;
         }
       );
@@ -11355,7 +11366,7 @@ test('125. H3-R7-01: sleepFn callbacks/getters/inherited overrides and invalid t
       }),
       error => {
         assert.match(error.message, /INVALID_TIMING_CONFIG|INVALID_DETERMINISTIC_FIXTURE_SPEC/);
-        r5AssertOutstanding(error.cleanupReport, inv);
+        r5AssertOutstanding(error.cleanupReport, inv, { admissionRejected: true });
         return true;
       }
     );
@@ -11695,7 +11706,7 @@ test('129. H3-R8-01B/C/D: Untrusted inventory and runContext reject with zero ex
     }),
     error => {
       assert.match(error.message, /ADMIN_CLIENT_RUN_MISMATCH|INVENTORY_RUN_ID_MISMATCH/);
-      r5AssertOutstanding(error.cleanupReport, crossRunInv);
+      r5AssertOutstanding(error.cleanupReport, crossRunInv, { admissionRejected: true });
       return true;
     }
   );
@@ -11715,7 +11726,7 @@ test('129. H3-R8-01B/C/D: Untrusted inventory and runContext reject with zero ex
     }),
     error => {
       assert.match(error.message, /UNTRUSTED_OFFLINE_DISPATCHER/);
-      r5AssertOutstanding(error.cleanupReport, validOutstandingInv);
+      r5AssertOutstanding(error.cleanupReport, validOutstandingInv, { admissionRejected: true });
       return true;
     }
   );

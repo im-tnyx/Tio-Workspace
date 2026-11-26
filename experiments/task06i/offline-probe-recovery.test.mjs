@@ -3,7 +3,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { once } from 'node:events';
 import {
-  copyFileSync, linkSync, mkdtempSync, readFileSync, realpathSync, rmSync,
+  copyFileSync, existsSync, linkSync, mkdtempSync, readFileSync, realpathSync, rmSync,
   symlinkSync, truncateSync, writeFileSync
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,7 +17,7 @@ import {
 } from './conditional-storage-fixture.mjs';
 import {
   createCreationProof, createDeterministicFixtureTransport, createHostedAdminClient, createMockProjectKey,
-  createTrustedOfflineDispatcher, HARDCODED_REAL_REF, HARDCODED_TEMP_REF, HARDCODED_TIO_WORLD_REF,
+  createRunContext, createTrustedOfflineDispatcher, HARDCODED_REAL_REF, HARDCODED_TEMP_REF, HARDCODED_TIO_WORLD_REF,
   provisionStorageProbeFixture, runHostedProbeRunner, runOfflineProbeSimulation, STORAGE_PROBE_BUCKET, TestRunInventory
 } from './hosted-probe-runner.mjs';
 import { createOfflineRecoveryJournal, recoverOfflineProbeRun, reopenOfflineRecoveryJournal } from './offline-probe-recovery.mjs';
@@ -102,6 +102,59 @@ function journalTransport(handle) {
       fetchFn: transport, probeContent: content
     })
   };
+}
+
+function runnerFixture(handle) {
+  const fixture = journalTransport(handle);
+  const dispatcher = createTrustedOfflineDispatcher({
+    projectRef, runId: handle.runId, fetchFn: fixture.transport,
+    outcomes: {
+      'BYPASS-01': {
+        passed: true, status: 422, route_disabled: true, error_code: 'email_provider_disabled',
+        transportRequest: { url: 'https://' + projectRef + '.supabase.co/auth/v1/user', method: 'GET' }
+      }
+    }
+  });
+  return {
+    ...fixture, dispatcher,
+    options: {
+      projectRef, runId: handle.runId, inventory: fixture.inventory, adminClient: fixture.adminClient,
+      offlineDispatcher: dispatcher, selectedProbeIds: ['BYPASS-01'], timing: { mode }
+    }
+  };
+}
+
+function admissionSnapshot(handle, directory, fixture, runContext) {
+  const file = journalPath(directory, handle.runId);
+  const { clear: _clear, ...contextState } = runContext ?? {};
+  return {
+    inventory: structuredClone(fixture.inventory),
+    context: structuredClone(contextState),
+    journal: handle.report(),
+    persisted: readFileSync(file),
+    rollbackSidecar: existsSync(file + '-journal') ? readFileSync(file + '-journal') : null,
+    budget: budget(handle).report(),
+    provider: snapshotRecoveryStorageFixture(getConditionalStorageFixtureProvider(fixture.transport)),
+    providerCalls: fixture.transport.calls,
+    dispatcherCalls: fixture.dispatcher.calls
+  };
+}
+
+async function assertUnchangedAdmission(handle, directory, fixture, invoke, expectedMessage, runContext) {
+  const before = admissionSnapshot(handle, directory, fixture, runContext);
+  let rejection;
+  await assert.rejects(invoke, error => {
+    assert.match(error.message, expectedMessage);
+    rejection = error;
+    return true;
+  });
+  const after = admissionSnapshot(handle, directory, fixture, runContext);
+  assert.deepEqual(after, before);
+  assert.equal(rejection.code, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(rejection.cleanupReport.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(rejection.cleanupReport.failureStage, 'admission');
+  assert.equal(rejection.cleanupReport.cleanupExecuted, false);
+  return rejection.cleanupReport;
 }
 
 function rewrite(directory, runId, edit, updateDigest = true) {
@@ -530,6 +583,101 @@ if (process.argv[2] === '--h4-child') {
     assert.equal(handle.report().consumed, 0);
     assert.equal(transport.calls.length, 0);
     assert.equal(dispatcher.calls.length, 0);
+  });
+
+  test('H4-R1 incorrect runner and repeated explicit LIVE rejection preserve the original eligible inventory', async t => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    t.after(() => handle.close());
+    const fixture = runnerFixture(handle);
+    const initial = admissionSnapshot(handle, directory, fixture);
+    await assert.rejects(recoverOfflineProbeRun({ handle }), /RECOVERY_REOPEN_REQUIRED/);
+    assert.deepEqual(admissionSnapshot(handle, directory, fixture), initial);
+    const wrongEntryPoint = () => runHostedProbeRunner({
+      ...fixture.options, argv: ['--live'], env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }
+    });
+    await assertUnchangedAdmission(handle, directory, fixture, wrongEntryPoint, /RECOVERY_PROBE_ADMISSION_BLOCKED/);
+    await assertUnchangedAdmission(handle, directory, fixture, wrongEntryPoint, /RECOVERY_PROBE_ADMISSION_BLOCKED/);
+    await assertUnchangedAdmission(handle, directory, fixture,
+      () => runOfflineProbeSimulation({ ...fixture.options, liveHostedDispatch: true }), /BLOCKED_PENDING_DURABLE_RECOVERY/);
+    assert.equal(handle.report().consumed, 0);
+    assert.equal(fixture.dispatcher.calls.length, 0);
+    assert.equal(fixture.transport.calls.length, 0);
+    const result = await runOfflineProbeSimulation(fixture.options);
+    assert.equal(result.status, 'COMPLETED');
+    assert.equal(result.cleanupReport.status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(handle.report().consumed, 1);
+  });
+
+  test('H4-R1 rejected admission preserves verified pending Storage and later admitted cleanup still deletes it', async t => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    t.after(() => handle.close());
+    const fixture = runnerFixture(handle);
+    await fixture.provision();
+    const report = await assertUnchangedAdmission(handle, directory, fixture,
+      () => runOfflineProbeSimulation({ ...fixture.options, adminClient: null }), /CLEANUP_CAPABILITY_REQUIRED/);
+    assert.ok(report.residualResources.some(resource => resource.type === 'storage_fixture'));
+    assert.equal(handle.report().consumed, 5);
+    const result = await runOfflineProbeSimulation(fixture.options);
+    assert.equal(result.status, 'COMPLETED');
+    assert.equal(result.cleanupReport.storageObjectsDeleted, 1);
+    assert.equal(handle.report().consumed, 8);
+    assert.equal(fixture.transport.calls.filter(call => call.method === 'DELETE').length, 1);
+  });
+
+  test('H4-R1 rejected timing preserves Auth obligations and transient credentials', async t => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    t.after(() => handle.close());
+    const fixture = runnerFixture(handle);
+    const runContext = createRunContext({ runId: handle.runId, testPassword: secretSentinel });
+    runContext.activeAccessToken = fixture.userAccessToken;
+    runContext.activeRefreshToken = secretSentinel + '-refresh';
+    fixture.inventory.registerSession(ownerId, fixture.userAccessToken);
+    fixture.inventory.registerSeedPasswordModification({ userId: ownerId, originalPassword: secretSentinel });
+    const report = await assertUnchangedAdmission(handle, directory, fixture,
+      () => runOfflineProbeSimulation({ ...fixture.options, runContext, timing: { mode: 'standard' } }),
+      /REQUEST_BUDGET_MODE_MISMATCH/, runContext);
+    assert.ok(report.residualResources.some(resource => resource.type === 'session'));
+    assert.ok(report.residualResources.some(resource => resource.type === 'seed_credential_restoration'));
+    const diagnostic = JSON.stringify(report);
+    assert.ok(!diagnostic.includes(secretSentinel) && !diagnostic.includes(fixture.userAccessToken));
+    assert.equal(handle.report().consumed, 0);
+  });
+
+  test('H4-R1 reopened recovery rejects probe admission without changing persistent recovery state', async t => {
+    const { handle, directory } = await seedStorage(t);
+    const fixture = runnerFixture(handle);
+    await assertUnchangedAdmission(handle, directory, fixture,
+      () => runOfflineProbeSimulation(fixture.options), /RECOVERY_PROBE_ADMISSION_BLOCKED/);
+    assert.equal(handle.report().consumed, 1);
+    assert.deepEqual(handle.report().residual.storage, [1]);
+    const result = await recoverOfflineProbeRun({ handle, provider: provider(handle.runId) });
+    assert.equal(result.status, 'CLEANUP_VERIFIED_SUCCESS');
+  });
+
+  test('H4-R1 terminal rejection preserves the finalized inventory and terminal journal', async t => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    t.after(() => handle.close());
+    const fixture = runnerFixture(handle);
+    assert.equal((await runOfflineProbeSimulation(fixture.options)).status, 'COMPLETED');
+    await assertUnchangedAdmission(handle, directory, fixture,
+      () => runOfflineProbeSimulation(fixture.options), /RECOVERY_PROBE_ADMISSION_BLOCKED/);
+    assert.equal(handle.report().status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(handle.report().consumed, 1);
+  });
+
+  test('H4-R1 rejected legacy admission cannot pin a pacing mode before valid retry', async () => {
+    const fixture = runnerFixture({ runId: 'r1-legacy-pacing-retry' });
+    const before = structuredClone(fixture.inventory);
+    await assert.rejects(runOfflineProbeSimulation({
+      ...fixture.options, adminClient: null, timing: { mode: 'standard' }
+    }), /CLEANUP_CAPABILITY_REQUIRED/);
+    assert.deepEqual(structuredClone(fixture.inventory), before);
+    assert.equal(fixture.transport.calls.length, 0);
+    assert.equal((await runOfflineProbeSimulation(fixture.options)).status, 'COMPLETED');
   });
 
   test('H4 integration persists normal H3 conditional cleanup and its private absence result', async t => {

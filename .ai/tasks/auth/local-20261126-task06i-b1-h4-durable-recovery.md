@@ -2,10 +2,10 @@
 
 | Field | Value |
 |---|---|
-| Status | Ready for review |
+| Status | H4-R1 offline validated, exact-head review on PR #47 |
 | Implementation owner | Codex root |
 | Previous agent | None for H4 |
-| Last commit agent | Codex root. First verified H4 implementation `80f8507ab92bb744a55b753439ec0434004643bf`, first correction `640c7b18e89ef743be5f125ef0e7497840a14b43`. The PR records the final reviewed HEAD. |
+| Last commit agent | Codex root. Verified R1 baseline `79e53cdb3c1f3c7db867c9c4c3766cb60ab83511`. PR #47 records the published R1 HEAD and review disposition. |
 | Tracking / approval | Owner task brief dated 2026-11-26, offline Task 06I-B1-H4. |
 | Branch | `feat/task06i-b1-h4-durable-recovery` |
 | Base / previous and aligned local HEAD / fetched remote main | `5809dddf456cea3b8dfec1164034cf63fc392eb1` |
@@ -50,3 +50,13 @@
 4. Keep unresolved records for operator review. Cold Auth reconciliation and unclassified effects have no supported provider proof path in this slice. Journal-backed runs retain them conservatively, including when the process-local H3 inventory alone reports clean. The existing process-local H3 entry points remain supported for legacy runs.
 
 The local filesystem trust boundary assumes an owner-controlled directory and ACL, stable paths and working local file locks and flush semantics. SQLite handles incomplete transactions and journal replay after process crashes. This implementation does not attest ACLs on Windows, support network filesystems or defend against a privileged actor substituting an internally consistent prior copy. Verification covers process termination on Windows and a Linux Docker volume. It does not demonstrate power-loss behavior.
+
+## R1 non-mutating admission rejection
+
+The owner authorized correction of the [P1 admission thread](https://github.com/im-tnyx/Tio-Workspace/pull/47#discussion_r4710049809) on the existing H4 branch and PR. Bootstrap verified a clean and aligned local checkout at PR HEAD `79e53cdb3c1f3c7db867c9c4c3766cb60ab83511` against main `5809dddf456cea3b8dfec1164034cf63fc392eb1`.
+
+- Five journal-backed regressions failed against the unchanged runner (exit 1). Rejected admission set `cleanupStarted` and `finalized` and changed `ACTIVE` or `FINALIZED` to `RESIDUAL_BLOCKED`, despite zero new provider calls or budget consumption.
+- `hosted-probe-runner.mjs` now builds sanitized diagnostics from trusted inventory without entering cleanup. The report marks `failureStage: admission` and `cleanupExecuted: false`. Actual cleanup retains its existing lifecycle and resource diagnostics. The runner configures the shared pacing mode after the other admission checks, so a rejected legacy call cannot pin that mode for a later valid call.
+- Tests compare inventory, transient context and credential obligations, journal report and SQLite files, budget, dispatcher and provider state. They cover repeated invalid entry, explicit LIVE, Storage and Auth obligations, recovery and terminal fences, legacy pacing retry and a valid retry using the same inventory. The Storage retry exercises admitted conditional deletion and independent absence verification.
+- Verification (exit 0): focused R1 **6/6**, Windows H4 and process-crash **33/33**, legacy runner **182/182**, full Windows Task 06I with local PostgreSQL **365/365**, hardened network-disabled Linux Docker Task 06I **365/365**, standalone local PostgreSQL parity **18/18**, Task 06H **115/115**, and `npm run verify` with **22/22** shell tests. Linux synthetic tests had no Docker socket. Parity ran separately in a pinned local Docker context using a cached PostgreSQL image with networking disabled.
+- Independent exact-head re-review, inline disposition and GitHub CI evidence are tracked in [PR #47](https://github.com/im-tnyx/Tio-Workspace/pull/47). H5 remains NOT IMPLEMENTED, hosted atomic deletion remains UNVERIFIED, hosted verification remains 0/18, Hosted LIVE remains NOT AUTHORIZED, and Production Real Auth remains STRICT NO-GO. Hosted mutations 0, additional infrastructure cost $0. Merge requires separate owner authorization.
