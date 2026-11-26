@@ -1135,3 +1135,60 @@ Continuing on PR #45 (`fix/task06i-jwt-validation-evidence`) from verified basel
 - **Independent read-only audit (`17d8d742`, Antigravity `research` subagent):** Initial audit flagged 4 actionable lifecycle findings (`observeAndTrackSessionTokens` active `ctx` / cross-session / malformed guards; `observeAuthResponse` 3C/3D `ctx` publication guards; strict 3-part JWT `session_id` & non-empty `sessionId` enforcement across `registerSession`/`executeCleanup`/`invalidateSession`/`verifyUserCredentials`; and bound string intrinsics in `extractUnverifiedJwtIdentityClaims`). After applying fixes and Scenario 6 regressions, independent re-review returned **PASS** (`157/157`; manual assessment only, not GitHub `APPROVED`).
 
 Hosted atomic conditional deletion remains **UNVERIFIED**; durable recovery **NOT IMPLEMENTED**; run-created seed support **NOT IMPLEMENTED**; hosted verification **0/18**; Hosted LIVE **NOT AUTHORIZED**; Production Real Auth **STRICT NO-GO**; hosted mutations **0**; cost **$0**. H4 preparation remains pending separate approval and merge of PR #45.
+
+### 21.4 Cleanup restoration and final reconciliation integrity (PR #45)
+
+| Ownership / authorization | Evidence |
+|---|---|
+| Implementation owner | Codex root, continuing this local task under the owner's explicit Task06I cleanup-restoration request dated 2026-11-26 |
+| Previous agent | Antigravity, prior session cleanup credential integrity follow-up |
+| Last commit agent / verified SHA at bootstrap | Antigravity / `385a6ba583ec828f53928fd8af5b8a8f22370e4a` (local HEAD and remote PR HEAD matched; clean worktree) |
+| Verified base | `main` / `dd90265d9cdd8d8bd228ae5e7cbf13f8d1fa2c7a` |
+| Authorized publication | Commit/push existing `fix/task06i-jwt-validation-evidence`; reply to both blocking threads; request independent `im-tio` exact-HEAD re-review. No duplicate PR or merge. |
+| Scope | `hosted-probe-runner.mjs`, `hosted-probe-runner.test.mjs`, `run-request-budget.mjs`, `.ai/current.md` and this record; offline implementation/tests/continuity only |
+
+**Root causes and baseline evidence:**
+
+1. [Finding A / `4706237319`](https://github.com/im-tnyx/Tio-Workspace/pull/45#discussion_r4706237319): identity-conflicted verification signed out the JWT's session but returned `sessionRevocationFailed` with the body session ID. The restoration path retried the body's prior credential and interpreted successful logout as restoration verification. Imported real `verifyUserCredentials` and `executeCleanup` regression paths reproduced the incorrect flag and `CLEANUP_VERIFIED_SUCCESS` on baseline source.
+2. [Finding B / `4706352213`](https://github.com/im-tnyx/Tio-Workspace/pull/45#discussion_r4706352213): reconciliation obligations were copied before restoration authentication; later missing-token-`session_id` registration added a new obligation, yet logout credited the body session and stale report arrays allowed success/credential clearing. The new test begins with zero obligations and reproduces false success only after cleanup-generated authentication.
+
+**Completion contract and corrections:**
+
+| Lifecycle gate | Required evidence / corrected behavior | Offline regression |
+|---|---|---|
+| Observation and correlation | Authentication HTTP success alone is insufficient. Token user/session must correlate with response and intended seed user. | `PR45-RESTORE-A`, `A2`, `B`, `D` |
+| Verification versus revocation | `credentialVerified`, `verifiedUserId` and `verificationSessionId` describe credential verification independently of `sessionRevocationFailed` and indeterminate response effects. Identity conflict stays failed even after successful correlated logout. | `A`, `A2`, `D`; existing R10/R11 indeterminate assertions now explicitly reject the logout-failure classification |
+| Targeted revocation | Verification calls `invalidateSession` using the token session; missing session identity dispatches no logout and receives no revocation credit. Prior correlated body credentials remain intact. | `A`, `A2`, `B` |
+| Legitimate retry | Retry requires actual revocation failure, affirmative expected-user credential verification and a matching stored JWT user/session. A local revocation receipt alone cannot establish credential restoration. | `C` plus existing R10 logout failure/exception/false-proof tests |
+| Final reconciliation | Inspect live obligations, unrevoked sessions and unresolved operations after restoration. The final success gate shares the inventory resource predicate with `isClean()`. New obligations cannot be dropped or cleared. Successful table cleanup removes settled IDs from inventory. | `B`, `F`, `H`, existing session/storage suites |
+| Recovery and repeated cleanup | Retain passwords/tokens while obligations remain; `clearCredentials` refuses outstanding inventory. Repeated cleanup preserves unresolved evidence; bounded retry permits internal cleanup while public admission stays fenced. | `B`, `C`, `F`, `G`, `H` |
+| Budget, exceptions, early rejection | Same shared 25 requests, reserve 0, standard pacing 1000 ms. Pre-dispatch budget rejection is distinct from indeterminate dispatched authentication. Adapter rejection/failClosed exceptions report obligations and retain recovery credentials. | `F` (update, login and logout exhaustion), `G`, `H` |
+
+**Validation on corrected source/tests before consolidated review:**
+
+- Focused imported-path regressions: `node --test --test-isolation=none --test-name-pattern=PR45-RESTORE experiments/task06i/hosted-probe-runner.test.mjs`: **9/9 PASS**. Initial default sandbox child-process execution returned `spawn EPERM`; subsequent normal suites ran with approved process access.
+- Conditional Storage: **64/64 PASS**; runner **166/166 PASS**; full Task06I **316/316 PASS**; Task06H **115/115 PASS**.
+- Established hardened Docker runner + conditional Storage + inventory effects + timing + request budget: **248/248 PASS**; `node:24-bookworm`, `--network none --pull never --cap-drop ALL --security-opt no-new-privileges --read-only`, read-only experiments mount; no supplied credentials/socket/ports. An earlier invocation used nonexistent effects/timing filenames and executed only **237** tests; the corrected full module set above supersedes that subset.
+- PostgreSQL parity: **POSTGRES_VERIFIED 18/18**, PostgreSQL **17.11**, isolated local Docker with no published ports.
+- `npm run verify`: tokens self-test/check, TypeScript, ESLint and **22/22** shell contract tests **PASS**.
+- `node --check` on both modified `.mjs` files and `git diff --check`: **PASS**.
+- Git Bash shell syntax and guard integrity fixture suite: **14/14 PASS**. Attribution fixture suite and final committed range checks pending. Preserve historical Windows MSYS fixture limitation separately from Linux CI results.
+
+**Consolidated independent assessment and corrections:** Separate read-only agent `cleanup_security_review` reviewed the complete seven-file PR delta from `dd90265d9cdd8d8bd228ae5e7cbf13f8d1fa2c7a`, including unpublished working changes. Initial **CHANGES_REQUESTED** consolidated report identified two further imported-path P2 reproductions:
+
+1. A dispatched transport could forge `REQUEST_BUDGET_EXHAUSTED` / `REQUEST_CANCELLED_BEFORE_DISPATCH`; code-only classification incorrectly suppressed uncertain session effects. Correction: `run-request-budget.mjs` issues private WeakMap pre-dispatch receipts bound to exact `runId`, with internally recognized cancellation errors. `verifyUserCredentials` consumes only this provenance. `PR45-RESTORE-I` proves matching transport error codes remain indeterminate and retain residual obligations, genuine cancellation receipts are accepted, forged receipts and cross-run reuse rejected.
+2. A token for a different user but the same session ID could receive revoked credit and skip cleanup with the original preserved credential. Correction: capture known inventory user binding before validated replacement and require it for credential verification and revocation attribution. `PR45-RESTORE-J` proves the original credential remains unrevoked after the conflicting verification and its logout actually dispatches in subsequent cleanup.
+
+After these corrections the independent consolidated re-review returned **PASS**, no remaining substantiated blocking findings. Independently executed: focused security/cleanup **19/19**, budget suite **7/7**, complete runner **168/168**, syntax and diff checks **PASS**. Its first full-run attempt had two unavailable CLI subprocess tests under sandbox process restrictions; approved process-access rerun passed **168/168**. This is a manual independent agent assessment, **not GitHub APPROVED**.
+
+**Final validation, superseding pre-review counts above:**
+
+- Baseline isolated export of `385a6ba583ec828f53928fd8af5b8a8f22370e4a` with current `PR45-RESTORE-A2` / `B` tests: **0/2 PASS, 2 expected failures**, both actual `CLEANUP_VERIFIED_SUCCESS` versus required residual failure. Current implementation: both PASS within full suite. No working source replacement was used for baseline reproduction.
+- Runner **168/168 PASS**; full Task06I **318/318 PASS** (includes Conditional Storage **64/64** and PostgreSQL parity contract tests); established hardened Docker set **250/250 PASS**, same network-disabled/read-only flags as above.
+- Task06H **115/115**, standalone PostgreSQL parity **18/18 POSTGRES_VERIFIED** (17.11), `npm run verify` including shell **22/22**: **PASS** before the additional bounded review fixes; these changes touch no Task06H/app/parity source. Final Task06I rerun includes actual PostgreSQL execution after the review fixes.
+- Shell syntax, `node --check` on all three changed runtime/test modules, Markdown relative links/fences, added-line sensitive-string scan and diff whitespace: **PASS**.
+- Local Git Bash **5.3.15** attribution fixtures: **142/142 PASS**, integrity fixtures **14/14 PASS**. The earlier documented **139/142 Windows MSYS emoji-grep fixture limitation** remains historical evidence for that earlier environment/run; current local results and Linux exact-HEAD CI are separately reported. No guard or fixture was weakened.
+
+**Publication / remaining gate:** New correction commit agent is Codex root; immutable publication SHA and exact-HEAD checks/review are recorded in PR #45 replies after commit/push (a tracked commit cannot contain its own SHA). Final exact-HEAD GitHub checks/re-review and formal approval pending. Bootstrap had 6 inline threads, 2 unresolved; latest `im-tio` review `6071656874` was `CHANGES_REQUESTED`. Main Protection ruleset `27218050` verified active, strict App-owned attribution check (`5032971`), one approval required and review-thread resolution required, no bypass actors. Request `im-tio` full exact-HEAD re-review; separate owner merge authorization remains absent.
+
+H3 remains **MERGED / OFFLINE TESTED**. JWT token/depth/nodes limits remain **32768 / 32 / 1024**. Hosted atomic conditional deletion **UNVERIFIED**; durable recovery **NOT IMPLEMENTED**; run-created seed support **NOT IMPLEMENTED**; hosted verification **0/18**; Hosted LIVE **NOT AUTHORIZED**; Production Real Auth **STRICT NO-GO**; hosted mutations **0**, cost **$0**. No H4, hosted Supabase/Brevo operations, migrations, email, deployment or production Auth implementation.

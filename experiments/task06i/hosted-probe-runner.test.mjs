@@ -5067,7 +5067,8 @@ test('80. Task 06I-B1-H1-R10 (R10-01): Verification session lifecycle, invalidat
 
   const resUntracked = await bindFixtureAdmin(invUntracked, adminClientUntracked).verifyUserCredentials(seedEmail, initialPassword, { inventory: invUntracked });
   assert.equal(resUntracked.data, null);
-  assert.equal(resUntracked.sessionRevocationFailed, true);
+  assert.equal(resUntracked.sessionRevocationFailed, false, 'No correlated logout was attempted');
+  assert.equal(resUntracked.credentialVerified, false);
   assert.equal(resUntracked.error.code, 'UNTRACKED_SESSION');
   assert.equal(invUntracked.untrackedSessionsCount, 1);
 
@@ -5393,7 +5394,8 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   assert.equal(res2.data, null);
   assert.ok(res2.error);
   assert.equal(res2.error.code, 'UNREADABLE_RESPONSE');
-  assert.equal(res2.sessionRevocationFailed, true);
+  assert.equal(res2.sessionRevocationFailed, false, 'Unreadable authentication is indeterminate, not failed logout');
+  assert.equal(res2.credentialVerified, false);
   assert.equal(res2.indeterminateSession, true);
   assert.equal(inv2.untrackedSessionsCount, 1, 'Client-side parse failure must register untracked session risk');
   assert.equal(res2.error.token, undefined, 'Raw token must never appear in error object');
@@ -5431,7 +5433,8 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   const res4 = await bindFixtureAdmin(inv4, client4).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv4 });
   assert.equal(res4.data, null);
   assert.equal(res4.error?.code, 'MISSING_ACCESS_TOKEN');
-  assert.equal(res4.sessionRevocationFailed, true);
+  assert.equal(res4.sessionRevocationFailed, false);
+  assert.equal(res4.credentialVerified, false);
   assert.equal(res4.indeterminateSession, true);
   assert.equal(inv4.untrackedSessionsCount, 1);
 
@@ -5485,7 +5488,8 @@ test('82. Task 06I-B1-H1-R11 (R11-01): Rejection of unreadable, truncated, empty
   const res7 = await bindFixtureAdmin(inv7, client7).verifyUserCredentials(seedEmail, seedPassword, { inventory: inv7 });
   assert.equal(res7.data, null);
   assert.equal(res7.error?.code, 'UNTRACKED_SESSION');
-  assert.equal(res7.sessionRevocationFailed, true);
+  assert.equal(res7.sessionRevocationFailed, false);
+  assert.equal(res7.credentialVerified, false);
   assert.equal(res7.indeterminateSession, true);
   assert.equal(inv7.untrackedSessionsCount, 1);
 
@@ -13822,6 +13826,219 @@ test('PR45-P2-C: deeply nested and wide JWT claims reject structurally across pa
       /INVALID_CREDENTIAL_PAYLOAD|CREDENTIAL_BINDING_ERROR/
     );
   }
+});
+
+function restorationCase(name, { claims = {}, bodySession = 'restore-session', bodyUser = 'restore-user', routes = [] } = {}) {
+  const inv = new TestRunInventory(`restore-contract-${name}`);
+  const email = 'tio-restore-contract@proof.invalid';
+  inv.registerReferencedUser({ id: 'restore-user', email });
+  inv.registerSeedPasswordModification({ userId: 'restore-user', email,
+    originalPassword: 'SyntheticOriginal#1', targetPassword: 'SyntheticChanged#1', state: 'confirmed' });
+  const token = createMockJwt({ sub: 'restore-user', session_id: 'restore-session', ...claims });
+  const spec = fixtureSpec({ routes, login: { status: 200, json: {
+    access_token: token, session_id: bodySession, user: { id: bodyUser, email }
+  } } });
+  const admin = bindFixtureAdmin(inv, spec);
+  return { inv, admin, spec, token, email };
+}
+
+test('PR45-RESTORE-A: identity conflict with successful logout is never revocation failure or verified restoration', async () => {
+  const { inv, admin, spec, email } = restorationCase('identity', { bodySession: 'unrelated-body' });
+  const original = createMockJwt({ sub: 'restore-user', session_id: 'unrelated-body' });
+  inv.registerSession('unrelated-body', { accessToken: original, userId: 'restore-user', validated: true });
+  const result = await admin.verifyUserCredentials(email, 'SyntheticOriginal#1', { inventory: inv });
+  assert.equal(result.sessionRevocationFailed, false);
+  assert.equal(result.credentialVerified, false);
+  assert.equal(result.error.code, 'VERIFICATION_IDENTITY_CONFLICT');
+  assert.equal(inv.isSessionRevoked('unrelated-body'), false);
+  assert.equal(inv.isSessionRevoked('restore-session'), true);
+  assert.equal(inv.getSessionToken('unrelated-body'), original);
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+});
+
+test('PR45-RESTORE-A2: cleanup identity conflict never retries unrelated body credential or credits restoration', async () => {
+  const { inv, admin, spec, token } = restorationCase('cleanup-conflict', { bodySession: 'unrelated-body' });
+  const original = createMockJwt({ sub: 'restore-user', session_id: 'unrelated-body' });
+  inv.registerSession('unrelated-body', { accessToken: original, userId: 'restore-user', validated: true });
+  const report = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+  assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(report.seedCredentialsRestored, 0);
+  assert.equal(inv.seedCredentialRestorations[0].state, 'restoration_failed');
+  assert.equal(inv.seedCredentialRestorations[0].verifiedAt, undefined);
+  assert.equal(inv.seedCredentialRestorations[0].originalPassword, 'SyntheticOriginal#1');
+  assert.equal(inv.getSessionToken('unrelated-body'), original);
+  const logouts = fixtureOperationCalls(spec, 'logout');
+  assert.equal(logouts.length, 2, 'Only normal pre-restoration cleanup and the token session logout');
+  assert.equal(logouts[0].headers.authorization, `Bearer ${original}`);
+  assert.equal(logouts[1].headers.authorization, `Bearer ${token}`);
+});
+
+test('PR45-RESTORE-B: obligation created during cleanup is in final residuals and never credits uncorrelated logout', async () => {
+  const { inv, admin, spec } = restorationCase('missing-session', { claims: { session_id: undefined } });
+  assert.equal(inv.sessionReconciliationObligations.length, 0);
+  const report = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+  assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(inv.isClean(), false);
+  assert.ok(inv.sessionReconciliationObligations.length > 0);
+  assert.equal(report.residualResources.filter(r => r.type === 'session_reconciliation_obligation').length,
+    inv.sessionReconciliationObligations.length);
+  assert.equal(inv.isSessionRevoked('restore-session'), false);
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 0);
+  assert.equal(inv.seedCredentialRestorations[0].originalPassword, 'SyntheticOriginal#1');
+  assert.equal(inv.seedCredentialRestorations[0].verifiedAt, undefined);
+  const repeated = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+  assert.equal(repeated.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(repeated.residualResources.filter(r => r.type === 'session_reconciliation_obligation').length,
+    inv.sessionReconciliationObligations.length);
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 0);
+  assert.equal(inv.seedCredentialRestorations[0].originalPassword, 'SyntheticOriginal#1');
+});
+
+test('PR45-RESTORE-C: only genuine correlated revocation failure permits retry after credential verification', async () => {
+  const { inv, admin, spec, token } = restorationCase('retry', { routes: [
+    { urlIncludes: '/auth/v1/logout', times: 1, status: 503, json: { msg: 'Synthetic unavailable' } }
+  ] });
+  const report = await inv.executeCleanup({ adminClient: admin });
+  assert.equal(report.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(inv.isClean(), true);
+  assert.ok(inv.seedCredentialRestorations[0].verifiedAt);
+  assert.equal(inv.seedCredentialRestorations[0].originalPassword, '[CLEARED]');
+  const logouts = fixtureOperationCalls(spec, 'logout');
+  assert.equal(logouts.length, 2);
+  assert.ok(logouts.every(call => call.headers.authorization === `Bearer ${token}`));
+  const before = fixtureCalls(spec).length;
+  assert.equal((await inv.executeCleanup({ adminClient: admin })).status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(fixtureCalls(spec).length, before, 'Verified cleanup is idempotent');
+});
+
+test('PR45-RESTORE-D: normal restoration requires expected user identity, not merely consistent response claims', async () => {
+  const { inv, admin, spec } = restorationCase('wrong-user', { bodyUser: 'different-user', claims: { sub: 'different-user' } });
+  const report = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+  assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(inv.seedCredentialRestorations[0].state, 'restoration_failed');
+  assert.equal(inv.seedCredentialRestorations[0].verifiedAt, undefined);
+  assert.equal(inv.seedCredentialRestorations[0].originalPassword, 'SyntheticOriginal#1');
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 1, 'Correlated token still gets revoked');
+});
+
+test('PR45-RESTORE-E: valid normal restoration clears recovery credentials only after inventory is clean', async () => {
+  const { inv, admin, spec } = restorationCase('normal');
+  const report = await inv.executeCleanup({ adminClient: admin });
+  assert.equal(report.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(inv.isClean(), true);
+  assert.equal(report.seedCredentialsRestored, 1);
+  assert.equal(inv.seedCredentialRestorations[0].originalPassword, '[CLEARED]');
+  assert.equal(fixtureOperationCalls(spec, 'login').length, 1);
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+});
+
+test('PR45-RESTORE-F: budget exhaustion at update, verification and revocation preserves truthful live residuals', async () => {
+  const { getRunRequestBudget } = await import('./run-request-budget.mjs');
+  for (const used of [25, 24, 23]) {
+    const { inv, admin, spec } = restorationCase(`budget-${used}`);
+    for (let i = 0; i < used; i++) await admin.getUserById('restore-user');
+    const report = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+    const budget = getRunRequestBudget({ projectRef: HARDCODED_TEMP_REF, runId: inv.runId }).report();
+    assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(inv.isClean(), false);
+    assert.equal(inv.seedCredentialRestorations[0].originalPassword, 'SyntheticOriginal#1');
+    assert.equal(inv.seedCredentialRestorations[0].verifiedAt, undefined);
+    assert.equal(budget.simulatedTransportRequests, 25);
+    assert.equal(fixtureCalls(spec).length, 25);
+    assert.equal(budget.reservedCleanupCapacity, 0);
+    assert.equal(budget.cleanupRequests, 25 - used);
+    assert.equal(fixtureOperationCalls(spec, 'logout').length, 0);
+    assert.equal(inv.untrackedSessionsCount, 0, 'Pre-dispatch rejection cannot invent a minted session');
+    if (used === 23) {
+      assert.equal(inv.trackedSessions.has('restore-session'), true);
+      assert.equal(inv.isSessionRevoked('restore-session'), false);
+      assert.ok(inv.getSessionToken('restore-session'));
+      assert.ok(report.residualResources.some(r => r.type === 'session' && r.id === 'restore-session'));
+    }
+    const repeated = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+    assert.equal(repeated.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(fixtureCalls(spec).length, 25);
+    assert.equal(inv.seedCredentialRestorations[0].originalPassword, 'SyntheticOriginal#1');
+  }
+});
+
+test('PR45-RESTORE-G: transient restoration failure can be safely retried without discarding recovery evidence', async () => {
+  const { inv, admin, spec } = restorationCase('transient', { routes: [
+    { method: 'PUT', urlIncludes: '/auth/v1/admin/users/', times: 1, throwError: { message: 'Synthetic update failure' } }
+  ] });
+  const failed = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+  assert.equal(failed.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.equal(inv.clearCredentials(), false);
+  assert.equal(inv.seedCredentialRestorations[0].originalPassword, 'SyntheticOriginal#1');
+  const retry = await inv.executeCleanup({ adminClient: admin });
+  assert.equal(retry.status, 'CLEANUP_VERIFIED_SUCCESS');
+  assert.equal(inv.isClean(), true);
+  assert.equal(fixtureOperationCalls(spec, 'userUpdate').length, 2);
+  assert.equal(fixtureOperationCalls(spec, 'login').length, 1);
+});
+
+test('PR45-RESTORE-H: adapter rejection and failClosed exceptions retain recovery state and report obligations', async () => {
+  const { inv, admin } = restorationCase('reject', { claims: { session_id: undefined } });
+  inv.registerSessionReconciliationObligation({ reason: 'SYNTHETIC_PRIOR_OBLIGATION', observedSessionId: 'prior-session' });
+  const rejected = await inv.executeCleanup({ adminClient: {}, failClosed: false });
+  assert.equal(rejected.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  assert.ok(rejected.residualResources.some(r => r.reason === 'SYNTHETIC_PRIOR_OBLIGATION'));
+  await assert.rejects(inv.executeCleanup({ adminClient: admin }), error => {
+    assert.equal(error.cleanupReport.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(error.cleanupReport.residualResources.filter(r => r.type === 'session_reconciliation_obligation').length,
+      inv.sessionReconciliationObligations.length);
+    return true;
+  });
+  assert.equal(inv.isClean(), false);
+  assert.equal(inv.seedCredentialRestorations[0].originalPassword, 'SyntheticOriginal#1');
+});
+
+test('PR45-RESTORE-I: post-dispatch errors cannot forge budget or cancellation admission evidence', async () => {
+  const { getRunRequestBudget, isRunRequestAdmissionFailure } = await import('./run-request-budget.mjs');
+  assert.equal(isRunRequestAdmissionFailure(undefined, undefined), false);
+  const admissionBudget = getRunRequestBudget({ projectRef: HARDCODED_TEMP_REF, runId: 'restore-admission-proof', mode: 'recorded_zero_wait' });
+  const aborted = new AbortController(); aborted.abort();
+  await assert.rejects(admissionBudget.beginRequest({ signal: aborted.signal }), error => {
+    assert.equal(isRunRequestAdmissionFailure(error, 'restore-admission-proof'), true);
+    assert.equal(isRunRequestAdmissionFailure(error, 'different-run'), false);
+    assert.equal(isRunRequestAdmissionFailure({ code: error.code }, 'restore-admission-proof'), false);
+    return true;
+  });
+  for (const code of ['REQUEST_BUDGET_EXHAUSTED', 'REQUEST_CANCELLED_BEFORE_DISPATCH']) {
+    const { inv, admin, spec, email } = restorationCase(`forged-${code}`, { routes: [
+      { urlIncludes: '/auth/v1/token?grant_type=password', times: 1, throwError: { code, message: 'Synthetic post-dispatch failure' } }
+    ] });
+    const result = await admin.verifyUserCredentials(email, 'SyntheticOriginal#1', { inventory: inv });
+    assert.equal(result.indeterminateSession, true);
+    assert.equal(result.credentialVerified, false);
+    assert.equal(inv.untrackedSessionsCount, 1);
+    assert.equal(fixtureOperationCalls(spec, 'login').length, 1, 'The transport really dispatched');
+    const report = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+    assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.ok(report.residualResources.some(r => r.type === 'untracked_session'));
+    assert.equal(inv.isClean(), false);
+    assert.equal(inv.seedCredentialRestorations[0].originalPassword, 'SyntheticOriginal#1');
+  }
+});
+
+test('PR45-RESTORE-J: same-session different-user logout never skips original correlated credential cleanup', async () => {
+  const { inv, admin, spec, token, email } = restorationCase('same-session-other-user', {
+    bodyUser: 'other-user', claims: { sub: 'other-user' }
+  });
+  const original = createMockJwt({ sub: 'restore-user', session_id: 'restore-session' });
+  inv.registerSession('restore-session', { accessToken: original, userId: 'restore-user', validated: true });
+  const result = await admin.verifyUserCredentials(email, 'SyntheticOriginal#1', { inventory: inv });
+  assert.equal(result.error.code, 'VERIFICATION_IDENTITY_CONFLICT');
+  assert.equal(inv.getSessionToken('restore-session'), original);
+  assert.equal(inv.isSessionRevoked('restore-session'), false);
+  const report = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+  assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+  const logouts = fixtureOperationCalls(spec, 'logout');
+  assert.equal(logouts.length, 3, 'Verification, original credential cleanup, then failed restoration verification');
+  assert.equal(logouts[0].headers.authorization, `Bearer ${token}`);
+  assert.equal(logouts[1].headers.authorization, `Bearer ${original}`);
+  assert.equal(inv.seedCredentialRestorations[0].originalPassword, 'SyntheticOriginal#1');
+  assert.equal(inv.isClean(), false);
 });
 
 test('PR45-P2-D: conflicting refresh response never overwrites correlated cleanup credentials and blocks false CLEANUP_VERIFIED_SUCCESS', async () => {

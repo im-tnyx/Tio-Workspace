@@ -3,6 +3,8 @@ import { types as utilTypes } from 'node:util';
 const RUN_BUDGETS = new Map();
 const TRUSTED_BUDGETS = new WeakSet();
 const TICKETS = new WeakMap();
+const PRE_DISPATCH_FAILURES = new WeakMap();
+const CANCELLATION_ERRORS = new WeakSet();
 const TEMP_PROJECT = 'wvdabiwbaavfggcmpizd';
 const LIMIT = 25;
 const INTERVAL = 1000;
@@ -37,7 +39,14 @@ function abortError() {
   const error = new Error('Request cancelled before dispatch');
   error.name = 'AbortError';
   error.code = 'REQUEST_CANCELLED_BEFORE_DISPATCH';
+  CANCELLATION_ERRORS.add(error);
   return error;
+}
+
+// Error text/code is not dispatch provenance. Only this module can issue this
+// receipt, and a caller may consume it only for the exact bound run.
+export function isRunRequestAdmissionFailure(error, runId) {
+  return typeof runId === 'string' && PRE_DISPATCH_FAILURES.get(error) === runId;
 }
 function wait(ms, signal) {
   return new Promise((resolve, reject) => {
@@ -97,7 +106,7 @@ export function getRunRequestBudget(rawOptions) {
       const category = request.category ?? 'probe';
       if (!['probe', 'auxiliary', 'cleanup'].includes(category)) throw new Error('INVALID_REQUEST_BUDGET_CATEGORY');
       const signal = trustedSignal(request.signal);
-      const rejectCancelled = () => { blocked++; cancelledBefore++; const error = abortError(); error._counted = true; throw error; };
+      const rejectCancelled = () => { blocked++; cancelledBefore++; const error = abortError(); error._counted = true; PRE_DISPATCH_FAILURES.set(error, options.runId); throw error; };
       if (signal && abortedGet.call(signal)) return rejectCancelled();
       // Synchronous reservation occurs before the first await, so concurrent callers cannot oversubscribe.
       if (attempted + reserved >= LIMIT) {
@@ -106,6 +115,7 @@ export function getRunRequestBudget(rawOptions) {
         error.code = 'REQUEST_BUDGET_EXHAUSTED';
         error.recoveryRequired = category === 'cleanup';
         error.budgetReport = budget.report();
+        PRE_DISPATCH_FAILURES.set(error, options.runId);
         throw error;
       }
       reserved++;
@@ -133,6 +143,7 @@ export function getRunRequestBudget(rawOptions) {
         TICKETS.set(ticket, { budget, entry });
         return ticket;
       } catch (error) {
+        if (CANCELLATION_ERRORS.has(error)) PRE_DISPATCH_FAILURES.set(error, options.runId);
         if (error?.name === 'AbortError' && error?.code === 'REQUEST_CANCELLED_BEFORE_DISPATCH' && !error._counted) {
           blocked++; cancelledBefore++;
         }

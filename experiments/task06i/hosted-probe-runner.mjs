@@ -21,7 +21,7 @@ import { admitInventoryEffects, snapshotInventoryEffectData, snapshotDirectInven
 
 import crypto from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
-import { getRunRequestBudget } from './run-request-budget.mjs';
+import { getRunRequestBudget, isRunRequestAdmissionFailure } from './run-request-budget.mjs';
 import { types as utilTypes } from 'node:util';
 import { PREFLIGHT_REQUIREMENTS, EXPECTED_REQUIREMENT_IDS } from './preflight-evaluator.mjs';
 
@@ -5091,6 +5091,23 @@ function cleanupFailure(message, report) {
   return error;
 }
 
+// Resource truth shared by the final cleanup gate and public isClean(). Lifecycle
+// fencing remains separate: cleanup must audit resources while CLEANUP_ACTIVE.
+function inventoryHasResidualResources(inv) {
+  if ([...inv.createdUsers.keys()].some(id => !inv.deletedUsers.has(id))) return true;
+  if (inv.unverifiedUsers.size || inv.untrackedSessionsCount || inv.untrackedUsersCount ||
+      inv.sessionReconciliationObligations.length || inv.hasUnresolvedOperations() ||
+      inv.postFinalizationMutations.length || inv.lateSettlementsDuringCleanup.length) return true;
+  if ([...inv.trackedSessions].some(id => !inv.revokedSessions.has(id))) return true;
+  if (inv.seedCredentialRestorations.some(r => r.state !== 'restored')) return true;
+  for (const [key, fixture] of inv.storageFixtures) {
+    if (!((fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED && hasVerifiedStorageDeletion(inv, key, fixture)) ||
+          (fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.CONFLICT_EXISTING_PRESERVED && !fixture.hasCommittedUpload) ||
+          (fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.DEFINITIVE_NON_CREATION && fixture.neverDispatched === true && !fixture.hasCommittedUpload))) return true;
+  }
+  return [...inv.trackedTableRows.values(), ...inv.trackedStorageObjects.values()].some(items => items.size > 0);
+}
+
 export function assertTrustedRunInventory(
   inventory,
   {
@@ -6183,6 +6200,7 @@ export class TestRunInventory {
   }
 
   clearCredentials() {
+    if (inventoryHasResidualResources(this)) return false;
     for (const item of this.seedCredentialRestorations) {
       if (item.originalPassword) item.originalPassword = '[CLEARED]';
       if (item.targetPassword) item.targetPassword = '[CLEARED]';
@@ -6540,32 +6558,7 @@ export class TestRunInventory {
     ) {
       return false;
     }
-    for (const uId of this.createdUsers.keys()) {
-      if (!this.deletedUsers.has(uId)) return false;
-    }
-    if (this.unverifiedUsers.size > 0) return false;
-    if (this.untrackedSessionsCount > 0) return false;
-    if (this.untrackedUsersCount > 0) return false;
-    if (this.sessionReconciliationObligations.length > 0) return false;
-    if (this.trackedSessions.size !== this.revokedSessions.size) return false;
-    if (this.hasUnresolvedOperations()) return false;
-    if (this.postFinalizationMutations.length > 0) return false;
-    if (this.lateSettlementsDuringCleanup.length > 0) return false;
-    if (this.seedCredentialRestorations.some(r => r.state !== 'restored')) return false;
-    for (const [fixtureKey, fixture] of this.storageFixtures.entries()) {
-      const settledCleanly =
-        (fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED && hasVerifiedStorageDeletion(this, fixtureKey, fixture)) ||
-        (fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.CONFLICT_EXISTING_PRESERVED && !fixture.hasCommittedUpload) ||
-        (fixture.lifecycleState === STORAGE_LIFECYCLE_STATE.DEFINITIVE_NON_CREATION && fixture.neverDispatched === true && !fixture.hasCommittedUpload);
-      if (!settledCleanly) return false;
-    }
-    for (const rows of this.trackedTableRows.values()) {
-      if (rows.size > 0) return false;
-    }
-    for (const objs of this.trackedStorageObjects.values()) {
-      if (objs.size > 0) return false;
-    }
-    return true;
+    return !inventoryHasResidualResources(this);
   }
 
   getSummary() {
@@ -6636,6 +6629,9 @@ export class TestRunInventory {
     };
 
     this.cleanupStarted = true;
+    // A bounded retry reopens internal cleanup only. Public admission stays
+    // fenced by QUIESCING/CLEANUP_ACTIVE; earlier residual evidence is retained.
+    this.finalized = false;
     this.runLifecycleState = INVENTORY_RUN_STATE.QUIESCING;
 
     // Await bounded grace period for in-flight requests to settle before auditing cleanup items (R13-02, R3-04)
@@ -6807,19 +6803,6 @@ export class TestRunInventory {
       });
     }
 
-    // 0D. Unresolved session reconciliation obligations (conflicting/malformed/unvalidated session observations)
-    for (const ob of this.sessionReconciliationObligations) {
-      report.residualResources.push({
-        type: 'session_reconciliation_obligation',
-        reason: ob.reason || 'SESSION_RECONCILIATION_OBLIGATION',
-        probeId: ob.probeId || null,
-        expectedSessionId: ob.expectedSessionId || null,
-        observedSessionId: ob.observedSessionId || null,
-        tokenSessionId: ob.tokenSessionId || null,
-        error: `UNRESOLVED_SESSION_RECONCILIATION: ${ob.reason || 'SESSION_RECONCILIATION_OBLIGATION'} (expected='${ob.expectedSessionId || 'none'}', observed='${ob.observedSessionId || 'none'}', token='${ob.tokenSessionId || 'none'}')`
-      });
-    }
-
     // 1. Delete tracked table rows by exact ID
     for (const [table, ids] of this.trackedTableRows.entries()) {
       if (ids.size > 0 && typeof adminClient.deleteTableRow !== 'function') {
@@ -6832,6 +6815,7 @@ export class TestRunInventory {
               report.residualResources.push({ type: 'table_row', table, id, error: res.error.message || String(res.error) });
             } else {
               report.tableRowsDeleted++;
+              ids.delete(id);
             }
           } catch (err) {
             report.residualResources.push({ type: 'table_row', table, id, error: err.message });
@@ -7301,6 +7285,8 @@ export class TestRunInventory {
           }
 
           try {
+            delete item.verifiedAt;
+            delete item.restoredAt;
             const res = await updateFn(item.userId, { password: item.originalPassword });
             if (res && res.error) {
               item.state = 'restoration_failed';
@@ -7315,12 +7301,15 @@ export class TestRunInventory {
 
             // Post-restoration verification via controlled authentication (R9-01, R10-01):
             // If adminClient provides verifyUserCredentials, verify that the restored password actually works
+            if (typeof adminClient.verifyUserCredentials !== 'function' || !(item.email || trackedEmail)) {
+              throw new Error('RESTORE_VERIFICATION_REQUIRED: Credential restoration requires controlled authentication with a known email');
+            }
             if (typeof adminClient.verifyUserCredentials === 'function') {
               const testEmail = item.email || trackedEmail;
               if (testEmail) {
                 let verifyRes;
                 try {
-                  verifyRes = await adminClient.verifyUserCredentials(testEmail, item.originalPassword, { inventory: this });
+                  verifyRes = await adminClient.verifyUserCredentials(testEmail, item.originalPassword, { inventory: this, expectedUserId: item.userId });
                 } catch (verifyErr) {
                   verifyRes = {
                     data: null,
@@ -7329,22 +7318,25 @@ export class TestRunInventory {
                 }
 
                 if (verifyRes && verifyRes.error) {
-                  const isRevocationFail = verifyRes.sessionRevocationFailed ||
-                    (typeof verifyRes.error.message === 'string' && verifyRes.error.message.includes('VERIFICATION_SESSION_REVOCATION_FAILED'));
+                  const isRevocationFail = verifyRes.sessionRevocationFailed === true &&
+                    verifyRes.credentialVerified === true && verifyRes.verifiedUserId === item.userId;
                   const isIndeterminate = verifyRes.indeterminateSession ||
                     (typeof verifyRes.error.message === 'string' && verifyRes.error.message.includes('INDETERMINATE_VERIFICATION_RESPONSE'));
 
                   if (isRevocationFail && !isIndeterminate) {
-                    const leakSessId = verifyRes.error?.sessionId || null;
+                    const leakSessId = verifyRes.verificationSessionId || null;
                     // Retrieve token from private inventory store (R11-02: secret boundary)
                     const leakToken = leakSessId ? this.getSessionToken(leakSessId) : null;
+                    const leakClaims = leakToken ? extractUnverifiedJwtIdentityClaims(leakToken) : null;
                     let retrySucceeded = false;
 
                     // Attempt safe fallback cleanup retry if private token context exists
-                    if (leakToken && typeof adminClient.signOut === 'function') {
+                    if (leakClaims?.isJwtStructure && leakClaims.parseable &&
+                        leakClaims.sessionId === leakSessId && leakClaims.userId === item.userId &&
+                        typeof adminClient.invalidateSession === 'function') {
                       try {
-                        const retryRes = await adminClient.signOut(leakToken, 'local');
-                        if (retryRes && !retryRes.error) {
+                        const retryRes = await adminClient.invalidateSession(leakSessId, leakToken);
+                        if (retryRes && !retryRes.error && retryRes.data?.scope === 'local') {
                           retrySucceeded = true;
                           if (leakSessId) this.markSessionRevoked(leakSessId);
                         }
@@ -7394,6 +7386,9 @@ export class TestRunInventory {
                     continue;
                   }
                 }
+                if (verifyRes?.credentialVerified !== true || verifyRes.verifiedUserId !== item.userId) {
+                  throw new Error('RESTORE_VERIFICATION_FAILED: Missing correlated seed credential verification evidence');
+                }
                 item.verifiedAt = new Date().toISOString();
               }
             }
@@ -7432,7 +7427,32 @@ export class TestRunInventory {
       });
     }
 
-    if (report.residualUsers.length > 0 || report.residualResources.length > 0) {
+    // Authentication during restoration can create obligations AFTER the session
+    // cleanup phase. Audit the live inventory only after every cleanup operation.
+    for (const ob of this.sessionReconciliationObligations) {
+      report.residualResources.push({ type: 'session_reconciliation_obligation', ...ob,
+        error: `UNRESOLVED_SESSION_RECONCILIATION: ${ob.reason || 'SESSION_RECONCILIATION_OBLIGATION'}` });
+    }
+    for (const id of this.trackedSessions) {
+      if (!this.revokedSessions.has(id) && !report.residualResources.some(r => r.type === 'session' && (r.id === id || r.sessionId === id))) {
+        report.residualResources.push({ type: 'session', id, error: 'SESSION_REVOCATION_UNVERIFIED' });
+      }
+    }
+    for (const op of lateUnresolvedOps) {
+      if (!report.residualResources.some(r => r.opId === op.opId)) {
+        report.residualResources.push({ type: 'unresolved_in_flight_operation', opId: op.opId, probeId: op.probeId, state: op.state });
+      }
+    }
+    for (const [type, count] of [['untracked_session', this.untrackedSessionsCount], ['unresolved_user_creation_risk', this.untrackedUsersCount]]) {
+      const entry = report.residualResources.find(r => r.type === type);
+      if (entry) entry.count = count;
+      else if (count) report.residualResources.push({ type, count, error: 'CLEANUP_GENERATED_UNRESOLVED_OBLIGATION' });
+    }
+    const liveResiduals = inventoryHasResidualResources(this);
+    if (liveResiduals && !report.residualUsers.length && !report.residualResources.length) {
+      report.residualResources.push({ type: 'inventory', error: 'LIVE_INVENTORY_NOT_CLEAN', summary: this.getSummary() });
+    }
+    if (liveResiduals || report.residualUsers.length > 0 || report.residualResources.length > 0) {
       report.status = 'CLEANUP_FAILED_RESIDUAL_RESOURCES';
       this.runLifecycleState = INVENTORY_RUN_STATE.RESIDUAL_BLOCKED;
       this.finalize();
@@ -10914,6 +10934,12 @@ export function createHostedAdminClient(rawOptions = {}) {
         transportError = err;
       }
 
+      if (isRunRequestAdmissionFailure(transportError, inv?.runId || boundRunId)) {
+        if (op && inv) inv.settleInFlightOperation(op.opId, { error: transportError, outcome: { dispatched: false } });
+        return { data: null, credentialVerified: false, sessionRevocationFailed: false, indeterminateSession: false,
+          error: { code: transportError.code, message: transportError.message } };
+      }
+
       const parseEnv = res ? await parseResponseEnvelope(res) : null;
       const observed = observeAuthResponse({
         probeId: 'verify_credentials',
@@ -10946,7 +10972,8 @@ export function createHostedAdminClient(rawOptions = {}) {
             code: observed.errorCode || 'UNREADABLE_RESPONSE',
             status: observed.status
           },
-          sessionRevocationFailed: true,
+          credentialVerified: false,
+          sessionRevocationFailed: false,
           indeterminateSession: true
         };
       }
@@ -10963,22 +10990,59 @@ export function createHostedAdminClient(rawOptions = {}) {
       }
 
       const token = observed.accessToken;
-      const sessionId = observed.sessionId;
+      const claims = extractUnverifiedJwtIdentityClaims(token);
+      const sessionId = claims.sessionId;
+      const storedClaims = inv ? extractUnverifiedJwtIdentityClaims(inv.getSessionToken(sessionId)) : null;
+      const storedUserId = inv?.sessionMetadata.get(sessionId)?.userId || storedClaims?.userId || null;
+      const expectedUserId = options.expectedUserId ||
+        (inv ? [...inv.trackedUsers.values()].find(user => user.email?.toLowerCase() === email.trim().toLowerCase())?.id : null);
+      const correlatedSession = claims.isJwtStructure && claims.parseable && Boolean(sessionId);
+      const credentialVerified = correlatedSession && Boolean(claims.userId) &&
+        !observed.identityConflict && observed.sessionId === sessionId && observed.userId === claims.userId &&
+        (!expectedUserId || claims.userId === expectedUserId) && (!storedUserId || storedUserId === claims.userId);
+      const verificationEvidence = {
+        credentialVerified,
+        verifiedUserId: credentialVerified ? claims.userId : null,
+        verificationSessionId: correlatedSession ? sessionId : null
+      };
+
+      if (!correlatedSession) {
+        return { data: null, ...verificationEvidence, sessionRevocationFailed: false,
+          error: { code: 'VERIFICATION_IDENTITY_UNCORRELATED', message: 'VERIFICATION_IDENTITY_UNCORRELATED: Token lacks correlated session identity' } };
+      }
+      if (credentialVerified && inv) {
+        inv.registerSession(sessionId, { accessToken: token, userId: claims.userId,
+          expectedUserId: claims.userId, validated: true, replaceExisting: true, source: 'verify_credentials' });
+      }
 
       // Immediately revoke verification session so no residual sessions leak (R9-01, R10-01, R11-01)
       let signOutRes;
       let signOutThrew = false;
       let signOutError = null;
       try {
-        signOutRes = await this.signOut(token, 'local');
+        signOutRes = await this.invalidateSession(sessionId, token);
       } catch (err) {
         signOutThrew = true;
         signOutError = err;
       }
 
+      const revocationSucceeded = !signOutThrew && !signOutRes?.error && signOutRes?.data?.scope === 'local';
+      if (revocationSucceeded && inv && claims.userId && (!storedUserId || storedUserId === claims.userId)) {
+        inv.markSessionRevoked(sessionId);
+      }
+
+      // A correlated logout may clean up the token session even when identity
+      // verification failed. It never repairs a conflicting authentication result.
+      if (!credentialVerified) {
+        return { data: null, ...verificationEvidence, sessionRevocationFailed: !revocationSucceeded,
+          error: { code: 'VERIFICATION_IDENTITY_CONFLICT', sessionId,
+            message: 'VERIFICATION_IDENTITY_CONFLICT: Verification identity does not match response or intended seed user' } };
+      }
+
       if (signOutThrew) {
         return {
           data: null,
+          ...verificationEvidence,
           error: {
             message: `VERIFICATION_SESSION_REVOCATION_FAILED: signOut threw exception: ${signOutError?.message || String(signOutError)} (R11-01)`,
             code: 'LOGOUT_EXCEPTION',
@@ -10989,40 +11053,24 @@ export function createHostedAdminClient(rawOptions = {}) {
         };
       }
 
-      if (signOutRes && signOutRes.error) {
+      if (!revocationSucceeded) {
         return {
           data: null,
+          ...verificationEvidence,
           error: {
-            message: `VERIFICATION_SESSION_REVOCATION_FAILED: signOut failed: ${signOutRes.error.message || JSON.stringify(signOutRes.error)} (R11-01)`,
+            message: 'VERIFICATION_SESSION_REVOCATION_FAILED: signOut did not confirm local revocation (R11-01)',
             code: 'LOGOUT_FAILED',
             sessionId: String(sessionId),
-            status: signOutRes.error.status
+            status: signOutRes?.error?.status
             // NOTE (R11-02): Raw token value is strictly omitted to prevent secret leakage
           },
           sessionRevocationFailed: true
         };
       }
 
-      // Successfully signed out - only credit session revoked when identity did not conflict
-      if (observed.identityConflict) {
-        if (inv && observed.tokenSessionId) {
-          inv.markSessionRevoked(observed.tokenSessionId);
-        }
-        return {
-          data: null,
-          error: {
-            message: 'VERIFICATION_IDENTITY_CONFLICT: Verification response body identity conflicts with JWT claims',
-            code: 'VERIFICATION_IDENTITY_CONFLICT',
-            sessionId: String(sessionId)
-          },
-          sessionRevocationFailed: true
-        };
-      }
-      if (inv && sessionId) {
-        inv.markSessionRevoked(sessionId);
-      }
-
       return {
+        ...verificationEvidence,
+        sessionRevocationFailed: false,
         data: {
           verified: true,
           userId: observed.userId,
