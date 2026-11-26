@@ -1,5 +1,7 @@
 # Task 06I-B1-H3 — Controlled Subset Dispatch & Run-Scoped Storage Implementation
 
+**Lifecycle status:** **Complete — archived 2026-11-26** after verified merges of PR #44 and PR #45. Section 21.7 is the post-merge receipt; earlier branch/review/pending fields below are historical checkpoints. H4 is a separate task, **NOT STARTED**. This completed record is not an active or paused implementation task.
+
 **Task ID:** `06I-B1-H3` (Revision `R16`)<br>
 **Creation Date:** 2026-11-24<br>
 **Revision Date:** 2026-11-26<br>
@@ -1251,3 +1253,32 @@ H3 **MERGED / OFFLINE TESTED**; JWT bounds **32768 / 32 / 1024**; budget **25**,
 - Focused independent read-only assessment by separate `required_argument_review` agent: **PASS**, no substantiated blocking finding. Independently ran **25/25** ARGS/VERIFY/RESTORE tests, both syntax checks and diff check. Reviewed current runner/test delta against `a5bc87d`; manual assessment, formal GitHub approval pending. Publication follows existing owner authorization on PR #45; formal review and separate owner merge gate remain required. Immutable correction SHA and published checks belong in the PR discussion after commit.
 - H3 MERGED / OFFLINE TESTED; hosted verification **0/18**, LIVE **NOT AUTHORIZED**, Production Real Auth **STRICT NO-GO**. Review scope remains safe admission and fail-closed behavior.
 - An earlier publication attempt was blocked before shell execution by automatic approval review over commit/push authorization. The owner subsequently explicitly authorized publishing this correction to the existing PR and returning it to GitHub review. Next publication actions are correction commit/push, substantive finding response and fresh complete review request. Merge still requires separate owner authorization.
+
+### 21.7 PR #45 post-merge receipt
+
+**Closure status (verified 2026-11-26): H3 follow-up MERGED / OFFLINE TESTED.** Sections 21.1–21.6 preserve historical review and publication checkpoints; their pending-review/merge wording describes those earlier checkpoints, not the current closure state.
+
+| Closure fact | Verified evidence |
+|---|---|
+| Approved feature HEAD | `8ab4c0e2fc80e940f94d1bee443db8fad0f82efc`; formal **APPROVED** by `im-tio` in [review 6074433501](https://github.com/im-tnyx/Tio-Workspace/pull/45#pullrequestreview-6074433501). This is the historical reviewed feature head. |
+| Review-thread disposition | **8/8 resolved**, verified from live PR #45 review threads. Last P2 [4707539838](https://github.com/im-tnyx/Tio-Workspace/pull/45#discussion_r4707539838) was addressed by the approved feature commit; [substantive response 4708411813](https://github.com/im-tnyx/Tio-Workspace/pull/45#discussion_r4708411813) records own credential-slot forwarding and offline regressions. Thread `PRRT_kwDOVtCmZc68WcL3` is resolved; formal approval accepts its closure. |
+| Owner merge gate / result | Separate owner merge authorization preceded the squash merge of [PR #45](https://github.com/im-tnyx/Tio-Workspace/pull/45). GitHub confirms **MERGED** into `main`, squash SHA `d966f535efba4811c6381377980400e9965e0379`, at **2026-11-26 13:06:14 UTC**. |
+| Latest verified main | Fetched `origin/main` and clean local `main` both `d966f535efba4811c6381377980400e9965e0379` at this closeout bootstrap. Record this verified main separately from the immutable PR #45 squash SHA even though they currently coincide. |
+| Post-merge security CI | [Run 45825896906](https://github.com/im-tnyx/Tio-Workspace/actions/runs/45825896906) is **completed / success** at the squash SHA. The [merge receipt 7192913229](https://github.com/im-tnyx/Tio-Workspace/pull/45#issuecomment-7192913229) reports **332/332 PASS, 0 FAIL, 0 SKIP**; the count is attributed to that receipt, not a new test run in this docs-only closeout. |
+| Post-merge verification receipt | The same receipt records identical reviewed/squash trees, a clean fast-forwarded checkout, local synthetic fixtures **246/246 PASS**, and successful parity/attribution CI. Those are historical receipt results; this closeout does not rerun runtime tests. |
+| Feature branch cleanup | `fix/task06i-jwt-validation-evidence` was subsequently deleted locally and remotely under the owner's cleanup instruction. No active H3 implementation branch remains. |
+| Docs closeout ownership | Implementation owner / previous agent / last verified feature commit agent: Codex root. Last verified feature commit SHA is `8ab4c0e2fc80e940f94d1bee443db8fad0f82efc`; this docs branch is `docs/pr45-h3-closeout`. Its immutable publication SHA belongs in the draft PR after commit; a commit cannot contain its own SHA. |
+
+**Next task:** H4 **offline durable crash recovery — NOT STARTED**. It needs separate bounded owner authorization and its own acceptance/review evidence. This receipt neither implements nor authorizes H4. H5 seed/TEMP work is outside this closeout and the proposed H4 scope; run-created seed support remains **NOT IMPLEMENTED**.
+
+**Unchanged blockers:** hosted verification **0/18**; hosted atomic conditional deletion **UNVERIFIED**; durable recovery **NOT IMPLEMENTED**; Hosted LIVE **NOT AUTHORIZED / BLOCKED**; Production Real Auth **STRICT NO-GO / BLOCKED**. This change touches only this record and `.ai/current.md`; no runtime code, hosted operations, deployment or docs-PR merge is authorized by the closeout instruction.
+
+**Initial docs-only closeout checks (commit `1303b0d6de8153b0d4fa5be493322034c85f03bd`):** `git diff --check` **PASS**; exactly the two authorized Markdown paths changed; **20 relative links / 2 anchors** and code-fence balance **PASS**; added-line sensitive-string scan **PASS**. Live GitHub metadata, approval, thread state, receipt and CI status were inspected using connected GitHub tooling and `gh`. Runtime/native/hosted tests were **not applicable / not run**. This initial draft-phase checkpoint preceded the PR #46 review corrections below.
+
+### 21.8 PR #46 documentation review corrections
+
+Codex reviewed closeout HEAD `1303b0d6de8153b0d4fa5be493322034c85f03bd` and raised two P2 findings: [archive the completed H3 task](https://github.com/im-tnyx/Tio-Workspace/pull/46#discussion_r4709185296) and [reconcile the completed-PR inventory](https://github.com/im-tnyx/Tio-Workspace/pull/46#discussion_r4709185299). The owner explicitly extended the original two-path scope to permit the archive move and necessary link/index updates.
+
+- Moved this complete record from `.ai/tasks/auth/` to `.ai/archive/2026/`, preserving the historical implementation and review evidence. Updated both receipt links in `.ai/current.md` to the archived path. The pointer's active objective is PR #46 documentation review, not completed H3; H4 remains **NOT STARTED**. The generic task/archive lifecycle indexes have no H3-specific entry requiring modification, and the record has no relative links requiring rebasing at its new location.
+- Added verified merged PRs #44/#45 to the explicitly selected completed-PR inventory. PR #31 was also verified merged and its stale open label removed. This inventory is selected history, not an exhaustive PR list.
+- Implementation owner / previous agent / last verified docs commit agent: Codex root; review baseline docs commit `1303b0d6de8153b0d4fa5be493322034c85f03bd`. Correction SHA, executed validation, thread responses and exact-HEAD re-review request belong in PR #46 after publication. No merge authorization; no H4/H5/runtime or hosted work.
