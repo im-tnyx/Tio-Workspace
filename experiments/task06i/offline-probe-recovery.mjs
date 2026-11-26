@@ -20,7 +20,7 @@ export async function recoverOfflineProbeRun(rawOptions) {
     const read = () => readRecoveryStorageFixture(provider, projectRef, runId);
     const request = (kind, operation) => executeRunBudgetRequest(budget, { category: 'cleanup', kind, signal }, operation);
     let status = handle.report();
-    if (status.residual.storage.length) {
+    if (status.residual.storage.length || journal.hasRecoveryStorageReservation()) {
       try {
         // Admission checks that the current provider offers an independent
         // snapshot. Ownership and absence come from budgeted observations.

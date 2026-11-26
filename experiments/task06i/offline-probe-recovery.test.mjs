@@ -70,7 +70,7 @@ function provider(runId, options = {}) {
   });
 }
 
-function journalTransport(handle, { postDeleteResponse = null, authCleanup = false } = {}) {
+function journalTransport(handle, { postDeleteResponse = null, authCleanup = false, authStatus = 200 } = {}) {
   const { runId } = handle;
   const location = object(runId);
   const transport = createDeterministicFixtureTransport({
@@ -78,7 +78,7 @@ function journalTransport(handle, { postDeleteResponse = null, authCleanup = fal
     conditionalStorage: { projectRef, runId, objects: [] },
     initialState: { uploaded: false, deleted: false },
     routes: [
-      { method: 'GET', pathEquals: '/auth/v1/user', status: 200, json: { id: ownerId, sentinel: secretSentinel } },
+      { method: 'GET', pathEquals: '/auth/v1/user', status: authStatus, json: { id: ownerId, sentinel: secretSentinel } },
       { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: false }, status: 404, json: { code: 'NoSuchKey' } },
       { method: 'POST', urlIncludes: '/storage/v1/object/', setsState: { uploaded: true }, status: 200, json: { Id: objectId, sentinel: secretSentinel } },
       { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: true, deleted: false }, status: 200, text: content },
@@ -240,7 +240,23 @@ async function child(kind, directory, runId) {
   const handle = create(directory);
   writeFileSync(join(directory, 'run-id'), handle.runId, { flush: true });
   let calls = 0;
-  if (kind === 'before-storage-resolution' || kind === 'after-storage-resolution') {
+  if (kind === 'r4-capacity') {
+    const inventory = new TestRunInventory(handle.runId);
+    let admitted = 0;
+    for (; admitted < 512; admitted++) {
+      try { inventory.registerTableRow('capacity_rows', 'row-' + admitted); }
+      catch (error) { if (error.code !== 'RECOVERY_CAPACITY_EXCEEDED') throw error; break; }
+    }
+    writeFileSync(join(directory, 'provider-witness.json'), JSON.stringify({ admitted }), { flush: true });
+    process.kill(process.pid, 'SIGKILL');
+  } else if (kind === 'r4-reservation' || kind === 'r4-direct-effect') {
+    const inventory = new TestRunInventory(handle.runId);
+    inventory.reserveStorageFixture({ path: handle.runId + '/probe.txt' });
+    const storage = provider(handle.runId);
+    if (kind === 'r4-direct-effect') storage.putObject(object(handle.runId));
+    writeFileSync(join(directory, 'provider-witness.json'), JSON.stringify({ calls: kind === 'r4-direct-effect' ? 1 : 0, ...snapshotRecoveryStorageFixture(storage) }), { flush: true });
+    process.kill(process.pid, 'SIGKILL');
+  } else if (kind === 'before-storage-resolution' || kind === 'after-storage-resolution') {
     const fixture = journalTransport(handle);
     await provisionKeyedStorage(fixture, handle);
     interruptWrite(directory, 'resolution', 7, kind === 'after-storage-resolution', () => ({ calls: fixture.transport.calls.length }));
@@ -1013,6 +1029,178 @@ if (process.argv[2] === '--h4-child') {
     assert.equal(restarted.report().status, 'RECOVERY_REQUIRED');
     assert.equal(restarted.report().residual.volatileInventory, true);
     assert.equal(restarted.report().consumed, 7);
+  });
+
+  for (const count of [200, 220]) {
+    test('H4-R4 capacity ' + count + ' public registrations never commits an unreadable journal', t => {
+      const directory = testDirectory();
+      const handle = create(directory);
+      const inventory = new TestRunInventory(handle.runId);
+      let admitted = 0;
+      for (; admitted < count; admitted++) {
+        try { inventory.registerTableRow('capacity_rows', 'row-' + admitted); }
+        catch (error) { assert.equal(error.code, 'RECOVERY_CAPACITY_EXCEEDED'); break; }
+      }
+      handle.close();
+      const db = new DatabaseSync(journalPath(directory, handle.runId));
+      const payload = db.prepare('SELECT payload FROM journal').get().payload;
+      db.close();
+      t.diagnostic(JSON.stringify({ admitted, events: JSON.parse(payload)[4].length, bytes: Buffer.byteLength(payload) }));
+      const restarted = reopen(directory, handle.runId);
+      t.after(() => restarted.close());
+      assert.equal(restarted.report().status, 'RECOVERY_REQUIRED');
+      assert.equal(inventory.trackedTableRows.get('capacity_rows').size, admitted);
+    });
+  }
+
+  test('H4-R4 explicit non-preflight reservation rejects without mutation', t => {
+    const handle = create(testDirectory());
+    t.after(() => handle.close());
+    const inventory = new TestRunInventory(handle.runId);
+    const before = handle.report();
+    assert.throws(() => inventory.reserveStorageFixture({ path: handle.runId + '/probe.txt', lifecycleState: 'CREATION_INDETERMINATE' }), /INVALID_STORAGE_RESERVATION_STATE/);
+    assert.deepEqual(handle.report(), before);
+    assert.equal(inventory.storageFixtures.size, 0);
+  });
+
+  test('H4-R4 normal direct reservation is durable before return and never self-authorizes absence', async t => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    t.after(() => handle.close());
+    const inventory = new TestRunInventory(handle.runId);
+    const fixture = inventory.reserveStorageFixture({ path: handle.runId + '/probe.txt' });
+    assert.equal(handle.report().residual.volatileInventory, true);
+    inventory.updateStorageFixture(fixture.key, { ownerOpId: fixture.reservationOpId,
+      lifecycleState: 'DEFINITIVE_NON_CREATION', neverDispatched: true });
+    handle.close();
+    const restarted = reopen(directory, handle.runId);
+    t.after(() => restarted.close());
+    assert.equal((await recoverOfflineProbeRun({ handle: restarted })).status, 'RECOVERY_REQUIRED');
+  });
+
+  for (const kind of ['r4-reservation', 'r4-direct-effect']) {
+    test('H4-R4 crash ' + kind + ' cannot falsely finish before fresh provider proof', async t => {
+      const { handle, witness } = crash(t, kind);
+      const result = await recoverOfflineProbeRun({ handle });
+      assert.equal(result.status, 'RECOVERY_REQUIRED');
+      assert.equal(witness.calls, kind === 'r4-direct-effect' ? 1 : 0);
+      assert.equal(witness.objects.length, kind === 'r4-direct-effect' ? 1 : 0);
+    });
+  }
+
+  test('H4-R4 maximum admission preserves outstanding outcomes, all 25 slots and recovery headroom', async t => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    t.after(() => handle.close());
+    const inventory = new TestRunInventory(handle.runId);
+    const shared = budget(handle);
+    const ticket = await shared.beginRequest({ kind: 'read' });
+    let admitted = 0;
+    for (; admitted < 512; admitted++) {
+      try { inventory.registerTableRow('capacity_rows', 'row-' + admitted); }
+      catch (error) { assert.equal(error.code, 'RECOVERY_CAPACITY_EXCEEDED'); break; }
+    }
+    const before = handle.report();
+    const bytes = readFileSync(journalPath(directory, handle.runId));
+    assert.throws(() => inventory.registerTableRow('capacity_rows', 'boundary-plus-one'), /RECOVERY_CAPACITY_EXCEEDED/);
+    assert.deepEqual(handle.report(), before);
+    assert.deepEqual(readFileSync(journalPath(directory, handle.runId)), bytes);
+    assert.equal(inventory.trackedTableRows.get('capacity_rows').size, admitted);
+    shared.completeRequest(ticket);
+    for (let index = 1; index < 25; index++) await request(handle, 'read');
+    assert.equal(shared.report().consumedAttempts, 25);
+    await assert.rejects(request(handle, 'read'), /REQUEST_BUDGET_EXHAUSTED/);
+    handle.close();
+    const restarted = reopen(directory, handle.runId);
+    t.after(() => restarted.close());
+    assert.equal(restarted.report().consumed, 25);
+    assert.equal(restarted.report().status, 'RECOVERY_REQUIRED');
+  });
+
+  for (const count of [200, 220, 256]) {
+    test('H4-R4 legacy V1 writer envelope above old byte limit remains readable ' + count, t => {
+      const directory = testDirectory();
+      const handle = create(directory);
+      handle.close();
+      rewrite(directory, handle.runId, envelope => {
+        envelope[4] = Array.from({ length: count }, (_, index) => ['volatile', 'other', createHash('sha256').update('legacy-' + index).digest('hex')]);
+      });
+      const restarted = reopen(directory, handle.runId);
+      t.after(() => restarted.close());
+      assert.equal(restarted.report().status, 'RECOVERY_REQUIRED');
+      assert.equal(restarted.report().consumed, 0);
+      const inventory = new TestRunInventory(handle.runId);
+      assert.throws(() => inventory.registerTableRow('legacy_rows', 'new'), /RECOVERY_INVENTORY_MUTATION_BLOCKED/);
+    });
+  }
+
+  test('H4-R4 oversized malformed envelope is bounded and rejected', () => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    handle.close();
+    rewrite(directory, handle.runId, envelope => { envelope[4] = [['volatile', 'other', 'a'.repeat(256 * 1024)]]; });
+    assert.throws(() => reopen(directory, handle.runId), /CORRUPT_RECOVERY_JOURNAL/);
+  });
+
+  test('H4-R4 actual process crash at capacity leaves readable recovery evidence', async t => {
+    const { handle, witness } = crash(t, 'r4-capacity');
+    assert.equal(witness.admitted, 154);
+    assert.equal((await recoverOfflineProbeRun({ handle })).status, 'RECOVERY_REQUIRED');
+    assert.equal(handle.report().consumed, 0);
+  });
+
+  test('H4-R4 reservation persistence failure prevents inventory admission and dispatch', async t => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    t.after(() => handle.close());
+    const inventory = new TestRunInventory(handle.runId);
+    const key = createHash('sha256').update('storage:storage:' + STORAGE_PROBE_BUCKET + '/' + handle.runId + '/probe.txt').digest('hex');
+    const restore = interruptWrite(directory, 'storage_reservation', key, false, () => ({}), 'fail');
+    try {
+      assert.throws(() => inventory.reserveStorageFixture({ path: handle.runId + '/probe.txt' }), /RECOVERY_PERSISTENCE_FAILED/);
+      assert.equal(inventory.storageFixtures.size, 0);
+      assert.equal(inventory._reservationSequence, 0);
+    } finally { restore(); }
+  });
+
+  test('H4-R4 module-owned definitive noncreation clears only its reservation', async t => {
+    const handle = create(testDirectory());
+    t.after(() => handle.close());
+    const fixture = journalTransport(handle, { authStatus: 503 });
+    fixture.inventory.registerTableRow('other_rows', 'unrelated');
+    await assert.rejects(fixture.provision(), /SEED_IDENTITY_VERIFICATION_FAILED/);
+    assert.equal(fixture.transport.calls.length, 1);
+    assert.deepEqual(handle.report().residual.volatileKinds, ['other']);
+    assert.throws(() => journalForRun(handle.runId).resolveNonCreation({ type: 'noncreation' }), /UNTRUSTED/);
+    assert.equal(handle.report().status, 'RECOVERY_REQUIRED');
+  });
+
+  test('H4-R4 fresh absence can reconcile reservation-only crash, current unknown object cannot', async t => {
+    for (const kind of ['r4-reservation', 'r4-direct-effect']) {
+      const { handle, witness } = crash(t, kind);
+      const result = await recoverOfflineProbeRun({ handle, provider: fromWitness(handle.runId, witness) });
+      assert.equal(result.status, kind === 'r4-reservation' ? 'CLEANUP_VERIFIED_SUCCESS' : 'RECOVERY_REQUIRED');
+      if (kind === 'r4-direct-effect') assert.equal(witness.objects.length, 1);
+      assert.equal(result.consumed, 1);
+    }
+  });
+
+  test('H4-R4 definitive noncreation can finish, while duplicate reservations retain original identity', async t => {
+    const handle = create(testDirectory());
+    t.after(() => handle.close());
+    const fixture = journalTransport(handle, { authStatus: 503 });
+    const provisioning = fixture.provision();
+    const key = STORAGE_PROBE_BUCKET + '/' + handle.runId + '/probe.txt';
+    const original = fixture.inventory.storageFixtures.get(key);
+    const before = handle.report();
+    assert.throws(() => fixture.inventory.reserveStorageFixture({ path: original.path, reservationOpId: 'conflicting-operation' }), /RESERVATION_CONFLICT/);
+    assert.deepEqual(handle.report(), before);
+    assert.equal(fixture.inventory.storageFixtures.get(key), original);
+    await assert.rejects(provisioning, /SEED_IDENTITY_VERIFICATION_FAILED/);
+    assert.equal(handle.report().residual.volatileInventory, false);
+    const cleanup = await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient, failClosed: false });
+    assert.equal(cleanup.status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(handle.report().consumed, 1);
   });
 
   test('H4 standard pacing and cancellation survive restart', async t => {

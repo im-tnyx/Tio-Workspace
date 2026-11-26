@@ -11,7 +11,11 @@ export const RECOVERY_PROJECT = 'wvdabiwbaavfggcmpizd';
 export const REQUEST_LIMIT = 25;
 export const REQUEST_INTERVAL_MS = 1000;
 const VERSION = 1;
-const MAX_EVENTS = 256;
+const MAX_EVENTS = 512;
+// All replay-admitted scalar strings are bounded ASCII. Non-resolution
+// events fit 256 bytes; total resolution keys <= event count, ordinals <=25.
+// 512*256 + 512*67 + 25*4 + envelope < 256 KiB, including legacy V1 events.
+const MAX_PAYLOAD_BYTES = 256 * 1024;
 const SCHEMA = 'CREATE TABLE journal (id INTEGER PRIMARY KEY CHECK (id = 1), payload TEXT NOT NULL, digest TEXT NOT NULL) STRICT';
 const require = createRequire(import.meta.url);
 const active = new Map();
@@ -116,7 +120,7 @@ function residuals(state) {
 // Replaying the closed set of events validates on-disk transitions before any
 // budget or provider capability can use them. Sequence is the array index.
 function replay(events, mode) {
-  const state = { attempts: [], absentThrough: 0, ownership: null, terminal: false, inventoryKinds: new Set(), obligations: new Map(), resolvedAttempts: new Set(), recovery: false };
+  const state = { attempts: [], absentThrough: 0, ownership: null, terminal: false, inventoryKinds: new Set(), obligations: new Map(), reservations: new Map(), resolvedAttempts: new Set(), recovery: false };
   const invalid = () => { throw fail('INVALID_RECOVERY_TRANSITION'); };
   if (!Array.isArray(events) || events.length > MAX_EVENTS) invalid();
   for (const event of events) {
@@ -180,6 +184,24 @@ function replay(events, mode) {
           state.obligations.set(first, ordinal);
         }
         break;
+      case 'storage_reservation':
+        if (event.length !== 3 || state.recovery || typeof ordinal !== 'string' || !/^[a-f0-9]{64}$/.test(ordinal) ||
+            typeof first !== 'string' || !/^[a-f0-9]{64}$/.test(first) || state.obligations.has(ordinal) || state.reservations.has(ordinal)) invalid();
+        state.obligations.set(ordinal, 'storage');
+        state.reservations.set(ordinal, first);
+        break;
+      case 'noncreation':
+        if (event.length !== 3 || state.recovery || !state.obligations.has(ordinal) || state.reservations.get(ordinal) !== first) invalid();
+        state.obligations.delete(ordinal);
+        state.reservations.delete(ordinal);
+        break;
+      case 'reservation_absence':
+        if (event.length !== 3 || !state.recovery || ordinal !== state.attempts.length ||
+            attempt?.kind !== 'recovery_lookup' || attempt.outcome !== 'success' || !state.reservations.has(first) ||
+            !state.obligations.has(first)) invalid();
+        state.obligations.delete(first);
+        state.reservations.delete(first);
+        break;
       case 'resolution': {
         if (event.length !== 4 || state.recovery || ordinal !== state.attempts.length ||
             !Array.isArray(first) || !Array.isArray(second) || first.length + second.length === 0) invalid();
@@ -189,6 +211,7 @@ function replay(events, mode) {
               !second.some(index => state.attempts[index - 1]?.resourceKey === key)) invalid();
           seen.add(key);
           state.obligations.delete(key);
+          state.reservations.delete(key);
         }
         let previous = 0;
         for (const index of second) {
@@ -261,7 +284,7 @@ function openJournal(rawOptions, creating) {
       }
       const rows = db.prepare('SELECT id, payload, digest FROM journal LIMIT 2').all();
       const row = rows[0];
-      if (rows.length !== 1 || row.id !== 1 || typeof row.payload !== 'string' || row.payload.length > 16384 ||
+      if (rows.length !== 1 || row.id !== 1 || typeof row.payload !== 'string' || Buffer.byteLength(row.payload, 'utf8') > MAX_PAYLOAD_BYTES ||
           row.digest !== digest(row.payload)) throw fail('CORRUPT_RECOVERY_JOURNAL');
       const envelope = JSON.parse(row.payload);
       if (!Array.isArray(envelope) || envelope.length !== 5 || JSON.stringify(envelope) !== row.payload) throw fail('CORRUPT_RECOVERY_JOURNAL');
@@ -285,11 +308,20 @@ function openJournal(rawOptions, creating) {
       requireUsable();
       const next = [...events, event];
       const nextState = replay(next, mode);
+      const payload = JSON.stringify([VERSION, RECOVERY_PROJECT, runId, mode, next]);
+      // Eight events per remaining request cover reserve/dispatch/outcome,
+      // ownership/absence/resolution plus slack. Existing admitted requests
+      // retain two completion events; every pending key retains a resolution.
+      const outstanding = nextState.attempts.filter(a => a.outcome === 'pending').length;
+      const headroom = 8 * (REQUEST_LIMIT - nextState.attempts.length) + 2 * outstanding + nextState.obligations.size + 4;
+      if (Buffer.byteLength(payload, 'utf8') > MAX_PAYLOAD_BYTES ||
+          (['volatile', 'storage_reservation', 'reserve'].includes(event[0]) && next.length + headroom > MAX_EVENTS)) {
+        throw fail('RECOVERY_CAPACITY_EXCEEDED');
+      }
       try {
         verifyFiles(path, false);
         const currentFile = stat(path);
         if (currentFile.dev !== originalFile.dev || currentFile.ino !== originalFile.ino) throw fail('RECOVERY_FILE_REPLACED');
-        const payload = JSON.stringify([VERSION, RECOVERY_PROJECT, runId, mode, next]);
         if (db.prepare('UPDATE journal SET payload = ?, digest = ? WHERE id = 1').run(payload, digest(payload)).changes !== 1) {
           throw fail('RECOVERY_ACCOUNTING_MISSING');
         }
@@ -356,6 +388,20 @@ function openJournal(rawOptions, creating) {
         }
         if (!state.inventoryKinds.has(kind)) append(['volatile', kind]);
       },
+      reserveStorage(resource, operation) {
+        requireUsable();
+        if (typeof resource !== 'string' || resource.length > 512 || typeof operation !== 'string' || !operation || operation.length > 512) throw fail('INVALID_RECOVERY_RESOURCE');
+        const key = digest('storage:' + resource);
+        append(['storage_reservation', key, digest(operation)]);
+        return key;
+      },
+      resolveNonCreation(receipt) {
+        requireUsable();
+        if (leases || state.recovery || state.terminal) throw fail('RECOVERY_RESOLUTION_BLOCKED');
+        const proof = consumeLiveCleanupResolution(receipt, handle);
+        if (proof.type !== 'noncreation') throw fail('UNTRUSTED_LIVE_CLEANUP_RESOLUTION');
+        append(['noncreation', proof.key, proof.operation]);
+      },
       resolveLive(receipt) {
         requireUsable();
         if (leases || state.recovery || state.terminal) throw fail('RECOVERY_RESOLUTION_BLOCKED');
@@ -372,7 +418,13 @@ function openJournal(rawOptions, creating) {
       absent(lookupOrdinal, observation) {
         assertRecoveryStorageObservation(observation, RECOVERY_PROJECT, runId);
         if (observation.indeterminate || observation.current) throw fail('RECOVERY_ABSENCE_UNPROVEN');
-        append(['absence', lookupOrdinal]);
+        if (pendingStorage(state).length) append(['absence', lookupOrdinal]);
+        const key = digest('storage:storage:task06i_probe_bucket/' + runId + '/probe.txt');
+        if (state.reservations.has(key) && state.obligations.has(key)) append(['reservation_absence', lookupOrdinal, key]);
+      },
+      hasRecoveryStorageReservation() {
+        const key = digest('storage:storage:task06i_probe_bucket/' + runId + '/probe.txt');
+        return state.reservations.has(key) && state.obligations.has(key);
       },
       liveAbsence(objectId, ownerId) {
         const uploads = pendingStorage(state).filter(attempt => attempt.kind === 'storage_upload');

@@ -5995,6 +5995,9 @@ export class TestRunInventory {
     if (!path || typeof path !== 'string' || !path.trim()) {
       throw new Error('reserveStorageFixture requires non-empty path');
     }
+    if (lifecycleState !== STORAGE_LIFECYCLE_STATE.CREATION_PENDING || status !== 'CREATION_PENDING') {
+      throw new Error('INVALID_STORAGE_RESERVATION_STATE');
+    }
 
     const cleanBucket = (bucket || STORAGE_PROBE_BUCKET).trim();
     const cleanPath = path.trim();
@@ -6014,7 +6017,16 @@ export class TestRunInventory {
 
     const assignedOpId = reservationOpId && typeof reservationOpId === 'string' && reservationOpId.trim()
       ? reservationOpId.trim()
-      : `op-res-${this.runId}-${++this._reservationSequence}`;
+      : `op-res-${this.runId}-${this._reservationSequence + 1}`;
+
+    const journal = journalForRun(this.runId);
+    if (journal) {
+      const key = journal.reserveStorage('storage:' + fixtureKey, assignedOpId);
+      let obligations = LIVE_RESOURCE_OBLIGATIONS.get(this);
+      if (!obligations) { obligations = new Map(); LIVE_RESOURCE_OBLIGATIONS.set(this, obligations); }
+      obligations.set('storage:' + fixtureKey, key);
+    }
+    if (!reservationOpId) this._reservationSequence++;
 
     const fixtureRecord = {
       bucket: cleanBucket,
@@ -7833,6 +7845,7 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
 
   let settledOutcome = null;
   let caughtErr = null;
+  let uploadMayHaveDispatched = false;
   try {
     // 7. Establish authenticated seed identity via affirmative provider /auth/v1/user proof (R2-01 #5, #6)
     const authHeaders = {
@@ -8034,6 +8047,7 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
       if (isNonEmptyString(anonKey)) {
         uploadHeaders.apikey = anonKey.trim();
       }
+      uploadMayHaveDispatched = true;
       uploadRes = await safeFetch(`${baseUrl}/storage/v1/object/${fullKey}`, {
         method: 'POST',
         headers: uploadHeaders,
@@ -8368,6 +8382,23 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
     caughtErr = err;
     throw err;
   } finally {
+    // Only this module-owned provisioning closure can prove it never entered
+    // the upload call. Public lifecycle/neverDispatched labels grant no proof.
+    try {
+      const journal = journalForRun(validRunId);
+      if (journal && !uploadMayHaveDispatched) {
+        const receipt = Object.freeze(Object.create(null));
+        LIVE_RESOLUTION_RECEIPTS.set(receipt, {
+          handle: journal.handle, type: 'noncreation',
+          key: LIVE_RESOURCE_OBLIGATIONS.get(inventory)?.get('storage:' + fullKey),
+          operation: crypto.createHash('sha256').update(ownerOpId).digest('hex')
+        });
+        journal.resolveNonCreation(receipt);
+      }
+    } catch (resolutionError) {
+      if (caughtErr) throw new AggregateError([caughtErr, resolutionError], `${caughtErr.message}; ${resolutionError.message}`);
+      throw resolutionError;
+    }
     if (provOp && typeof inventory.settleInFlightOperation === 'function') {
       inventory.settleInFlightOperation(provOp.opId, {
         outcome: settledOutcome || 'FAILED',
