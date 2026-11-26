@@ -29,6 +29,43 @@ function snapshotJwtRecord(value) {
   return snapshotBoundedJwtClaims(value);
 }
 
+const _jwtStringTrim = Function.prototype.call.bind(String.prototype.trim);
+const _jwtStringIncludes = Function.prototype.call.bind(String.prototype.includes);
+const _jwtStringSplit = Function.prototype.call.bind(String.prototype.split);
+const _jwtJsonParse = JSON.parse;
+const _jwtBufferFrom = Buffer.from;
+
+/**
+ * Extracts bounded unverified identity claims (sub, session_id) from a 3-part JWT string
+ * without treating decoded claims as cryptographically authenticated.
+ */
+function extractUnverifiedJwtIdentityClaims(token) {
+  if (typeof token !== 'string') {
+    return { isJwtStructure: false, parseable: false, sessionId: null, userId: null };
+  }
+  const trimmed = _jwtStringTrim(token);
+  if (!trimmed || trimmed.length > MAX_OFFLINE_JWT_TOKEN_LENGTH) {
+    return { isJwtStructure: _jwtStringIncludes(trimmed, '.'), parseable: false, sessionId: null, userId: null };
+  }
+  const parts = _jwtStringSplit(trimmed, '.');
+  if (parts.length !== 3) {
+    return { isJwtStructure: _jwtStringIncludes(trimmed, '.'), parseable: false, sessionId: null, userId: null };
+  }
+  try {
+    const payload = snapshotJwtRecord(_jwtJsonParse(_jwtBufferFrom(parts[1], 'base64url').toString('utf8')));
+    if (!payload || typeof payload !== 'object') {
+      return { isJwtStructure: true, parseable: false, sessionId: null, userId: null };
+    }
+    const rawSessionId = typeof payload.session_id === 'string' ? _jwtStringTrim(payload.session_id) : '';
+    const rawUserId = typeof payload.sub === 'string' ? _jwtStringTrim(payload.sub) : '';
+    const sessionId = rawSessionId || null;
+    const userId = rawUserId || null;
+    return { isJwtStructure: true, parseable: true, sessionId, userId };
+  } catch {
+    return { isJwtStructure: true, parseable: false, sessionId: null, userId: null };
+  }
+}
+
 const CONDITIONAL_RESPONSE_EVIDENCE = new WeakMap();
 const defineOwnEvidenceProperty = Object.defineProperty;
 function publishConditionalEvidence(response, transport, key, rawEvidence) {
@@ -3285,35 +3322,33 @@ export function observeAuthResponse({
        null)
     : null;
 
-  let rawSessionId = isBodyObject
+  const bodySessionId = isBodyObject
     ? ((typeof body.session_id === 'string' && body.session_id.trim()) ||
        (typeof body.session?.id === 'string' && body.session.id.trim()) ||
        (typeof body.tokens?.session_id === 'string' && body.tokens.session_id.trim()) ||
        null)
     : null;
 
-  let rawUserId = isBodyObject
+  const bodyUserId = isBodyObject
     ? ((typeof body.user?.id === 'string' && body.user.id.trim()) ||
        (typeof body.id === 'string' && body.id.trim()) ||
        (typeof body.tokens?.user?.id === 'string' && body.tokens.user.id.trim()) ||
        null)
     : null;
 
-  // Extract from unverified JWT claims if not present at top level
-  if (accessToken && (!rawSessionId || !rawUserId)) {
-    try {
-      const parts = accessToken.split('.');
-      if (parts.length === 3) {
-        const payload = snapshotJwtRecord(JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')));
-        if (!rawSessionId && typeof payload?.session_id === 'string' && payload.session_id.trim()) {
-          rawSessionId = payload.session_id.trim();
-        }
-        if (!rawUserId && typeof payload?.sub === 'string' && payload.sub.trim()) {
-          rawUserId = payload.sub.trim();
-        }
-      }
-    } catch {}
-  }
+  // Always inspect unverified JWT claims when accessToken is present so conflicting body/token identities are detected
+  const jwtIdentity = accessToken ? extractUnverifiedJwtIdentityClaims(accessToken) : { isJwtStructure: false, parseable: false, sessionId: null, userId: null };
+  const tokenSessionId = jwtIdentity.sessionId;
+  const tokenUserId = jwtIdentity.userId;
+  let rawSessionId = bodySessionId || tokenSessionId || null;
+  let rawUserId = bodyUserId || tokenUserId || null;
+  const sessionIdConflict = Boolean(bodySessionId && tokenSessionId && bodySessionId !== tokenSessionId);
+  const userIdConflict = Boolean(bodyUserId && tokenUserId && bodyUserId !== tokenUserId);
+  const activeSessionId = typeof ctx?.activeSessionId === 'string' && ctx.activeSessionId.trim() ? ctx.activeSessionId.trim() : null;
+  const activeUserId = typeof ctx?.activeUserId === 'string' && ctx.activeUserId.trim() ? ctx.activeUserId.trim() : null;
+  const activeSessionConflict = Boolean(probeId === 'HOOK-02' && activeSessionId && ((bodySessionId && bodySessionId !== activeSessionId) || (tokenSessionId && tokenSessionId !== activeSessionId)));
+  const activeUserConflict = Boolean(probeId === 'HOOK-02' && activeUserId && ((bodyUserId && bodyUserId !== activeUserId) || (tokenUserId && tokenUserId !== activeUserId)));
+  const identityConflict = sessionIdConflict || userIdConflict || activeSessionConflict || activeUserConflict;
 
   const hasTokens = Boolean(accessToken || refreshToken || rawSessionId);
   const returnedEmail =
@@ -3420,9 +3455,13 @@ export function observeAuthResponse({
       if (inv) {
         inv.registerUntrackedSession();
       }
+      const tokenClaimsUsable = !accessToken || jwtIdentity.parseable;
+      const canPublishCtx = !identityConflict && expectedOperation !== 'rejection' && tokenClaimsUsable;
       if (ctx) {
-        if (accessToken) ctx.mintedAccessToken = accessToken;
-        if (rawUserId && probeId !== 'HOOK-01' && probeId !== 'HOOK-02') ctx.activeUserId = String(rawUserId).trim();
+        if (accessToken && canPublishCtx) ctx.mintedAccessToken = accessToken;
+        if (rawUserId && canPublishCtx && probeId !== 'HOOK-01' && probeId !== 'HOOK-02' && !activeUserId) {
+          ctx.activeUserId = String(rawUserId).trim();
+        }
       }
       return {
         classification: 'AUTH_RESPONSE_INDETERMINATE',
@@ -3441,16 +3480,69 @@ export function observeAuthResponse({
 
     // 3D: Valid token and extractable session ID observed
     if (hasTokens) {
-      if (inv) {
-        if (rawSessionId) {
-          inv.registerSession(String(rawSessionId).trim(), { accessToken, source: `${probeId}_observed` });
+      let reconciliationRecorded = false;
+      if (inv && rawSessionId) {
+        const normRawSession = String(rawSessionId).trim();
+        if (probeId === 'HOOK-02') {
+          // On refresh, never overwrite an existing correlated session token before full claim/identity validation passes.
+          if (identityConflict || (accessToken && (!jwtIdentity.parseable || !tokenSessionId || !tokenUserId))) {
+            if (bodySessionId) {
+              inv.registerSession(bodySessionId, { probeId, source: `${probeId}_conflicting_body_session` });
+            }
+            if (tokenSessionId && tokenSessionId !== activeSessionId) {
+              inv.registerSession(tokenSessionId, { accessToken, userId: tokenUserId, probeId, source: `${probeId}_conflicting_token_session` });
+            } else if (!inv.trackedSessions.has(normRawSession)) {
+              inv.registerSession(normRawSession, { probeId, source: `${probeId}_conflicting_observation` });
+            }
+            if (typeof inv.registerSessionReconciliationObligation === 'function') {
+              inv.registerSessionReconciliationObligation({
+                reason: identityConflict ? 'REFRESH_IDENTITY_CONFLICT' : 'REFRESH_UNVERIFIED_IDENTITY',
+                probeId,
+                expectedSessionId: activeSessionId,
+                observedSessionId: bodySessionId,
+                tokenSessionId,
+                expectedUserId: activeUserId,
+                observedUserId: bodyUserId,
+                tokenUserId
+              });
+              reconciliationRecorded = true;
+            }
+          } else if (!inv.trackedSessions.has(normRawSession)) {
+            inv.trackedSessions.add(normRawSession);
+          }
+        } else if (sessionIdConflict || userIdConflict) {
+          if (bodySessionId) {
+            inv.registerSession(bodySessionId, { probeId, source: `${probeId}_conflicting_body_session` });
+          }
+          if (tokenSessionId) {
+            inv.registerSession(tokenSessionId, { accessToken, userId: tokenUserId, probeId, source: `${probeId}_conflicting_token_session` });
+          }
+          if (typeof inv.registerSessionReconciliationObligation === 'function') {
+            inv.registerSessionReconciliationObligation({
+              reason: 'RESPONSE_IDENTITY_CONFLICT',
+              probeId,
+              observedSessionId: bodySessionId,
+              tokenSessionId,
+              observedUserId: bodyUserId,
+              tokenUserId
+            });
+            reconciliationRecorded = true;
+          }
+        } else {
+          inv.registerSession(normRawSession, { accessToken, userId: rawUserId ? String(rawUserId).trim() : null, probeId, source: `${probeId}_observed` });
         }
       }
 
+      const tokenClaimsUsable = !accessToken || jwtIdentity.parseable;
+      const canPublishCtx = !identityConflict && expectedOperation !== 'rejection' && tokenClaimsUsable;
       if (ctx) {
-        if (rawSessionId && probeId !== 'HOOK-01' && probeId !== 'HOOK-02') ctx.activeSessionId = String(rawSessionId).trim();
-        if (rawUserId && probeId !== 'HOOK-01' && probeId !== 'HOOK-02') ctx.activeUserId = String(rawUserId).trim();
-        if (accessToken) {
+        if (rawSessionId && canPublishCtx && probeId !== 'HOOK-01' && probeId !== 'HOOK-02' && !activeSessionId) {
+          ctx.activeSessionId = String(rawSessionId).trim();
+        }
+        if (rawUserId && canPublishCtx && probeId !== 'HOOK-01' && probeId !== 'HOOK-02' && !activeUserId) {
+          ctx.activeUserId = String(rawUserId).trim();
+        }
+        if (accessToken && canPublishCtx && probeId !== 'HOOK-02') {
           ctx.mintedAccessToken = accessToken;
         }
       }
@@ -3463,6 +3555,12 @@ export function observeAuthResponse({
         hasTokens: true,
         sessionId: rawSessionId ? String(rawSessionId).trim() : null,
         userId: rawUserId ? String(rawUserId).trim() : null,
+        bodySessionId,
+        tokenSessionId,
+        bodyUserId,
+        tokenUserId,
+        identityConflict,
+        reconciliationRecorded,
         accessToken,
         refreshToken,
         indeterminateSession: false,
@@ -3495,7 +3593,23 @@ export function observeAuthResponse({
     // Unexpected tokens returned in non-200 error response
     if (inv) {
       if (rawSessionId) {
-        inv.registerSession(String(rawSessionId).trim(), { accessToken, source: `${probeId}_unexpected_non200` });
+        if (probeId === 'HOOK-02' || identityConflict) {
+          if (bodySessionId) inv.registerSession(bodySessionId, { probeId, source: `${probeId}_unexpected_non200_body` });
+          if (tokenSessionId && tokenSessionId !== activeSessionId) {
+            inv.registerSession(tokenSessionId, { accessToken, userId: tokenUserId, probeId, source: `${probeId}_unexpected_non200_token` });
+          }
+          if (typeof inv.registerSessionReconciliationObligation === 'function') {
+            inv.registerSessionReconciliationObligation({
+              reason: 'UNEXPECTED_NON200_TOKEN_CONFLICT',
+              probeId,
+              expectedSessionId: activeSessionId,
+              observedSessionId: bodySessionId,
+              tokenSessionId
+            });
+          }
+        } else {
+          inv.registerSession(String(rawSessionId).trim(), { accessToken, userId: rawUserId ? String(rawUserId).trim() : null, probeId, source: `${probeId}_unexpected_non200` });
+        }
       } else {
         inv.registerUntrackedSession();
       }
@@ -3509,6 +3623,8 @@ export function observeAuthResponse({
       accessToken,
       refreshToken,
       indeterminateSession: !rawSessionId,
+      identityConflict,
+      reconciliationRecorded: Boolean(inv && rawSessionId && (probeId === 'HOOK-02' || identityConflict)),
       errorCode: 'UNEXPECTED_TOKEN_IN_ERROR_RESPONSE',
       error: `SECURITY_INVARIANT_VIOLATION: ${probeId} returned HTTP ${status} but unexpectedly included session tokens!`,
       body
@@ -3577,42 +3693,35 @@ export function observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser
     (typeof body.session?.refresh_token === 'string' && body.session.refresh_token.trim()) ||
     null;
 
-  let rawSessionId =
-    body.session_id ||
-    body.session?.id ||
-    body.tokens?.session_id ||
-    null;
+  const bodySessionId = typeof body.session_id === 'string' && body.session_id.trim()
+    ? body.session_id.trim()
+    : (typeof body.session?.id === 'string' && body.session.id.trim()
+      ? body.session.id.trim()
+      : (typeof body.tokens?.session_id === 'string' && body.tokens.session_id.trim() ? body.tokens.session_id.trim() : null));
 
-  let rawUserId =
-    body.user?.id ||
-    body.id ||
-    body.tokens?.user?.id ||
-    null;
+  const bodyUserId = typeof body.user?.id === 'string' && body.user.id.trim()
+    ? body.user.id.trim()
+    : (typeof body.id === 'string' && body.id.trim()
+      ? body.id.trim()
+      : (typeof body.tokens?.user?.id === 'string' && body.tokens.user.id.trim() ? body.tokens.user.id.trim() : null));
 
-  // If token is present, attempt safe unverified claim extraction for session_id and sub
-  if (accessToken && (!rawSessionId || !rawUserId)) {
-    try {
-      const parts = accessToken.split('.');
-      if (parts.length === 3) {
-        const payload = snapshotJwtRecord(JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')));
-        if (!rawSessionId && payload?.session_id) {
-          rawSessionId = payload.session_id;
-        }
-        if (!rawUserId && payload?.sub) {
-          rawUserId = payload.sub;
-        }
-      }
-    } catch {}
-  }
+  const jwtIdentity = accessToken ? extractUnverifiedJwtIdentityClaims(accessToken) : { isJwtStructure: false, parseable: false, sessionId: null, userId: null };
+  const rawSessionId = bodySessionId || jwtIdentity.sessionId || null;
+  const rawUserId = bodyUserId || jwtIdentity.userId || null;
+  const sessionIdConflict = Boolean(bodySessionId && jwtIdentity.sessionId && bodySessionId !== jwtIdentity.sessionId);
+  const userIdConflict = Boolean(bodyUserId && jwtIdentity.userId && bodyUserId !== jwtIdentity.userId);
+  const activeSessionId = typeof ctx?.activeSessionId === 'string' && ctx.activeSessionId.trim() ? ctx.activeSessionId.trim() : null;
+  const activeUserId = typeof ctx?.activeUserId === 'string' && ctx.activeUserId.trim() ? ctx.activeUserId.trim() : null;
+  const activeSessionConflict = Boolean(activeSessionId && ((bodySessionId && bodySessionId !== activeSessionId) || (jwtIdentity.sessionId && jwtIdentity.sessionId !== activeSessionId)));
+  const activeUserConflict = Boolean(activeUserId && ((bodyUserId && bodyUserId !== activeUserId) || (jwtIdentity.userId && jwtIdentity.userId !== activeUserId)));
+  const malformedToken = Boolean(accessToken && (!jwtIdentity.isJwtStructure || !jwtIdentity.parseable));
+  const identityConflict = sessionIdConflict || userIdConflict || activeSessionConflict || activeUserConflict;
 
   const hasTokens = Boolean(accessToken || refreshToken || rawSessionId);
 
   if (hasTokens && inv) {
     const userEmail = testUser || (typeof body.email === 'string' ? body.email : null) || 'tio-test-user-06i@proof.invalid';
 
-    // Register user for cleanup accounting (R15-01, R16-02):
-    // For BYPASS-01 or BYPASS-02, unproven unexpected response user IDs are recorded as observed/unverified (NEVER deleted).
-    // For seed user or login probes, register as REFERENCED user so pre-existing user is NEVER deleted during cleanup!
     if (rawUserId) {
       const uidStr = String(rawUserId).trim();
       if (probeId === 'BYPASS-01' || probeId === 'BYPASS-02') {
@@ -3628,18 +3737,58 @@ export function observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser
       }
     }
 
-    // Register session cleanup obligation (R17-01)
+    // Register session cleanup obligation (R17-01) without overwriting existing correlated credentials on conflict/malformed refresh
     if (rawSessionId) {
-      inv.registerSession(String(rawSessionId).trim(), { accessToken });
+      if (probeId === 'HOOK-02') {
+        if (identityConflict || malformedToken || !jwtIdentity.sessionId || !jwtIdentity.userId) {
+          if (bodySessionId) inv.registerSession(bodySessionId, { probeId, source: `${probeId}_conflicting_body_session` });
+          if (jwtIdentity.sessionId && jwtIdentity.sessionId !== activeSessionId) {
+            inv.registerSession(jwtIdentity.sessionId, { accessToken, userId: jwtIdentity.userId, probeId, source: `${probeId}_conflicting_token_session` });
+          } else if (!inv.trackedSessions.has(String(rawSessionId).trim())) {
+            inv.registerSession(String(rawSessionId).trim(), { probeId, source: `${probeId}_conflicting_observation` });
+          }
+          if (typeof inv.registerSessionReconciliationObligation === 'function') {
+            inv.registerSessionReconciliationObligation({
+              reason: identityConflict ? 'OBSERVED_IDENTITY_CONFLICT' : 'OBSERVED_UNVERIFIED_REFRESH_TOKEN',
+              probeId: probeId || 'unknown',
+              expectedSessionId: activeSessionId,
+              observedSessionId: bodySessionId,
+              tokenSessionId: jwtIdentity.sessionId,
+              expectedUserId: activeUserId,
+              observedUserId: bodyUserId,
+              tokenUserId: jwtIdentity.userId
+            });
+          }
+        } else if (!inv.trackedSessions.has(String(rawSessionId).trim())) {
+          inv.trackedSessions.add(String(rawSessionId).trim());
+        }
+      } else if (identityConflict || malformedToken) {
+        if (bodySessionId) inv.registerSession(bodySessionId, { probeId, source: `${probeId}_conflicting_body_session` });
+        if (jwtIdentity.sessionId && !malformedToken) inv.registerSession(jwtIdentity.sessionId, { accessToken, userId: jwtIdentity.userId, probeId, source: `${probeId}_conflicting_token_session` });
+        if (typeof inv.registerSessionReconciliationObligation === 'function') {
+          inv.registerSessionReconciliationObligation({
+            reason: identityConflict ? 'OBSERVED_IDENTITY_CONFLICT' : 'MALFORMED_OBSERVED_TOKEN',
+            probeId: probeId || 'unknown',
+            expectedSessionId: activeSessionId,
+            observedSessionId: bodySessionId,
+            tokenSessionId: jwtIdentity.sessionId,
+            expectedUserId: activeUserId,
+            observedUserId: bodyUserId,
+            tokenUserId: jwtIdentity.userId
+          });
+        }
+      } else {
+        inv.registerSession(String(rawSessionId).trim(), { accessToken, userId: rawUserId ? String(rawUserId).trim() : null, probeId });
+      }
     } else {
       // Any token present without extractable session ID must register untracked session obligation (R5-04, R8-01, R17-01)
       inv.registerUntrackedSession();
     }
   }
 
-  if (hasTokens && ctx) {
-    if (rawSessionId) ctx.activeSessionId = String(rawSessionId).trim();
-    if (rawUserId) ctx.activeUserId = String(rawUserId).trim();
+  if (hasTokens && ctx && !identityConflict && !malformedToken && probeId !== 'HOOK-01' && probeId !== 'HOOK-02') {
+    if (rawSessionId && !activeSessionId) ctx.activeSessionId = String(rawSessionId).trim();
+    if (rawUserId && !activeUserId) ctx.activeUserId = String(rawUserId).trim();
   }
 
   return {
@@ -3647,7 +3796,8 @@ export function observeAndTrackSessionTokens(body, { inv, ctx, probeId, testUser
     sessionId: rawSessionId ? String(rawSessionId).trim() : null,
     userId: rawUserId ? String(rawUserId).trim() : null,
     accessToken,
-    refreshToken
+    refreshToken,
+    identityConflict
   };
 }
 
@@ -5097,6 +5247,8 @@ export class TestRunInventory {
     this.verifiedSeedUsers = new Map(); // seedUserId -> { id, email, proof, registeredAt } (R17-03)
     this.trackedSessions = new Set(); // Session IDs
     this.sessionTokens = new Map(); // sessionId -> accessToken for supported GoTrue session invalidation (R6-01)
+    this.sessionMetadata = new Map(); // sessionId -> { userId, validated, source, updatedAt }
+    this.sessionReconciliationObligations = []; // Unresolved conflicting/unvalidated session observations
     this.revokedSessions = new Set(); // Session IDs affirmatively verified as revoked or absent (R8-02)
     this.trackedTableRows = new Map(); // table -> Set(id)
     this.trackedStorageObjects = new Map(); // bucket -> Set(path)
@@ -5128,6 +5280,7 @@ export class TestRunInventory {
       trackReferencedUser: this.trackReferencedUser,
       registerUnverifiedUser: this.registerUnverifiedUser,
       registerSession: this.registerSession,
+      registerSessionReconciliationObligation: this.registerSessionReconciliationObligation,
       registerUntrackedSession: this.registerUntrackedSession,
       registerUntrackedUser: this.registerUntrackedUser,
       registerInFlightOperation: this.registerInFlightOperation,
@@ -5405,11 +5558,32 @@ export class TestRunInventory {
     return this.registerCreatedUser(userObj);
   }
 
+  registerSessionReconciliationObligation(rawObligation = {}) {
+    const obligation = snapshotDirectInventoryInput(rawObligation, 'sessionReconciliationObligation');
+    if (this.finalized) {
+      this.postFinalizationMutations.push({
+        action: 'registerSessionReconciliationObligation',
+        reason: obligation.reason || 'SESSION_RECONCILIATION_OBLIGATION',
+        attemptedAt: new Date().toISOString()
+      });
+    }
+    this.sessionReconciliationObligations.push({
+      ...obligation,
+      recordedAt: new Date().toISOString()
+    });
+  }
+
   registerSession(sessionOrId, optionsOrToken = {}) {
     if (sessionOrId && typeof sessionOrId === 'object') sessionOrId = snapshotDirectInventoryInput(sessionOrId, 'registerSession');
     if (optionsOrToken && typeof optionsOrToken === 'object') optionsOrToken = snapshotDirectInventoryInput(optionsOrToken, 'registerSession.options');
     let sessionId = null;
     let accessToken = null;
+    let userId = null;
+    let source = null;
+    let probeId = null;
+    let validated = false;
+    let replaceExisting = false;
+    let expectedUserId = null;
 
     if (typeof sessionOrId === 'string' && sessionOrId.trim().length > 0) {
       sessionId = sessionOrId.trim();
@@ -5417,10 +5591,22 @@ export class TestRunInventory {
         accessToken = optionsOrToken.trim();
       } else if (optionsOrToken && typeof optionsOrToken === 'object') {
         accessToken = optionsOrToken.accessToken || optionsOrToken.jwt || optionsOrToken.token || null;
+        userId = typeof optionsOrToken.userId === 'string' && optionsOrToken.userId.trim() ? optionsOrToken.userId.trim() : null;
+        source = typeof optionsOrToken.source === 'string' && optionsOrToken.source.trim() ? optionsOrToken.source.trim() : null;
+        probeId = typeof optionsOrToken.probeId === 'string' && optionsOrToken.probeId.trim() ? optionsOrToken.probeId.trim() : null;
+        validated = optionsOrToken.validated === true;
+        replaceExisting = optionsOrToken.replaceExisting === true;
+        expectedUserId = typeof optionsOrToken.expectedUserId === 'string' && optionsOrToken.expectedUserId.trim() ? optionsOrToken.expectedUserId.trim() : null;
       }
     } else if (sessionOrId && typeof sessionOrId === 'object') {
       sessionId = (sessionOrId.sessionId || sessionOrId.id || '').trim();
       accessToken = sessionOrId.accessToken || sessionOrId.jwt || sessionOrId.token || null;
+      userId = typeof sessionOrId.userId === 'string' && sessionOrId.userId.trim() ? sessionOrId.userId.trim() : null;
+      source = typeof sessionOrId.source === 'string' && sessionOrId.source.trim() ? sessionOrId.source.trim() : null;
+      probeId = typeof sessionOrId.probeId === 'string' && sessionOrId.probeId.trim() ? sessionOrId.probeId.trim() : null;
+      validated = sessionOrId.validated === true;
+      replaceExisting = sessionOrId.replaceExisting === true;
+      expectedUserId = typeof sessionOrId.expectedUserId === 'string' && sessionOrId.expectedUserId.trim() ? sessionOrId.expectedUserId.trim() : null;
     }
 
     if (this.finalized) {
@@ -5431,12 +5617,100 @@ export class TestRunInventory {
       });
     }
 
-    if (sessionId) {
-      this.trackedSessions.add(sessionId);
-      if (accessToken && typeof accessToken === 'string' && accessToken.trim().length > 0) {
-        this.sessionTokens.set(sessionId, accessToken.trim());
+    if (!sessionId) return { registered: false };
+
+    this.trackedSessions.add(sessionId);
+    const trimmedToken = typeof accessToken === 'string' && accessToken.trim().length > 0 ? accessToken.trim() : null;
+    if (!trimmedToken) {
+      return { registered: true, hasToken: false, sessionId };
+    }
+
+    const tokClaims = extractUnverifiedJwtIdentityClaims(trimmedToken);
+    if (!tokClaims.isJwtStructure || !tokClaims.parseable) {
+      // Never store a malformed/non-JWT token as a correlated cleanup credential, and never overwrite existing credentials.
+      this.registerSessionReconciliationObligation({
+        reason: 'MALFORMED_SESSION_CREDENTIAL',
+        probeId,
+        expectedSessionId: sessionId,
+        source
+      });
+      return { registered: false, malformedToken: true, sessionId };
+    }
+
+    if (!tokClaims.sessionId) {
+      this.registerSessionReconciliationObligation({
+        reason: 'UNCORRELATED_SESSION_CREDENTIAL',
+        probeId,
+        expectedSessionId: sessionId,
+        tokenUserId: tokClaims.userId || null,
+        source
+      });
+      return { registered: false, uncorrelated: true, sessionId };
+    }
+
+    if (tokClaims.sessionId !== sessionId) {
+      // Token belongs to a different session ID; preserve any existing credential for sessionId and track token's own session separately.
+      this.trackedSessions.add(tokClaims.sessionId);
+      if (!this.sessionTokens.has(tokClaims.sessionId)) {
+        this.sessionTokens.set(tokClaims.sessionId, trimmedToken);
+        this.sessionMetadata.set(tokClaims.sessionId, {
+          userId: tokClaims.userId || null,
+          validated: false,
+          source: source ? `${source}_token_session` : 'conflicting_token_session',
+          updatedAt: new Date().toISOString()
+        });
+      }
+      this.registerSessionReconciliationObligation({
+        reason: 'SESSION_CREDENTIAL_MISMATCH',
+        probeId,
+        expectedSessionId: sessionId,
+        tokenSessionId: tokClaims.sessionId,
+        tokenUserId: tokClaims.userId || null,
+        source
+      });
+      return { registered: false, conflict: true, sessionId, tokenSessionId: tokClaims.sessionId };
+    }
+
+    const existingToken = this.sessionTokens.get(sessionId) || null;
+    const existingMeta = this.sessionMetadata.get(sessionId) || null;
+    if (existingToken) {
+      if (existingToken === trimmedToken) {
+        if (validated && !existingMeta?.validated) {
+          this.sessionMetadata.set(sessionId, {
+            userId: tokClaims.userId || userId || existingMeta?.userId || null,
+            validated: true,
+            source: source || existingMeta?.source || null,
+            updatedAt: new Date().toISOString()
+          });
+        }
+        return { registered: true, unchanged: true, sessionId };
+      }
+
+      const requiredUserId = expectedUserId || existingMeta?.userId || null;
+      const userMatches = !requiredUserId || tokClaims.userId === requiredUserId;
+      const sessionMatches = tokClaims.isJwtStructure && tokClaims.parseable && tokClaims.sessionId === sessionId;
+      if (!validated || !replaceExisting || !sessionMatches || !userMatches) {
+        this.registerSessionReconciliationObligation({
+          reason: 'UNVALIDATED_OR_CONFLICTING_TOKEN_REPLACEMENT',
+          probeId,
+          expectedSessionId: sessionId,
+          tokenSessionId: tokClaims.sessionId,
+          expectedUserId: requiredUserId,
+          tokenUserId: tokClaims.userId || userId,
+          source
+        });
+        return { registered: false, preservedExisting: true, sessionId };
       }
     }
+
+    this.sessionTokens.set(sessionId, trimmedToken);
+    this.sessionMetadata.set(sessionId, {
+      userId: tokClaims.userId || userId || existingMeta?.userId || null,
+      validated: Boolean(validated),
+      source: source || existingMeta?.source || null,
+      updatedAt: new Date().toISOString()
+    });
+    return { registered: true, replaced: Boolean(existingToken), sessionId };
   }
 
   getSessionToken(sessionId) {
@@ -6272,6 +6546,7 @@ export class TestRunInventory {
     if (this.unverifiedUsers.size > 0) return false;
     if (this.untrackedSessionsCount > 0) return false;
     if (this.untrackedUsersCount > 0) return false;
+    if (this.sessionReconciliationObligations.length > 0) return false;
     if (this.trackedSessions.size !== this.revokedSessions.size) return false;
     if (this.hasUnresolvedOperations()) return false;
     if (this.postFinalizationMutations.length > 0) return false;
@@ -6309,6 +6584,7 @@ export class TestRunInventory {
       seedCredentialRestorationsCount: this.seedCredentialRestorations.length,
       untrackedSessionsCount: this.untrackedSessionsCount,
       untrackedUsersCount: this.untrackedUsersCount,
+      sessionReconciliationObligationsCount: this.sessionReconciliationObligations.length,
       inFlightOperationsCount: this.inFlightOperations.size,
       unresolvedOperationsCount: this.getUnresolvedOperations().length,
       finalized: this.finalized,
@@ -6382,6 +6658,7 @@ export class TestRunInventory {
       this.seedCredentialRestorations.length > 0 ||
       this.untrackedSessionsCount > 0 ||
       this.untrackedUsersCount > 0 ||
+      this.sessionReconciliationObligations.length > 0 ||
       unresolvedOps.length > 0 ||
       this.lateSettlementsDuringCleanup.length > 0 ||
       this.postFinalizationMutations.length > 0;
@@ -6427,6 +6704,20 @@ export class TestRunInventory {
       }
       if (this.untrackedSessionsCount) report.residualResources.push({ type: 'untracked_session', count: this.untrackedSessionsCount });
       if (this.untrackedUsersCount) report.residualResources.push({ type: 'unresolved_user_creation_risk', count: this.untrackedUsersCount });
+      for (const ob of this.sessionReconciliationObligations) {
+        report.residualResources.push({
+          type: 'session_reconciliation_obligation',
+          reason: ob.reason || 'SESSION_RECONCILIATION_OBLIGATION',
+          probeId: ob.probeId || 'unknown',
+          expectedSessionId: ob.expectedSessionId || null,
+          observedSessionId: ob.observedSessionId || null,
+          tokenSessionId: ob.tokenSessionId || null,
+          expectedUserId: ob.expectedUserId || null,
+          observedUserId: ob.observedUserId || null,
+          tokenUserId: ob.tokenUserId || null,
+          source: ob.source || null
+        });
+      }
       if (this.lateSettlementsDuringCleanup.length) report.residualResources.push({ type: 'late_settlement_during_cleanup', count: this.lateSettlementsDuringCleanup.length });
       if (this.postFinalizationMutations.length) report.residualResources.push({ type: 'post_finalization_mutations', count: this.postFinalizationMutations.length });
       report.status = 'CLEANUP_FAILED_RESIDUAL_RESOURCES';
@@ -6513,6 +6804,19 @@ export class TestRunInventory {
         type: 'post_finalization_mutations',
         count: this.postFinalizationMutations.length,
         error: `POST_FINALIZATION_MUTATIONS: ${this.postFinalizationMutations.length} mutation(s) occurred after inventory was finalized`
+      });
+    }
+
+    // 0D. Unresolved session reconciliation obligations (conflicting/malformed/unvalidated session observations)
+    for (const ob of this.sessionReconciliationObligations) {
+      report.residualResources.push({
+        type: 'session_reconciliation_obligation',
+        reason: ob.reason || 'SESSION_RECONCILIATION_OBLIGATION',
+        probeId: ob.probeId || null,
+        expectedSessionId: ob.expectedSessionId || null,
+        observedSessionId: ob.observedSessionId || null,
+        tokenSessionId: ob.tokenSessionId || null,
+        error: `UNRESOLVED_SESSION_RECONCILIATION: ${ob.reason || 'SESSION_RECONCILIATION_OBLIGATION'} (expected='${ob.expectedSessionId || 'none'}', observed='${ob.observedSessionId || 'none'}', token='${ob.tokenSessionId || 'none'}')`
       });
     }
 
@@ -6753,6 +7057,15 @@ export class TestRunInventory {
 
         try {
           const token = this.sessionTokens.get(sessionId) || null;
+          const tokClaims = token ? extractUnverifiedJwtIdentityClaims(token) : null;
+          if (token && (!tokClaims || !tokClaims.isJwtStructure || !tokClaims.parseable || !tokClaims.sessionId || tokClaims.sessionId !== sessionId)) {
+            report.residualResources.push({
+              type: 'session',
+              id: sessionId,
+              error: `SESSION_CREDENTIAL_MISMATCH: Stored credential does not correlate with target session '${sessionId}'`
+            });
+            continue;
+          }
           let res;
           if (typeof adminClient.invalidateSession === 'function') {
             res = await adminClient.invalidateSession(sessionId, token);
@@ -9052,6 +9365,18 @@ export function createHostedDispatcher(rawOptions = {}) {
           };
         }
 
+        if (inv) {
+          inv.registerSession(sessionId, {
+            accessToken,
+            userId,
+            expectedUserId: userId,
+            validated: true,
+            replaceExisting: true,
+            probeId: 'HOOK-01',
+            source: 'HOOK-01_validated'
+          });
+        }
+
         if (ctx) {
           ctx.activeAccessToken = accessToken;
           ctx.activeRefreshToken = refreshToken;
@@ -9167,6 +9492,15 @@ export function createHostedDispatcher(rawOptions = {}) {
         // Strictly validate refreshed JWT payload - NO bypass paths allowed (R3-08)
         const jwtCheck = parseAndValidateJwt(refreshedAccess, { expectedAudience: 'authenticated' });
         if (!jwtCheck.valid) {
+          if (inv && !observed.reconciliationRecorded && typeof inv.registerSessionReconciliationObligation === 'function') {
+            inv.registerSessionReconciliationObligation({
+              reason: 'REFRESH_JWT_CLAIM_VIOLATION',
+              probeId: 'HOOK-02',
+              expectedSessionId: ctx?.activeSessionId || null,
+              observedSessionId: observed.bodySessionId || observed.sessionId || null,
+              tokenSessionId: observed.tokenSessionId || null
+            });
+          }
           return {
             passed: false,
             status: observed.status,
@@ -9185,6 +9519,15 @@ export function createHostedDispatcher(rawOptions = {}) {
         const activeSessionId = isNonEmptyString(ctx?.activeSessionId) ? jwtStringTrim(ctx.activeSessionId) : null;
 
         if (!claimUserId || !claimSessionId) {
+          if (inv && !observed.reconciliationRecorded && typeof inv.registerSessionReconciliationObligation === 'function') {
+            inv.registerSessionReconciliationObligation({
+              reason: 'REFRESH_MISSING_IDENTITY_CLAIMS',
+              probeId: 'HOOK-02',
+              expectedSessionId: activeSessionId,
+              observedSessionId: observed.bodySessionId || observedSessionId,
+              tokenSessionId: claimSessionId
+            });
+          }
           return {
             passed: false,
             status: observed.status,
@@ -9196,12 +9539,25 @@ export function createHostedDispatcher(rawOptions = {}) {
           };
         }
 
-        if ((activeUserId && activeUserId !== claimUserId) ||
+        if (observed.identityConflict ||
+            (activeUserId && activeUserId !== claimUserId) ||
             (activeSessionId && activeSessionId !== claimSessionId) ||
             (observedUserId && observedUserId !== claimUserId) ||
             (observedSessionId && observedSessionId !== claimSessionId) ||
             (activeUserId && observedUserId && activeUserId !== observedUserId) ||
             (activeSessionId && observedSessionId && activeSessionId !== observedSessionId)) {
+          if (inv && !observed.reconciliationRecorded && typeof inv.registerSessionReconciliationObligation === 'function') {
+            inv.registerSessionReconciliationObligation({
+              reason: 'REFRESH_IDENTITY_MISMATCH',
+              probeId: 'HOOK-02',
+              expectedSessionId: activeSessionId,
+              observedSessionId: observed.bodySessionId || observedSessionId,
+              tokenSessionId: claimSessionId,
+              expectedUserId: activeUserId,
+              observedUserId: observed.bodyUserId || observedUserId,
+              tokenUserId: claimUserId
+            });
+          }
           return {
             passed: false,
             status: observed.status,
@@ -9218,6 +9574,15 @@ export function createHostedDispatcher(rawOptions = {}) {
           hasOwnPasswordAmr(jwtCheck.payload.amr);
 
         if (!amrPreserved) {
+          if (inv && !observed.reconciliationRecorded && typeof inv.registerSessionReconciliationObligation === 'function') {
+            inv.registerSessionReconciliationObligation({
+              reason: 'REFRESH_AMR_PRESERVATION_VIOLATION',
+              probeId: 'HOOK-02',
+              expectedSessionId: activeSessionId,
+              observedSessionId: observed.bodySessionId || observedSessionId,
+              tokenSessionId: claimSessionId
+            });
+          }
           return {
             passed: false,
             status: observed.status,
@@ -9226,6 +9591,18 @@ export function createHostedDispatcher(rawOptions = {}) {
             session_id: observedSessionId || null,
             session_cleanup_registered: isNonEmptyString(observedSessionId)
           };
+        }
+
+        if (inv) {
+          inv.registerSession(claimSessionId, {
+            accessToken: refreshedAccess,
+            userId: claimUserId,
+            expectedUserId: claimUserId,
+            validated: true,
+            replaceExisting: true,
+            probeId: 'HOOK-02',
+            source: 'HOOK-02_validated'
+          });
         }
 
         if (ctx) {
@@ -10626,7 +11003,21 @@ export function createHostedAdminClient(rawOptions = {}) {
         };
       }
 
-      // Successfully signed out - mark session revoked in inventory
+      // Successfully signed out - only credit session revoked when identity did not conflict
+      if (observed.identityConflict) {
+        if (inv && observed.tokenSessionId) {
+          inv.markSessionRevoked(observed.tokenSessionId);
+        }
+        return {
+          data: null,
+          error: {
+            message: 'VERIFICATION_IDENTITY_CONFLICT: Verification response body identity conflicts with JWT claims',
+            code: 'VERIFICATION_IDENTITY_CONFLICT',
+            sessionId: String(sessionId)
+          },
+          sessionRevocationFailed: true
+        };
+      }
       if (inv && sessionId) {
         inv.markSessionRevoked(sessionId);
       }
@@ -10738,16 +11129,49 @@ export function createHostedAdminClient(rawOptions = {}) {
     },
 
     async invalidateSession(sessionId, token) {
+      const normSessionId = typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : null;
+      if (!normSessionId) {
+        return {
+          data: null,
+          error: {
+            status: 400,
+            code: 'MISSING_SESSION_ID',
+            message: 'MISSING_SESSION_ID: invalidateSession requires non-empty target sessionId'
+          }
+        };
+      }
       if (!token || typeof token !== 'string' || !token.trim()) {
         return {
           data: null,
           error: {
             status: 400,
-            message: `UNSUPPORTED_SESSION_REVOCATION: GoTrue lacks an admin session-by-id deletion endpoint; access token context is required for targeted local sign-out of session '${sessionId}' (R6-01)`
+            message: `UNSUPPORTED_SESSION_REVOCATION: GoTrue lacks an admin session-by-id deletion endpoint; access token context is required for targeted local sign-out of session '${normSessionId}' (R6-01)`
           }
         };
       }
-      const res = await this.signOut(token.trim(), 'local');
+      const trimmedToken = token.trim();
+      const tokClaims = extractUnverifiedJwtIdentityClaims(trimmedToken);
+      if (!tokClaims.isJwtStructure || !tokClaims.parseable || !tokClaims.sessionId) {
+        return {
+          data: null,
+          error: {
+            status: 400,
+            code: 'UNCORRELATED_SESSION_CREDENTIAL',
+            message: `UNCORRELATED_SESSION_CREDENTIAL: Cleanup credential lacks verifiable session_id correlation for target session '${normSessionId}'`
+          }
+        };
+      }
+      if (tokClaims.sessionId !== normSessionId) {
+        return {
+          data: null,
+          error: {
+            status: 400,
+            code: 'SESSION_CREDENTIAL_MISMATCH',
+            message: `SESSION_CREDENTIAL_MISMATCH: Cleanup token belongs to session '${tokClaims.sessionId}', not target session '${normSessionId}'`
+          }
+        };
+      }
+      const res = await this.signOut(trimmedToken, 'local');
       if (res.session_not_found) {
         return { data: { sessionId, scope: 'local', alreadyRevoked: true }, error: null, session_not_found: true };
       }

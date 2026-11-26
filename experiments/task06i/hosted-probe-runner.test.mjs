@@ -3595,8 +3595,8 @@ test('70. Task 06I-B1-H1-R5 (R5-08): Edge Function contract rejects false revoca
 
 test('71. Task 06I-B1-H1-R6 (R6-01): Supported session revocation for cleanup preserves token context and uses GoTrue sign-out', async () => {
   const inv = new TestRunInventory('test-run-session-r6-01');
-  const testToken = createMockJwt({ exp: Math.floor(Date.now() / 1000) + 3600 });
   const testSessionId = 'sess-cleanup-r6-01';
+  const testToken = createMockJwt({ session_id: testSessionId, exp: Math.floor(Date.now() / 1000) + 3600 });
 
   // 1. registerSession preserves both sessionId and accessToken
   inv.registerSession(testSessionId, { accessToken: testToken });
@@ -3827,7 +3827,7 @@ test('74. Task 06I-B1-H1-R7 (R7-01): createHostedAdminClient adapter implements 
   // Verify signOut takes (token, scope) and is NOT shadowed by (sessionId)
   // Calling invalidateSession(sessionId, token) must invoke signOut(token, 'local')
   let prevCallsCount = mockFetch.calls.length;
-  const testToken = createMockJwt();
+  const testToken = createMockJwt({ session_id: 'sess-r7-01' });
   const resInvalidate = await adminClient.invalidateSession('sess-r7-01', testToken);
   assert.equal(resInvalidate.error, null);
   assert.equal(resInvalidate.data?.scope, 'local');
@@ -3874,7 +3874,7 @@ test('74. Task 06I-B1-H1-R7 (R7-01): createHostedAdminClient adapter implements 
 
   // 3. Integration with executeCleanup: executeCleanup with actual createHostedAdminClient
   const inv = new TestRunInventory('inv-r7-01');
-  const sessToken = createMockJwt();
+  const sessToken = createMockJwt({ session_id: 'sess-tracked-01' });
   inv.registerSession('sess-tracked-01', { accessToken: sessToken });
   inv.registerCreatedUser({
     id: 'u-created-01',
@@ -13776,7 +13776,7 @@ test('PR45-P2-C: deeply nested and wide JWT claims reject structurally across pa
           session_id: 'sess-p2c-runner',
           tokens: { access_token: deep6000ArrJwt },
           inventoryEffects: {
-            registerSession: { sessionId: 'sess-p2c-runner', accessToken: deep6000ArrJwt, source: 'HOOK-01_observed' }
+            registerSession: { sessionId: 'sess-p2c-runner', accessToken: createMockJwt({ session_id: 'sess-p2c-runner' }), source: 'HOOK-01_observed' }
           }
         }
       }
@@ -13821,5 +13821,371 @@ test('PR45-P2-C: deeply nested and wide JWT claims reject structurally across pa
       }),
       /INVALID_CREDENTIAL_PAYLOAD|CREDENTIAL_BINDING_ERROR/
     );
+  }
+});
+
+test('PR45-P2-D: conflicting refresh response never overwrites correlated cleanup credentials and blocks false CLEANUP_VERIFIED_SUCCESS', async () => {
+  const userId1 = '11111111-1111-4111-a111-111111111111';
+  const userId2 = '22222222-2222-4222-a222-222222222222';
+  const tok1 = createMockJwt({ sub: userId1, session_id: 'sess-p2d-1', amr: [{ method: 'password' }] });
+  const tokConflict = createMockJwt({ sub: userId1, session_id: 'sess-p2d-2', amr: [{ method: 'password' }] });
+  const tok2Valid = createMockJwt({ sub: userId1, session_id: 'sess-p2d-1', amr: [{ method: 'password' }] });
+  const tokWrongUser = createMockJwt({ sub: userId2, session_id: 'sess-p2d-1', amr: [{ method: 'password' }] });
+  const tokMissingSub = createMockJwt({ sub: undefined, session_id: 'sess-p2d-1', amr: [{ method: 'password' }] });
+  const deep6000Jwt = `eyJhbGciOiJIUzI1NiJ9.${Buffer.from(`{"sub":"${userId1}","session_id":"sess-p2d-1","deep":${'['.repeat(6000)}1${']'.repeat(6000)}}`).toString('base64url')}.sig`;
+
+  // 1. Core #discussion_r4705809422 reproduction:
+  // HOOK-01 establishes sess-p2d-1 with tok1 -> conflicting HOOK-02 returns body session_id='sess-p2d-1'
+  // while JWT carries session_id='sess-p2d-2' (tokConflict).
+  // Must preserve tok1 on sess-p2d-1 and ctx, track sess-p2d-2 -> tokConflict, record reconciliation obligation,
+  // revoke both sessions using their own correlated credentials, and never report CLEANUP_VERIFIED_SUCCESS.
+  {
+    const transport = createDeterministicFixtureTransport({
+      requestBudgetMode: 'recorded_zero_wait',
+      routes: [
+        {
+          urlIncludes: '/auth/v1/token?grant_type=password',
+          status: 200,
+          json: {
+            access_token: tok1,
+            refresh_token: 'ref-p2d-1',
+            session_id: 'sess-p2d-1',
+            user: { id: userId1 }
+          }
+        },
+        {
+          urlIncludes: '/auth/v1/token?grant_type=refresh_token',
+          status: 200,
+          json: {
+            access_token: tokConflict,
+            refresh_token: 'ref-p2d-conflict',
+            session_id: 'sess-p2d-1',
+            user: { id: userId1 }
+          }
+        },
+        { urlIncludes: '/auth/v1/logout', status: 204, json: {} }
+      ],
+      defaultResponse: { status: 200, json: {} }
+    });
+
+    const inv = new TestRunInventory('test-p2d-repro');
+    const ctx = createRunContext({ runId: inv.runId });
+    const disp = createHostedDispatcher({
+      anonKey: validTestAnonKey,
+      inventory: inv,
+      runContext: ctx,
+      fetchFn: transport
+    });
+    const admin = createHostedAdminClient({
+      serviceRoleKey: validTestServiceRoleKey,
+      anonKey: validTestAnonKey,
+      runId: inv.runId,
+      fetchFn: transport
+    });
+
+    const h1 = await disp({ id: 'HOOK-01', category: 'Token Hook' });
+    assert.equal(h1.passed, true);
+    assert.equal(inv.getSessionToken('sess-p2d-1'), tok1);
+    assert.equal(ctx.activeAccessToken, tok1);
+    assert.equal(ctx.activeSessionId, 'sess-p2d-1');
+
+    const h2 = await disp({ id: 'HOOK-02', category: 'Token Hook' });
+    assert.equal(h2.passed, false);
+    assert.match(h2.error, /JWT_IDENTITY_MISMATCH|SESSION_IDENTITY_CONFLICT/);
+
+    // Original correlated token & active context remain intact
+    assert.equal(inv.getSessionToken('sess-p2d-1'), tok1);
+    assert.equal(inv.getSessionToken('sess-p2d-2'), tokConflict);
+    assert.equal(inv.trackedSessions.has('sess-p2d-1'), true);
+    assert.equal(inv.trackedSessions.has('sess-p2d-2'), true);
+    assert.equal(ctx.activeAccessToken, tok1);
+    assert.equal(ctx.activeRefreshToken, 'ref-p2d-1');
+    assert.equal(ctx.activeSessionId, 'sess-p2d-1');
+    assert.equal(ctx.activeUserId, userId1);
+    assert.equal(inv.sessionReconciliationObligations.length > 0, true);
+    assert.equal(inv.isClean(), false);
+
+    const report1 = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+    assert.equal(report1.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(inv.revokedSessions.has('sess-p2d-1'), true);
+    assert.equal(inv.revokedSessions.has('sess-p2d-2'), true);
+    assert.equal(report1.residualResources.some((r) => r.type === 'session_reconciliation_obligation'), true);
+
+    const logoutCalls1 = transport.calls.filter((c) => c.url.includes('/auth/v1/logout'));
+    assert.equal(logoutCalls1.length, 2);
+    const logoutTokens = logoutCalls1.map((c) => c.headers.authorization.replace('Bearer ', ''));
+    assert.deepEqual(logoutTokens.sort(), [tok1, tokConflict].sort());
+
+    // Repeated cleanup makes 0 redundant logout calls while keeping reconciliation unresolved
+    const prevLogoutCount = logoutCalls1.length;
+    const report2 = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+    assert.equal(report2.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(transport.calls.filter((c) => c.url.includes('/auth/v1/logout')).length, prevLogoutCount);
+    assert.equal(inv.isClean(), false);
+  }
+
+  // 2. Direct inventory/admin/cleanup correlation guards reject mismatched session credentials without logout or revoking target session
+  {
+    const transport = createDeterministicFixtureTransport({
+      requestBudgetMode: 'recorded_zero_wait',
+      routes: [{ urlIncludes: '/auth/v1/logout', status: 204, json: {} }],
+      defaultResponse: { status: 200, json: {} }
+    });
+    const inv = new TestRunInventory('test-p2d-direct-guards');
+    const admin = createHostedAdminClient({
+      serviceRoleKey: validTestServiceRoleKey,
+      anonKey: validTestAnonKey,
+      runId: inv.runId,
+      fetchFn: transport
+    });
+
+    // Direct registerSession with valid correlated token succeeds; mismatched replacement is rejected and preserves tok1
+    assert.equal(inv.registerSession('sess-p2d-1', { accessToken: tok1, source: 'HOOK-01', validated: true, replaceExisting: true }).registered, true);
+    const conflictReg = inv.registerSession('sess-p2d-1', { accessToken: tokConflict, source: 'HOOK-02_conflict', validated: true, replaceExisting: true });
+    assert.equal(conflictReg.registered, false);
+    assert.equal(conflictReg.conflict, true);
+    assert.equal(inv.getSessionToken('sess-p2d-1'), tok1);
+    assert.equal(inv.sessionReconciliationObligations.some((ob) => ob.reason === 'SESSION_CREDENTIAL_MISMATCH'), true);
+
+    // Direct admin.invalidateSession rejects mismatched credential without network call
+    const callsBeforeInvalid = transport.calls.length;
+    const mismatchRes = await admin.invalidateSession('sess-p2d-1', tokConflict);
+    assert.ok(mismatchRes.error);
+    assert.equal(mismatchRes.error.code, 'SESSION_CREDENTIAL_MISMATCH');
+    assert.equal(transport.calls.length, callsBeforeInvalid);
+
+    // Direct executeCleanup correlation defense: even if sessionTokens map was polluted directly,
+    // executeCleanup refuses to sign out mismatched token or mark target session revoked.
+    const invPolluted = new TestRunInventory('test-p2d-polluted-map');
+    const adminPolluted = createHostedAdminClient({
+      serviceRoleKey: validTestServiceRoleKey,
+      anonKey: validTestAnonKey,
+      runId: invPolluted.runId,
+      fetchFn: transport
+    });
+    invPolluted.registerSession('sess-p2d-1', { source: 'HOOK-01_pre' });
+    invPolluted.sessionTokens.set('sess-p2d-1', tokConflict);
+    const pollutedReport = await invPolluted.executeCleanup({ adminClient: adminPolluted, failClosed: false });
+    assert.equal(pollutedReport.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(invPolluted.revokedSessions.has('sess-p2d-1'), false);
+    assert.equal(transport.calls.filter((c) => c.url.includes('/auth/v1/logout')).length, 0);
+    assert.equal(pollutedReport.residualResources.some((r) => r.type === 'session' && /SESSION_CREDENTIAL_MISMATCH/.test(r.error)), true);
+  }
+
+  // 3. Same session_id with conflicting user, missing sub, or malformed/over-depth JWT never overwrites tok1 and blocks CLEANUP_VERIFIED_SUCCESS
+  for (const [label, badRefreshToken] of [
+    ['wrong-user', tokWrongUser],
+    ['missing-sub', tokMissingSub],
+    ['malformed-jwt', 'malformed.token.value'],
+    ['over-depth-jwt', deep6000Jwt]
+  ]) {
+    const transport = createDeterministicFixtureTransport({
+      requestBudgetMode: 'recorded_zero_wait',
+      routes: [
+        {
+          urlIncludes: '/auth/v1/token?grant_type=password',
+          status: 200,
+          json: { access_token: tok1, refresh_token: 'ref-1', session_id: 'sess-p2d-1', user: { id: userId1 } }
+        },
+        {
+          urlIncludes: '/auth/v1/token?grant_type=refresh_token',
+          status: 200,
+          json: { access_token: badRefreshToken, refresh_token: 'ref-bad', session_id: 'sess-p2d-1', user: { id: userId1 } }
+        },
+        { urlIncludes: '/auth/v1/logout', status: 204, json: {} }
+      ],
+      defaultResponse: { status: 200, json: {} }
+    });
+    const inv = new TestRunInventory(`test-p2d-${label}`);
+    const ctx = createRunContext({ runId: inv.runId });
+    const disp = createHostedDispatcher({ anonKey: validTestAnonKey, inventory: inv, runContext: ctx, fetchFn: transport });
+    const admin = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, anonKey: validTestAnonKey, runId: inv.runId, fetchFn: transport });
+
+    const h1 = await disp({ id: 'HOOK-01', category: 'Token Hook' });
+    assert.equal(h1.passed, true, `${label}: HOOK-01 must pass`);
+
+    const h2 = await disp({ id: 'HOOK-02', category: 'Token Hook' });
+    assert.equal(h2.passed, false, `${label}: HOOK-02 must fail closed`);
+    assert.equal(inv.getSessionToken('sess-p2d-1'), tok1, `${label}: must preserve tok1`);
+    assert.equal(ctx.activeAccessToken, tok1, `${label}: must preserve activeAccessToken`);
+    assert.equal(inv.sessionReconciliationObligations.length > 0, true, `${label}: must record reconciliation obligation`);
+
+    const rep = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+    assert.equal(rep.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES', `${label}: must block CLEANUP_VERIFIED_SUCCESS`);
+    assert.equal(inv.revokedSessions.has('sess-p2d-1'), true, `${label}: valid sess-p2d-1 credential still signs out`);
+    const logouts = transport.calls.filter((c) => c.url.includes('/auth/v1/logout'));
+    assert.equal(logouts.length, 1);
+    assert.equal(logouts[0].headers.authorization, `Bearer ${tok1}`, `${label}: logout must use preserved tok1`);
+  }
+
+  // 4. Legitimate same-session, same-user refresh updates cleanup credential & context and achieves idempotent CLEANUP_VERIFIED_SUCCESS
+  {
+    const transport = createDeterministicFixtureTransport({
+      requestBudgetMode: 'recorded_zero_wait',
+      routes: [
+        {
+          urlIncludes: '/auth/v1/token?grant_type=password',
+          status: 200,
+          json: { access_token: tok1, refresh_token: 'ref-1', session_id: 'sess-p2d-1', user: { id: userId1 } }
+        },
+        {
+          urlIncludes: '/auth/v1/token?grant_type=refresh_token',
+          status: 200,
+          json: { access_token: tok2Valid, refresh_token: 'ref-2', session_id: 'sess-p2d-1', user: { id: userId1 } }
+        },
+        { urlIncludes: '/auth/v1/logout', status: 204, json: {} }
+      ],
+      defaultResponse: { status: 200, json: {} }
+    });
+    const inv = new TestRunInventory('test-p2d-valid-refresh');
+    const ctx = createRunContext({ runId: inv.runId });
+    const disp = createHostedDispatcher({ anonKey: validTestAnonKey, inventory: inv, runContext: ctx, fetchFn: transport });
+    const admin = createHostedAdminClient({ serviceRoleKey: validTestServiceRoleKey, anonKey: validTestAnonKey, runId: inv.runId, fetchFn: transport });
+
+    assert.equal((await disp({ id: 'HOOK-01', category: 'Token Hook' })).passed, true);
+    assert.equal((await disp({ id: 'HOOK-02', category: 'Token Hook' })).passed, true);
+    assert.equal(inv.getSessionToken('sess-p2d-1'), tok2Valid);
+    assert.equal(ctx.activeAccessToken, tok2Valid);
+    assert.equal(ctx.activeRefreshToken, 'ref-2');
+    assert.equal(inv.sessionReconciliationObligations.length, 0);
+
+    const rep1 = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+    assert.equal(rep1.status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(inv.isClean(), true);
+    const logouts1 = transport.calls.filter((c) => c.url.includes('/auth/v1/logout'));
+    assert.equal(logouts1.length, 1);
+    assert.equal(logouts1[0].headers.authorization, `Bearer ${tok2Valid}`);
+
+    const rep2 = await inv.executeCleanup({ adminClient: admin, failClosed: false });
+    assert.equal(rep2.status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(transport.calls.filter((c) => c.url.includes('/auth/v1/logout')).length, 1);
+  }
+
+  // 5. Conflicting observeAndTrackSessionTokens / non-200 auth observation preserves tok1 and records reconciliation
+  {
+    const inv = new TestRunInventory('test-p2d-non200-observe');
+    const ctx = createRunContext({ runId: inv.runId });
+    ctx.activeUserId = userId1;
+    ctx.activeSessionId = 'sess-p2d-1';
+    ctx.activeAccessToken = tok1;
+    inv.registerSession('sess-p2d-1', { accessToken: tok1, source: 'HOOK-01', validated: true, replaceExisting: true });
+
+    const tracked = observeAndTrackSessionTokens(
+      { session_id: 'sess-p2d-1', access_token: tokConflict, refresh_token: 'ref-x', user: { id: userId1 } },
+      { inv, ctx, probeId: 'HOOK-02' }
+    );
+    assert.equal(tracked.identityConflict, true);
+    assert.equal(inv.getSessionToken('sess-p2d-1'), tok1);
+    assert.equal(inv.getSessionToken('sess-p2d-2'), tokConflict);
+    assert.equal(ctx.activeAccessToken, tok1);
+    assert.equal(inv.sessionReconciliationObligations.length > 0, true);
+
+    const inv2 = new TestRunInventory('test-p2d-non200-observe-409');
+    inv2.registerSession('sess-p2d-1', { accessToken: tok1, source: 'HOOK-01', validated: true, replaceExisting: true });
+    const observedErr = observeAuthResponse({
+      probeId: 'HOOK-02',
+      status: 409,
+      parseStatus: 'parsed',
+      body: { session_id: 'sess-p2d-1', access_token: tokConflict, user: { id: userId1 } },
+      inv: inv2,
+      ctx,
+      expectedOperation: 'token_issuance',
+      canMintSession: true
+    });
+    assert.equal(observedErr.identityConflict, true);
+    assert.equal(inv2.getSessionToken('sess-p2d-1'), tok1);
+    assert.equal(inv2.getSessionToken('sess-p2d-2'), tokConflict);
+    assert.equal(inv2.isClean(), false);
+  }
+
+  // 6. Audit hardening regressions: active ctx binding, uncorrelated/non-3-part/empty-id rejection, and String.prototype immunity
+  {
+    const transport = createDeterministicFixtureTransport({
+      requestBudgetMode: 'recorded_zero_wait',
+      routes: [{ urlIncludes: '/auth/v1/logout', status: 204, json: {} }],
+      defaultResponse: { status: 200, json: {} }
+    });
+    const inv = new TestRunInventory('test-p2d-audit-hardening');
+    const ctx = createRunContext({ runId: inv.runId });
+    ctx.activeUserId = userId1;
+    ctx.activeSessionId = 'sess-p2d-1';
+    ctx.activeAccessToken = tok1;
+    inv.registerSession('sess-p2d-1', { accessToken: tok1, source: 'HOOK-01', validated: true, replaceExisting: true });
+
+    // 6A. Cross-session agreeing body+JWT on active ctx via observeAndTrackSessionTokens must NOT clobber activeSessionId/activeUserId
+    const tokSess3WrongUser = createMockJwt({ sub: userId2, session_id: 'sess-p2d-3', amr: [{ method: 'password' }] });
+    observeAndTrackSessionTokens(
+      { session_id: 'sess-p2d-3', access_token: tokSess3WrongUser, user: { id: userId2 } },
+      { inv, ctx, probeId: 'HOOK-02' }
+    );
+    assert.equal(ctx.activeSessionId, 'sess-p2d-1');
+    assert.equal(ctx.activeUserId, userId1);
+    assert.equal(inv.getSessionToken('sess-p2d-1'), tok1);
+    assert.equal(inv.getSessionToken('sess-p2d-3'), tokSess3WrongUser);
+
+    // 6B. Non-HOOK probe (BYPASS-03) with conflicting or unexpected token must NOT clobber active ctx
+    observeAuthResponse({
+      probeId: 'BYPASS-03',
+      status: 200,
+      parseStatus: 'parsed',
+      body: { session_id: 'sess-p2d-4', access_token: createMockJwt({ sub: userId2, session_id: 'sess-p2d-4' }), user: { id: userId2 } },
+      inv,
+      ctx,
+      expectedOperation: 'rejection',
+      canMintSession: true
+    });
+    assert.equal(ctx.activeSessionId, 'sess-p2d-1');
+    assert.equal(ctx.activeUserId, userId1);
+    assert.equal(ctx.mintedAccessToken ?? null, null);
+
+    // 6C. Missing session_id in 3-part JWT, 2-part malformed JWT, and empty target sessionId reject cleanly
+    const tokMissingSid = createMockJwt({ sub: userId1, session_id: undefined });
+    const regNoSid = inv.registerSession('sess-p2d-nosid', { accessToken: tokMissingSid, source: 'HOOK-01' });
+    assert.equal(regNoSid.registered, false);
+    assert.equal(regNoSid.uncorrelated, true);
+    assert.equal(inv.getSessionToken('sess-p2d-nosid'), null);
+
+    const regTwoPart = inv.registerSession('sess-p2d-1', { accessToken: 'hdr.payload', source: 'HOOK-02', validated: true, replaceExisting: true });
+    assert.equal(regTwoPart.registered, false);
+    assert.equal(inv.getSessionToken('sess-p2d-1'), tok1);
+
+    const admin = createHostedAdminClient({
+      serviceRoleKey: validTestServiceRoleKey,
+      anonKey: validTestAnonKey,
+      runId: inv.runId,
+      fetchFn: transport
+    });
+    const emptyTargetRes = await admin.invalidateSession('', tokConflict);
+    assert.equal(emptyTargetRes.error?.code, 'MISSING_SESSION_ID');
+    const twoPartInvalid = await admin.invalidateSession('sess-p2d-1', 'hdr.payload');
+    assert.equal(twoPartInvalid.error?.code, 'UNCORRELATED_SESSION_CREDENTIAL');
+    assert.equal(transport.calls.length, 0);
+
+    // 6D. String.prototype.split/includes/trim pollution cannot bypass session_id correlation
+    const origSplit = String.prototype.split;
+    const origIncludes = String.prototype.includes;
+    const origTrim = String.prototype.trim;
+    try {
+      // eslint-disable-next-line no-extend-native
+      String.prototype.split = function () { return ['hdr', Buffer.from(JSON.stringify({ sub: userId1, session_id: 'sess-p2d-1' })).toString('base64url'), 'sig']; };
+      // eslint-disable-next-line no-extend-native
+      String.prototype.includes = function () { return false; };
+      const pollutedRes = await admin.invalidateSession('sess-p2d-1', tokConflict);
+      assert.equal(pollutedRes.error?.code, 'SESSION_CREDENTIAL_MISMATCH');
+      assert.equal(transport.calls.length, 0);
+
+      // eslint-disable-next-line no-extend-native
+      String.prototype.trim = function () { return 'sess-p2d-1'; };
+      const pollutedReg = inv.registerSession('sess-p2d-1', { accessToken: tokConflict, source: 'HOOK-02', validated: true, replaceExisting: true });
+      assert.equal(pollutedReg.registered, false);
+      assert.equal(inv.getSessionToken('sess-p2d-1'), tok1);
+    } finally {
+      // eslint-disable-next-line no-extend-native
+      String.prototype.split = origSplit;
+      // eslint-disable-next-line no-extend-native
+      String.prototype.includes = origIncludes;
+      // eslint-disable-next-line no-extend-native
+      String.prototype.trim = origTrim;
+    }
   }
 });
