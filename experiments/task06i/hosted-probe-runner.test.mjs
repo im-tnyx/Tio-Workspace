@@ -2309,7 +2309,7 @@ test('39. Task 06I-B1-H1-R2 (R2-03): Run-scoped refresh token propagation & AMR 
         urlIncludes: 'grant_type=password',
         status: 200,
         json: {
-          access_token: createMockJwt(),
+          access_token: createMockJwt({ sub: 'usr-1', session_id: 'sess-1' }),
           refresh_token: 'fresh-refresh-token-xyz',
           user: { id: 'usr-1' },
           session_id: 'sess-1'
@@ -2320,7 +2320,7 @@ test('39. Task 06I-B1-H1-R2 (R2-03): Run-scoped refresh token propagation & AMR 
         bodyMatch: { refresh_token: 'fresh-refresh-token-xyz' },
         status: 200,
         json: {
-          access_token: createMockJwt({ exp: Math.floor(Date.now() / 1000) + 600 }),
+          access_token: createMockJwt({ sub: 'usr-1', session_id: 'sess-1', exp: Math.floor(Date.now() / 1000) + 600 }),
           refresh_token: 'refreshed-token-2'
         }
       },
@@ -2676,7 +2676,7 @@ test('51. Task 06I-B1-H1-R3 (R3-08): Strict JWT parsing without bypass; non-JSON
     amr_authenticated: true
   });
   assert.equal(resNotJson.passed, false);
-  assert.match(resNotJson.reason, /JWT_CLAIM_VIOLATION: HOOK-01 TOKEN_PARSE_ERROR/);
+  assert.match(resNotJson.reason, /JWT_CLAIM_VIOLATION: HOOK-01 TOKEN_FORMAT_INVALID/);
 
   // 2. Missing dot-separated parts fails closed
   const resFormat = validateProbeOutcome(hook01, {
@@ -3378,7 +3378,7 @@ test('66. Task 06I-B1-H1-R5 (R5-04): Successful password grant mints session tha
 
   // 1. Dispatcher rejected token for authorization because of JWT claim violation
   assert.equal(outcome.passed, false);
-  assert.equal(outcome.jwt_claims_verified, false);
+  assert.equal(outcome.jwt_claim_policy_validated, false);
   assert.match(outcome.error, /JWT_CLAIM_VIOLATION/);
 
   // 2. BUT minted session was immediately captured and registered in inventory for cleanup!
@@ -5743,7 +5743,8 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
   });
   const res1 = await disp1({ id: 'HOOK-01', category: 'Token Hook' });
   assert.equal(res1.passed, true);
-  assert.equal(res1.jwt_claims_verified, true);
+  assert.equal(res1.jwt_claim_policy_validated, true);
+  assert.equal(res1.cryptographically_authenticated, false);
   assert.equal(res1.session_id, sess1);
   assert.equal(inv1.trackedSessions.has(sess1), true);
   assert.equal(runCtx1.activeAccessToken, token1);
@@ -5843,7 +5844,7 @@ test('84. Task 06I-B1-H1-R12 (R12-01 & R12-02): Shared fail-closed Auth response
   });
   const res6 = await disp6({ id: 'HOOK-01', category: 'Token Hook' });
   assert.equal(res6.passed, false);
-  assert.equal(res6.jwt_claims_verified, false);
+  assert.equal(res6.jwt_claim_policy_validated, false);
   assert.equal(runCtx6.activeAccessToken, null, 'Unverified JWT must not be stored in activeAccessToken');
   assert.equal(inv6.trackedSessions.has(sess6), true, 'Session must be tracked for cleanup');
 
@@ -13273,4 +13274,113 @@ test('147. H3-R13 audit: route body and state matching ignore inherited properti
   });
   assert.equal(stateGetters, 0);
   assert.equal(stateSetters, 0);
+});
+test('SR-01/SR-02: canonical JWT admission and own option defaults resist ambient mutation', () => {
+  const valid = createMockJwt();
+  const [header, payload, signature] = valid.split('.');
+  const encode = value => Buffer.from(JSON.stringify(value)).toString('base64url');
+  for (const token of [
+    `${encode({ alg: 'none' })}.${payload}.`,
+    `${header}.${payload}.`,
+    `${header}.${payload}.***`,
+    `${header}.${payload}.A`,
+    `${header}.${payload}.AB`,
+    `${encode({ alg: 'HS256', crit: ['unknown'] })}.${payload}.${signature}`
+  ]) assert.equal(parseAndValidateJwt(token).valid, false);
+  const binarySignature = `${header}.${payload}.${Buffer.from([0xff, 0x80, 0x00]).toString('base64url')}`;
+  assert.equal(parseAndValidateJwt(binarySignature).valid, true);
+  assert.equal(parseAndValidateJwt(valid).cryptographicallyAuthenticated, false);
+  const expired = createMockJwt({ aud: 'anon', exp: Math.floor(Date.now() / 1000) - 120 });
+  const previousAudience = Object.getOwnPropertyDescriptor(Object.prototype, 'expectedAudience');
+  const previousIssuer = Object.getOwnPropertyDescriptor(Object.prototype, 'expectedIssuer');
+  const previousClock = Object.getOwnPropertyDescriptor(Object.prototype, 'clockToleranceSeconds');
+  const previousSplit = Object.getOwnPropertyDescriptor(String.prototype, 'split');
+  let getters = 0;
+  try {
+    Object.defineProperty(Object.prototype, 'expectedAudience', { configurable: true, get() { getters++; return 'anon'; } });
+    Object.defineProperty(Object.prototype, 'expectedIssuer', { configurable: true, get() { getters++; return 'wrong'; } });
+    Object.defineProperty(Object.prototype, 'clockToleranceSeconds', { configurable: true, get() { getters++; return 3600; } });
+    for (const options of [undefined, {}, { expectedIssuer: `https://${HARDCODED_TEMP_REF}.supabase.co` }]) {
+      assert.equal(parseAndValidateJwt(expired, options).valid, false);
+    }
+    assert.equal(getters, 0);
+    assert.equal(parseAndValidateJwt(valid, {}).valid, true);
+    assert.equal(parseAndValidateJwt(valid, { expectedAudience: 'anon' }).valid, false);
+    assert.equal(parseAndValidateJwt(valid, { clockToleranceSeconds: -1 }).valid, false);
+    assert.equal(parseAndValidateJwt(valid, Object.defineProperty({}, 'expectedAudience', { get() { getters++; return 'authenticated'; } })).valid, false);
+    const proxy = new Proxy({}, { get() { getters++; throw Error('trap'); }, getOwnPropertyDescriptor() { getters++; throw Error('trap'); } });
+    assert.equal(parseAndValidateJwt(valid, proxy).valid, false);
+    assert.equal(getters, 0);
+    Object.defineProperty(String.prototype, 'split', { configurable: true, value() { getters++; return [header, payload, signature]; } });
+    assert.equal(parseAndValidateJwt('forged', {}).valid, false);
+    assert.equal(getters, 0);
+  } finally {
+    for (const [name, descriptor] of [['expectedAudience', previousAudience], ['expectedIssuer', previousIssuer], ['clockToleranceSeconds', previousClock]]) {
+      if (descriptor) Object.defineProperty(Object.prototype, name, descriptor); else delete Object.prototype[name];
+    }
+    if (previousSplit) Object.defineProperty(String.prototype, 'split', previousSplit); else delete String.prototype.split;
+  }
+});
+
+test('SR-01: HOOK-01/02 reject conflicting or invalid token identity and retain observed session cleanup', async () => {
+  const observedUser = 'user-observed-sr01';
+  const observedSession = 'session-observed-sr01';
+  for (const [probeId, token] of [
+    ['HOOK-01', createMockJwt({ sub: 'user-conflicting-sr01', session_id: 'session-conflicting-sr01' })],
+    ['HOOK-01', createMockJwt().replace(/[^.]+$/, '')],
+    ['HOOK-02', createMockJwt({ sub: 'user-conflicting-sr01', session_id: 'session-conflicting-sr01' })]
+  ]) {
+    const inventory = new TestRunInventory(`test-${probeId}-${token.length}`);
+    const context = createRunContext({ runId: inventory.runId });
+    if (probeId === 'HOOK-02') {
+      context.activeRefreshToken = 'refresh-existing-sr01';
+      context.activeUserId = observedUser;
+      context.activeSessionId = 'session-prior-sr01';
+      context.activeAccessToken = 'prior-access-token-sr01';
+    }
+    const dispatcher = createHostedDispatcher({
+      anonKey: validTestAnonKey,
+      inventory,
+      runContext: context,
+      fetchFn: staticTransport({ status: 200, json: {
+        access_token: token, refresh_token: 'refresh-new-sr01', session_id: observedSession,
+        user: { id: observedUser, email: 'proof-sr01@proof.invalid' }
+      } })
+    });
+    const result = await dispatcher({ id: probeId, category: 'Token Hook' });
+    assert.equal(result.passed, false);
+    assert.match(result.error, /JWT_IDENTITY_MISMATCH|JWT_CLAIM_VIOLATION/);
+    assert.equal(context.activeAccessToken, probeId === 'HOOK-02' ? 'prior-access-token-sr01' : null);
+    assert.equal(context.activeUserId, probeId === 'HOOK-02' ? observedUser : null);
+    assert.equal(context.activeSessionId, probeId === 'HOOK-02' ? 'session-prior-sr01' : null);
+    assert.equal(inventory.trackedSessions.has(observedSession), true);
+    assert.equal(result.session_cleanup_registered, true);
+  }
+  for (const probeId of ['HOOK-01', 'HOOK-02']) {
+    const result = validateProbeOutcome({ id: probeId, category: 'Token Hook' }, {
+      passed: true, status: 200, access_token: createMockJwt().replace(/[^.]+$/, ''),
+      session_id: observedSession, amr_authenticated: true, amr_preserved: true
+    });
+    assert.equal(result.passed, false);
+    assert.match(result.reason, /JWT_CLAIM_VIOLATION/);
+  }
+  const inventory = new TestRunInventory('test-hook02-no-session-sr01');
+  const context = createRunContext({ runId: inventory.runId });
+  context.activeRefreshToken = 'refresh-prior-sr01';
+  context.activeAccessToken = 'access-prior-sr01';
+  context.activeUserId = 'user-prior-sr01';
+  context.activeSessionId = 'session-prior-sr01';
+  const dispatcher = createHostedDispatcher({
+    anonKey: validTestAnonKey, inventory, runContext: context,
+    fetchFn: staticTransport({ status: 200, json: {
+      access_token: createMockJwt({ session_id: null }), user: { id: 'user-new-sr01' }
+    } })
+  });
+  const result = await dispatcher({ id: 'HOOK-02', category: 'Token Hook' });
+  assert.equal(result.passed, false);
+  assert.equal(result.indeterminate_session, true);
+  assert.equal(inventory.untrackedSessionsCount, 1);
+  assert.equal(context.activeAccessToken, 'access-prior-sr01');
+  assert.equal(context.activeUserId, 'user-prior-sr01');
+  assert.equal(context.activeSessionId, 'session-prior-sr01');
 });

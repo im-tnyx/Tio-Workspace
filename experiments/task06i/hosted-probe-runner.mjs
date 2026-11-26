@@ -3423,7 +3423,7 @@ export function observeAuthResponse({
       }
       if (ctx) {
         if (accessToken) ctx.mintedAccessToken = accessToken;
-        if (rawUserId) ctx.activeUserId = String(rawUserId).trim();
+        if (rawUserId && probeId !== 'HOOK-01' && probeId !== 'HOOK-02') ctx.activeUserId = String(rawUserId).trim();
       }
       return {
         classification: 'AUTH_RESPONSE_INDETERMINATE',
@@ -3449,8 +3449,8 @@ export function observeAuthResponse({
       }
 
       if (ctx) {
-        if (rawSessionId) ctx.activeSessionId = String(rawSessionId).trim();
-        if (rawUserId) ctx.activeUserId = String(rawUserId).trim();
+        if (rawSessionId && probeId !== 'HOOK-01' && probeId !== 'HOOK-02') ctx.activeSessionId = String(rawSessionId).trim();
+        if (rawUserId && probeId !== 'HOOK-01' && probeId !== 'HOOK-02') ctx.activeUserId = String(rawUserId).trim();
         if (accessToken) {
           ctx.mintedAccessToken = accessToken;
         }
@@ -3984,7 +3984,7 @@ export function validateProbeOutcome(item, rawOutcome) {
       return {
         passed: false,
         status,
-        reason: 'MISSING_EVIDENCE: HOOK-01 expected verified amr_authenticated claim'
+        reason: 'MISSING_EVIDENCE: HOOK-01 expected policy-valid amr_authenticated claim'
       };
     }
   }
@@ -4023,7 +4023,7 @@ export function validateProbeOutcome(item, rawOutcome) {
       return {
         passed: false,
         status,
-        reason: 'MISSING_EVIDENCE: HOOK-02 expected verified AMR preservation (amr_preserved: true)'
+        reason: 'MISSING_EVIDENCE: HOOK-02 expected policy-valid AMR preservation (amr_preserved: true)'
       };
     }
   }
@@ -7968,30 +7968,44 @@ export function createRunContext(rawOptions = {}) {
 }
 
 /**
- * Inspects real JWT claim structure.
- * Decodes base64url payload, validates expiration, audience, issuer,
- * verifies server-owned claims.amr_authenticated, and ensures RFC 8176 AMR compliance.
+ * Admits canonical signed-token structure and validates decoded claim policy.
+ * This offline check does not authenticate a signature or prove claim origin.
  * Never logs access tokens or secrets.
  * Resolves PRRT_kwDOVtCmZc66lOOM.
  */
-export function parseAndValidateJwt(token, { expectedIssuer, expectedAudience = 'authenticated', clockToleranceSeconds = 60 } = {}) {
-  if (typeof token !== 'string' || !token.trim()) {
+const jwtOptionDescriptor = Object.getOwnPropertyDescriptor;
+const jwtOptionPrototype = Object.getPrototypeOf;
+const jwtHasOwn = Object.prototype.hasOwnProperty;
+function jwtOwnOption(options, name, fallback) {
+  const descriptor = jwtOptionDescriptor(options, name);
+  if (!descriptor) return fallback;
+  if (!jwtHasOwn.call(descriptor, 'value')) throw new TypeError('JWT_OPTIONS_INVALID');
+  return descriptor.value;
+}
+export function parseAndValidateJwt(token, options = undefined) {
+  if (options === undefined) options = Object.create(null);
+  if (options === null || typeof options !== 'object' || utilTypes.isProxy(options) ||
+      (jwtOptionPrototype(options) !== null && jwtOptionPrototype(options) !== Object.prototype)) {
+    return { valid: false, reason: 'JWT_OPTIONS_INVALID' };
+  }
+  let expectedIssuer, expectedAudience, clockToleranceSeconds;
+  try {
+    expectedIssuer = jwtOwnOption(options, 'expectedIssuer', undefined);
+    expectedAudience = jwtOwnOption(options, 'expectedAudience', 'authenticated');
+    clockToleranceSeconds = jwtOwnOption(options, 'clockToleranceSeconds', 60);
+  } catch {
+    return { valid: false, reason: 'JWT_OPTIONS_INVALID' };
+  }
+  if ((expectedIssuer !== undefined && (typeof expectedIssuer !== 'string' || !expectedIssuer)) ||
+      typeof expectedAudience !== 'string' || !expectedAudience ||
+      typeof clockToleranceSeconds !== 'number' || !Number.isFinite(clockToleranceSeconds) || clockToleranceSeconds < 0) {
+    return { valid: false, reason: 'JWT_OPTIONS_INVALID' };
+  }
+  if (typeof token !== 'string' || !token) {
     return { valid: false, reason: 'TOKEN_EMPTY: JWT token must be a non-empty string' };
   }
-  const parts = token.trim().split('.');
-  if (parts.length !== 3) {
-    return { valid: false, reason: `TOKEN_FORMAT_INVALID: JWT must contain exactly 3 dot-separated parts, got ${parts.length}` };
-  }
-  let header, payload;
-  try {
-    header = JSON.parse(Buffer.from(parts[0], 'base64url').toString('utf8'));
-    payload = snapshotJwtRecord(JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8')));
-  } catch (err) {
-    return { valid: false, reason: `TOKEN_PARSE_ERROR: Failed to decode JWT base64url JSON: ${err.message}` };
-  }
-  if (!payload || typeof payload !== 'object') {
-    return { valid: false, reason: 'TOKEN_PAYLOAD_INVALID: Decoded JWT payload must be a JSON object' };
-  }
+  const payload = decodeOfflineJwtClaims(token);
+  if (!payload) return { valid: false, reason: 'TOKEN_FORMAT_INVALID: canonical signed JWT structure required' };
 
   // Mandatory finite numeric expiration claim (R5-05)
   if (payload.exp === undefined || payload.exp === null) {
@@ -8063,9 +8077,11 @@ export function parseAndValidateJwt(token, { expectedIssuer, expectedAudience = 
 
   return {
     valid: true,
-    header,
     payload,
-    claims: payload
+    claims: payload,
+    structuralAdmission: true,
+    claimPolicyValidated: true,
+    cryptographicallyAuthenticated: false
   };
 }
 
@@ -8079,9 +8095,9 @@ async function parseResponseBody(res) {
 }
 
 /**
- * Authoritatively validates that a Supabase key (anon or service_role) belongs strictly to the expected project.
- * Inspects the decoded base64url JWT payload of the key.
- * Strictly prevents sending a production/REAL key to a TEMP environment or vice-versa.
+ * Checks the decoded project claim of a Supabase key (anon or service_role) against the expected project.
+ * This is a fail-closed routing guard, not cryptographic credential authentication.
+ * Rejects decoded forbidden project refs before dispatch; forged claims cannot prove credential origin.
  * Resolves PRRT_kwDOVtCmZc66lq3W.
  */
 export function validateProjectCredentialBinding(key, expectedProjectRef = HARDCODED_TEMP_REF) {
@@ -8092,7 +8108,7 @@ export function validateProjectCredentialBinding(key, expectedProjectRef = HARDC
   const parts = trimmed.split('.');
   if (parts.length !== 3) {
     throw new Error(
-      `OPAQUE_CREDENTIAL_UNSUPPORTED: Credential must be a 3-part project JWT (anon or service_role); opaque or malformed keys (${parts.length} parts) cannot be cryptographically bound to target project '${expectedProjectRef}'.`
+      `OPAQUE_CREDENTIAL_UNSUPPORTED: Credential must be a 3-part project JWT (anon or service_role); opaque or malformed keys (${parts.length} parts) cannot be checked against target project '${expectedProjectRef}'.`
     );
   }
 
@@ -8123,7 +8139,7 @@ export function validateProjectCredentialBinding(key, expectedProjectRef = HARDC
   const normDetected = detectedRef.trim().toLowerCase();
   if (normDetected === HARDCODED_REAL_REF || normDetected === HARDCODED_TIO_WORLD_REF || isForbiddenProject(normDetected)) {
     throw new Error(
-      `CRITICAL_SECURITY_VIOLATION: Credential belongs to forbidden project '${normDetected}'! Production credential cannot be forwarded to testbed.`
+      `CRITICAL_SECURITY_VIOLATION: Credential declares forbidden project '${normDetected}'! Forwarding prohibited.`
     );
   }
 
@@ -8969,21 +8985,36 @@ export function createHostedDispatcher(rawOptions = {}) {
             passed: false,
             status: observed.status,
             error: `JWT_CLAIM_VIOLATION: ${jwtCheck.reason}`,
-            jwt_claims_verified: false,
+            jwt_claim_policy_validated: false,
             session_id: rawSessionId || null,
             session_cleanup_registered: isNonEmptyString(rawSessionId)
           };
         }
 
-        const userId = jwtCheck.payload.sub || rawUserId;
-        const sessionId = jwtCheck.payload.session_id || rawSessionId;
+        if ((rawUserId && jwtCheck.payload.sub && rawUserId !== jwtCheck.payload.sub) ||
+            (rawSessionId && jwtCheck.payload.session_id && rawSessionId !== jwtCheck.payload.session_id)) {
+          return {
+            passed: false,
+            status: observed.status,
+            error: 'JWT_IDENTITY_MISMATCH: decoded claims conflict with observed response identity',
+            jwt_claim_policy_validated: true,
+            cryptographically_authenticated: false,
+            session_id: rawSessionId || null,
+            session_cleanup_registered: isNonEmptyString(rawSessionId)
+          };
+        }
+        const userId = rawUserId || jwtCheck.payload.sub;
+        const sessionId = rawSessionId || jwtCheck.payload.session_id;
 
         if (!isNonEmptyString(sessionId)) {
           return {
             passed: false,
             status: observed.status,
             error: 'MISSING_SESSION_ID: Valid JWT must contain session_id claim for session tracking (R3-05)',
-            jwt_claims_verified: true
+            jwt_claim_policy_validated: true,
+            cryptographically_authenticated: false,
+            session_id: rawSessionId || null,
+            session_cleanup_registered: isNonEmptyString(rawSessionId)
           };
         }
 
@@ -9000,7 +9031,8 @@ export function createHostedDispatcher(rawOptions = {}) {
           access_token: accessToken,
           refresh_token: refreshToken,
           amr_authenticated: true,
-          jwt_claims_verified: true,
+          jwt_claim_policy_validated: true,
+          cryptographically_authenticated: false,
           user_id: userId,
           session_id: sessionId,
           tokens: parseEnv?.body || null
@@ -9098,7 +9130,21 @@ export function createHostedDispatcher(rawOptions = {}) {
             passed: false,
             status: observed.status,
             error: `JWT_CLAIM_VIOLATION: ${jwtCheck.reason}`,
-            refreshed_claims_verified: false
+            refreshed_claim_policy_validated: false
+          };
+        }
+
+        if ((ctx?.activeUserId && jwtCheck.payload.sub && ctx.activeUserId !== jwtCheck.payload.sub) ||
+            (observed.userId && jwtCheck.payload.sub && observed.userId !== jwtCheck.payload.sub) ||
+            (observed.sessionId && jwtCheck.payload.session_id && observed.sessionId !== jwtCheck.payload.session_id)) {
+          return {
+            passed: false,
+            status: observed.status,
+            error: 'JWT_IDENTITY_MISMATCH: refreshed claims conflict with observed identity',
+            refreshed_claim_policy_validated: true,
+            cryptographically_authenticated: false,
+            session_id: observed.sessionId || null,
+            session_cleanup_registered: isNonEmptyString(observed.sessionId)
           };
         }
 
@@ -9128,7 +9174,8 @@ export function createHostedDispatcher(rawOptions = {}) {
           status: observed.status,
           access_token: refreshedAccess,
           amr_preserved: true,
-          refreshed_claims_verified: true,
+          refreshed_claim_policy_validated: true,
+          cryptographically_authenticated: false,
           tokens: parseEnv?.body || null
         };
       }
