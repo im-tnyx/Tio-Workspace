@@ -10912,10 +10912,12 @@ export function createHostedAdminClient(rawOptions = {}) {
     async verifyUserCredentials(email, password, options = {}) {
       const inv = options.inventory || null;
       if (!email || typeof email !== 'string' || !email.trim()) {
-        return { data: null, error: { message: 'MISSING_EMAIL: verifyUserCredentials requires non-empty email' } };
+        return { data: null, credentialVerified: false, verifiedUserId: null,
+          error: { code: 'MISSING_EMAIL', message: 'MISSING_EMAIL: verifyUserCredentials requires non-empty email' } };
       }
       if (!password || typeof password !== 'string') {
-        return { data: null, error: { message: 'MISSING_PASSWORD: verifyUserCredentials requires string password' } };
+        return { data: null, credentialVerified: false, verifiedUserId: null,
+          error: { code: 'MISSING_PASSWORD', message: 'MISSING_PASSWORD: verifyUserCredentials requires string password' } };
       }
 
       // Capture the intended identity BEFORE dispatch/observation. Only existing
@@ -11681,9 +11683,17 @@ export function createHostedAdminClient(rawOptions = {}) {
       let operationRunId = null;
       if (name === 'verifyUserCredentials') {
         try {
+          const emailSlot = Object.getOwnPropertyDescriptor(args, '0');
+          const passwordSlot = Object.getOwnPropertyDescriptor(args, '1');
           const optionsSlot = Object.getOwnPropertyDescriptor(args, '2');
           const admitted = admitVerificationOptions(optionsSlot && Object.hasOwn(optionsSlot, 'value') ? optionsSlot.value : undefined);
-          Object.defineProperty(args, '2', { __proto__: null, value: admitted, writable: true, enumerable: true, configurable: true });
+          // Every forwarded slot must be own data, including missing required
+          // values. Extending a sparse argument array would consult prototypes.
+          args = [
+            emailSlot && Object.hasOwn(emailSlot, 'value') ? emailSlot.value : undefined,
+            passwordSlot && Object.hasOwn(passwordSlot, 'value') ? passwordSlot.value : undefined,
+            admitted
+          ];
         } catch {
           return { data: null, credentialVerified: false, verifiedUserId: null,
             sessionRevocationFailed: false, indeterminateSession: false,

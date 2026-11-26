@@ -14041,6 +14041,94 @@ test('PR45-VERIFY-11: accessor descriptor is rejected before inherited descripto
   assert.equal(fixtureCalls(spec).length, 0);
 });
 
+test('PR45-ARGS-01: omitted required arguments ignore inherited numeric data/getters/setters without request attempts', async () => {
+  const { getRunRequestBudget } = await import('./run-request-budget.mjs');
+  const cases = [[], ['email'], ['email', undefined], [undefined, 'password'], [undefined, undefined]];
+  for (let caseIndex = 0; caseIndex < cases.length; caseIndex++) {
+    for (const mode of ['data', 'getter', 'setter']) {
+      const { inv, email, admin, spec } = verificationIdentityCase(`required-${caseIndex}-${mode}`);
+      const args = cases[caseIndex].map(value => value === 'email' ? email : value === 'password' ? 'SyntheticRequired#1' : value);
+      const inherited = [email, 'SyntheticRequired#1', { expectedUserId: 'verify-user-a' }];
+      const previous = [0, 1, 2].map(index => Object.getOwnPropertyDescriptor(Array.prototype, String(index)));
+      const budget = getRunRequestBudget({ projectRef: HARDCODED_TEMP_REF, runId: inv.runId, mode: 'recorded_zero_wait' });
+      const before = budget.report();
+      let getterCalls = 0;
+      let setterCalls = 0;
+      let pending;
+      try {
+        for (let index = 0; index < 3; index++) {
+          const value = inherited[index];
+          const descriptor = mode === 'data'
+            ? { __proto__: null, configurable: true, writable: true, value }
+            : { __proto__: null, configurable: true,
+              get() { getterCalls++; return value; },
+              ...(mode === 'setter' ? { set(assigned) { setterCalls++; Object.defineProperty(this, String(index), { __proto__: null, configurable: true, writable: true, enumerable: true, value: assigned }); } } : {}) };
+          Object.defineProperty(Array.prototype, String(index), descriptor);
+        }
+        // Forwarding executes synchronously. Restore prototypes before awaiting
+        // transport settlement so unrelated async runtime work stays isolated.
+        pending = Reflect.apply(admin.verifyUserCredentials, admin, args);
+      } finally {
+        for (let index = 0; index < 3; index++) {
+          if (previous[index]) Object.defineProperty(Array.prototype, String(index), previous[index]);
+          else delete Array.prototype[index];
+        }
+      }
+      const result = await pending;
+      assert.equal(getterCalls, 0);
+      assert.equal(setterCalls, 0);
+      assert.equal(result.error.code, caseIndex === 1 || caseIndex === 2 ? 'MISSING_PASSWORD' : 'MISSING_EMAIL');
+      assert.equal(fixtureCalls(spec).length, 0);
+      assert.deepEqual(budget.report(), before);
+      assert.equal(inv.inFlightOperations.size, 0);
+      assert.equal(inv.trackedSessions.size, 0);
+    }
+  }
+});
+
+test('PR45-ARGS-02: invalid required values reject structurally with zero behavior and unchanged budget', async () => {
+  const { getRunRequestBudget } = await import('./run-request-budget.mjs');
+  let executions = 0;
+  const proxy = new Proxy({}, { get() { executions++; throw new Error('Must not execute'); } });
+  const invalid = [undefined, null, '', 0, false, [], {}, proxy, () => { executions++; }];
+  for (let index = 0; index < invalid.length; index++) {
+    for (const field of ['email', 'password']) {
+      const { inv, email, admin, spec } = verificationIdentityCase(`invalid-required-${index}-${field}`);
+      const budget = getRunRequestBudget({ projectRef: HARDCODED_TEMP_REF, runId: inv.runId, mode: 'recorded_zero_wait' });
+      const before = budget.report();
+      const args = field === 'email' ? [invalid[index], 'SyntheticRequired#1'] : [email, invalid[index]];
+      const result = await Reflect.apply(admin.verifyUserCredentials, admin, args);
+      assert.equal(result.error.code, field === 'email' ? 'MISSING_EMAIL' : 'MISSING_PASSWORD');
+      assert.equal(fixtureCalls(spec).length, 0);
+      assert.deepEqual(budget.report(), before);
+    }
+  }
+  const { email, admin, spec } = verificationIdentityCase('blank-email');
+  assert.equal((await admin.verifyUserCredentials('  ', 'SyntheticRequired#1')).error.code, 'MISSING_EMAIL');
+  assert.equal(fixtureCalls(spec).length, 0);
+  assert.equal(executions, 0);
+});
+
+test('PR45-ARGS-03: valid own credentials preserve omitted options, trusted options and cleanup behavior', async () => {
+  const { email, admin, spec } = verificationIdentityCase('valid-two', { responseUser: 'verify-user-a' });
+  const two = await admin.verifyUserCredentials(email, 'SyntheticRequired#1');
+  assert.equal(two.error.code, 'VERIFICATION_IDENTITY_UNAVAILABLE');
+  assert.equal(fixtureOperationCalls(spec, 'login').length, 1);
+  assert.equal(fixtureOperationCalls(spec, 'logout').length, 1);
+  const valid = verificationIdentityCase('valid-three', { responseUser: 'verify-user-a' });
+  const three = await valid.admin.verifyUserCredentials(valid.email, 'SyntheticRequired#1', { inventory: valid.inv, expectedUserId: 'verify-user-a' });
+  assert.equal(three.error, null);
+  assert.equal(three.credentialVerified, true);
+  assert.equal(valid.inv.isClean(), true);
+  assert.equal((await valid.inv.executeCleanup({ adminClient: valid.admin })).status, 'CLEANUP_VERIFIED_SUCCESS');
+  const rejected = verificationIdentityCase('invalid-own-options');
+  for (const options of [{ expectedUserId: undefined }, { inventory: {} }]) {
+    const result = await rejected.admin.verifyUserCredentials(rejected.email, 'SyntheticRequired#1', options);
+    assert.equal(result.error.code, 'INVALID_VERIFICATION_OPTIONS');
+  }
+  assert.equal(fixtureCalls(rejected.spec).length, 0);
+});
+
 function restorationCase(name, { claims = {}, bodySession = 'restore-session', bodyUser = 'restore-user', routes = [] } = {}) {
   const inv = new TestRunInventory(`restore-contract-${name}`);
   const email = 'tio-restore-contract@proof.invalid';
