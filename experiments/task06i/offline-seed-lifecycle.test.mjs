@@ -12,7 +12,7 @@ import {
   TestRunInventory, createMockProjectKey, createCreationProof, createRunContext,
   createDeterministicFixtureTransport, createHostedAdminClient, createRunCreatedSeedDispatcher,
   reserveRunCreatedSeed, provisionRunCreatedSeed, runOfflineProbeSimulation, runHostedProbeRunner,
-  provisionStorageProbeFixture
+  provisionStorageProbeFixture, createTrustedOfflineDispatcher
 } from './hosted-probe-runner.mjs';
 import { createOfflineRecoveryJournal, reopenOfflineRecoveryJournal, recoverOfflineProbeRun } from './offline-probe-recovery.mjs';
 import { journalForRun } from './offline-recovery-journal.mjs';
@@ -32,9 +32,9 @@ function token(id) {
     role: 'authenticated', aud: 'authenticated', iss: `https://${projectRef}.supabase.co/auth/v1`, iat, exp: iat + 300,
     amr_authenticated: true, amr: [{ method: 'password', timestamp: iat }] }), 'AA'].join('.');
 }
-function setup(t, directory = null) {
+function setup(t, directory = null, pacingMode = mode) {
   directory ||= realpathSync.native(mkdtempSync(join(realpathSync.native(tmpdir()), 'task06i-h5-')));
-  const handle = createOfflineRecoveryJournal({ directory, projectRef, mode });
+  const handle = createOfflineRecoveryJournal({ directory, projectRef, mode: pacingMode });
   const inventory = new TestRunInventory(handle.runId);
   if (t) t.after(() => {
     handle.close();
@@ -48,11 +48,11 @@ function fixture(base, controls = {}) {
   const plan = reserveRunCreatedSeed({ inventory, projectRef });
   const id = plan.userId;
   const jwt = token(id);
-  const transport = createDeterministicFixtureTransport({ requestBudgetMode: mode,
+  const transport = createDeterministicFixtureTransport({ requestBudgetMode: handle.report().mode,
     conditionalStorage: { projectRef, runId: handle.runId, objects: [] },
     initialState: { created: false, deleted: false, uploaded: false, storageDeleted: false, reset: false },
     routes: [
-      { method: 'GET', pathEquals: '/auth/v1/admin/users/' + id, whenState: { created: false },
+      { method: 'GET', pathEquals: '/auth/v1/admin/users/' + id, whenState: { created: false, deleted: false },
         status: controls.preexisting ? 200 : 404, json: controls.preexisting ? { id, email: plan.email } : { code: 'user_not_found' } },
       { method: 'POST', pathEquals: '/auth/v1/admin/users', setsState: { created: true },
         ...(controls.create || { status: 201, json: { id, email: plan.email } }) },
@@ -75,7 +75,15 @@ function fixture(base, controls = {}) {
       { method: 'POST', pathEquals: '/rest/v1/rpc/task06i_lookup_storage_object_owner', status: 200,
         json: [{ id: objectId, bucket_id: 'task06i_probe_bucket', name: handle.runId + '/probe.txt', owner_id: controls.owner || id }] },
       { method: 'DELETE', urlIncludes: '/storage/v1/object/', setsState: { storageDeleted: true }, status: 200, json: {} },
-      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { storageDeleted: true }, status: 400, json: { code: 'NoSuchKey', statusCode: '404' } }
+      { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { storageDeleted: true }, status: 400, json: { code: 'NoSuchKey', statusCode: '404' } },
+      ...(controls.siblings || []).flatMap(siblingId => [
+        { method: 'DELETE', pathEquals: '/auth/v1/admin/users/' + siblingId,
+          setsState: { ['deleted-' + siblingId]: true }, ...(controls.siblingDelete || { status: 200, json: {} }) },
+        { method: 'GET', pathEquals: '/auth/v1/admin/users/' + siblingId, whenState: { ['deleted-' + siblingId]: true },
+          ...(controls.siblingAbsence || { status: 404, json: { code: 'user_not_found' } }) },
+        { method: 'GET', pathEquals: '/auth/v1/admin/users/' + siblingId, status: 200,
+          json: { id: siblingId, email: 'tio-test-sibling@proof.invalid' } }
+      ])
     ] });
   const adminClient = createHostedAdminClient({ runId: handle.runId, fetchFn: transport,
     serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
@@ -88,6 +96,10 @@ function fixture(base, controls = {}) {
 }
 const budget = handle => getRunRequestBudget({ projectRef, runId: handle.runId });
 const cleanup = f => f.inventory.executeCleanup({ adminClient: f.adminClient, failClosed: false });
+function registerSibling(inventory, id = foreignId) {
+  return inventory.registerCreatedUser({ id, email: 'tio-test-sibling@proof.invalid',
+    creationProof: createCreationProof('provider_admin_create', { providerReturnedId: id }) });
+}
 function persisted(f) {
   f.handle.close();
   const db = new DatabaseSync(join(f.directory, f.handle.runId + '.sqlite'), { readOnly: true });
@@ -118,12 +130,14 @@ async function child(directory, type, rawOrdinal, after, stage, action) {
   let f;
   const witness = () => ({ calls: f?.transport.calls.length ?? 0,
     created: f?.transport.calls.some(c => c.method === 'POST' && c.pathname === '/auth/v1/admin/users') ?? false,
-    deleted: f?.transport.calls.some(c => c.method === 'DELETE' && c.pathname.startsWith('/auth/v1/admin/users/')) ?? false,
+    deleted: f?.transport.calls.some(c => c.method === 'DELETE' && c.pathname === '/auth/v1/admin/users/' + f.plan.userId) ?? false,
+    siblingDeleted: f?.transport.calls.some(c => c.method === 'DELETE' && c.pathname.endsWith('/' + foreignId)) ?? false,
     storage: f ? snapshotRecoveryStorageFixture(getConditionalStorageFixtureProvider(f.transport)).objects : [] });
   const restore = interrupt(directory, type, rawOrdinal === 'any' ? null : Number(rawOrdinal), after === 'after', witness, action);
   try {
-    f = fixture(base);
+    f = fixture(base, stage.startsWith('sibling') ? { siblings: [foreignId] } : {});
     await f.provision();
+    if (stage.startsWith('sibling')) registerSibling(f.inventory);
     if (stage === 'storage') await f.storage();
     if (stage === 'auth' || stage === 'storage') {
       const dispatch = f.dispatcher();
@@ -156,6 +170,243 @@ function restart(t, [type, ordinal, after, stage], action = 'kill') {
 }
 
 if (!process.argv.includes('--seed-child')) {
+  for (const [label, controls] of [['collision', { preexisting: true }],
+    ['indeterminate', { create: { throwError: 'H5-R1 lost create response' } }]]) {
+    test('H5-R1-01 sibling inventory cannot delete reserved seed after ' + label, async t => {
+      const f = fixture(setup(t), controls); await assert.rejects(f.provision());
+      const sibling = new TestRunInventory(f.handle.runId);
+      try {
+        sibling.registerCreatedUser({ id: f.plan.userId, email: f.plan.email,
+          creationProof: createCreationProof('provider_admin_create', { providerReturnedId: f.plan.userId }) });
+        await sibling.executeCleanup({ adminClient: f.adminClient, failClosed: false });
+      } catch (error) { assert.match(error.message, /SEED|OWNERSHIP/); }
+      assert.equal(f.transport.calls.filter(c => c.method === 'DELETE').length, 0);
+      assert.equal(f.handle.report().seeds.length, 1);
+      assert.equal(f.handle.report().status, 'RECOVERY_REQUIRED');
+      const observed = await f.adminClient.getUserById(f.plan.userId);
+      assert.equal(observed.data.id, f.plan.userId);
+    });
+  }
+  test('H5-R1-02 verified sibling resolution precedes seed-last cleanup', async t => {
+    const f = fixture(setup(t), { siblings: [foreignId] }); await f.provision(); registerSibling(f.inventory);
+    const first = await cleanup(f);
+    assert.equal(first.status, 'CLEANUP_VERIFIED_SUCCESS', JSON.stringify(first));
+    assert.deepEqual(f.transport.calls.filter(c => c.method === 'DELETE').map(c => c.pathname.split('/').at(-1)), [foreignId, f.plan.userId]);
+    assert.equal(f.handle.report().consumed, 7);
+    const before = f.transport.calls.length;
+    assert.equal((await cleanup(f)).status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(f.transport.calls.length, before);
+  });
+  test('H5-R1-01 generic Admin, alternate client, raw transport and direct budget cannot delete seed', async t => {
+    const f = fixture(setup(t)); await f.provision();
+    const alternate = createHostedAdminClient({ runId: f.handle.runId, fetchFn: f.transport,
+      serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
+    for (const client of [f.adminClient, alternate]) await assert.rejects(client.deleteUser(f.plan.userId), /SEED_DELETE/);
+    const raw = createDeterministicFixtureTransport({ requestBudgetMode: mode, defaultResponse: { status: 200, json: {} } });
+    for (const path of [f.plan.userId, f.plan.userId.toUpperCase(), '%'+f.plan.userId.charCodeAt(0).toString(16)+f.plan.userId.slice(1)]) {
+      await assert.rejects(raw(`https://${projectRef}.supabase.co/auth/v1/admin/users/${path}`, { method: 'DELETE' }), /SEED_DELETE/);
+    }
+    const dispatcher = createTrustedOfflineDispatcher({ projectRef, runId: f.handle.runId, fetchFn: raw, outcomes: {
+      'BYPASS-01': { passed: false, transportRequest: { url: `https://${projectRef}.supabase.co/auth/v1/admin/users/${f.plan.userId}`, method: 'DELETE' } }
+    } });
+    await assert.rejects(dispatcher({ id: 'BYPASS-01' }), /SEED_DELETE/);
+    const key = createHash('sha256').update('auth:user:' + f.plan.userId).digest('hex');
+    const operationHash = createHash('sha256').update(f.plan.operationId).digest('hex');
+    let entered = 0;
+    await assert.rejects(executeRunBudgetRequest(budget(f.handle), { kind: 'auth_delete', resourceKey: key, operationHash }, () => { entered++; return { ok: true }; }), /SEED_DELETE/);
+    assert.throws(() => journalForRun(f.handle.runId).reserve(4, 'cleanup', 'auth_delete', Date.now(), key, operationHash), /SEED_DELETE/);
+    assert.equal(entered, 0); assert.equal(raw.calls.length, 0); assert.equal(f.transport.calls.length, 3);
+    assert.equal(f.handle.report().consumed, 3);
+    assert.equal((await cleanup(f)).status, 'CLEANUP_VERIFIED_SUCCESS');
+  });
+  test('H5-R1-01 public ownership maps and lifecycle labels cannot authorize a sibling inventory', async t => {
+    const f = fixture(setup(t), { preexisting: true }); await assert.rejects(f.provision());
+    const other = new TestRunInventory(f.handle.runId);
+    other.createdUsers.set(f.plan.userId, { id: f.plan.userId, email: f.plan.email, ownership: 'RUN_CREATED_VERIFIED',
+      creationProof: createCreationProof('provider_admin_create', { providerReturnedId: f.plan.userId }) });
+    other.userOwnership.set(f.plan.userId, 'RUN_CREATED_VERIFIED'); other.deletedUsers.add(f.plan.userId);
+    assert.equal(other.getUserOwnership(f.plan.userId), 'CREATION_INDETERMINATE');
+    await other.executeCleanup({ adminClient: f.adminClient, failClosed: false });
+    assert.equal(f.transport.calls.filter(c => c.method === 'DELETE').length, 0);
+    assert.equal(f.handle.report().status, 'RECOVERY_REQUIRED');
+  });
+  test('H5-R1-01 cross-run and cross-journal Admin clients cannot adopt reserved identity', async t => {
+    const f = fixture(setup(t)); await f.provision(); const other = setup(t);
+    const raw = createDeterministicFixtureTransport({ requestBudgetMode: mode, defaultResponse: { status: 200 } });
+    const client = createHostedAdminClient({ runId: other.handle.runId, fetchFn: raw, serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
+    await assert.rejects(client.deleteUser(f.plan.userId), /SEED_DELETE/);
+    assert.equal(raw.calls.length, 0); assert.equal(other.handle.report().consumed, 0);
+    assert.equal((await cleanup(f)).status, 'CLEANUP_VERIFIED_SUCCESS');
+  });
+  test('H5-R1-01 owner authority cannot move to a different synthetic provider transport', async t => {
+    const f = fixture(setup(t)); await f.provision();
+    const raw = createDeterministicFixtureTransport({ requestBudgetMode: mode, defaultResponse: { status: 404 } });
+    const alternate = createHostedAdminClient({ runId: f.handle.runId, fetchFn: raw, serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
+    assert.equal((await f.inventory.executeCleanup({ adminClient: alternate, failClosed: false })).status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(raw.calls.length, 0); assert.equal(f.handle.report().consumed, 3);
+    assert.equal((await cleanup(f)).status, 'CLEANUP_VERIFIED_SUCCESS');
+  });
+  test('H5-R1-02 alternate provider cannot forge sibling absence before original cleanup', async t => {
+    const f = fixture(setup(t), { siblings: [foreignId] }); await f.provision(); registerSibling(f.inventory);
+    const raw = createDeterministicFixtureTransport({ requestBudgetMode: mode, routes: [
+      { method: 'DELETE', pathIncludes: '/auth/v1/admin/users/', status: 200, json: {} },
+      { method: 'GET', pathIncludes: '/auth/v1/admin/users/', status: 404, json: { code: 'user_not_found' } }
+    ] });
+    const alternate = createHostedAdminClient({ runId: f.handle.runId, fetchFn: raw, serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
+    await f.inventory.executeCleanup({ adminClient: alternate, failClosed: false });
+    assert.equal(raw.calls.length, 0);
+    assert.equal((await cleanup(f)).status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.deepEqual(f.transport.calls.filter(c => c.method === 'DELETE').map(c => c.pathname.split('/').at(-1)), [foreignId, f.plan.userId]);
+  });
+  test('H5-R1-02 genuine sibling users in separate same-run inventories resolve without deadlock', async t => {
+    const f = fixture(setup(t), { siblings: [foreignId, sessionId] }); await f.provision();
+    const b = new TestRunInventory(f.handle.runId), c = new TestRunInventory(f.handle.runId);
+    registerSibling(b, foreignId); registerSibling(c, sessionId);
+    for (const inventory of [b,c]) {
+      await inventory.executeCleanup({ adminClient: f.adminClient, failClosed: false });
+      const id = inventory === b ? foreignId : sessionId;
+      assert.equal(journalForRun(f.handle.runId).state.obligations.has(createHash('sha256').update('auth:user:' + id).digest('hex')), false);
+    }
+    assert.equal((await cleanup(f)).status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(f.handle.report().consumed, 9);
+  });
+  for (const verified of [false, true]) test('H5-R1-01 stale capabilities remain blocked after reopen: ' + verified, async t => {
+    const f = fixture(setup(t)); if (verified) await f.provision(); f.handle.close();
+    const reopened = reopenOfflineRecoveryJournal({ directory: f.directory, projectRef, runId: f.handle.runId });
+    try {
+      await assert.rejects(f.adminClient.deleteUser(f.plan.userId), /SEED_DELETE|RECOVERY/);
+      if (!verified) await assert.rejects(f.provision(), /SEED_JOURNAL/);
+      const other = new TestRunInventory(f.handle.runId);
+      assert.throws(() => other.registerCreatedUser({ id: f.plan.userId, email: f.plan.email,
+        creationProof: createCreationProof('provider_admin_create', { providerReturnedId: f.plan.userId }) }), /SEED_CREATION_PROOF/);
+      const report = await recoverOfflineProbeRun({ handle: reopened });
+      assert.equal(report.status, 'RECOVERY_REQUIRED');
+      assert.equal(report.reason, 'TRANSIENT_AUTH_CREDENTIALS_OR_PROOF_UNAVAILABLE');
+      assert.equal(f.transport.calls.filter(c => c.method === 'DELETE').length, 0);
+    } finally { reopened.close(); }
+  });
+  for (const first of [true, false]) test('H5-R1-02 seed-last is independent of registration order: ' + first, async t => {
+    const f = fixture(setup(t), { siblings: [foreignId, sessionId] });
+    if (!first) registerSibling(f.inventory); await f.provision();
+    if (first) registerSibling(f.inventory); registerSibling(f.inventory, sessionId);
+    assert.equal((await cleanup(f)).status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.deepEqual(f.transport.calls.filter(c => c.method === 'DELETE').map(c => c.pathname.split('/').at(-1)), [foreignId, sessionId, f.plan.userId]);
+    assert.equal(f.handle.report().consumed, 9);
+    f.inventory.deletedUsers.clear(); // A public flag is not the retry receipt.
+    assert.equal((await cleanup(f)).status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(f.transport.calls.length, 9);
+  });
+  for (const [label, controls] of [
+    ['failed DELETE', { siblingDelete: { status: 500, json: { code: 'unknown' } } }],
+    ['indeterminate DELETE', { siblingDelete: { throwError: 'H5-R1 lost sibling response' } }],
+    ['absence200', { siblingAbsence: { status: 200, json: { id: foreignId } } }],
+    ['absence503', { siblingAbsence: { status: 503, json: { code: 'unknown' } } }]
+  ]) test('H5-R1-02 ' + label + ' retains sibling obligation and blocks seed', async t => {
+    const f = fixture(setup(t), { siblings: [foreignId], ...controls }); await f.provision(); registerSibling(f.inventory);
+    assert.equal((await cleanup(f)).status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(f.transport.calls.some(c => c.method === 'DELETE' && c.pathname.endsWith('/' + f.plan.userId)), false);
+    assert.equal(journalForRun(f.handle.runId).state.obligations.has(createHash('sha256').update('auth:user:' + foreignId).digest('hex')), true);
+  });
+  test('H5-R1-02 unrelated and failed Auth effects survive individual sibling resolution', async t => {
+    const f = fixture(setup(t), { siblings: [foreignId] }); await f.provision(); registerSibling(f.inventory);
+    await executeRunBudgetRequest(budget(f.handle), { kind: 'auth_effect' }, () => ({ ok: false, status: 503 }));
+    assert.equal((await cleanup(f)).status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.ok(f.handle.report().residual.credentialDependent.includes(4));
+    assert.equal(f.transport.calls.some(c => c.method === 'DELETE' && c.pathname.endsWith('/' + f.plan.userId)), false);
+    const before = f.transport.calls.length;
+    assert.equal((await cleanup(f)).status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(f.transport.calls.length, before);
+  });
+  test('H5-R1-02 missing transient session credential blocks seed after sibling cleanup', async t => {
+    const f = fixture(setup(t), { siblings: [foreignId] }); await f.provision(); registerSibling(f.inventory);
+    f.inventory.registerSession(sessionId);
+    assert.equal((await cleanup(f)).status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(f.transport.calls.some(c => c.method === 'DELETE' && c.pathname.endsWith('/' + f.plan.userId)), false);
+    assert.equal(f.transport.calls.some(c => c.method === 'DELETE'), false);
+    assert.equal(f.handle.report().status, 'RECOVERY_REQUIRED');
+  });
+  test('H5-R1-02 mixed Storage, sessions, siblings and seed reach genuine terminal success', async t => {
+    const f = fixture(setup(t), { siblings: [foreignId, sessionId] }); await f.provision();
+    registerSibling(f.inventory); registerSibling(f.inventory, sessionId); await f.storage();
+    const result = await runOfflineProbeSimulation({ projectRef, inventory: f.inventory, adminClient: f.adminClient,
+      offlineDispatcher: f.dispatcher(), testEmail: f.plan.email, selectedProbeIds: ['HOOK-01','SESSION-01'], timing: { mode } });
+    assert.equal(result.status, 'COMPLETED', JSON.stringify(result));
+    assert.equal(f.handle.report().status, 'CLEANUP_VERIFIED_SUCCESS'); assert.equal(f.handle.report().consumed, 19);
+    const deletes = f.transport.calls.filter(c => c.method === 'DELETE');
+    assert.ok(deletes[0].pathname.startsWith('/storage/')); assert.ok(deletes.at(-1).pathname.endsWith(f.plan.userId));
+  });
+  for (const blocker of ['session', 'storage', 'sibling', 'record']) test('H5-R1-01 live ' + blocker + ' gate rechecks after dispatch before provider entry', async t => {
+    const f = fixture(setup(t)); await f.provision();
+    const original = DatabaseSync.prototype.prepare; let scheduled = false;
+    DatabaseSync.prototype.prepare = function (...args) {
+      const statement = original.apply(this, args);
+      if (!args[0].startsWith('UPDATE journal SET payload')) return statement;
+      return { run(...params) {
+        const result = statement.run(...params); const event = JSON.parse(params[0])[4].at(-1);
+        if (!scheduled && event[0] === 'dispatch' && event[1] === 4) {
+          scheduled = true; queueMicrotask(() => {
+            if (blocker === 'session') f.inventory.registerUntrackedSession();
+            if (blocker === 'storage') new TestRunInventory(f.handle.runId).registerStorageObject('task06i_probe_bucket', f.handle.runId + '/probe.txt');
+            if (blocker === 'sibling') registerSibling(new TestRunInventory(f.handle.runId));
+            if (blocker === 'record') f.inventory.createdUsers.get(f.plan.userId).creationProof = createCreationProof('provider_admin_create', { providerReturnedId: f.plan.userId });
+          });
+        }
+        return result;
+      } };
+    };
+    try { assert.equal((await cleanup(f)).status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES'); }
+    finally { DatabaseSync.prototype.prepare = original; }
+    assert.equal(scheduled, true); assert.equal(f.transport.calls.length, 3);
+    assert.equal(f.handle.report().consumed, 4); assert.equal(f.handle.report().attempts[3].outcome, 'failed');
+  });
+  test('H5-R1-01 ownership/session gate rechecks after actual standard pacing wait', async t => {
+    const f = fixture(setup(t, null, 'standard')); await f.provision();
+    const pending = cleanup(f);
+    await new Promise(resolve => setTimeout(resolve, 50)); f.inventory.registerUntrackedSession();
+    assert.equal((await pending).status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(f.transport.calls.length, 3); assert.equal(f.handle.report().consumed, 3);
+  });
+  test('H5-R1-01 admission helpers cannot be replaced by executable caller methods', async t => {
+    const f = fixture(setup(t)); await f.provision(); let executions = 0;
+    f.inventory.getUserOwnership = () => { executions++; return 'RUN_CREATED_VERIFIED'; };
+    const result = await cleanup(f);
+    assert.equal(result.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES'); assert.equal(executions, 0);
+    assert.equal(f.transport.calls.length, 3);
+  });
+  for (const after of ['before', 'after']) test('H5-R1-02 real crash ' + after + ' sibling durable resolution', async t => {
+    const { handle, witness } = restart(t, ['auth_absence_resolution', 5, after, 'sibling']);
+    assert.equal(witness.siblingDeleted, true); assert.equal(witness.deleted, false);
+    assert.equal(handle.report().consumed, 5);
+    assert.equal(handle.report().residual.credentialDependent.includes(4), after === 'before');
+    const recovered = await recoverOfflineProbeRun({ handle });
+    assert.equal(recovered.status, 'RECOVERY_REQUIRED');
+    assert.equal(recovered.reason, 'TRANSIENT_AUTH_CREDENTIALS_OR_PROOF_UNAVAILABLE');
+    assert.deepEqual(await recoverOfflineProbeRun({ handle }), recovered);
+  });
+  test('H5-R1-02 sibling resolution persistence failure prevents dependent seed dispatch', t => {
+    const { handle, witness } = restart(t, ['auth_absence_resolution', 5, 'before', 'sibling'], 'fail');
+    assert.equal(witness.deleted, false); assert.equal(witness.siblingDeleted, true);
+    assert.ok(handle.report().residual.credentialDependent.includes(4));
+    assert.equal(handle.report().status, 'RECOVERY_REQUIRED');
+  });
+  test('H5-R1-02 forged live sibling receipt and malformed or duplicate replay cannot resolve seed', async t => {
+    const fresh = fixture(setup(t)); await fresh.provision();
+    assert.throws(() => journalForRun(fresh.handle.runId).resolveAuthAbsence({ type: 'auth_absence' }), /UNTRUSTED_LIVE_CLEANUP_RESOLUTION/);
+    for (const edit of [
+      events => { events.find(e => e[0] === 'auth_absence_resolution')[2] = events.find(e => e[0] === 'seed_intent')[1]; },
+      events => { events.find(e => e[0] === 'auth_absence_resolution')[4] = 2; },
+      events => { const i = events.findIndex(e => e[0] === 'auth_absence_resolution'); events.splice(i + 1, 0, [...events[i]]); }
+    ]) {
+      const f = fixture(setup(t), { siblings: [foreignId] }); await f.provision(); registerSibling(f.inventory);
+      assert.equal((await cleanup(f)).status, 'CLEANUP_VERIFIED_SUCCESS'); f.handle.close();
+      const db = new DatabaseSync(join(f.directory, f.handle.runId + '.sqlite'));
+      try {
+        const envelope = JSON.parse(db.prepare('SELECT payload FROM journal').get().payload); edit(envelope[4]);
+        const payload = JSON.stringify(envelope); db.prepare('UPDATE journal SET payload=?,digest=?').run(payload, createHash('sha256').update(payload).digest('hex'));
+      } finally { db.close(); }
+      assert.throws(() => reopenOfflineRecoveryJournal({ directory: f.directory, projectRef, runId: f.handle.runId }), /INVALID_RECOVERY_TRANSITION/);
+    }
+  });
   test('H5 exact creation and durable absence reach terminal in five shared requests', async t => {
     const f = fixture(setup(t));
     assert.equal(f.handle.report().seeds[0].state, 'CREATION_PENDING');

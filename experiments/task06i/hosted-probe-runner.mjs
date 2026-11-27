@@ -23,7 +23,7 @@ import { validateSessionRevocationEvidence } from './session-revocation-evidence
 import crypto from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { executeRunBudgetRequest, getRunRequestBudget, isRunRequestAdmissionFailure } from './run-request-budget.mjs';
-import { journalForRun, recoveryOptions } from './offline-recovery-journal.mjs';
+import { journalForRun, journalProtectingSeed, recoveryOptions } from './offline-recovery-journal.mjs';
 import { types as utilTypes } from 'node:util';
 import { PREFLIGHT_REQUIREMENTS, EXPECTED_REQUIREMENT_IDS } from './preflight-evaluator.mjs';
 
@@ -148,13 +148,74 @@ const LIVE_RESOURCE_ATTEMPTS = new WeakMap();
 const VERIFIED_SESSION_REVOCATIONS = new WeakMap();
 const VERIFIED_SESSION_BASELINES = new WeakMap();
 const RUN_SEEDS = new WeakMap();
+const JOURNAL_SEEDS = new WeakMap();
+const AUTH_DELETE_CONTEXT = new AsyncLocalStorage();
+const VERIFIED_AUTH_ABSENCES = new WeakMap();
+const AUTH_USER_REGISTRATIONS = new WeakMap();
 const SEED_PLANS = new WeakMap();
 const ADMIN_SEED_CREATORS = new WeakMap();
 const SEED_ADMISSION = Symbol('module-owned seed admission');
 
 function privateSeed(inventory, id) {
-  const seed = RUN_SEEDS.get(inventory);
+  const journal = journalForRun(inventory.runId);
+  const seed = journal ? JOURNAL_SEEDS.get(journal.handle) : null;
   return seed && seed.userId === id ? seed : null;
+}
+
+function protectedSeed(inventory, id) {
+  const journal = journalForRun(inventory.runId);
+  return journal?.state.seeds.has(crypto.createHash('sha256').update('auth:user:' + id).digest('hex')) ?? false;
+}
+
+function authDeletionUserId(target) {
+  if (target?.method !== 'DELETE' || !target.path?.startsWith('/auth/v1/admin/users/')) return null;
+  try { return decodeURIComponent(target.path.slice('/auth/v1/admin/users/'.length)).toLowerCase(); } catch { return null; }
+}
+
+function withAuthDeletion(inventory, userId, record, adminClient, operation) {
+  const journal = journalForRun(inventory.runId);
+  if (!journal?.state.seeds.size) return operation();
+  const key = crypto.createHash('sha256').update('auth:user:' + userId).digest('hex');
+  const seed = journal.state.seeds.get(key);
+  const authority = { inventory, record, creationProof: record.creationProof, email: record.email, handle: journal.handle, userId, key,
+    transport: TRUSTED_ADMIN_CLIENTS.get(adminClient)?.rawTransportFetch,
+    operation: seed?.operation ?? null, ordinal: null, entered: false };
+  return AUTH_DELETE_CONTEXT.run(authority, operation);
+}
+
+/** Validate only module-owned context. Neither durable fields nor public options are authority. */
+export function validateLiveAuthDeletion(handle, key, operation, ordinal, phase) {
+  const authority = AUTH_DELETE_CONTEXT.getStore();
+  if (!authority || authority.handle !== handle || authority.key !== key || authority.operation !== operation ||
+      authority.entered || !['reserve', 'dispatch', 'provider'].includes(phase)) throw new Error('SEED_DELETE_AUTHORIZATION_REQUIRED');
+  const { inventory, userId, record } = authority;
+  assertTrustedRunInventory(inventory, { projectRef: HARDCODED_TEMP_REF, expectedRunId: handle.runId });
+  const journal = journalForRun(handle.runId);
+  const registration = AUTH_USER_REGISTRATIONS.get(handle)?.get(key);
+  const runSeed = JOURNAL_SEEDS.get(handle);
+  if (!journal || journal.handle !== handle || journal.state.recovery || journal.state.terminal ||
+      !runSeed || runSeed.transport !== authority.transport ||
+      registration?.inventory !== inventory || registration.record !== record || registration.creationProof !== record.creationProof || registration.email !== record.email ||
+      inventory.runLifecycleState !== INVENTORY_RUN_STATE.CLEANUP_ACTIVE || inventory.createdUsers.get(userId) !== record ||
+      record.creationProof !== authority.creationProof || record.email !== authority.email ||
+      inventory.getUserOwnership(userId) !== USER_OWNERSHIP.RUN_CREATED_VERIFIED ||
+      !isValidCreationProof(record.creationProof) || inventory.isSeedIdentity(userId, record.email) || inventory.isUserReferenced(userId) ||
+      inventory._evaluatePreUserDeletionBlocker(false, createCleanupReport(inventory))) throw new Error('SEED_DELETE_LIVE_GATE_BLOCKED');
+  const state = journal.state;
+  const userKeys = new Set(AUTH_USER_REGISTRATIONS.get(handle)?.keys());
+  for (const seedKey of state.seeds.keys()) userKeys.add(seedKey);
+  if (state.inventoryKinds.has('auth') || [...state.obligations].some(([other, kind]) => kind === 'auth' && !userKeys.has(other)) ||
+      [...inventory.trackedSessions].some(id => !hasVerifiedSessionRevocation(inventory, id)) ||
+      inventory.untrackedSessionsCount || inventory.sessionReconciliationObligations.length) throw new Error('SEED_DELETE_SESSION_GATE_BLOCKED');
+  if (journal.state.seeds.has(key)) {
+    const seed = privateSeed(inventory, userId);
+    if (!seed || seed.transport !== authority.transport || !seedCanDelete(inventory, seed, phase === 'provider' ? ordinal : null)) throw new Error('SEED_DELETE_OWNERSHIP_UNVERIFIED');
+  }
+  if (phase === 'reserve') {
+    if (authority.ordinal !== null) throw new Error('SEED_DELETE_CAPABILITY_ALREADY_USED');
+    authority.ordinal = ordinal;
+  } else if (authority.ordinal !== ordinal) throw new Error('SEED_DELETE_REQUEST_MISMATCH');
+  if (phase === 'provider') authority.entered = true;
 }
 
 /** Reserve one synthetic disposable identity. This capability contains no credentials. */
@@ -174,9 +235,10 @@ export function reserveRunCreatedSeed(rawOptions) {
   const password = crypto.randomBytes(24).toString('base64url') + 'aA1!';
   const key = journal.reserveSeed(userId, operationId);
   const plan = Object.freeze(Object.assign(Object.create(null), { projectRef, runId: inventory.runId, userId, email, operationId }));
-  const seed = { inventory, plan, userId, email, operationId, key, password,
+  const seed = { inventory, plan, userId, email, operationId, key, password, handle: journal.handle,
     operationHash: crypto.createHash('sha256').update(operationId).digest('hex'), state: 'CREATION_PENDING', creationProof: null };
   RUN_SEEDS.set(inventory, seed);
+  JOURNAL_SEEDS.set(journal.handle, seed);
   SEED_PLANS.set(plan, seed);
   let obligations = LIVE_RESOURCE_OBLIGATIONS.get(inventory);
   if (!obligations) { obligations = new Map(); LIVE_RESOURCE_OBLIGATIONS.set(inventory, obligations); }
@@ -194,8 +256,10 @@ export async function provisionRunCreatedSeed(rawOptions) {
   inventory.assertActiveForAdmission('provisionRunCreatedSeed');
   if (seed.state !== 'CREATION_PENDING') throw new Error('SEED_CREATION_ALREADY_ENTERED');
   const journal = journalForRun(plan.runId);
+  if (journal?.handle !== seed.handle) throw new Error('SEED_JOURNAL_CAPABILITY_MISMATCH');
   const creator = ADMIN_SEED_CREATORS.get(adminClient);
   if (!journal || !creator) throw new Error('SEED_CAPABILITY_UNAVAILABLE');
+  seed.transport = TRUSTED_ADMIN_CLIENTS.get(adminClient).rawTransportFetch;
   seed.state = 'CREATION_INDETERMINATE';
   return withRunRequestBudget(plan.runId, 'auxiliary', async () => { try {
     const before = await collectResourceCleanup('user:' + seed.userId, () => adminClient.getUserById(seed.userId), () => true);
@@ -221,12 +285,17 @@ export async function provisionRunCreatedSeed(rawOptions) {
   } });
 }
 
-function seedCanDelete(inventory, seed) {
+function seedCanDelete(inventory, seed, activeOrdinal = null) {
   if (!['CREATION_VERIFIED', 'CLEANUP_PENDING'].includes(seed.state) || !seed.creationProof ||
+      seed.inventory !== inventory || journalForRun(inventory.runId)?.handle !== seed.handle ||
       seed.foreignEffect === true ||
       inventory.createdUsers.get(seed.userId)?.creationProof !== seed.creationProof) return false;
   const state = journalForRun(inventory.runId)?.state;
-  if (!state || state.inventoryKinds.has('auth') || [...state.obligations].some(([key, kind]) => kind === 'auth' && key !== seed.key)) return false;
+  if (!state || state.recovery || state.terminal || state.inventoryKinds.has('auth') ||
+      [...state.obligations].some(([key, kind]) => kind === 'auth' && key !== seed.key) ||
+      state.attempts.some(a => a.ordinal !== activeOrdinal && a.dispatchedAt !== null && !state.resolvedAttempts.has(a.ordinal) &&
+        ['seed_create', 'auth_effect', 'auth_delete'].includes(a.kind) && (a.resourceKey !== seed.key || a.outcome !== 'success')) ||
+      inventory.seedCredentialRestorations.some(r => r.state !== 'restored')) return false;
   for (const id of inventory.trackedSessions) {
     if (!hasVerifiedSessionRevocation(inventory, id)) return false;
   }
@@ -241,6 +310,38 @@ function persistSeedAbsence(inventory, seed, absence) {
   LIVE_RESOLUTION_RECEIPTS.set(receipt, { type: 'seed_absence', handle: journal.handle, key: seed.key, operation: seed.operationHash, attempts });
   journal.resolveSeed(receipt);
   seed.state = 'CLEANUP_VERIFIED';
+}
+
+function verifiedAuthAbsence(inventory, userId, record) {
+  const proof = VERIFIED_AUTH_ABSENCES.get(inventory)?.get(userId);
+  const journal = journalForRun(inventory.runId);
+  return Boolean(proof && journal?.handle === proof.handle && proof.record === record &&
+    proof.transport === JOURNAL_SEEDS.get(journal.handle)?.transport &&
+    proof.creationProof === record.creationProof && !journal.state.obligations.has(proof.key) &&
+    !journal.state.attempts.some(a => a.resourceKey === proof.key && a.dispatchedAt !== null && !journal.state.resolvedAttempts.has(a.ordinal)) &&
+    proof.attempts.every(ordinal => journal.state.resolvedAttempts.has(ordinal)));
+}
+
+function persistSiblingAuthAbsence(inventory, userId, record, deletion, absence) {
+  const journal = journalForRun(inventory.runId);
+  const key = crypto.createHash('sha256').update('auth:user:' + userId).digest('hex');
+  const expectedPath = '/auth/v1/admin/users/' + encodeURIComponent(userId);
+  const bound = (entry, method) => entry?.projectRef === HARDCODED_TEMP_REF && entry.runId === inventory.runId &&
+    entry.resource === 'user:' + userId && entry.key === key && entry.requestOrdinals.length === 1 && entry.responses.length === 1 &&
+    entry.responses[0].ordinal === entry.requestOrdinals[0] && entry.responses[0].target?.origin === `https://${HARDCODED_TEMP_REF}.supabase.co` &&
+    entry.responses[0].target?.path === expectedPath && entry.responses[0].target?.method === method;
+  if (!journal || journal.state.seeds.has(key) || inventory.createdUsers.get(userId) !== record ||
+      !bound(deletion, 'DELETE') || deletion.responses[0].status < 200 || deletion.responses[0].status >= 300 ||
+      !bound(absence.entry, 'GET') || absence.entry.responses[0].status !== 404 || absence.result?.error?.status !== 404) throw new Error('SIBLING_AUTH_ABSENCE_UNVERIFIED');
+  const attempts = journal.state.attempts.filter(a => a.resourceKey === key && a.dispatchedAt !== null && !journal.state.resolvedAttempts.has(a.ordinal)).map(a => a.ordinal);
+  const receipt = Object.freeze(Object.create(null));
+  LIVE_RESOLUTION_RECEIPTS.set(receipt, { type: 'auth_absence', handle: journal.handle, key, attempts,
+    deletionOrdinal: deletion.requestOrdinals[0], absenceOrdinal: absence.entry.requestOrdinals[0] });
+  journal.resolveAuthAbsence(receipt);
+  let proofs = VERIFIED_AUTH_ABSENCES.get(inventory);
+  if (!proofs) { proofs = new Map(); VERIFIED_AUTH_ABSENCES.set(inventory, proofs); }
+  proofs.set(userId, { handle: journal.handle, key, record, creationProof: record.creationProof, attempts,
+    transport: JOURNAL_SEEDS.get(journal.handle)?.transport });
 }
 const revocationFalseProofTest = Function.prototype.call.bind(RegExp.prototype.test);
 function isFalseRevocationProof(body) {
@@ -572,8 +673,15 @@ async function executeBudgetedRequest(runId, category, operation, signal = null,
   if (!effectiveRun || (runId && runId !== effectiveRun)) throw new Error('REQUEST_BUDGET_BINDING_MISMATCH');
   const budget = getRunRequestBudget({ projectRef: 'wvdabiwbaavfggcmpizd', runId: effectiveRun, mode: existing?.mode ?? mode });
   const resourceContext = RESOURCE_REQUEST_CONTEXT.getStore();
+  const journal = journalForRun(effectiveRun);
+  const authUserId = authDeletionUserId(target);
+  const authKey = authUserId === null ? null : crypto.createHash('sha256').update('auth:user:' + authUserId).digest('hex');
+  if (kind === 'auth_delete' && journal?.state.seeds.size && (!authKey || resourceContext?.key !== authKey)) throw new Error('SEED_DELETE_REQUEST_BINDING_REQUIRED');
+  const operationHash = kind === 'auth_delete' && journal?.state.seeds.has(authKey)
+    ? journal.state.seeds.get(authKey).operation : ['seed_create', 'storage_upload'].includes(kind) ? resourceContext?.operationHash : undefined;
   return executeRunBudgetRequest(budget, { category: existing?.category || category, signal, kind,
-    resourceKey: resourceContext?.key, operationHash: ['seed_create', 'storage_upload'].includes(kind) ? resourceContext?.operationHash : undefined }, async (ordinal, recordCreation) => {
+    resourceKey: resourceContext?.key, operationHash }, async (ordinal, recordCreation) => {
+    if (kind === 'auth_delete') journal?.admitAuthDeletionProvider(ordinal);
     resourceContext?.requestOrdinals?.push(ordinal);
     const result = await operation(ordinal, recordCreation);
     resourceContext?.responses?.push({ ordinal, status: result?.status, kind, target });
@@ -593,6 +701,8 @@ async function executeBudgetedRequest(runId, category, operation, signal = null,
   });
 }
 function executeCurrentTransportRequest(transport, signal, operation, kind, target) {
+  const authority = AUTH_DELETE_CONTEXT.getStore();
+  if (kind === 'auth_delete' && authority && authority.transport !== transport) throw new Error('SEED_DELETE_TRANSPORT_MISMATCH');
   const context = RUN_REQUEST_BUDGET_CONTEXT.getStore();
   if (!context) return operation(null, () => {}); // Standalone fixture routing has no run/resource authority.
   return executeBudgetedRequest(context.runId, context.category, operation, signal, TRANSPORT_REQUEST_BUDGET_MODES.get(transport), kind, target);
@@ -2006,6 +2116,11 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
     const journal = journalForRun(runId);
     const kind = recoveryRequestKind(transport, runId, urlStr, method);
     const target = sessionEvidenceRequestTarget(urlStr, method);
+    const authUserId = authDeletionUserId(target);
+    const protectingJournal = journalProtectingSeed(authUserId);
+    if (protectingJournal && (runId !== protectingJournal.handle.runId ||
+        target.origin !== `https://${HARDCODED_TEMP_REF}.supabase.co` ||
+        target.path !== '/auth/v1/admin/users/' + authUserId)) throw new Error('SEED_DELETE_PROJECT_RUN_OR_PATH_MISMATCH');
     if (isTrustedSignalAborted(signal)) {
       const abortErr = new Error('The operation was aborted');
       abortErr.name = 'AbortError';
@@ -5902,7 +6017,12 @@ export class TestRunInventory {
       updateStorageFixture: this.updateStorageFixture,
       getStorageFixture: this.getStorageFixture,
       registerStorageObject: this.registerStorageObject,
-      registerSeedPasswordModification: this.registerSeedPasswordModification
+      registerSeedPasswordModification: this.registerSeedPasswordModification,
+      getUserOwnership: this.getUserOwnership,
+      isSeedIdentity: this.isSeedIdentity,
+      isUserReferenced: this.isUserReferenced,
+      getSessionToken: this.getSessionToken,
+      _evaluatePreUserDeletionBlocker: this._evaluatePreUserDeletionBlocker
     });
     TRUSTED_RUN_INVENTORIES.set(
       this,
@@ -5981,7 +6101,7 @@ export class TestRunInventory {
     if (!userId || typeof userId !== 'string') return USER_OWNERSHIP.OWNERSHIP_UNKNOWN;
     const cleanId = userId.trim();
     const runSeed = privateSeed(this, cleanId);
-    if (runSeed) return ['CREATION_VERIFIED', 'CLEANUP_PENDING', 'CLEANUP_VERIFIED'].includes(runSeed.state) ? USER_OWNERSHIP.RUN_CREATED_VERIFIED : USER_OWNERSHIP.CREATION_INDETERMINATE;
+    if (protectedSeed(this, cleanId)) return runSeed?.inventory === this && ['CREATION_VERIFIED', 'CLEANUP_PENDING', 'CLEANUP_VERIFIED'].includes(runSeed.state) ? USER_OWNERSHIP.RUN_CREATED_VERIFIED : USER_OWNERSHIP.CREATION_INDETERMINATE;
     if (this.userOwnership.has(cleanId)) {
       return this.userOwnership.get(cleanId);
     }
@@ -6022,7 +6142,7 @@ export class TestRunInventory {
     const cleanId = id.trim();
     const normEmail = email.trim().toLowerCase();
     const runSeed = privateSeed(this, cleanId);
-    if (runSeed && (capability !== SEED_ADMISSION || normEmail !== runSeed.email)) throw new Error('UNTRUSTED_SEED_CREATION_PROOF');
+    if (protectedSeed(this, cleanId) && (!runSeed || runSeed.inventory !== this || capability !== SEED_ADMISSION || normEmail !== runSeed.email)) throw new Error('UNTRUSTED_SEED_CREATION_PROOF');
 
     // Anti-deletion guard: Never classify pre-existing seed user as run-created! (R16-02)
     if (this.isSeedIdentity(cleanId, normEmail) || this.isUserReferenced(cleanId)) {
@@ -6062,6 +6182,14 @@ export class TestRunInventory {
       createdAt: new Date().toISOString()
     };
     this.createdUsers.set(cleanId, record);
+    const journal = journalForRun(this.runId);
+    if (journal) {
+      let registrations = AUTH_USER_REGISTRATIONS.get(journal.handle);
+      if (!registrations) { registrations = new Map(); AUTH_USER_REGISTRATIONS.set(journal.handle, registrations); }
+      registrations.set(crypto.createHash('sha256').update('auth:user:' + cleanId).digest('hex'), {
+        inventory: this, record, creationProof: record.creationProof, email: record.email
+      });
+    }
     this.userOwnership.set(cleanId, USER_OWNERSHIP.RUN_CREATED_VERIFIED);
     this.unverifiedUsers.delete(cleanId);
     return record;
@@ -7714,12 +7842,9 @@ export class TestRunInventory {
       }
     } else {
       for (const [userId, userObj] of this.createdUsers.entries()) {
-        const runSeed = privateSeed(this, userId);
-        if (runSeed?.state === 'CLEANUP_VERIFIED') continue;
-        if (runSeed && !seedCanDelete(this, runSeed)) {
-          report.residualUsers.push({ id: userId, error: 'SEED_SESSION_OR_OWNERSHIP_UNVERIFIED' });
-          continue;
-        }
+        // Reserved seeds are handled only by the final private seed phase.
+        if (protectedSeed(this, userId)) continue;
+        if (verifiedAuthAbsence(this, userId, userObj)) { this.deletedUsers.add(userId); continue; }
         // Live per-user pre-deletion audit immediately before deleteUser() (R3-04)
         const liveBlocker = this._evaluatePreUserDeletionBlocker(storageCleanupFailed, report);
         if (liveBlocker) {
@@ -7761,8 +7886,8 @@ export class TestRunInventory {
         }
 
         try {
-          if (runSeed) runSeed.state = 'CLEANUP_PENDING';
-          const cleanup = await collectResourceCleanup('user:' + userId, () => adminClient.deleteUser(userId), res => res && !res.error);
+          const cleanup = await withAuthDeletion(this, userId, userObj, adminClient, () =>
+            collectResourceCleanup('user:' + userId, () => adminClient.deleteUser(userId), res => res && !res.error));
           const res = cleanup.result;
           if (res && res.error) {
             report.residualUsers.push({ id: userId, email: userObj.email, error: res.error.message || String(res.error) });
@@ -7785,20 +7910,19 @@ export class TestRunInventory {
         report.residualResources.push({ type: 'verification', error: 'MISSING_GET_USER_BY_ID_METHOD' });
       } else {
         for (const [userId, userObj] of this.createdUsers.entries()) {
+          if (protectedSeed(this, userId)) continue;
+          if (verifiedAuthAbsence(this, userId, userObj)) { this.deletedUsers.add(userId); continue; }
           if (typeof adminClient.getUserById === 'function') {
             try {
-              const seed = privateSeed(this, userId);
-              if (seed?.state === 'CLEANUP_VERIFIED') continue;
-              if (seed && !userCleanupAttempts.has(userId)) continue;
-              const seedAbsence = seed
-                ? await collectResourceCleanup('user:' + userId, () => adminClient.getUserById(userId), () => true)
-                : null;
-              const check = seedAbsence ? seedAbsence.result : await adminClient.getUserById(userId);
-              if (seed) {
-                persistSeedAbsence(this, seed, seedAbsence);
+              if (journalForRun(this.runId)?.state.seeds.size) {
+                const deletion = userCleanupAttempts.get(userId);
+                if (!deletion) continue;
+                const absence = await collectResourceCleanup('user:' + userId, () => adminClient.getUserById(userId), () => true);
+                persistSiblingAuthAbsence(this, userId, userObj, deletion, absence);
                 this.deletedUsers.add(userId);
                 continue;
               }
+              const check = await adminClient.getUserById(userId);
               // Detect user existence across all response shapes (data.user.id, data.id, top-level id) (R4-06)
               const returnedUser = check?.data?.user || check?.data || (check && !check.error && check.id ? check : null);
               const foundId = returnedUser?.id;
@@ -8053,6 +8177,30 @@ export class TestRunInventory {
             });
           }
         }
+      }
+    }
+
+    // Seed last: sibling absence is already durable; restoration may have added sessions.
+    const ownedSeed = RUN_SEEDS.get(this);
+    if (ownedSeed?.state === 'CLEANUP_VERIFIED') {
+      const journal = journalForRun(this.runId);
+      if (journal?.handle === ownedSeed.handle && journal.state.seeds.get(ownedSeed.key)?.cleaned) this.deletedUsers.add(ownedSeed.userId);
+    }
+    if (ownedSeed && ownedSeed.state !== 'CLEANUP_VERIFIED') {
+      try {
+        if (!seedCanDelete(this, ownedSeed) || report.residualUsers.length || report.residualResources.length ||
+            this._evaluatePreUserDeletionBlocker(storageCleanupFailed, report)) throw new Error('SEED_SESSION_OR_OWNERSHIP_UNVERIFIED');
+        const record = this.createdUsers.get(ownedSeed.userId);
+        ownedSeed.state = 'CLEANUP_PENDING';
+        const deletion = await withAuthDeletion(this, ownedSeed.userId, record, adminClient, () =>
+          collectResourceCleanup('user:' + ownedSeed.userId, () => adminClient.deleteUser(ownedSeed.userId), res => res && !res.error));
+        if (deletion.result?.error || !deletion.entry) throw new Error('SEED_DELETE_UNVERIFIED');
+        report.usersDeleted++;
+        const absence = await collectResourceCleanup('user:' + ownedSeed.userId, () => adminClient.getUserById(ownedSeed.userId), () => true);
+        persistSeedAbsence(this, ownedSeed, absence);
+        this.deletedUsers.add(ownedSeed.userId);
+      } catch (error) {
+        report.residualUsers.push({ id: ownedSeed.userId, error: error.code || error.message });
       }
     }
 

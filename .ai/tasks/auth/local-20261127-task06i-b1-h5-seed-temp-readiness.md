@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | IMPLEMENTED_OFFLINE_TESTED / PR #49 published, formal exact-HEAD review pending |
+| Status | H5-R1 IMPLEMENTED_OFFLINE_TESTED / fresh formal exact-HEAD re-review pending |
 | Objective | Offline-tested Option B run-created seed lifecycle integrated with the existing runner, H4 journal and shared budget, plus future TEMP readiness packet |
 | Implementation owner | Codex root |
 | Previous agent | Codex root, H4 closeout |
@@ -84,6 +84,52 @@ Reviewer returned **PASS** on the final runtime, test and readiness diff and ind
 
 Runtime checkpoint `08d6cd2111a66e965fcb0a296012b13f5e71c8c8` was committed and pushed after final independent PASS. Remote main remained `efa5929f5718e38d40f0035624c1b6b3da8000db`. PR #49 opened with seven scoped files. This follow-up records the actual PR link; runtime/tests/readiness blobs remain identical to the independently reviewed versions. Exact final HEAD, CI, review requests and reviewer availability are recorded in the PR conversation after this continuity push. Formal approval remains pending; this record does not cache a mutable PR-head SHA or claim CI/reviewer success before observation.
 
+## H5-R1 — Run-wide seed authorization and ordered durable Auth cleanup
+
+Owner separately authorized this revision on existing PR #49 against baseline feature `8f0fed4a5ae604f5f6bc07cff38fccf0048a277c` and unchanged main/base `efa5929f5718e38d40f0035624c1b6b3da8000db`. Initial checkout was clean, feature local/remote aligned, one worktree. Live reviews recorded two unresolved findings and formal `im-tio` CHANGES_REQUESTED; passing CI did not override those blockers. H3/H4 archives and protected governance files remain unchanged.
+
+### Reproductions before runtime edits
+
+- [R1-01 P1](https://github.com/im-tnyx/Tio-Workspace/pull/49#discussion_r4716319038), thread `PRRT_kwDOVtCmZc68qw6i`: inventory A reserved a seed; on pre-existing collision and indeterminate creation, genuine same-run inventory B registered an ordinary creation proof and reached one synthetic DELETE in each case. Both zero-DELETE assertions failed on unchanged runtime.
+- [R1-02 P2](https://github.com/im-tnyx/Tio-Workspace/pull/49#discussion_r4716305329), thread `PRRT_kwDOVtCmZc68qu0M`: admitted sibling deletion/absence left its Auth obligation unresolved, preventing seed deletion and preventing finalization from persisting the sibling resolution. The terminal assertion failed. Initial focused run:3/3 FAIL, exit1; independent reviewer separately executed the same reproduction.
+- Adjacent correction testing found an alternative same-run provider transport could persist a sibling absence and later let original-provider cleanup skip its surviving sibling. Reviewer independently reproduced false terminal success. A separate two-inventory sibling ordering test also reproduced a conservative user/session-classification deadlock. Both failing regressions were added before their corrections; both now pass. These are bounded lifecycle corrections, not a new research phase.
+
+### Correction and audit
+
+`hosted-probe-runner.mjs` binds protection to the current journal handle/run, exact reserved UUID, private original owner and verification transport. Module-owned per-request authority is required for all Auth DELETE in a seed journal; the exact registered inventory/record, provider transport, key, seed operation and request ordinal are rechecked after pacing, at durable dispatch and immediately before provider entry. Standalone/raw/case/encoded targets, alternate/cross-run adapters, public ownership/lifecycle labels and serialized hashes cannot substitute for the private capability. Stale close/reopen ownership is not reconstructed from metadata. Cleanup helper methods used by admission are identity-checked before executing caller replacements.
+
+All Auth deletions in the seed run use its original verified fixture transport. A journal-handle-bound private index records admitted user registrations across genuine inventories, distinguishing their sibling-user keys from unresolved session/unknown Auth keys. It preserves the existing ordinary non-seed proof contract; the reserved seed still requires authentic private verification.
+
+Sibling users are processed independently of seed registration/Map order. Exact sibling DELETE plus independently captured exact GET404 issues a private receipt and persists typed `auth_absence_resolution` before the seed gate. Failed/indeterminate and unrelated effects remain unresolved. Private handle/record/proof/transport/resolved-ordinal receipts skip already verified work on retry. Storage and applicable sessions precede Auth; credential restoration may add blockers before the final seed phase. The verified seed is deleted last, followed by independent absence, durable seed resolution, terminal persistence and credential disposal. An individual resolution does not require the whole inventory to be clean. Persistence failure prevents dependent seed dispatch.
+
+The [bounded deletion-path audit, lifecycle matrix and updated request costs](../../../experiments/task06i/h5-temp-readiness.md#h5-r1--run-wide-authority-and-ordered-auth-cleanup) cover registration, run identity, Admin/direct transport/budget/journal admission, private authority, session/Storage gates, absence, resolution and restart. No journal schema-version migration or parallel runner was introduced; capacity and recovery headroom remain fixed.
+
+Base Option A/B costs remain unchanged. A sibling adds exactly2 shared requests. Actual B costs: minimal5; one sibling7; two siblings9; authentication+Storage15; authentication+Storage+two siblings19. All stay within25. No additional hidden allowance/reserve/refund or hosted endpoint is authorized.
+
+### Final R1 verification
+
+All below actually executed with exit0 and zero failed/cancelled/skipped tests:
+
+| Check | Outcome |
+|---|---|
+| Focused `--test-name-pattern H5-R1` |30/30 PASS |
+| Complete H5 `offline-seed-lifecycle.test.mjs` |82/82 PASS, original52 retained |
+| Complete Task06I Windows |544/544 PASS, original514 retained |
+| Complete hardened network-none Linux `node:24-bookworm` |544/544 PASS; cached/pull-never, cap-drop ALL, no-new-privileges, read-only root/source, tmpfs, no credentials/ports/socket |
+| Separate H4 crash/restart |130/130 PASS |
+| Separate legacy runner / PR45 |182/182 PASS |
+| Local PostgreSQL17.11 parity |POSTGRES_VERIFIED,18/18 matched |
+| Task06H |115/115 PASS |
+| `npm run verify` |Token self-test/check, typecheck, lint, shell22/22 PASS |
+| Attribution / protected guard-integrity fixtures |142/142 and14/14 PASS |
+| Syntax / documentation / sensitive literals / diff |4 JavaScript syntax checks;3 Markdown files,50 relative links,13 focused anchors;7 scoped-file scan; diff checks and historical/protected-file equality PASS |
+
+Negative coverage includes missing/wrong authority, alternate provider, cross-run/journal, stale reopen, public-map tampering, exact absence failures, unknown effects and missing credentials. Temporal tests insert session/Storage/sibling/record blockers after durable dispatch but before provider entry, and during an actual standard pacing wait; no unauthorized DELETE occurs and consumed markers are not refunded. Real subprocesses terminate before/after sibling resolution. Resolution write failure leaves seed undispatched and residual evidence visible. Forged/malformed/duplicate private/replay receipts reject.
+
+Independent read-only reviewer `/root/h5_r1_review` returned final **PASS**, independently executing R1 30/30 and complete H5 82/82, both exit0. Reviewer distinguished original/adjacent executed reproductions from static tracing and did not independently rerun full Task06I/CI. Reviewed final runtime blobs: runner `bbe5c7973c56560d59b50392b7fa7e20027fe8f5`, journal `d6cecc4aade79e4dfed1d4d2d4fc6b4e2ee8f830`, budget `ff721722f6b3c28bcada8a46e6bdbd58db6d46e8`, tests `5f68acfeb85179bed7eae29a927141276fc2938a`.
+
+Publication must reply separately to both original findings with exact committed SHA and this evidence, resolve only demonstrated corrections, and request fresh exact-HEAD `im-tio`/Codex review. The existing CHANGES_REQUESTED review is not dismissed. Bugbot remains disabled and Cursor Security Reviewer quota-limited; neither is a successful scan. No settings/credits/paid service changes. Formal approval, CI and merge authorization are separate gates; resolve their current state from GitHub.
+
 ## Truth boundary
 
-H4 MERGED / OFFLINE TESTED. H5 IMPLEMENTED_OFFLINE_TESTED / PR #49 REVIEW_PENDING. Hosted atomic deletion UNVERIFIED. Hosted verification0/18. Hosted LIVE NOT AUTHORIZED/BLOCKED. Production Real Auth STRICT NO-GO. Hosted mutations0. Added infrastructure cost$0. Merge requires separate explicit owner authorization.
+H4 MERGED / OFFLINE TESTED. H5-R1 IMPLEMENTED_OFFLINE_TESTED / PR #49 exact-HEAD re-review pending. Hosted atomic deletion UNVERIFIED. Hosted verification0/18. Hosted LIVE NOT AUTHORIZED/BLOCKED. Production Real Auth STRICT NO-GO. Hosted mutations0. Added infrastructure cost$0. Merge requires separate explicit owner authorization. Stop after R1 publication; no H6.

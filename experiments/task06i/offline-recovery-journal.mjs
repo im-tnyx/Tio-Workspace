@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { types } from 'node:util';
 import { assertRecoveryStorageObservation } from './conditional-storage-fixture.mjs';
 import { validateSessionResolutionJournalEvidence } from './session-revocation-evidence.mjs';
-import { consumeLiveCleanupResolution } from './hosted-probe-runner.mjs';
+import { consumeLiveCleanupResolution, validateLiveAuthDeletion } from './hosted-probe-runner.mjs';
 
 export const RECOVERY_PROJECT = 'wvdabiwbaavfggcmpizd';
 export const REQUEST_LIMIT = 25;
@@ -121,6 +121,15 @@ function residuals(state) {
 
 // Replaying the closed set of events validates on-disk transitions before any
 // budget or provider capability can use them. Sequence is the array index.
+function seedDeletionReplayAllowed(state, key, operation) {
+  const seed = state.seeds.get(key);
+  return Boolean(seed?.verified && !seed.cleaned && seed.operation === operation && !state.inventoryKinds.has('auth') &&
+    ![...state.obligations].some(([other, kind]) => kind === 'auth' && other !== key) &&
+    !state.attempts.some(a => a.dispatchedAt !== null && !state.resolvedAttempts.has(a.ordinal) &&
+      ['seed_create', 'auth_effect', 'auth_delete'].includes(a.kind) &&
+      (a.resourceKey !== key || a.outcome !== 'success')));
+}
+
 function replay(events, mode) {
   const state = { attempts: [], absentThrough: 0, lastVerifiedAbsenceOrdinal: 0, ownership: null, terminal: false,
     inventoryKinds: new Set(), obligations: new Map(), reservations: new Map(), resolvedAttempts: new Set(),
@@ -139,13 +148,18 @@ function replay(events, mode) {
       case 'reserve':
         if (![5, 6, 7].includes(event.length) ||
             (event.length >= 6 && (typeof event[5] !== 'string' || !/^[a-f0-9]{64}$/.test(event[5]))) ||
-            (event.length === 7 && (!['storage_upload', 'seed_create'].includes(second) || typeof event[6] !== 'string' || !/^[a-f0-9]{64}$/.test(event[6]))) ||
+            (event.length === 7 && (!['storage_upload', 'seed_create', 'auth_delete'].includes(second) || typeof event[6] !== 'string' || !/^[a-f0-9]{64}$/.test(event[6]))) ||
             ordinal !== state.attempts.length + 1 || ordinal > REQUEST_LIMIT ||
             !categories.includes(first) || !kinds.includes(second) || !validTime(third) ||
             (state.recovery !== second.startsWith('recovery_')) ||
             (second.startsWith('recovery_') && first !== 'cleanup') ||
             (second === 'recovery_delete' && state.ownership?.lookupOrdinal !== ordinal - 1) ||
             (second === 'auth_delete' && hasStorageObligation(state))) invalid();
+        if (second === 'auth_delete' && state.seeds.size) {
+          if (event.length < 6) invalid();
+          const seed = state.seeds.get(event[5]);
+          if (seed ? !seedDeletionReplayAllowed(state, event[5], event[6]) : event.length === 7) invalid();
+        } else if (second === 'auth_delete' && event.length === 7) invalid();
         if (mode === 'standard' && state.attempts.length &&
             third - (state.attempts.at(-1).dispatchedAt ?? state.attempts.at(-1).reservedAt) < REQUEST_INTERVAL_MS) invalid();
         if (second === 'seed_create') {
@@ -165,6 +179,8 @@ function replay(events, mode) {
             attempt.dispatchedAt !== null || !validTime(first) || first < attempt.reservedAt ||
             (state.recovery !== attempt.kind.startsWith('recovery_')) ||
             (attempt.kind === 'auth_delete' && hasStorageObligation(state))) invalid();
+        if (attempt.kind === 'auth_delete' && state.seeds.has(attempt.resourceKey) &&
+            !seedDeletionReplayAllowed(state, attempt.resourceKey, attempt.operationHash)) invalid();
         attempt.dispatchedAt = first;
         break;
       case 'outcome':
@@ -269,6 +285,22 @@ function replay(events, mode) {
         if (!before || before.ordinal >= seed.ordinal || before.kind !== 'read' || before.resourceKey !== first || before.httpStatus !== 404 || before.outcome !== 'failed' ||
             !after || after.ordinal <= seed.ordinal || after.kind !== 'read' || after.resourceKey !== first || after.httpStatus !== 200 || after.outcome !== 'success') invalid();
         seed.verified = true;
+        break;
+      }
+      case 'auth_absence_resolution': {
+        if (event.length !== 6 || state.recovery || ordinal !== state.attempts.length || state.seeds.size === 0 ||
+            state.seeds.has(first) || state.obligations.get(first) !== 'auth' || !Array.isArray(second)) invalid();
+        const scoped = state.attempts.filter(a => a.resourceKey === first && a.dispatchedAt !== null && !state.resolvedAttempts.has(a.ordinal));
+        if (second.length !== scoped.length || second.some((index, pos) => index !== scoped[pos].ordinal) || scoped.length < 2) invalid();
+        if (scoped.some(a => !['read', 'auth_effect', 'auth_delete'].includes(a.kind) ||
+            !['success', 'failed'].includes(a.outcome) || (a.kind !== 'read' && a.outcome !== 'success'))) invalid();
+        const deletion = scoped.at(-2);
+        const absence = scoped.at(-1);
+        if (deletion.ordinal !== third || absence.ordinal !== event[5] || absence.ordinal !== ordinal ||
+            deletion.kind !== 'auth_delete' || deletion.outcome !== 'success' || deletion.httpStatus < 200 || deletion.httpStatus >= 300 ||
+            absence.kind !== 'read' || absence.httpStatus !== 404 || absence.outcome !== 'failed' || hasStorageObligation(state)) invalid();
+        for (const index of second) state.resolvedAttempts.add(index);
+        state.obligations.delete(first);
         break;
       }
       case 'seed_absence': {
@@ -530,10 +562,20 @@ function openJournal(rawOptions, creating) {
       leaveRequest() { leases--; },
       reserve(ordinal, category, kind, time, resourceKey = null, operationHash = null) {
         if (state.recovery && !reconciling) throw fail('RECOVERY_RECONCILIATION_REQUIRED');
+        if (kind === 'auth_delete' && state.seeds.size) validateLiveAuthDeletion(handle, resourceKey, operationHash, ordinal, 'reserve');
         append(operationHash !== null ? ['reserve', ordinal, category, kind, time, resourceKey, operationHash] :
           resourceKey === null ? ['reserve', ordinal, category, kind, time] : ['reserve', ordinal, category, kind, time, resourceKey]);
       },
-      dispatch(ordinal, time) { append(['dispatch', ordinal, time]); },
+      dispatch(ordinal, time) {
+        const attempt = state.attempts[ordinal - 1];
+        if (attempt?.kind === 'auth_delete' && state.seeds.size) validateLiveAuthDeletion(handle, attempt.resourceKey, attempt.operationHash ?? null, ordinal, 'dispatch');
+        append(['dispatch', ordinal, time]);
+      },
+      admitAuthDeletionProvider(ordinal) {
+        const attempt = state.attempts[ordinal - 1];
+        if (attempt?.kind === 'auth_delete' && hasStorageObligation(state)) throw fail('RECOVERY_AUTH_DELETION_BLOCKED');
+        if (attempt?.kind === 'auth_delete' && state.seeds.size) validateLiveAuthDeletion(handle, attempt.resourceKey, attempt.operationHash ?? null, ordinal, 'provider');
+      },
       complete(ordinal, outcome, identity, httpStatus = null) {
         const candidate = identity === null ? null : recoveryOptions(identity, ['projectRef', 'runId', 'bucket', 'path', 'objectId', 'ownerId']);
         if (candidate && (candidate.projectRef !== RECOVERY_PROJECT || candidate.runId !== runId ||
@@ -575,6 +617,13 @@ function openJournal(rawOptions, creating) {
         const proof = consumeLiveCleanupResolution(receipt, handle);
         if (proof.type !== 'seed_absence') throw fail('UNTRUSTED_LIVE_CLEANUP_RESOLUTION');
         append(['seed_absence', state.attempts.length, proof.key, proof.operation, proof.attempts]);
+      },
+      resolveAuthAbsence(receipt) {
+        requireUsable();
+        if (leases || state.recovery || state.terminal) throw fail('RECOVERY_RESOLUTION_BLOCKED');
+        const proof = consumeLiveCleanupResolution(receipt, handle);
+        if (proof.type !== 'auth_absence') throw fail('UNTRUSTED_LIVE_CLEANUP_RESOLUTION');
+        append(['auth_absence_resolution', state.attempts.length, proof.key, proof.attempts, proof.deletionOrdinal, proof.absenceOrdinal]);
       },
       resolveNonCreation(receipt) {
         requireUsable();
@@ -670,4 +719,12 @@ export function journalForRun(runId) {
   const journal = active.get(runId);
   if (!journal) throw fail('RECOVERY_ACCOUNTING_MISSING');
   return journal;
+}
+
+/** Protective identity lookup only; durable metadata never supplies live authority. */
+export function journalProtectingSeed(userId) {
+  if (typeof userId !== 'string') return null;
+  const key = digest('auth:user:' + userId.toLowerCase());
+  for (const journal of active.values()) if (journal.state.seeds.has(key)) return journal;
+  return null;
 }
