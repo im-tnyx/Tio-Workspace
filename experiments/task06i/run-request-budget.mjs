@@ -117,7 +117,7 @@ export function getRunRequestBudget(rawOptions) {
       const category = request.category ?? 'probe';
       if (!['probe', 'auxiliary', 'cleanup'].includes(category)) throw new Error('INVALID_REQUEST_BUDGET_CATEGORY');
       if (request.resourceKey !== undefined && (typeof request.resourceKey !== 'string' || !/^[a-f0-9]{64}$/.test(request.resourceKey))) throw new Error('INVALID_REQUEST_RESOURCE_KEY');
-      if (request.operationHash !== undefined && (typeof request.operationHash !== 'string' || !/^[a-f0-9]{64}$/.test(request.operationHash) || request.kind !== 'storage_upload' || !request.resourceKey)) throw new Error('INVALID_REQUEST_OPERATION_BINDING');
+      if (request.operationHash !== undefined && (typeof request.operationHash !== 'string' || !/^[a-f0-9]{64}$/.test(request.operationHash) || !['storage_upload', 'seed_create', 'auth_delete'].includes(request.kind) || !request.resourceKey)) throw new Error('INVALID_REQUEST_OPERATION_BINDING');
       const signal = trustedSignal(request.signal);
       const rejectCancelled = () => { blocked++; cancelledBefore++; const error = abortError(); error._counted = true; PRE_DISPATCH_FAILURES.set(error, options.runId); throw error; };
       if (signal && abortedGet.call(signal)) return rejectCancelled();

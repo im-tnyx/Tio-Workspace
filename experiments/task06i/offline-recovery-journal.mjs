@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { types } from 'node:util';
 import { assertRecoveryStorageObservation } from './conditional-storage-fixture.mjs';
 import { validateSessionResolutionJournalEvidence } from './session-revocation-evidence.mjs';
-import { consumeLiveCleanupResolution } from './hosted-probe-runner.mjs';
+import { consumeLiveCleanupResolution, validateLiveAuthDeletion } from './hosted-probe-runner.mjs';
 
 export const RECOVERY_PROJECT = 'wvdabiwbaavfggcmpizd';
 export const REQUEST_LIMIT = 25;
@@ -21,10 +21,11 @@ const SCHEMA = 'CREATE TABLE journal (id INTEGER PRIMARY KEY CHECK (id = 1), pay
 const require = createRequire(import.meta.url);
 const active = new Map();
 const handles = new WeakMap();
+const protectedSeeds = new Map();
 const projectRoot = fileURLToPath(new URL('../../', import.meta.url));
 const runPattern = /^h4-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const kinds = ['read', 'storage_absence_read', 'storage_upload', 'storage_delete', 'auth_effect', 'auth_delete', 'other_effect', 'recovery_lookup', 'recovery_delete'];
+const kinds = ['read', 'storage_absence_read', 'storage_upload', 'storage_delete', 'auth_effect', 'auth_delete', 'seed_create', 'other_effect', 'recovery_lookup', 'recovery_delete'];
 const categories = ['probe', 'auxiliary', 'cleanup'];
 const outcomes = ['success', 'failed', 'cancelled_after_dispatch'];
 const modes = ['standard', 'recorded_zero_wait'];
@@ -111,7 +112,7 @@ function hasStorageObligation(state) {
 }
 
 function residuals(state) {
-  const effects = state.attempts.filter(a => !state.resolvedAttempts.has(a.ordinal) && a.dispatchedAt !== null && ['auth_effect', 'auth_delete', 'other_effect'].includes(a.kind));
+  const effects = state.attempts.filter(a => !state.resolvedAttempts.has(a.ordinal) && a.dispatchedAt !== null && ['auth_effect', 'auth_delete', 'seed_create', 'other_effect'].includes(a.kind));
   return {
     storage: pendingStorage(state),
     other: effects,
@@ -121,10 +122,19 @@ function residuals(state) {
 
 // Replaying the closed set of events validates on-disk transitions before any
 // budget or provider capability can use them. Sequence is the array index.
+function seedDeletionReplayAllowed(state, key, operation) {
+  const seed = state.seeds.get(key);
+  return Boolean(seed?.verified && !seed.cleaned && seed.operation === operation && !state.inventoryKinds.has('auth') &&
+    ![...state.obligations].some(([other, kind]) => kind === 'auth' && other !== key) &&
+    !state.attempts.some(a => a.dispatchedAt !== null && !state.resolvedAttempts.has(a.ordinal) &&
+      ['seed_create', 'auth_effect', 'auth_delete'].includes(a.kind) &&
+      (a.resourceKey !== key || a.outcome !== 'success')));
+}
+
 function replay(events, mode) {
   const state = { attempts: [], absentThrough: 0, lastVerifiedAbsenceOrdinal: 0, ownership: null, terminal: false,
     inventoryKinds: new Set(), obligations: new Map(), reservations: new Map(), resolvedAttempts: new Set(),
-    storageResolvedAttempts: new Set(), recovery: false };
+    storageResolvedAttempts: new Set(), seeds: new Map(), recovery: false };
   const invalid = () => { throw fail('INVALID_RECOVERY_TRANSITION'); };
   if (!Array.isArray(events) || events.length > MAX_EVENTS) invalid();
   for (const event of events) {
@@ -139,15 +149,25 @@ function replay(events, mode) {
       case 'reserve':
         if (![5, 6, 7].includes(event.length) ||
             (event.length >= 6 && (typeof event[5] !== 'string' || !/^[a-f0-9]{64}$/.test(event[5]))) ||
-            (event.length === 7 && (second !== 'storage_upload' || typeof event[6] !== 'string' || !/^[a-f0-9]{64}$/.test(event[6]))) ||
+            (event.length === 7 && (!['storage_upload', 'seed_create', 'auth_delete'].includes(second) || typeof event[6] !== 'string' || !/^[a-f0-9]{64}$/.test(event[6]))) ||
             ordinal !== state.attempts.length + 1 || ordinal > REQUEST_LIMIT ||
             !categories.includes(first) || !kinds.includes(second) || !validTime(third) ||
             (state.recovery !== second.startsWith('recovery_')) ||
             (second.startsWith('recovery_') && first !== 'cleanup') ||
             (second === 'recovery_delete' && state.ownership?.lookupOrdinal !== ordinal - 1) ||
             (second === 'auth_delete' && hasStorageObligation(state))) invalid();
+        if (second === 'auth_delete' && state.seeds.size) {
+          if (event.length < 6) invalid();
+          const seed = state.seeds.get(event[5]);
+          if (seed ? !seedDeletionReplayAllowed(state, event[5], event[6]) : event.length === 7) invalid();
+        } else if (second === 'auth_delete' && event.length === 7) invalid();
         if (mode === 'standard' && state.attempts.length &&
             third - (state.attempts.at(-1).dispatchedAt ?? state.attempts.at(-1).reservedAt) < REQUEST_INTERVAL_MS) invalid();
+        if (second === 'seed_create') {
+          const seed = state.seeds.get(event[5]);
+          if (event.length !== 7 || !seed || seed.operation !== event[6] || seed.ordinal !== null) invalid();
+          seed.ordinal = ordinal;
+        }
         state.attempts.push({
           ordinal, category: first, kind: second, reservedAt: third,
           dispatchedAt: null, outcome: 'pending', objectId: null, ownerId: null,
@@ -160,6 +180,8 @@ function replay(events, mode) {
             attempt.dispatchedAt !== null || !validTime(first) || first < attempt.reservedAt ||
             (state.recovery !== attempt.kind.startsWith('recovery_')) ||
             (attempt.kind === 'auth_delete' && hasStorageObligation(state))) invalid();
+        if (attempt.kind === 'auth_delete' && state.seeds.has(attempt.resourceKey) &&
+            !seedDeletionReplayAllowed(state, attempt.resourceKey, attempt.operationHash)) invalid();
         attempt.dispatchedAt = first;
         break;
       case 'outcome':
@@ -244,9 +266,70 @@ function replay(events, mode) {
         state.obligations.delete(first);
         break;
       }
+      case 'seed_intent': {
+        if (event.length !== 4 || state.recovery || typeof ordinal !== 'string' || !/^[a-f0-9]{64}$/.test(ordinal) ||
+            typeof first !== 'string' || !/^[a-f0-9]{64}$/.test(first) || typeof second !== 'string' || !uuid.test(second) ||
+            ordinal !== digest('auth:user:' + second) || state.obligations.has(ordinal) || state.seeds.size !== 0) invalid();
+        state.obligations.set(ordinal, 'auth');
+        state.seeds.set(ordinal, { userId: second, operation: first, ordinal: null, verified: false, cleaned: false });
+        break;
+      }
+      case 'seed_verified': {
+        const seed = state.seeds.get(first);
+        const creation = seed && state.attempts[seed.ordinal - 1];
+        if (event.length !== 5 || state.recovery || ordinal !== state.attempts.length || !seed || seed.verified ||
+            seed.operation !== second || !creation || creation.kind !== 'seed_create' || creation.resourceKey !== first ||
+            creation.operationHash !== second || creation.outcome !== 'success' || ![200, 201].includes(creation.httpStatus) ||
+            !Array.isArray(third) || third.length !== 3 || third[1] !== seed.ordinal || third[2] !== ordinal) invalid();
+        const before = state.attempts[third[0] - 1];
+        const after = state.attempts[third[2] - 1];
+        if (!before || before.ordinal >= seed.ordinal || before.kind !== 'read' || before.resourceKey !== first || before.httpStatus !== 404 || before.outcome !== 'failed' ||
+            !after || after.ordinal <= seed.ordinal || after.kind !== 'read' || after.resourceKey !== first || after.httpStatus !== 200 || after.outcome !== 'success') invalid();
+        seed.verified = true;
+        break;
+      }
+      case 'auth_absence_resolution': {
+        if (event.length !== 6 || state.recovery || ordinal !== state.attempts.length || state.seeds.size === 0 ||
+            state.seeds.has(first) || state.obligations.get(first) !== 'auth' || !Array.isArray(second)) invalid();
+        const scoped = state.attempts.filter(a => a.resourceKey === first && a.dispatchedAt !== null && !state.resolvedAttempts.has(a.ordinal));
+        if (second.length !== scoped.length || second.some((index, pos) => index !== scoped[pos].ordinal) || scoped.length < 2) invalid();
+        if (scoped.some(a => !['read', 'auth_effect', 'auth_delete'].includes(a.kind) ||
+            !['success', 'failed'].includes(a.outcome) || (a.kind !== 'read' && a.outcome !== 'success'))) invalid();
+        const deletion = scoped.at(-2);
+        const absence = scoped.at(-1);
+        if (deletion.ordinal !== third || absence.ordinal !== event[5] || absence.ordinal !== ordinal ||
+            deletion.kind !== 'auth_delete' || deletion.outcome !== 'success' || deletion.httpStatus < 200 || deletion.httpStatus >= 300 ||
+            absence.kind !== 'read' || absence.httpStatus !== 404 || absence.outcome !== 'failed' || hasStorageObligation(state)) invalid();
+        for (const index of second) state.resolvedAttempts.add(index);
+        state.obligations.delete(first);
+        break;
+      }
+      case 'seed_absence': {
+        const seed = state.seeds.get(first);
+        if (event.length !== 5 || state.recovery || ordinal !== state.attempts.length || !seed?.verified || seed.cleaned || seed.operation !== second ||
+            !Array.isArray(third) || third.length < 3 || third.at(-1) !== ordinal) invalid();
+        const scoped = state.attempts.filter(a => a.resourceKey === first && a.dispatchedAt !== null && !state.resolvedAttempts.has(a.ordinal));
+        if (third.length !== scoped.length || third.some((index, pos) => index !== scoped[pos].ordinal)) invalid();
+        for (const effect of scoped) {
+          if (!['seed_create', 'auth_effect', 'auth_delete', 'read'].includes(effect.kind) ||
+              !['success', 'failed'].includes(effect.outcome) ||
+              (effect.kind !== 'read' && effect.outcome !== 'success')) invalid();
+        }
+        const absent = scoped.at(-1);
+        const deletion = scoped.at(-2);
+        if (absent.kind !== 'read' || absent.httpStatus !== 404 || absent.outcome !== 'failed' ||
+            deletion.kind !== 'auth_delete' || deletion.outcome !== 'success' || deletion.httpStatus < 200 || deletion.httpStatus >= 300 ||
+            hasStorageObligation(state) || state.inventoryKinds.has('auth') ||
+            [...state.obligations].some(([key, kind]) => kind === 'auth' && key !== first)) invalid();
+        for (const index of third) state.resolvedAttempts.add(index);
+        state.obligations.delete(first);
+        seed.cleaned = true;
+        break;
+      }
       case 'resolution': {
         if (event.length !== 4 || state.recovery || ordinal !== state.attempts.length ||
             !Array.isArray(first) || !Array.isArray(second) || first.length + second.length === 0) invalid();
+        if (first.some(key => state.seeds.has(key))) invalid();
         if (first.some(key => state.obligations.get(key) === 'storage')) {
           const absence = state.attempts[ordinal - 1];
           if (state.absentThrough !== ordinal || absence?.kind !== 'storage_absence_read' ||
@@ -406,6 +489,7 @@ function openJournal(rawOptions, creating) {
       events = envelope[4];
     }
     state = replay(events, mode);
+    for (const key of state.seeds.keys()) protectedSeeds.set(key, runId);
     db.exec('COMMIT;'); // In EXCLUSIVE locking mode the connection retains ownership.
     const originalFile = stat(path);
     let failed = false;
@@ -426,7 +510,7 @@ function openJournal(rawOptions, creating) {
       const outstanding = nextState.attempts.filter(a => a.outcome === 'pending').length;
       const headroom = 8 * (REQUEST_LIMIT - nextState.attempts.length) + 2 * outstanding + nextState.obligations.size + 4;
       if (Buffer.byteLength(payload, 'utf8') > MAX_PAYLOAD_BYTES ||
-          (['volatile', 'storage_reservation', 'reserve'].includes(event[0]) && next.length + headroom > MAX_EVENTS)) {
+          (['volatile', 'storage_reservation', 'seed_intent', 'reserve'].includes(event[0]) && next.length + headroom > MAX_EVENTS)) {
         throw fail('RECOVERY_CAPACITY_EXCEEDED');
       }
       try {
@@ -454,9 +538,11 @@ function openJournal(rawOptions, creating) {
           status: state.terminal ? 'CLEANUP_VERIFIED_SUCCESS' : 'RECOVERY_REQUIRED',
           lastVerifiedStorageAbsenceOrdinal: state.lastVerifiedAbsenceOrdinal || null,
           attempts: state.attempts.map(attempt => ({ ...attempt })),
+          seeds: [...state.seeds.values()].map(seed => ({ userId: seed.userId, creationOrdinal: seed.ordinal,
+            state: seed.cleaned ? 'CLEANUP_VERIFIED' : seed.verified ? 'CREATION_VERIFIED' : seed.ordinal ? 'CREATION_INDETERMINATE' : 'CREATION_PENDING' })),
           residual: {
             storage: pendingStorage(state).map(a => a.ordinal),
-            credentialDependent: residuals(state).other.filter(a => ['auth_effect', 'auth_delete'].includes(a.kind)).map(a => a.ordinal),
+            credentialDependent: residuals(state).other.filter(a => ['auth_effect', 'auth_delete', 'seed_create'].includes(a.kind)).map(a => a.ordinal),
             unclassified: residuals(state).other.filter(a => a.kind === 'other_effect').map(a => a.ordinal),
             volatileInventory: residuals(state).volatileInventory,
             volatileKinds: [...new Set([...state.inventoryKinds, ...state.obligations.values()])]
@@ -478,10 +564,20 @@ function openJournal(rawOptions, creating) {
       leaveRequest() { leases--; },
       reserve(ordinal, category, kind, time, resourceKey = null, operationHash = null) {
         if (state.recovery && !reconciling) throw fail('RECOVERY_RECONCILIATION_REQUIRED');
+        if (kind === 'auth_delete' && state.seeds.size) validateLiveAuthDeletion(handle, resourceKey, operationHash, ordinal, 'reserve');
         append(operationHash !== null ? ['reserve', ordinal, category, kind, time, resourceKey, operationHash] :
           resourceKey === null ? ['reserve', ordinal, category, kind, time] : ['reserve', ordinal, category, kind, time, resourceKey]);
       },
-      dispatch(ordinal, time) { append(['dispatch', ordinal, time]); },
+      dispatch(ordinal, time) {
+        const attempt = state.attempts[ordinal - 1];
+        if (attempt?.kind === 'auth_delete' && state.seeds.size) validateLiveAuthDeletion(handle, attempt.resourceKey, attempt.operationHash ?? null, ordinal, 'dispatch');
+        append(['dispatch', ordinal, time]);
+      },
+      admitAuthDeletionProvider(ordinal) {
+        const attempt = state.attempts[ordinal - 1];
+        if (attempt?.kind === 'auth_delete' && hasStorageObligation(state)) throw fail('RECOVERY_AUTH_DELETION_BLOCKED');
+        if (attempt?.kind === 'auth_delete' && state.seeds.size) validateLiveAuthDeletion(handle, attempt.resourceKey, attempt.operationHash ?? null, ordinal, 'provider');
+      },
       complete(ordinal, outcome, identity, httpStatus = null) {
         const candidate = identity === null ? null : recoveryOptions(identity, ['projectRef', 'runId', 'bucket', 'path', 'objectId', 'ownerId']);
         if (candidate && (candidate.projectRef !== RECOVERY_PROJECT || candidate.runId !== runId ||
@@ -506,6 +602,31 @@ function openJournal(rawOptions, creating) {
         const key = digest('storage:' + resource);
         append(['storage_reservation', key, digest(operation)]);
         return key;
+      },
+      reserveSeed(userId, operation) {
+        const key = digest('auth:user:' + userId);
+        append(['seed_intent', key, digest(operation), userId]);
+        protectedSeeds.set(key, runId);
+        return key;
+      },
+      verifySeed(receipt) {
+        if (leases || state.recovery || state.terminal) throw fail('RECOVERY_RESOLUTION_BLOCKED');
+        const proof = consumeLiveCleanupResolution(receipt, handle);
+        if (proof.type !== 'seed_verified') throw fail('UNTRUSTED_LIVE_CLEANUP_RESOLUTION');
+        append(['seed_verified', state.attempts.length, proof.key, proof.operation, proof.attempts]);
+      },
+      resolveSeed(receipt) {
+        if (leases || state.recovery || state.terminal) throw fail('RECOVERY_RESOLUTION_BLOCKED');
+        const proof = consumeLiveCleanupResolution(receipt, handle);
+        if (proof.type !== 'seed_absence') throw fail('UNTRUSTED_LIVE_CLEANUP_RESOLUTION');
+        append(['seed_absence', state.attempts.length, proof.key, proof.operation, proof.attempts]);
+      },
+      resolveAuthAbsence(receipt) {
+        requireUsable();
+        if (leases || state.recovery || state.terminal) throw fail('RECOVERY_RESOLUTION_BLOCKED');
+        const proof = consumeLiveCleanupResolution(receipt, handle);
+        if (proof.type !== 'auth_absence') throw fail('UNTRUSTED_LIVE_CLEANUP_RESOLUTION');
+        append(['auth_absence_resolution', state.attempts.length, proof.key, proof.attempts, proof.deletionOrdinal, proof.absenceOrdinal]);
       },
       resolveNonCreation(receipt) {
         requireUsable();
@@ -601,4 +722,16 @@ export function journalForRun(runId) {
   const journal = active.get(runId);
   if (!journal) throw fail('RECOVERY_ACCOUNTING_MISSING');
   return journal;
+}
+
+/** Protective identity lookup only; durable metadata never supplies live authority. */
+export function journalProtectingSeed(userId) {
+  if (typeof userId !== 'string') return null;
+  const key = digest('auth:user:' + userId.toLowerCase());
+  for (const journal of active.values()) if (journal.state.seeds.has(key)) return journal;
+  const protectedRunId = protectedSeeds.get(key);
+  if (protectedRunId) {
+    return { closed: true, handle: Object.freeze({ projectRef: RECOVERY_PROJECT, runId: protectedRunId }) };
+  }
+  return null;
 }
