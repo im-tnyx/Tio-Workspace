@@ -4322,7 +4322,6 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
       status: 403,
       ok: false,
       json: {
-        code: 403,
         error_code: 'session_not_found',
         msg: 'Session from session_id claim in JWT does not exist'
       }
@@ -4341,7 +4340,6 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
       status: 400,
       ok: false,
       json: {
-        code: 400,
         error_code: 'authsessionmissingerror',
         msg: 'Auth session missing!'
       }

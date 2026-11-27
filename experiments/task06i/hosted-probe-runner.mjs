@@ -291,9 +291,20 @@ function getVerifiedSessionBaseline(inventory, sessionId, token, expectedUserId)
   }
   return baseline;
 }
-function normalizedSessionProviderEvidence(errorCode) {
-  if (typeof errorCode !== 'string') return null;
-  switch (errorCode.toLowerCase()) {
+export function normalizedSessionProviderEvidence(body) {
+  if (!body || typeof body !== 'object' || Array.isArray(body) || utilTypes.isProxy(body)) return null;
+  const prototype = Object.getPrototypeOf(body);
+  if (prototype !== Object.prototype && prototype !== null) return null;
+  let code = null;
+  for (const key of ['code', 'error_code']) {
+    const descriptor = Object.getOwnPropertyDescriptor(body, key);
+    if (!descriptor) continue;
+    if (!Object.hasOwn(descriptor, 'value') || typeof descriptor.value !== 'string') return null;
+    const value = descriptor.value.toLowerCase();
+    if (code !== null && code !== value) return null;
+    code = value;
+  }
+  switch (code) {
     case 'session_not_found': return 'SESSION_NOT_FOUND';
     case 'session_revoked': return 'SESSION_REVOKED';
     case 'authsessionmissingerror': return 'AUTH_SESSION_MISSING';
@@ -10440,6 +10451,7 @@ export function createHostedDispatcher(rawOptions = {}) {
         let remainingSessions = null;
         let verifyError = null;
         let probeErrorCode = null;
+        let probeProviderEvidence = null;
         const durableSessionJournal = Boolean(inv && journalForRun(inv.runId));
         const verifiedBaseline = getVerifiedSessionBaseline(inv, ctx?.activeSessionId, ctx?.activeAccessToken, ctx?.activeUserId);
         const baselineValid = ctx?.preInvalidationSessionValid === true && (!durableSessionJournal || verifiedBaseline !== null);
@@ -10458,6 +10470,7 @@ export function createHostedDispatcher(rawOptions = {}) {
             revocationEntry = revocation.entry;
             const probeBody = await parseResponseBody(probeRes);
             probeErrorCode = (probeBody?.error_code || probeBody?.code || '').toLowerCase();
+            probeProviderEvidence = normalizedSessionProviderEvidence(probeBody);
             const probeErrorMsg = (probeBody?.msg || probeBody?.message || probeBody?.error_description || probeBody?.error || '').toLowerCase();
 
             // Distinguish false-proof errors (R5-01): bad_jwt, jwt_expired, token_expired, invalid_jwt, malformed_jwt, etc.
@@ -10475,12 +10488,7 @@ export function createHostedDispatcher(rawOptions = {}) {
               probeErrorMsg.includes('signature');
 
             // Affirmative provider-observed session revocation error (R5-01)
-            const isAffirmativeRevocation =
-              probeErrorCode === 'session_not_found' ||
-              probeErrorCode === 'session_revoked' ||
-              probeErrorCode === 'authsessionmissingerror' ||
-              probeErrorMsg.includes('session not found') ||
-              probeErrorMsg.includes('session_not_found');
+            const isAffirmativeRevocation = normalizedSessionProviderEvidence(probeBody) !== null;
 
             if (probeRes.status === 200) {
               sessionRevocationVerified = false;
@@ -10520,7 +10528,7 @@ export function createHostedDispatcher(rawOptions = {}) {
             const proven = recordVerifiedSessionRevocation(inv, ctx.activeSessionId, ctx.activeAccessToken, ctx.activeUserId, revocationEntry,
               createSessionRevocationProof(revocationEntry, 'session_02_post_reset_user_read', 'provider_session_revoked',
                 ['password_reset_confirmed', 'pre_invalidation_session_valid', 'intended_user_correlated'],
-                verifiedBaseline ? [verifiedBaseline.ordinal] : [], normalizedSessionProviderEvidence(probeErrorCode),
+                verifiedBaseline ? [verifiedBaseline.ordinal] : [], probeProviderEvidence,
                 verifiedBaseline ? [{ ordinal: verifiedBaseline.ordinal, status: verifiedBaseline.status, kind: verifiedBaseline.kind,
                   target: { origin: `https://${HARDCODED_TEMP_REF}.supabase.co`, method: verifiedBaseline.method,
                     path: verifiedBaseline.path, scope: verifiedBaseline.scope } }] : []));
@@ -10592,16 +10600,14 @@ export function createHostedDispatcher(rawOptions = {}) {
         // Provider-observed revocation error (R4-04): Do NOT synthesize error code for generic 401/403
         const isRevocationError =
           !isFalseRevocationProof(body) && (res.status === 401 || res.status === 403) &&
-          (errCode === 'session_not_found' ||
-           errCode === 'AuthSessionMissingError' ||
-           (errCode !== 'bad_jwt' && (errMsg.includes('session not found') || errMsg.includes('session is revoked') || errMsg.includes('session_not_found'))));
+          ['SESSION_NOT_FOUND', 'SESSION_REVOKED', 'AUTH_SESSION_MISSING'].includes(normalizedSessionProviderEvidence(body));
 
         let isRevocationSuccess = isRevocationError && ctx?.preInvalidationSessionValid === true && ctx?.passwordResetCompleted === true;
         if (isRevocationSuccess && inv && sessionId) {
           const proven = recordVerifiedSessionRevocation(inv, sessionId, ctx.activeAccessToken, ctx.activeUserId, revocation.entry,
             createSessionRevocationProof(revocation.entry, 'session_03_post_reset_user_read', 'provider_session_revoked',
               ['password_reset_confirmed', 'pre_invalidation_session_valid', 'intended_user_correlated'],
-              baseline ? [baseline.ordinal] : [], normalizedSessionProviderEvidence(errCode),
+              baseline ? [baseline.ordinal] : [], normalizedSessionProviderEvidence(body),
               baseline ? [{ ordinal: baseline.ordinal, status: baseline.status, kind: baseline.kind,
                 target: { origin: `https://${HARDCODED_TEMP_REF}.supabase.co`, method: baseline.method,
                   path: baseline.path, scope: baseline.scope } }] : []));
@@ -10975,17 +10981,14 @@ export function createHostedDispatcher(rawOptions = {}) {
         const isRevocationError =
           !isFalseProof &&
           (res.status === 401 || res.status === 403 || res.status === 500) &&
-          (errCode === 'AuthSessionMissingError' ||
-           errCode === 'session_not_found' ||
-           errMsg.includes('authsessionmissingerror') ||
-           errMsg.includes('session not found'));
+          ['SESSION_NOT_FOUND', 'AUTH_SESSION_MISSING'].includes(normalizedSessionProviderEvidence(body));
 
         let isRevocationSuccess = isRevocationError && ctx?.preInvalidationSessionValid === true && ctx?.passwordResetCompleted === true;
         if (isRevocationSuccess && inv && sessionId) {
           const proven = recordVerifiedSessionRevocation(inv, sessionId, ctx.activeAccessToken, ctx.activeUserId, revocation.entry,
             createSessionRevocationProof(revocation.entry, 'session_06_post_reset_edge_probe', 'provider_session_revoked',
               ['password_reset_confirmed', 'pre_invalidation_session_valid', 'intended_user_correlated'],
-              baseline ? [baseline.ordinal] : [], normalizedSessionProviderEvidence(errCode),
+              baseline ? [baseline.ordinal] : [], normalizedSessionProviderEvidence(body),
               baseline ? [{ ordinal: baseline.ordinal, status: baseline.status, kind: baseline.kind,
                 target: { origin: `https://${HARDCODED_TEMP_REF}.supabase.co`, method: baseline.method,
                   path: baseline.path, scope: baseline.scope } }] : []));
@@ -11776,22 +11779,10 @@ export function createHostedAdminClient(rawOptions = {}) {
           errMsg.includes('invalid token') ||
           errMsg.includes('invalid claim');
 
-        // Affirmative session absence: session_not_found or authsessionmissingerror (R8-02)
-        const isSessionAbsence = !isFalseProof && (
-          errCode === 'session_not_found' ||
-          errCode === 'authsessionmissingerror' ||
-          errMsg.includes('session not found') ||
-          errMsg.includes('session_not_found') ||
-          errMsg.includes('auth session missing') ||
-          errMsg.includes('session from session_id claim in jwt does not exist') ||
-          (errMsg.includes('session') && errMsg.includes('does not exist'))
-        );
-
-        const sessionEvidence = isSessionAbsence
-          ? errCode === 'authsessionmissingerror' || errMsg.includes('auth session missing')
-            ? 'AUTH_SESSION_MISSING'
-            : 'SESSION_NOT_FOUND'
-          : null;
+        // Structured provider codes alone establish absence. Messages remain diagnostic.
+        const sessionEvidence = normalizedSessionProviderEvidence(body);
+        const isSessionAbsence = !isFalseProof &&
+          ['SESSION_NOT_FOUND', 'AUTH_SESSION_MISSING'].includes(sessionEvidence);
 
         if (isSessionAbsence && [400, 401, 403, 404].includes(res.status)) {
           return {

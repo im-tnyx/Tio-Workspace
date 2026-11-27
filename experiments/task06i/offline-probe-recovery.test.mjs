@@ -18,7 +18,7 @@ import {
 import {
   createCreationProof, createDeterministicFixtureTransport, createHostedAdminClient, createHostedDispatcher, createMockProjectKey,
   createRunContext, createTrustedOfflineDispatcher, HARDCODED_REAL_REF, HARDCODED_TEMP_REF, HARDCODED_TIO_WORLD_REF,
-  provisionStorageProbeFixture, runHostedProbeRunner, runOfflineProbeSimulation, STORAGE_PROBE_BUCKET, TestRunInventory
+  normalizedSessionProviderEvidence, provisionStorageProbeFixture, runHostedProbeRunner, runOfflineProbeSimulation, STORAGE_PROBE_BUCKET, TestRunInventory
 } from './hosted-probe-runner.mjs';
 import { createOfflineRecoveryJournal, recoverOfflineProbeRun, reopenOfflineRecoveryJournal } from './offline-probe-recovery.mjs';
 import { executeRunBudgetRequest, getRunRequestBudget } from './run-request-budget.mjs';
@@ -1841,6 +1841,103 @@ if (process.argv[2] === '--h4-child') {
     assert.throws(() => reopen(tampered, known.runId), /INVALID_RECOVERY_TRANSITION/,
       'replay refuses a status-only local logout absence claim');
   });
+
+  test('H4-R8 permission denial with absence-like text remains unresolved after reopen', async t => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    t.after(() => handle.close());
+    const fixture = revokedSessionFixture(handle);
+    const transport = createDeterministicFixtureTransport({ requestBudgetMode: mode, routes: [
+      { method: 'POST', pathEquals: '/auth/v1/logout', status: 403,
+        json: { code: 'permission_denied', message: 'requested session does not exist for this caller' } }
+    ] });
+    const admin = createHostedAdminClient({ runId: handle.runId, fetchFn: transport, serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
+    const result = await fixture.inventory.executeCleanup({ adminClient: admin, failClosed: false });
+    const live = handle.report();
+    const retainedToken = fixture.inventory.getSessionToken(ownerId);
+    handle.close();
+    const restarted = reopen(directory, handle.runId);
+    t.after(() => restarted.close());
+    assert.deepEqual([result.status, live.status, restarted.report().status],
+      ['CLEANUP_FAILED_RESIDUAL_RESOURCES', 'RECOVERY_REQUIRED', 'RECOVERY_REQUIRED']);
+    assert.equal(retainedToken, fixture.token);
+    assert.equal(restarted.report().consumed, 1);
+  });
+
+  test('H4-R8 structured code admission never executes hostile evidence', () => {
+    let executions = 0;
+    const inherited = Object.create({ code: 'session_not_found' });
+    const accessor = Object.defineProperty({}, 'code', { get() { executions++; return 'session_not_found'; } });
+    const proxy = new Proxy({}, { get() { executions++; }, getOwnPropertyDescriptor() { executions++; } });
+    for (const body of [inherited, accessor, proxy, [], null, { code: 1 }, { code: {} },
+      { code: 'session_not_found', error_code: 'permission_denied' },
+      { code: '', error_code: 'session_not_found' }, { code: ' session_not_found' },
+      { message: 'session not found' }, { code: 'unknown', message: 'session not found' }]) {
+      assert.equal(normalizedSessionProviderEvidence(body), null);
+    }
+    assert.equal(executions, 0);
+    assert.equal(normalizedSessionProviderEvidence({ code: 'session_not_found' }), 'SESSION_NOT_FOUND');
+    assert.equal(normalizedSessionProviderEvidence({ error_code: 'AuthSessionMissingError' }), 'AUTH_SESSION_MISSING');
+    assert.equal(normalizedSessionProviderEvidence({ code: 'session_revoked', error_code: 'SESSION_REVOKED' }), 'SESSION_REVOKED');
+  });
+
+  test('H4-R8 all rejection statuses retain credentials and journal obligations for misleading codes', async t => {
+    for (const status of [400, 401, 403, 404]) {
+      for (const codes of [{}, { code: 'unknown' }, { code: 'permission_denied' }, { code: 'bad_jwt' },
+        { code: 'token_expired' }, { code: 'session_not_found', error_code: 'permission_denied' },
+        { error_code: 'session_not_found', code: 'permission_denied' },
+        { error_code: 'session_not_found', code: 403 }, { code: null }, { code: 1 }]) {
+        const directory = testDirectory();
+        const handle = create(directory);
+        t.after(() => handle.close());
+        const fixture = revokedSessionFixture(handle);
+        const transport = createDeterministicFixtureTransport({ requestBudgetMode: mode, routes: [
+          { method: 'POST', pathEquals: '/auth/v1/logout', status,
+            json: { ...codes, message: 'requested session does not exist for this caller' } }
+        ] });
+        const admin = createHostedAdminClient({ runId: handle.runId, fetchFn: transport, serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
+        assert.equal((await fixture.inventory.executeCleanup({ adminClient: admin, failClosed: false })).status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+        assert.equal(fixture.inventory.getSessionToken(ownerId), fixture.token);
+        handle.close();
+        const restarted = reopen(directory, handle.runId);
+        assert.equal(restarted.report().status, 'RECOVERY_REQUIRED');
+        assert.equal(restarted.report().consumed, 1);
+        restarted.close();
+      }
+    }
+  });
+
+  test('H4-R8 exact session absence codes and genuine logout survive durable restart', async t => {
+    for (const response of [{ status: 204 }, { status: 403, json: { code: 'session_not_found' } },
+      { status: 400, json: { error_code: 'AuthSessionMissingError' } }]) {
+      const directory = testDirectory();
+      const handle = create(directory);
+      t.after(() => handle.close());
+      const fixture = revokedSessionFixture(handle);
+      const transport = createDeterministicFixtureTransport({ requestBudgetMode: mode, routes: [
+        { method: 'POST', pathEquals: '/auth/v1/logout', ...response }
+      ] });
+      const admin = createHostedAdminClient({ runId: handle.runId, fetchFn: transport, serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
+      assert.equal((await fixture.inventory.executeCleanup({ adminClient: admin })).status, 'CLEANUP_VERIFIED_SUCCESS');
+      handle.close();
+      const restarted = reopen(directory, handle.runId);
+      assert.equal(restarted.report().status, 'CLEANUP_VERIFIED_SUCCESS');
+      assert.equal(restarted.report().consumed, 1);
+      restarted.close();
+    }
+  });
+
+  for (const probeId of ['SESSION-02', 'SESSION-03', 'SESSION-06']) {
+    test('H4-R8 ' + probeId + ' rejects conflicting codes despite affirmative preferred field', async t => {
+      const handle = create(testDirectory());
+      t.after(() => handle.close());
+      const fixture = revokedSessionFixture(handle, { probeId, rejection: {
+        status: 403, json: { error_code: 'session_not_found', code: 'permission_denied', message: 'session not found' }
+      } });
+      assert.equal((await fixture.verify()).passed, false);
+      assert.equal(handle.report().status, 'RECOVERY_REQUIRED');
+    });
+  }
 
   test('H4-R7 generic local logout rejection statuses cannot become durable session absence', async t => {
     for (const status of [400, 401, 403, 404]) {
