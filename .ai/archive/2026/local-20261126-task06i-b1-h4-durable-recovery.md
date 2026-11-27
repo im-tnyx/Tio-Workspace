@@ -2,7 +2,7 @@
 
 | Field | Value |
 |---|---|
-| Status | H4-R1 offline validated, exact-head review on PR #47 |
+| Status | Complete — H4 MERGED / OFFLINE TESTED via PR #47; see final closeout receipt. |
 | Implementation owner | Codex root |
 | Previous agent | None for H4 |
 | Last commit agent | Codex root. Verified R1 baseline `79e53cdb3c1f3c7db867c9c4c3766cb60ab83511`. PR #47 records the published R1 HEAD and review disposition. |
@@ -308,3 +308,43 @@ Before runtime edits, an actual imported journal-backed Admin/transport cleanup 
 Final executed checks exit0 with zero skipped/cancelled tests: focused R9 **6/6**, request-budget **7/7**, full H4 crash/restart **130/130**, full Task06I Windows and hardened network-disabled Linux **462/462 each**, legacy runner/PR45 **182/182**, Task06H **115/115**, local PostgreSQL17.11 **18/18 POSTGRES_VERIFIED**, npm verify PASS including shell **22/22**, attribution fixtures **142/142**, guard integrity **14/14**. Linux uses cached `node:24-bookworm`, pull never, network none, cap-drop ALL, no-new-privileges, read-only experiments, dedicated writable temporary `/tmp`, no hosted credentials/socket/ports. Attribution fixture scripts normalize CRLF only in temporary Linux copies. Existing R1–R8 regression coverage remains included.
 
 Syntax, Markdown links/fences, scoped sensitive-literal and diff checks PASS. Independent read-only `r9_review` diff review PASS, independently focused/adjacent **19/19** and H4 plus budget **137/137**, diff exit0. Exact committed-HEAD review is required before publication. Formal im-tio and integration reviews remain separate gates. H4 `IMPLEMENTED_OFFLINE_TESTED / REVIEW_PENDING`; H5 `NOT IMPLEMENTED`; hosted atomic deletion `UNVERIFIED`; hosted verification `0/18`; Hosted LIVE `BLOCKED`; Production Real Auth `STRICT NO-GO`; hosted mutations `0`; added infrastructure cost `$0`; merge requires separate owner authorization. Stop after R9 publication and verification.
+
+
+## H4 merged closeout receipt
+
+Implementation owner / last commit agent: Codex root. Previous agent: Codex root. Owner authorized exact-HEAD squash merge of PR #47, local alignment, completed branch cleanup and a separate reviewable documentation closeout PR. This receipt supersedes historical in-progress/review-pending checkpoints above.
+
+- PR #47 is **MERGED / OFFLINE TESTED** at squash `9165825a233795dd06cc362e8afcaf9c4b289115`, merged 2026-11-27 05:30:21 UTC.
+- Approved feature HEAD `bcae8f89e6654d74246c681c168df884627328c3`, base `5809dddf456cea3b8dfec1164034cf63fc392eb1`. Both feature and squash tree equal `56a7f823277ab977363f059c0cfd4e21233ed2c1`. Squash parent equals the verified base. No tree changes were introduced by squash.
+- [Formal im-tio approval](https://github.com/im-tnyx/Tio-Workspace/pull/47#pullrequestreview-6083852266) records APPROVED on that exact feature HEAD. [Codex receipt](https://github.com/im-tnyx/Tio-Workspace/pull/47#issuecomment-7209527304) reports no major issues. Eight current pre-merge checks succeeded, including Cursor Bugbot, Security Reviewer and App-owned guard integration5032971. Ruleset27218050 was active/strict, required one approval and resolved threads, with zero bypass actors.
+- Post-merge push workflows on the squash all **SUCCESS**: [security contract tests](https://github.com/im-tnyx/Tio-Workspace/actions/runs/45946198135), [PostgreSQL parity](https://github.com/im-tnyx/Tio-Workspace/actions/runs/45946198189), [attribution fixtures](https://github.com/im-tnyx/Tio-Workspace/actions/runs/45946198312), [post-merge attribution audit](https://github.com/im-tnyx/Tio-Workspace/actions/runs/45946198276).
+- Actual post-merge local Windows Task06I **462/462**, hardened network-disabled Linux Task06I **462/462**, npm verify PASS including shell **22/22**. All exit0 with zero skipped/cancelled tests. Linux retains cached node:24-bookworm, pull never, network none, cap-drop ALL, no-new-privileges, read-only experiments, dedicated temporary /tmp and no mounted credentials/socket/ports.
+- Local main and origin/main aligned at `9165825a233795dd06cc362e8afcaf9c4b289115`, ahead/behind0/0 and clean. One primary worktree, no conflicting worktree. H4 local branch was removed with non-forced `git branch -d` after exact tree equality. Git warned about squash ancestry and accepted deletion against its synchronized upstream. The completed remote branch was then deleted, and remote refs pruned. Unrelated branches were preserved.
+- This complete R1–R9 record moves to the archive through a separate documentation PR. The documentation PR requires review and separate merge authorization. Its current HEAD and check state resolve from GitHub.
+
+### All fourteen historical review threads
+
+| Finding | Thread | Final disposition |
+|---|---|---|
+| [4710049809](https://github.com/im-tnyx/Tio-Workspace/pull/47#discussion_r4710049809) | `PRRT_kwDOVtCmZc68cP6m` | RESOLVED |
+| [4710445981](https://github.com/im-tnyx/Tio-Workspace/pull/47#discussion_r4710445981) | `PRRT_kwDOVtCmZc68dKdy` | RESOLVED |
+| [4710934807](https://github.com/im-tnyx/Tio-Workspace/pull/47#discussion_r4710934807) | `PRRT_kwDOVtCmZc68eSQw` | RESOLVED |
+| [4710985979](https://github.com/im-tnyx/Tio-Workspace/pull/47#discussion_r4710985979) | `PRRT_kwDOVtCmZc68eZbC` | RESOLVED |
+| [4710985990](https://github.com/im-tnyx/Tio-Workspace/pull/47#discussion_r4710985990) | `PRRT_kwDOVtCmZc68eZbH` | RESOLVED |
+| [4711089784](https://github.com/im-tnyx/Tio-Workspace/pull/47#discussion_r4711089784) | `PRRT_kwDOVtCmZc68eoeX` | RESOLVED |
+| [4711089798](https://github.com/im-tnyx/Tio-Workspace/pull/47#discussion_r4711089798) | `PRRT_kwDOVtCmZc68eoeh` | RESOLVED |
+| [4711348560](https://github.com/im-tnyx/Tio-Workspace/pull/47#discussion_r4711348560) | `PRRT_kwDOVtCmZc68fOgx` | RESOLVED |
+| [4711669972](https://github.com/im-tnyx/Tio-Workspace/pull/47#discussion_r4711669972) | `PRRT_kwDOVtCmZc68f-kY` | RESOLVED |
+| [4711669986](https://github.com/im-tnyx/Tio-Workspace/pull/47#discussion_r4711669986) | `PRRT_kwDOVtCmZc68f-kh` | RESOLVED |
+| [4711694429](https://github.com/im-tnyx/Tio-Workspace/pull/47#discussion_r4711694429) | `PRRT_kwDOVtCmZc68gCGv` | RESOLVED |
+| [4711902831](https://github.com/im-tnyx/Tio-Workspace/pull/47#discussion_r4711902831) | `PRRT_kwDOVtCmZc68ggjm` | RESOLVED |
+| [4715380481](https://github.com/im-tnyx/Tio-Workspace/pull/47#discussion_r4715380481) | `PRRT_kwDOVtCmZc68ok1w` | RESOLVED |
+| [4715523805](https://github.com/im-tnyx/Tio-Workspace/pull/47#discussion_r4715523805) | `PRRT_kwDOVtCmZc68o6iY` | RESOLVED |
+
+All fourteen were confirmed resolved immediately before merge. Each thread retains its original findings, substantive correction/disposition reply and review history.
+
+### Remaining limits and authorization
+
+H4 **MERGED / OFFLINE TESTED**. H5 **NOT STARTED / NOT IMPLEMENTED**. Shared request ceiling **25**, standard pacing **1,000 ms**, cleanup reserve **0**. Hosted atomic deletion **UNVERIFIED**. Hosted verification **0/18**. Hosted LIVE **NOT AUTHORIZED / BLOCKED**. Production Real Auth **STRICT NO-GO**. Hosted mutations **0**. Added infrastructure cost **$0**.
+
+Demonstrated durability covers local process-crash recovery under the recorded owner-controlled filesystem assumptions. Power loss, privileged filesystem tampering/rollback and hosted provider semantics remain outside verified coverage. Cold Auth recovery without transient credentials and unresolved/unknown effects remains blocked. Preserve unresolved journals. A future H5/seed or hosted task needs separate bounded owner authorization.
