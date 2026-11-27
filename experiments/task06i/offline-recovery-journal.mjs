@@ -24,7 +24,7 @@ const handles = new WeakMap();
 const projectRoot = fileURLToPath(new URL('../../', import.meta.url));
 const runPattern = /^h4-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
-const kinds = ['read', 'storage_absence_read', 'storage_upload', 'storage_delete', 'auth_effect', 'auth_delete', 'other_effect', 'recovery_lookup', 'recovery_delete'];
+const kinds = ['read', 'storage_absence_read', 'storage_upload', 'storage_delete', 'auth_effect', 'auth_delete', 'seed_create', 'other_effect', 'recovery_lookup', 'recovery_delete'];
 const categories = ['probe', 'auxiliary', 'cleanup'];
 const outcomes = ['success', 'failed', 'cancelled_after_dispatch'];
 const modes = ['standard', 'recorded_zero_wait'];
@@ -111,7 +111,7 @@ function hasStorageObligation(state) {
 }
 
 function residuals(state) {
-  const effects = state.attempts.filter(a => !state.resolvedAttempts.has(a.ordinal) && a.dispatchedAt !== null && ['auth_effect', 'auth_delete', 'other_effect'].includes(a.kind));
+  const effects = state.attempts.filter(a => !state.resolvedAttempts.has(a.ordinal) && a.dispatchedAt !== null && ['auth_effect', 'auth_delete', 'seed_create', 'other_effect'].includes(a.kind));
   return {
     storage: pendingStorage(state),
     other: effects,
@@ -124,7 +124,7 @@ function residuals(state) {
 function replay(events, mode) {
   const state = { attempts: [], absentThrough: 0, lastVerifiedAbsenceOrdinal: 0, ownership: null, terminal: false,
     inventoryKinds: new Set(), obligations: new Map(), reservations: new Map(), resolvedAttempts: new Set(),
-    storageResolvedAttempts: new Set(), recovery: false };
+    storageResolvedAttempts: new Set(), seeds: new Map(), recovery: false };
   const invalid = () => { throw fail('INVALID_RECOVERY_TRANSITION'); };
   if (!Array.isArray(events) || events.length > MAX_EVENTS) invalid();
   for (const event of events) {
@@ -139,7 +139,7 @@ function replay(events, mode) {
       case 'reserve':
         if (![5, 6, 7].includes(event.length) ||
             (event.length >= 6 && (typeof event[5] !== 'string' || !/^[a-f0-9]{64}$/.test(event[5]))) ||
-            (event.length === 7 && (second !== 'storage_upload' || typeof event[6] !== 'string' || !/^[a-f0-9]{64}$/.test(event[6]))) ||
+            (event.length === 7 && (!['storage_upload', 'seed_create'].includes(second) || typeof event[6] !== 'string' || !/^[a-f0-9]{64}$/.test(event[6]))) ||
             ordinal !== state.attempts.length + 1 || ordinal > REQUEST_LIMIT ||
             !categories.includes(first) || !kinds.includes(second) || !validTime(third) ||
             (state.recovery !== second.startsWith('recovery_')) ||
@@ -148,6 +148,11 @@ function replay(events, mode) {
             (second === 'auth_delete' && hasStorageObligation(state))) invalid();
         if (mode === 'standard' && state.attempts.length &&
             third - (state.attempts.at(-1).dispatchedAt ?? state.attempts.at(-1).reservedAt) < REQUEST_INTERVAL_MS) invalid();
+        if (second === 'seed_create') {
+          const seed = state.seeds.get(event[5]);
+          if (event.length !== 7 || !seed || seed.operation !== event[6] || seed.ordinal !== null) invalid();
+          seed.ordinal = ordinal;
+        }
         state.attempts.push({
           ordinal, category: first, kind: second, reservedAt: third,
           dispatchedAt: null, outcome: 'pending', objectId: null, ownerId: null,
@@ -244,9 +249,54 @@ function replay(events, mode) {
         state.obligations.delete(first);
         break;
       }
+      case 'seed_intent': {
+        if (event.length !== 4 || state.recovery || typeof ordinal !== 'string' || !/^[a-f0-9]{64}$/.test(ordinal) ||
+            typeof first !== 'string' || !/^[a-f0-9]{64}$/.test(first) || typeof second !== 'string' || !uuid.test(second) ||
+            ordinal !== digest('auth:user:' + second) || state.obligations.has(ordinal) || state.seeds.size !== 0) invalid();
+        state.obligations.set(ordinal, 'auth');
+        state.seeds.set(ordinal, { userId: second, operation: first, ordinal: null, verified: false, cleaned: false });
+        break;
+      }
+      case 'seed_verified': {
+        const seed = state.seeds.get(first);
+        const creation = seed && state.attempts[seed.ordinal - 1];
+        if (event.length !== 5 || state.recovery || ordinal !== state.attempts.length || !seed || seed.verified ||
+            seed.operation !== second || !creation || creation.kind !== 'seed_create' || creation.resourceKey !== first ||
+            creation.operationHash !== second || creation.outcome !== 'success' || ![200, 201].includes(creation.httpStatus) ||
+            !Array.isArray(third) || third.length !== 3 || third[1] !== seed.ordinal || third[2] !== ordinal) invalid();
+        const before = state.attempts[third[0] - 1];
+        const after = state.attempts[third[2] - 1];
+        if (!before || before.ordinal >= seed.ordinal || before.kind !== 'read' || before.resourceKey !== first || before.httpStatus !== 404 || before.outcome !== 'failed' ||
+            !after || after.ordinal <= seed.ordinal || after.kind !== 'read' || after.resourceKey !== first || after.httpStatus !== 200 || after.outcome !== 'success') invalid();
+        seed.verified = true;
+        break;
+      }
+      case 'seed_absence': {
+        const seed = state.seeds.get(first);
+        if (event.length !== 5 || state.recovery || ordinal !== state.attempts.length || !seed?.verified || seed.cleaned || seed.operation !== second ||
+            !Array.isArray(third) || third.length < 3 || third.at(-1) !== ordinal) invalid();
+        const scoped = state.attempts.filter(a => a.resourceKey === first && a.dispatchedAt !== null && !state.resolvedAttempts.has(a.ordinal));
+        if (third.length !== scoped.length || third.some((index, pos) => index !== scoped[pos].ordinal)) invalid();
+        for (const effect of scoped) {
+          if (!['seed_create', 'auth_effect', 'auth_delete', 'read'].includes(effect.kind) ||
+              !['success', 'failed'].includes(effect.outcome) ||
+              (effect.kind !== 'read' && effect.outcome !== 'success')) invalid();
+        }
+        const absent = scoped.at(-1);
+        const deletion = scoped.at(-2);
+        if (absent.kind !== 'read' || absent.httpStatus !== 404 || absent.outcome !== 'failed' ||
+            deletion.kind !== 'auth_delete' || deletion.outcome !== 'success' || deletion.httpStatus < 200 || deletion.httpStatus >= 300 ||
+            hasStorageObligation(state) || state.inventoryKinds.has('auth') ||
+            [...state.obligations].some(([key, kind]) => kind === 'auth' && key !== first)) invalid();
+        for (const index of third) state.resolvedAttempts.add(index);
+        state.obligations.delete(first);
+        seed.cleaned = true;
+        break;
+      }
       case 'resolution': {
         if (event.length !== 4 || state.recovery || ordinal !== state.attempts.length ||
             !Array.isArray(first) || !Array.isArray(second) || first.length + second.length === 0) invalid();
+        if (first.some(key => state.seeds.has(key))) invalid();
         if (first.some(key => state.obligations.get(key) === 'storage')) {
           const absence = state.attempts[ordinal - 1];
           if (state.absentThrough !== ordinal || absence?.kind !== 'storage_absence_read' ||
@@ -426,7 +476,7 @@ function openJournal(rawOptions, creating) {
       const outstanding = nextState.attempts.filter(a => a.outcome === 'pending').length;
       const headroom = 8 * (REQUEST_LIMIT - nextState.attempts.length) + 2 * outstanding + nextState.obligations.size + 4;
       if (Buffer.byteLength(payload, 'utf8') > MAX_PAYLOAD_BYTES ||
-          (['volatile', 'storage_reservation', 'reserve'].includes(event[0]) && next.length + headroom > MAX_EVENTS)) {
+          (['volatile', 'storage_reservation', 'seed_intent', 'reserve'].includes(event[0]) && next.length + headroom > MAX_EVENTS)) {
         throw fail('RECOVERY_CAPACITY_EXCEEDED');
       }
       try {
@@ -454,9 +504,11 @@ function openJournal(rawOptions, creating) {
           status: state.terminal ? 'CLEANUP_VERIFIED_SUCCESS' : 'RECOVERY_REQUIRED',
           lastVerifiedStorageAbsenceOrdinal: state.lastVerifiedAbsenceOrdinal || null,
           attempts: state.attempts.map(attempt => ({ ...attempt })),
+          seeds: [...state.seeds.values()].map(seed => ({ userId: seed.userId, creationOrdinal: seed.ordinal,
+            state: seed.cleaned ? 'CLEANUP_VERIFIED' : seed.verified ? 'CREATION_VERIFIED' : seed.ordinal ? 'CREATION_INDETERMINATE' : 'CREATION_PENDING' })),
           residual: {
             storage: pendingStorage(state).map(a => a.ordinal),
-            credentialDependent: residuals(state).other.filter(a => ['auth_effect', 'auth_delete'].includes(a.kind)).map(a => a.ordinal),
+            credentialDependent: residuals(state).other.filter(a => ['auth_effect', 'auth_delete', 'seed_create'].includes(a.kind)).map(a => a.ordinal),
             unclassified: residuals(state).other.filter(a => a.kind === 'other_effect').map(a => a.ordinal),
             volatileInventory: residuals(state).volatileInventory,
             volatileKinds: [...new Set([...state.inventoryKinds, ...state.obligations.values()])]
@@ -506,6 +558,23 @@ function openJournal(rawOptions, creating) {
         const key = digest('storage:' + resource);
         append(['storage_reservation', key, digest(operation)]);
         return key;
+      },
+      reserveSeed(userId, operation) {
+        const key = digest('auth:user:' + userId);
+        append(['seed_intent', key, digest(operation), userId]);
+        return key;
+      },
+      verifySeed(receipt) {
+        if (leases || state.recovery || state.terminal) throw fail('RECOVERY_RESOLUTION_BLOCKED');
+        const proof = consumeLiveCleanupResolution(receipt, handle);
+        if (proof.type !== 'seed_verified') throw fail('UNTRUSTED_LIVE_CLEANUP_RESOLUTION');
+        append(['seed_verified', state.attempts.length, proof.key, proof.operation, proof.attempts]);
+      },
+      resolveSeed(receipt) {
+        if (leases || state.recovery || state.terminal) throw fail('RECOVERY_RESOLUTION_BLOCKED');
+        const proof = consumeLiveCleanupResolution(receipt, handle);
+        if (proof.type !== 'seed_absence') throw fail('UNTRUSTED_LIVE_CLEANUP_RESOLUTION');
+        append(['seed_absence', state.attempts.length, proof.key, proof.operation, proof.attempts]);
       },
       resolveNonCreation(receipt) {
         requireUsable();

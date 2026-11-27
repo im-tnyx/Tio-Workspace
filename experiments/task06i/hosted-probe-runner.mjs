@@ -23,7 +23,7 @@ import { validateSessionRevocationEvidence } from './session-revocation-evidence
 import crypto from 'node:crypto';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { executeRunBudgetRequest, getRunRequestBudget, isRunRequestAdmissionFailure } from './run-request-budget.mjs';
-import { journalForRun } from './offline-recovery-journal.mjs';
+import { journalForRun, recoveryOptions } from './offline-recovery-journal.mjs';
 import { types as utilTypes } from 'node:util';
 import { PREFLIGHT_REQUIREMENTS, EXPECTED_REQUIREMENT_IDS } from './preflight-evaluator.mjs';
 
@@ -147,6 +147,101 @@ const RESOURCE_REQUEST_CONTEXT = new AsyncLocalStorage();
 const LIVE_RESOURCE_ATTEMPTS = new WeakMap();
 const VERIFIED_SESSION_REVOCATIONS = new WeakMap();
 const VERIFIED_SESSION_BASELINES = new WeakMap();
+const RUN_SEEDS = new WeakMap();
+const SEED_PLANS = new WeakMap();
+const ADMIN_SEED_CREATORS = new WeakMap();
+const SEED_ADMISSION = Symbol('module-owned seed admission');
+
+function privateSeed(inventory, id) {
+  const seed = RUN_SEEDS.get(inventory);
+  return seed && seed.userId === id ? seed : null;
+}
+
+/** Reserve one synthetic disposable identity. This capability contains no credentials. */
+export function reserveRunCreatedSeed(rawOptions) {
+  const { inventory, projectRef } = recoveryOptions(rawOptions, ['inventory', 'projectRef']);
+  if (projectRef !== HARDCODED_TEMP_REF) throw new Error('SEED_PROJECT_BOUNDARY');
+  assertTrustedRunInventory(inventory, { projectRef, expectedRunId: null });
+  inventory.assertActiveForAdmission('reserveRunCreatedSeed');
+  const journal = journalForRun(inventory.runId);
+  if (!journal || journal.state.recovery || journal.state.terminal) throw new Error('SEED_DURABLE_JOURNAL_REQUIRED');
+  if (RUN_SEEDS.has(inventory) || journal.state.seeds.size) throw new Error('SEED_ALREADY_ADMITTED');
+  if (getRunRequestBudget({ projectRef, runId: inventory.runId }).report().remainingCapacity < 5) throw new Error('SEED_REQUEST_BUDGET_INSUFFICIENT');
+  const userId = crypto.randomUUID();
+  if (inventory.isUserTracked(userId) || inventory.isSeedIdentity(userId)) throw new Error('SEED_IDENTITY_COLLISION');
+  const email = `tio-test-h5-${userId}@proof.invalid`;
+  const operationId = crypto.randomUUID();
+  const password = crypto.randomBytes(24).toString('base64url') + 'aA1!';
+  const key = journal.reserveSeed(userId, operationId);
+  const plan = Object.freeze(Object.assign(Object.create(null), { projectRef, runId: inventory.runId, userId, email, operationId }));
+  const seed = { inventory, plan, userId, email, operationId, key, password,
+    operationHash: crypto.createHash('sha256').update(operationId).digest('hex'), state: 'CREATION_PENDING', creationProof: null };
+  RUN_SEEDS.set(inventory, seed);
+  SEED_PLANS.set(plan, seed);
+  let obligations = LIVE_RESOURCE_OBLIGATIONS.get(inventory);
+  if (!obligations) { obligations = new Map(); LIVE_RESOURCE_OBLIGATIONS.set(inventory, obligations); }
+  obligations.set('user:' + userId, key);
+  return plan;
+}
+
+/** Observe exact Admin create and independent before/after UUID reads under one intent. */
+export async function provisionRunCreatedSeed(rawOptions) {
+  const { plan, inventory, adminClient } = recoveryOptions(rawOptions, ['plan', 'inventory', 'adminClient']);
+  const seed = SEED_PLANS.get(plan);
+  if (!seed || seed.inventory !== inventory || RUN_SEEDS.get(inventory) !== seed) throw new Error('UNTRUSTED_SEED_PLAN');
+  assertTrustedRunInventory(inventory, { projectRef: HARDCODED_TEMP_REF, expectedRunId: plan.runId });
+  assertTrustedAdminClient(adminClient, { projectRef: HARDCODED_TEMP_REF, runId: plan.runId });
+  inventory.assertActiveForAdmission('provisionRunCreatedSeed');
+  if (seed.state !== 'CREATION_PENDING') throw new Error('SEED_CREATION_ALREADY_ENTERED');
+  const journal = journalForRun(plan.runId);
+  const creator = ADMIN_SEED_CREATORS.get(adminClient);
+  if (!journal || !creator) throw new Error('SEED_CAPABILITY_UNAVAILABLE');
+  seed.state = 'CREATION_INDETERMINATE';
+  return withRunRequestBudget(plan.runId, 'auxiliary', async () => { try {
+    const before = await collectResourceCleanup('user:' + seed.userId, () => adminClient.getUserById(seed.userId), () => true);
+    if (before.result?.error?.status !== 404 || before.entry.responses[0]?.status !== 404) throw new Error('SEED_PREEXISTENCE_OR_UNKNOWN');
+    const created = await collectResourceCleanup('user:' + seed.userId, () => creator(seed), () => true);
+    const body = snapshotJwtRecord(created.result.body);
+    if (![200, 201].includes(created.result.status) || body?.id !== seed.userId || body?.email !== seed.email) throw new Error('SEED_CREATION_UNVERIFIED');
+    const after = await collectResourceCleanup('user:' + seed.userId, () => adminClient.getUserById(seed.userId), () => true);
+    const observed = snapshotJwtRecord(after.result?.data);
+    if (after.entry.responses[0]?.status !== 200 || observed?.id !== seed.userId || observed?.email !== seed.email) throw new Error('SEED_IDENTITY_VERIFICATION_FAILED');
+    const receipt = Object.freeze(Object.create(null));
+    LIVE_RESOLUTION_RECEIPTS.set(receipt, { type: 'seed_verified', handle: journal.handle, key: seed.key, operation: seed.operationHash,
+      attempts: [before.entry.requestOrdinals[0], created.entry.requestOrdinals[0], after.entry.requestOrdinals[0]] });
+    journal.verifySeed(receipt);
+    seed.creationProof = createCreationProof('provider_admin_create', { providerReturnedId: seed.userId });
+    const registered = inventory.registerCreatedUser({ id: seed.userId, email: seed.email, source: 'H5_admin_create', creationProof: seed.creationProof }, SEED_ADMISSION);
+    seed.creationProof = registered.creationProof;
+    seed.state = 'CREATION_VERIFIED';
+    return Object.freeze({ state: seed.state, userId: seed.userId, email: seed.email, runId: plan.runId });
+  } catch (error) {
+    seed.state = 'RESIDUAL_BLOCKED';
+    throw error;
+  } });
+}
+
+function seedCanDelete(inventory, seed) {
+  if (!['CREATION_VERIFIED', 'CLEANUP_PENDING'].includes(seed.state) || !seed.creationProof ||
+      seed.foreignEffect === true ||
+      inventory.createdUsers.get(seed.userId)?.creationProof !== seed.creationProof) return false;
+  const state = journalForRun(inventory.runId)?.state;
+  if (!state || state.inventoryKinds.has('auth') || [...state.obligations].some(([key, kind]) => kind === 'auth' && key !== seed.key)) return false;
+  for (const id of inventory.trackedSessions) {
+    if (!hasVerifiedSessionRevocation(inventory, id)) return false;
+  }
+  return inventory.sessionReconciliationObligations.length === 0 && inventory.untrackedSessionsCount === 0;
+}
+
+function persistSeedAbsence(inventory, seed, absence) {
+  if (!seedCanDelete(inventory, seed) || absence.result?.error?.status !== 404 || absence.entry.responses[0]?.status !== 404) throw new Error('SEED_ABSENCE_UNVERIFIED');
+  const journal = journalForRun(inventory.runId);
+  const receipt = Object.freeze(Object.create(null));
+  const attempts = journal.state.attempts.filter(a => a.resourceKey === seed.key && a.dispatchedAt !== null && !journal.state.resolvedAttempts.has(a.ordinal)).map(a => a.ordinal);
+  LIVE_RESOLUTION_RECEIPTS.set(receipt, { type: 'seed_absence', handle: journal.handle, key: seed.key, operation: seed.operationHash, attempts });
+  journal.resolveSeed(receipt);
+  seed.state = 'CLEANUP_VERIFIED';
+}
 const revocationFalseProofTest = Function.prototype.call.bind(RegExp.prototype.test);
 function isFalseRevocationProof(body) {
   if (!body || typeof body !== 'object' || utilTypes.isProxy(body)) return false;
@@ -478,7 +573,7 @@ async function executeBudgetedRequest(runId, category, operation, signal = null,
   const budget = getRunRequestBudget({ projectRef: 'wvdabiwbaavfggcmpizd', runId: effectiveRun, mode: existing?.mode ?? mode });
   const resourceContext = RESOURCE_REQUEST_CONTEXT.getStore();
   return executeRunBudgetRequest(budget, { category: existing?.category || category, signal, kind,
-    resourceKey: resourceContext?.key, operationHash: resourceContext?.operationHash }, async (ordinal, recordCreation) => {
+    resourceKey: resourceContext?.key, operationHash: ['seed_create', 'storage_upload'].includes(kind) ? resourceContext?.operationHash : undefined }, async (ordinal, recordCreation) => {
     resourceContext?.requestOrdinals?.push(ordinal);
     const result = await operation(ordinal, recordCreation);
     resourceContext?.responses?.push({ ordinal, status: result?.status, kind, target });
@@ -522,6 +617,7 @@ function recoveryRequestKind(transport, runId, url, method) {
   try { target = new URL(url); } catch { return 'other_effect'; }
   if (target.origin !== `https://${HARDCODED_TEMP_REF}.supabase.co` || target.username || target.password) return 'other_effect';
   const path = target.pathname;
+  if (method === 'POST' && path === '/auth/v1/admin/users' && RESOURCE_REQUEST_CONTEXT.getStore()?.seedCreateTransport === transport) return 'seed_create';
   const object = `${STORAGE_PROBE_BUCKET}/${runId}/probe.txt`;
   if (method === 'POST' && path === `/storage/v1/object/${object}`) return 'storage_upload';
   if (method === 'DELETE' && path === `/storage/v1/object/${object}` &&
@@ -1976,13 +2072,16 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
           conditionalDeletion = provider.conditionalDelete(context.expected);
         }
       }
+      const seedRun = Boolean(journalForRun(runId)?.state.seeds.size);
+      const recordedHeaders = seedRun ? sanitizeData(lowerHeaders) : lowerHeaders;
+      const recordedBody = seedRun ? sanitizeData(bodyJson) : bodyJson;
       calls.push(Object.freeze({
         url: urlStr,
         pathname,
         method,
-        headers: Object.freeze({ ...lowerHeaders }),
-        body: rawBody,
-        bodyJson: clonePlainData(bodyJson),
+        headers: Object.freeze({ ...recordedHeaders }),
+        body: seedRun && bodyJson ? JSON.stringify(recordedBody) : rawBody,
+        bodyJson: clonePlainData(recordedBody),
         tag: selected.tag || null,
         routeIndex: matched ? matched._index : -1,
         timestamp: new Date().toISOString()
@@ -3729,6 +3828,8 @@ export function observeAuthResponse({
   const activeSessionConflict = Boolean(probeId === 'HOOK-02' && activeSessionId && ((bodySessionId && bodySessionId !== activeSessionId) || (tokenSessionId && tokenSessionId !== activeSessionId)));
   const activeUserConflict = Boolean(probeId === 'HOOK-02' && activeUserId && ((bodyUserId && bodyUserId !== activeUserId) || (tokenUserId && tokenUserId !== activeUserId)));
   const identityConflict = sessionIdConflict || userIdConflict || activeSessionConflict || activeUserConflict;
+  const runSeed = RUN_SEEDS.get(inv);
+  if (runSeed && ((bodyUserId && bodyUserId !== runSeed.userId) || (tokenUserId && tokenUserId !== runSeed.userId))) runSeed.foreignEffect = true;
 
   const hasTokens = Boolean(accessToken || refreshToken || rawSessionId);
   const returnedEmail =
@@ -5541,6 +5642,8 @@ function recordBlockedCleanup(report, inventory, message, unresolvedOps) {
 // Resource truth shared by the final cleanup gate and public isClean(). Lifecycle
 // fencing remains separate: cleanup must audit resources while CLEANUP_ACTIVE.
 function inventoryHasResidualResources(inv) {
+  const seed = RUN_SEEDS.get(inv);
+  if (seed && seed.state !== 'CLEANUP_VERIFIED') return true;
   if ([...inv.createdUsers.keys()].some(id => !inv.deletedUsers.has(id))) return true;
   if (inv.unverifiedUsers.size || inv.untrackedSessionsCount || inv.untrackedUsersCount ||
       inv.sessionReconciliationObligations.length || inv.hasUnresolvedOperations() ||
@@ -5839,6 +5942,11 @@ export class TestRunInventory {
     }
     const cleanId = id.trim();
     const cleanEmail = email && typeof email === 'string' && email.trim().length > 0 ? email.trim().toLowerCase() : null;
+    const runSeed = privateSeed(this, cleanId);
+    if (runSeed) {
+      if (cleanEmail && cleanEmail !== runSeed.email) throw new Error('SEED_IDENTITY_CONFLICT');
+      return false; // Module-owned disposable identity can never become Option A.
+    }
     this.protectedSeedIdentities.add(cleanId);
     this.verifiedSeedUsers.set(cleanId, {
       id: cleanId,
@@ -5872,6 +5980,8 @@ export class TestRunInventory {
   getUserOwnership(userId) {
     if (!userId || typeof userId !== 'string') return USER_OWNERSHIP.OWNERSHIP_UNKNOWN;
     const cleanId = userId.trim();
+    const runSeed = privateSeed(this, cleanId);
+    if (runSeed) return ['CREATION_VERIFIED', 'CLEANUP_PENDING', 'CLEANUP_VERIFIED'].includes(runSeed.state) ? USER_OWNERSHIP.RUN_CREATED_VERIFIED : USER_OWNERSHIP.CREATION_INDETERMINATE;
     if (this.userOwnership.has(cleanId)) {
       return this.userOwnership.get(cleanId);
     }
@@ -5891,7 +6001,7 @@ export class TestRunInventory {
    * Registers a user created during this run with affirmative proof (R16-02).
    * Deletion eligible upon cleanup ONLY if RUN_CREATED_VERIFIED.
    */
-  registerCreatedUser(raw = {}) {
+  registerCreatedUser(raw = {}, capability = null) {
     const { id, email, source = 'test_signup', creationProof = null } = snapshotDirectInventoryInput(raw, 'registerCreatedUser');
     if (this.finalized) {
       this.postFinalizationMutations.push({
@@ -5911,6 +6021,8 @@ export class TestRunInventory {
     validateTestIdentity(email);
     const cleanId = id.trim();
     const normEmail = email.trim().toLowerCase();
+    const runSeed = privateSeed(this, cleanId);
+    if (runSeed && (capability !== SEED_ADMISSION || normEmail !== runSeed.email)) throw new Error('UNTRUSTED_SEED_CREATION_PROOF');
 
     // Anti-deletion guard: Never classify pre-existing seed user as run-created! (R16-02)
     if (this.isSeedIdentity(cleanId, normEmail) || this.isUserReferenced(cleanId)) {
@@ -6031,6 +6143,11 @@ export class TestRunInventory {
     validateTestIdentity(email);
     const cleanId = id.trim();
     const normEmail = email.trim().toLowerCase();
+    const runSeed = privateSeed(this, cleanId);
+    if (runSeed) {
+      if (runSeed.state !== 'CREATION_VERIFIED' || normEmail !== runSeed.email) throw new Error('SEED_IDENTITY_CONFLICT');
+      return this.createdUsers.get(cleanId);
+    }
     const record = {
       id: cleanId,
       email: normEmail,
@@ -6722,6 +6839,8 @@ export class TestRunInventory {
     if (inventoryHasResidualResources(this)) return false;
     const journal = journalForRun(this.runId);
     if (journal && journal.handle.report().status !== 'CLEANUP_VERIFIED_SUCCESS') return false;
+    const seed = RUN_SEEDS.get(this);
+    if (seed) seed.password = null;
     for (const item of this.seedCredentialRestorations) {
       if (item.originalPassword) item.originalPassword = '[CLEARED]';
       if (item.targetPassword) item.targetPassword = '[CLEARED]';
@@ -7098,6 +7217,7 @@ export class TestRunInventory {
   getSummary() {
     return {
       runId: this.runId,
+      seedLifecycle: RUN_SEEDS.get(this)?.state ?? 'PRE_EXISTING_OR_NONE',
       runLifecycleState: this.runLifecycleState,
       createdUsersCount: this.createdUsers.size,
       referencedUsersCount: this.referencedUsers.size,
@@ -7594,6 +7714,12 @@ export class TestRunInventory {
       }
     } else {
       for (const [userId, userObj] of this.createdUsers.entries()) {
+        const runSeed = privateSeed(this, userId);
+        if (runSeed?.state === 'CLEANUP_VERIFIED') continue;
+        if (runSeed && !seedCanDelete(this, runSeed)) {
+          report.residualUsers.push({ id: userId, error: 'SEED_SESSION_OR_OWNERSHIP_UNVERIFIED' });
+          continue;
+        }
         // Live per-user pre-deletion audit immediately before deleteUser() (R3-04)
         const liveBlocker = this._evaluatePreUserDeletionBlocker(storageCleanupFailed, report);
         if (liveBlocker) {
@@ -7635,6 +7761,7 @@ export class TestRunInventory {
         }
 
         try {
+          if (runSeed) runSeed.state = 'CLEANUP_PENDING';
           const cleanup = await collectResourceCleanup('user:' + userId, () => adminClient.deleteUser(userId), res => res && !res.error);
           const res = cleanup.result;
           if (res && res.error) {
@@ -7660,7 +7787,18 @@ export class TestRunInventory {
         for (const [userId, userObj] of this.createdUsers.entries()) {
           if (typeof adminClient.getUserById === 'function') {
             try {
-              const check = await adminClient.getUserById(userId);
+              const seed = privateSeed(this, userId);
+              if (seed?.state === 'CLEANUP_VERIFIED') continue;
+              if (seed && !userCleanupAttempts.has(userId)) continue;
+              const seedAbsence = seed
+                ? await collectResourceCleanup('user:' + userId, () => adminClient.getUserById(userId), () => true)
+                : null;
+              const check = seedAbsence ? seedAbsence.result : await adminClient.getUserById(userId);
+              if (seed) {
+                persistSeedAbsence(this, seed, seedAbsence);
+                this.deletedUsers.add(userId);
+                continue;
+              }
               // Detect user existence across all response shapes (data.user.id, data.id, top-level id) (R4-06)
               const returnedUser = check?.data?.user || check?.data || (check && !check.error && check.id ? check : null);
               const foundId = returnedUser?.id;
@@ -9287,7 +9425,17 @@ export const HOSTED_PROBE_SPECIFICATIONS = Object.freeze({
  * PRRT_kwDOVtCmZc66lo-a, PRRT_kwDOVtCmZc66lo-f, PRRT_kwDOVtCmZc66lo-i, PRRT_kwDOVtCmZc66lo-m,
  * PRRT_kwDOVtCmZc66lo-o, PRRT_kwDOVtCmZc66lo-t, PRRT_kwDOVtCmZc66lq3S, and PRRT_kwDOVtCmZc66lq3W.
  */
-export function createHostedDispatcher(rawOptions = {}) {
+/** Reuse the existing probes with a private seed binding and registered offline transport. */
+export function createRunCreatedSeedDispatcher(rawOptions) {
+  const options = admitValidatedInput(rawOptions, 'createHostedDispatcherOptions');
+  const seed = RUN_SEEDS.get(options.inventory);
+  if (!seed || seed.state !== 'CREATION_VERIFIED') throw new Error('SEED_NOT_VERIFIED');
+  return createHostedDispatcher({ ...options, testEmail: seed.email, seedEmail: seed.email, seedUserId: seed.userId,
+    runContext: options.runContext || createRunContext({ runId: seed.plan.runId, testEmail: seed.email,
+      seedEmail: seed.email, seedUserId: seed.userId }) }, SEED_ADMISSION);
+}
+
+export function createHostedDispatcher(rawOptions = {}, seedCapability = null) {
   const opts = admitValidatedInput(rawOptions, 'createHostedDispatcherOptions');
   let {
     projectRef = HARDCODED_TEMP_REF,
@@ -9366,7 +9514,8 @@ export function createHostedDispatcher(rawOptions = {}) {
   // Return the async dispatcher matching (item, options) contract
   const dispatcher = async function hostedDispatcher(rawItem, rawCallOptions = {}) {
     const liveCtx = RUNNER_LIVE_DISPATCH_CONTEXT.getStore();
-    if (liveCtx && liveCtx.durableRecoveryVerified !== true) {
+    if (liveCtx && liveCtx.durableRecoveryVerified !== true &&
+        !(seedCapability === SEED_ADMISSION && liveCtx.executionMode === 'OFFLINE_SIMULATION')) {
       throw new Error(
         'BLOCKED_PENDING_DURABLE_RECOVERY: Hosted network dispatcher cannot execute inside LIVE runner while durable crash recovery is not implemented'
       );
@@ -9380,6 +9529,7 @@ export function createHostedDispatcher(rawOptions = {}) {
     }
     const effInv = options.inventory !== undefined && options.inventory !== null ? options.inventory : inventory;
     const effCtx = options.runContext !== undefined && options.runContext !== null ? options.runContext : runContext;
+    if (seedCapability === SEED_ADMISSION && effInv !== inventory) throw new Error('SEED_INVENTORY_CAPABILITY_MISMATCH');
     if (factoryBoundRunId !== null && options.runId !== undefined && options.runId !== null && options.runId !== factoryBoundRunId) {
       throw new Error(
         `DISPATCHER_RUN_MISMATCH: Per-call runId '${options.runId}' does not match factory-bound run '${factoryBoundRunId}' (R10-02)`
@@ -9404,12 +9554,24 @@ export function createHostedDispatcher(rawOptions = {}) {
       }
     }
     const callCtx = { trappedRecoveryError: null, runId: effInv?.runId || effCtx?.runId || expectedCallRunId };
-    const outcome = await DISPATCHER_CALL_CONTEXT.run(callCtx, async () => {
+    const seed = RUN_SEEDS.get(effInv);
+    if (seed && seed.state !== 'CREATION_VERIFIED') throw new Error('SEED_NOT_VERIFIED');
+    if (seed) effInv.assertActiveForAdmission('seed probe dispatch');
+    if (seed && ((effCtx && (effCtx.seedUserId !== seed.userId || effCtx.testEmail !== seed.email)) ||
+        (effCtx?.activeUserId && effCtx.activeUserId !== seed.userId) ||
+        (effCtx?.activeAccessToken && extractUnverifiedJwtIdentityClaims(effCtx.activeAccessToken).userId !== seed.userId) ||
+        (item.testUser && item.testUser !== seed.email) ||
+        (options.testEmail && options.testEmail !== seed.email) ||
+        (options.testUser && options.testUser !== seed.email) ||
+        (options.seedUserId && options.seedUserId !== seed.userId))) throw new Error('SEED_CONTEXT_IDENTITY_MISMATCH');
+    const seedRequestContext = seed ? { resource: 'user:' + seed.userId, key: seed.key, projectRef: normRef,
+      runId: seed.plan.runId, attempts: [], requestOrdinals: [], responses: [] } : RESOURCE_REQUEST_CONTEXT.getStore();
+    const outcome = await RESOURCE_REQUEST_CONTEXT.run(seedRequestContext, () => DISPATCHER_CALL_CONTEXT.run(callCtx, async () => {
       const signal = options.signal;
       const probeId = item.id;
       const ctx = effCtx;
       const inv = effInv;
-      const testPassword = options.testPassword || ctx?.testPassword || getRunTestPassword(options);
+      const testPassword = seed ? seed.password : options.testPassword || ctx?.testPassword || getRunTestPassword(options);
       const testUser = item?.testUser || options.testEmail || options.testUser || ctx?.testEmail || factorySeedEmail || 'tio-test-user-06i@proof.invalid';
 
       if (inv) {
@@ -10327,7 +10489,7 @@ export function createHostedDispatcher(rawOptions = {}) {
         // If the request commits but response is lost (network drop, timeout, connection reset,
         // or unreadable JSON), the restoration obligation is already securely recorded in inventory.
         let restorationRecord = null;
-        if (inv && userId) {
+        if (inv && userId && !privateSeed(inv, String(userId))) {
           restorationRecord = inv.registerSeedPasswordModification({
             userId: String(userId),
             email: seedEmail,
@@ -11023,19 +11185,23 @@ export function createHostedDispatcher(rawOptions = {}) {
         };
       }
     }
-    });
+    }));
     if (callCtx.trappedRecoveryError) {
       throw callCtx.trappedRecoveryError;
     }
     return outcome;
   };
-  HOSTED_NETWORK_DISPATCHERS.add(dispatcher);
+  if (seedCapability === SEED_ADMISSION) {
+    TRUSTED_OFFLINE_DISPATCHERS.set(dispatcher, Object.freeze({ projectRef: normRef, runId: factoryBoundRunId,
+      rawTransportFetch: transportFetch, dispatchFn: dispatcher }));
+  } else HOSTED_NETWORK_DISPATCHERS.add(dispatcher);
   Object.defineProperty(dispatcher, '_isHostedNetworkDispatcher', {
-    value: true,
+    value: seedCapability !== SEED_ADMISSION,
     writable: false,
     configurable: false,
     enumerable: true
   });
+  if (seedCapability === SEED_ADMISSION) Object.freeze(dispatcher);
   return dispatcher;
 }
 
@@ -11193,6 +11359,12 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
     if (options.requireSelection === true && (!options.selectedProbeIds || options.selectedProbeIds.length === 0)) {
       throw new Error('SELECTION_REQUIRED: Executing runner mode strictly requires an explicit, validated selectedProbeIds array');
     }
+    const seed = RUN_SEEDS.get(activeInventory);
+    if (seed && (seed.state !== 'CREATION_VERIFIED' || testEmail !== seed.email ||
+        (options.seedUserId && options.seedUserId !== seed.userId) ||
+        (options.targetUserId && options.targetUserId !== seed.userId) ||
+        (options.seedEmail && options.seedEmail !== seed.email) ||
+        (runContext && (runContext.seedUserId !== seed.userId || runContext.testEmail !== seed.email)))) throw new Error('SEED_RUN_IDENTITY_MISMATCH');
     // Initialize pacing only after the remaining admission checks pass. An
     // otherwise rejected legacy run must not pin the mode for a valid retry.
     getRunRequestBudget({ projectRef: validatedRef, runId: activeInventory.runId, mode: timingConfig.mode });
@@ -11209,12 +11381,13 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
   if (verifiedSeedId) {
     activeInventory.protectSeedIdentity({ email: options.seedEmail || testEmail || null, id: verifiedSeedId });
   }
+  const runSeed = RUN_SEEDS.get(activeInventory);
   const activeRunContext = runContext || createRunContext({
     runId: activeInventory.runId,
     testEmail,
-    testPassword: options.testPassword,
-    seedUserId: options.seedUserId,
-    seedEmail: options.seedEmail,
+    testPassword: runSeed ? runSeed.password : options.testPassword,
+    seedUserId: runSeed ? runSeed.userId : options.seedUserId,
+    seedEmail: runSeed ? runSeed.email : options.seedEmail,
     storageFixturePath: options.storageFixturePath
   });
   let cleanupReport = null;
@@ -11285,7 +11458,7 @@ async function _runHostedProbeRunnerInternal(rawOptions = {}, forcedExecutionMod
       let rawOutcome;
       try {
         const dispatchPromise = RUNNER_LIVE_DISPATCH_CONTEXT.run(
-          { durableRecoveryVerified: false },
+          { durableRecoveryVerified: false, executionMode: explicitOfflineSimulation ? 'OFFLINE_SIMULATION' : 'LIVE' },
           () => withRunRequestBudget(activeInventory.runId, 'probe', () => runWithBlockedRealFetch(() =>
             Promise.resolve(
               candidateDispatcher(item, {
@@ -12321,6 +12494,18 @@ export function createHostedAdminClient(rawOptions = {}) {
       capabilities
     })
   );
+  ADMIN_SEED_CREATORS.set(client, async seed => {
+    if (RUN_SEEDS.get(seed.inventory) !== seed || seed.plan.runId !== boundRunId || seed.state !== 'CREATION_INDETERMINATE') throw new Error('UNTRUSTED_SEED_OPERATION');
+    const context = RESOURCE_REQUEST_CONTEXT.getStore();
+    if (!context || context.key !== seed.key || context.runId !== boundRunId) throw new Error('UNBOUND_SEED_OPERATION');
+    context.operationHash = seed.operationHash;
+    context.seedCreateTransport = rawTransportFetch;
+    const response = await fetchFn(`${baseUrl}/auth/v1/admin/users`, {
+      method: 'POST', headers: { apikey: serviceRoleKey, Authorization: `Bearer ${serviceRoleKey}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: seed.userId, email: seed.email, password: seed.password, email_confirm: true })
+    });
+    return { status: response.status, body: await response.json() };
+  });
   return client;
 }
 
