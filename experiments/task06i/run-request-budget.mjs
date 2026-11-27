@@ -199,17 +199,29 @@ export function getRunRequestBudget(rawOptions) {
       return metadata.entry.ordinal;
     },
     completeRequest(ticket, outcome = 'success', identity = null, responseStatus = null) {
-      if (!['success', 'failed', 'cancelled_after_dispatch'].includes(outcome)) throw new Error('INVALID_REQUEST_BUDGET_OUTCOME');
-      if (responseStatus !== null && (!Number.isInteger(responseStatus) || responseStatus < 100 || responseStatus > 599)) throw new Error('INVALID_REQUEST_RESPONSE_STATUS');
       const metadata = TICKETS.get(ticket);
       if (!metadata || metadata.budget !== budget) throw new Error('UNTRUSTED_REQUEST_BUDGET_TICKET');
       if (metadata.settled) throw new Error('REQUEST_BUDGET_ALREADY_COMPLETED');
       metadata.settled = true;
       try {
+        let validationError = null;
+        if (!['success', 'failed', 'cancelled_after_dispatch'].includes(outcome)) {
+          validationError = new Error('INVALID_REQUEST_BUDGET_OUTCOME');
+        } else if (responseStatus !== null && (!Number.isInteger(responseStatus) || responseStatus < 100 || responseStatus > 599)) {
+          validationError = new Error('INVALID_REQUEST_RESPONSE_STATUS');
+        }
+        if (validationError) {
+          // The provider was already entered. Persist failure without inventing
+          // HTTP status or accepting unverified identity, then reject admission.
+          outcome = 'failed';
+          identity = null;
+          responseStatus = null;
+        }
         journal?.complete(metadata.entry.ordinal, outcome, identity, responseStatus);
         metadata.entry.outcome = outcome;
         if (outcome === 'failed') failed++;
         if (outcome === 'cancelled_after_dispatch') { failed++; cancelledAfter++; }
+        if (validationError) throw validationError;
       } finally {
         journal?.leaveRequest();
       }
@@ -249,13 +261,18 @@ export async function executeRunBudgetRequest(budget, request, operation) {
   let identity = null;
   let result;
   let outcome;
+  let responseStatus;
   try {
     result = await operation(budget.requestOrdinal(ticket), observed => { identity = observed; });
     outcome = result?.ok === false ? 'failed' : 'success';
+    responseStatus = result?.status ?? null;
   } catch (error) {
-    budget.completeRequest(ticket, error?.name === 'AbortError' ? 'cancelled_after_dispatch' : 'failed');
+    let cancelled = false;
+    // Rejection metadata is diagnostic and may itself be unreadable.
+    try { cancelled = error?.name === 'AbortError'; } catch { /* retain failed classification */ }
+    budget.completeRequest(ticket, cancelled ? 'cancelled_after_dispatch' : 'failed');
     throw error;
   }
-  budget.completeRequest(ticket, outcome, identity, result?.status ?? null);
+  budget.completeRequest(ticket, outcome, identity, responseStatus);
   return result;
 }

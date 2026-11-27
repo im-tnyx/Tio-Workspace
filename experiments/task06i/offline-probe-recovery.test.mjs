@@ -1842,6 +1842,143 @@ if (process.argv[2] === '--h4-child') {
       'replay refuses a status-only local logout absence claim');
   });
 
+  test('H4-R9 malformed status through journal-backed cleanup releases its dispatched lease', async () => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    const fixture = revokedSessionFixture(handle);
+    const transport = createDeterministicFixtureTransport({ requestBudgetMode: mode, routes: [
+      { method: 'POST', pathEquals: '/auth/v1/logout', status: 0 }
+    ] });
+    const admin = createHostedAdminClient({ runId: handle.runId, fetchFn: transport, serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
+    let closeError;
+    let report;
+    let live;
+    try {
+      report = await fixture.inventory.executeCleanup({ adminClient: admin, failClosed: false });
+      live = handle.report();
+      try { handle.close(); } catch (error) { closeError = error; }
+    } finally {
+      // Baseline reproduction must not strand the test's exclusive journal.
+      if (closeError) journalForRun(handle.runId).leaveRequest();
+      handle.close();
+    }
+    assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(live.consumed, 1);
+    assert.notEqual(live.attempts[0].dispatchedAt, null);
+    assert.equal(closeError, undefined);
+    const restarted = reopen(directory, handle.runId);
+    try {
+      assert.equal(restarted.report().status, 'RECOVERY_REQUIRED');
+      assert.equal(restarted.report().consumed, 1);
+      assert.equal(restarted.report().attempts[0].outcome, 'failed');
+    } finally { restarted.close(); }
+  });
+
+  test('H4-R9 direct completion rejects invalid statuses after conserving the failed attempt', async () => {
+    for (const status of [0, 99, 600, -1, 200.5, NaN, Infinity, '200', {}, false]) {
+      const directory = testDirectory();
+      const handle = create(directory);
+      const shared = budget(handle);
+      const ticket = await shared.beginRequest({ kind: 'auth_effect' });
+      assert.throws(() => shared.completeRequest(ticket, 'success', null, status), /INVALID_REQUEST_RESPONSE_STATUS/);
+      assert.equal(handle.report().attempts[0].outcome, 'failed');
+      assert.equal(handle.report().attempts[0].httpStatus, null);
+      assert.equal(shared.report().failedRequestAttempts, 1);
+      assert.throws(() => shared.completeRequest(ticket), /ALREADY_COMPLETED/);
+      handle.close();
+      const restarted = reopen(directory, handle.runId);
+      try {
+        assert.equal(restarted.report().status, 'RECOVERY_REQUIRED');
+        assert.equal(restarted.report().consumed, 1);
+        assert.notEqual(restarted.report().attempts[0].dispatchedAt, null);
+      } finally { restarted.close(); }
+    }
+  });
+
+  test('H4-R9 valid status boundaries and non-HTTP absence preserve exact metadata', async () => {
+    const handle = create(testDirectory());
+    try {
+      for (const status of [100, 200, 599, undefined, null]) {
+        await request(handle, 'auth_effect', () => status === undefined ? {} : { status });
+      }
+      assert.deepEqual(handle.report().attempts.map(a => a.httpStatus), [100, 200, 599, null, null]);
+      assert.equal(handle.report().consumed, 5);
+      assert.equal(handle.report().status, 'RECOVERY_REQUIRED');
+    } finally { handle.close(); }
+  });
+
+  test('H4-R9 wrapper metadata and operation exceptions always release their lease', async () => {
+    for (const field of ['status', 'ok', 'provider', 'rejection-name', 'abort']) {
+      const directory = testDirectory();
+      const handle = create(directory);
+      const marker = new Error('synthetic failure');
+      if (field === 'rejection-name') Object.defineProperty(marker, 'name', { get() { throw new Error('unreadable name'); } });
+      if (field === 'abort') marker.name = 'AbortError';
+      try {
+        await assert.rejects(request(handle, 'auth_effect', () => {
+          if (['provider', 'abort', 'rejection-name'].includes(field)) throw marker;
+          return Object.defineProperty({}, field, { get() { throw marker; } });
+        }), error => error === marker);
+        assert.equal(handle.report().attempts[0].outcome, field === 'abort' ? 'cancelled_after_dispatch' : 'failed');
+        assert.equal(handle.report().consumed, 1);
+      } finally { handle.close(); }
+      const restarted = reopen(directory, handle.runId);
+      assert.equal(restarted.report().status, 'RECOVERY_REQUIRED');
+      restarted.close();
+    }
+  });
+
+  test('H4-R9 foreign forged and duplicate tickets cannot release another request lease', async () => {
+    const first = create(testDirectory());
+    const second = create(testDirectory());
+    const shared = budget(first);
+    const foreignBudget = budget(second);
+    const [one, two] = await Promise.all([
+      shared.beginRequest({ kind: 'auth_effect' }), shared.beginRequest({ kind: 'auth_effect' })
+    ]);
+    const foreign = await foreignBudget.beginRequest({ kind: 'auth_effect' });
+    try {
+      for (const ticket of [{}, foreign]) {
+        assert.throws(() => shared.completeRequest(ticket, 'success', null, 0), /UNTRUSTED_REQUEST_BUDGET_TICKET/);
+      }
+      assert.throws(() => first.close(), /RECOVERY_JOURNAL_IN_USE/);
+      assert.throws(() => shared.completeRequest(one, 'unsupported'), /INVALID_REQUEST_BUDGET_OUTCOME/);
+      assert.throws(() => shared.completeRequest(one), /ALREADY_COMPLETED/);
+      assert.throws(() => first.close(), /RECOVERY_JOURNAL_IN_USE/);
+      assert.throws(() => second.close(), /RECOVERY_JOURNAL_IN_USE/);
+      shared.completeRequest(two, 'failed');
+      foreignBudget.completeRequest(foreign, 'failed');
+      first.close();
+      second.close();
+    } finally {
+      // Only failed assertions need this defensive per-ticket teardown.
+      for (const [owner, ticket] of [[shared, one], [shared, two], [foreignBudget, foreign]]) {
+        try { owner.completeRequest(ticket, 'failed'); } catch { /* already settled */ }
+      }
+      first.close(); second.close();
+    }
+  });
+
+  test('H4-R9 outcome persistence failure releases lease and retains dispatched pending recovery', async () => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    const shared = budget(handle);
+    const ticket = await shared.beginRequest({ kind: 'auth_effect' });
+    const restore = interruptWrite(directory, 'outcome', 1, false, () => ({}), 'fail');
+    try {
+      assert.throws(() => shared.completeRequest(ticket, 'success', null, 0), /RECOVERY_PERSISTENCE_FAILED/);
+      assert.throws(() => shared.completeRequest(ticket), /ALREADY_COMPLETED/);
+      assert.throws(() => handle.report(), /RECOVERY_JOURNAL_UNAVAILABLE/);
+    } finally { restore(); handle.close(); }
+    const restarted = reopen(directory, handle.runId);
+    try {
+      assert.equal(restarted.report().status, 'RECOVERY_REQUIRED');
+      assert.equal(restarted.report().consumed, 1);
+      assert.equal(restarted.report().attempts[0].outcome, 'pending');
+      assert.notEqual(restarted.report().attempts[0].dispatchedAt, null);
+    } finally { restarted.close(); }
+  });
+
   test('H4-R8 permission denial with absence-like text remains unresolved after reopen', async t => {
     const directory = testDirectory();
     const handle = create(directory);
