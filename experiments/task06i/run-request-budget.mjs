@@ -1,6 +1,8 @@
 import { types as utilTypes } from 'node:util';
+import { journalForRun } from './offline-recovery-journal.mjs';
 
 const RUN_BUDGETS = new Map();
+const DURABLE_BUDGETS = new WeakMap();
 const TRUSTED_BUDGETS = new WeakSet();
 const TICKETS = new WeakMap();
 const PRE_DISPATCH_FAILURES = new WeakMap();
@@ -82,34 +84,45 @@ export function getRunRequestBudget(rawOptions) {
   if (options.projectRef !== TEMP_PROJECT || typeof options.runId !== 'string' || !/^[a-zA-Z0-9_-]+$/.test(options.runId)) throw new Error('REQUEST_BUDGET_BINDING_REQUIRED');
   if (options.mode !== undefined && !['standard', 'recorded_zero_wait'].includes(options.mode)) throw new Error('INVALID_REQUEST_BUDGET_MODE');
   const key = options.projectRef + ':' + options.runId;
-  if (RUN_BUDGETS.has(key)) {
-    const existing = RUN_BUDGETS.get(key);
+  const journal = journalForRun(options.runId);
+  if (journal && options.mode !== undefined && options.mode !== journal.mode) throw new Error('REQUEST_BUDGET_MODE_MISMATCH');
+  const existing = journal ? DURABLE_BUDGETS.get(journal) : RUN_BUDGETS.get(key);
+  if (existing) {
     if (options.mode !== undefined && options.mode !== existing.report().pacingMode) throw new Error('REQUEST_BUDGET_MODE_MISMATCH');
     return existing;
   }
-  const mode = options.mode ?? 'standard';
+  const mode = journal?.mode ?? options.mode ?? 'standard';
+  const history = journal?.state.attempts ?? [];
   let reserved = 0;
-  let attempted = 0;
+  let consumed = history.length;
+  let dispatched = history.filter(entry => entry.dispatchedAt !== null).length;
   let blocked = 0;
-  let failed = 0;
+  let failed = history.filter(entry => entry.outcome === 'failed' || entry.outcome === 'cancelled_after_dispatch').length;
   let cancelledBefore = 0;
-  let cancelledAfter = 0;
-  let cleanupAttempts = 0;
-  let auxiliaryAttempts = 0;
-  let lastDispatch = null;
+  let cancelledAfter = history.filter(entry => entry.outcome === 'cancelled_after_dispatch').length;
+  let cleanupAttempts = history.filter(entry => entry.dispatchedAt !== null && entry.category === 'cleanup').length;
+  let auxiliaryAttempts = history.filter(entry => entry.dispatchedAt !== null && entry.category === 'auxiliary').length;
+  let lastDispatch = history.at(-1)?.dispatchedAt ?? history.at(-1)?.reservedAt ?? null;
+  // On reopen wait a full interval on a fresh monotonic clock. Persisted wall
+  // time still constrains ordering, including a system clock rollback.
+  let lastAdmission = journal && history.length ? performance.now() : null;
   let queue = Promise.resolve();
   const intervals = [];
-  const attempts = [];
+  const attempts = history.map(({ ordinal, category, reservedAt, dispatchedAt, outcome }) => ({
+    ordinal, category, reservedAt, dispatchedAt, outcome
+  }));
   const budget = Object.freeze({
     async beginRequest(rawRequest = Object.create(null)) {
-      const request = record(rawRequest, ['category', 'signal']);
+      const request = record(rawRequest, ['category', 'signal', 'kind', 'resourceKey', 'operationHash']);
       const category = request.category ?? 'probe';
       if (!['probe', 'auxiliary', 'cleanup'].includes(category)) throw new Error('INVALID_REQUEST_BUDGET_CATEGORY');
+      if (request.resourceKey !== undefined && (typeof request.resourceKey !== 'string' || !/^[a-f0-9]{64}$/.test(request.resourceKey))) throw new Error('INVALID_REQUEST_RESOURCE_KEY');
+      if (request.operationHash !== undefined && (typeof request.operationHash !== 'string' || !/^[a-f0-9]{64}$/.test(request.operationHash) || request.kind !== 'storage_upload' || !request.resourceKey)) throw new Error('INVALID_REQUEST_OPERATION_BINDING');
       const signal = trustedSignal(request.signal);
       const rejectCancelled = () => { blocked++; cancelledBefore++; const error = abortError(); error._counted = true; PRE_DISPATCH_FAILURES.set(error, options.runId); throw error; };
       if (signal && abortedGet.call(signal)) return rejectCancelled();
       // Synchronous reservation occurs before the first await, so concurrent callers cannot oversubscribe.
-      if (attempted + reserved >= LIMIT) {
+      if (consumed + reserved >= LIMIT) {
         blocked++;
         const error = new Error('REQUEST_BUDGET_EXHAUSTED: Shared run request limit reached; outstanding resources require recovery');
         error.code = 'REQUEST_BUDGET_EXHAUSTED';
@@ -121,62 +134,117 @@ export function getRunRequestBudget(rawOptions) {
       reserved++;
       const previous = queue;
       let release;
+      let leased = false;
+      let admitted = false;
       queue = new Promise(resolve => { release = resolve; });
       try {
+        if (journal) {
+          journal.enterRequest();
+          leased = true;
+        }
         await previous;
         if (signal && abortedGet.call(signal)) return rejectCancelled();
         if (lastDispatch !== null) {
           if (mode === 'standard') {
             // Check against the last actual admission after acquiring the serialized pacing turn.
-            while (Date.now() - lastDispatch < INTERVAL) await wait(INTERVAL - (Date.now() - lastDispatch), signal);
+            let remaining;
+            do {
+              const elapsed = Date.now() - lastDispatch;
+              if (journal && elapsed < 0) throw new Error('REQUEST_CLOCK_BEFORE_RECOVERY_ACCOUNTING');
+              remaining = Math.max(INTERVAL - elapsed, lastAdmission === null ? 0 : INTERVAL - (performance.now() - lastAdmission));
+              if (remaining > 0) await wait(Math.ceil(remaining), signal);
+            } while (remaining > 0);
           }
           intervals.push(mode === 'standard' ? Date.now() - lastDispatch : INTERVAL);
         }
         if (signal && abortedGet.call(signal)) return rejectCancelled();
-        lastDispatch = Date.now();
-        attempted++;
+        const reservedAt = Date.now();
+        journal?.reserve(consumed + 1, category, request.kind, reservedAt, request.resourceKey ?? null, request.operationHash ?? null);
+        lastDispatch = reservedAt;
+        consumed++;
+        const ticket = Object.freeze(Object.create(null));
+        const entry = { ordinal: consumed, category, dispatchedAt: journal ? null : lastDispatch, outcome: 'pending' };
+        if (journal) entry.reservedAt = reservedAt;
+        attempts.push(entry);
+        if (journal) {
+          const dispatchedAt = Date.now();
+          journal.dispatch(consumed, dispatchedAt);
+          lastAdmission = performance.now();
+          lastDispatch = dispatchedAt;
+          entry.dispatchedAt = dispatchedAt;
+        }
+        dispatched++;
         if (category === 'cleanup') cleanupAttempts++;
         if (category === 'auxiliary') auxiliaryAttempts++;
-        const ticket = Object.freeze(Object.create(null));
-        const entry = { ordinal: attempted, category, dispatchedAt: lastDispatch, outcome: 'pending' };
-        attempts.push(entry);
-        TICKETS.set(ticket, { budget, entry });
+        TICKETS.set(ticket, { budget, entry, settled: false });
+        admitted = true;
         return ticket;
       } catch (error) {
         if (CANCELLATION_ERRORS.has(error)) PRE_DISPATCH_FAILURES.set(error, options.runId);
+        // A journal failure here is before the caller can enter the provider.
+        if (journal) PRE_DISPATCH_FAILURES.set(error, options.runId);
         if (error?.name === 'AbortError' && error?.code === 'REQUEST_CANCELLED_BEFORE_DISPATCH' && !error._counted) {
           blocked++; cancelledBefore++;
         }
         throw error;
       } finally {
+        if (leased && !admitted) journal.leaveRequest();
         reserved--;
         release();
       }
     },
-    completeRequest(ticket, outcome = 'success') {
-      if (!['success', 'failed', 'cancelled_after_dispatch'].includes(outcome)) throw new Error('INVALID_REQUEST_BUDGET_OUTCOME');
+    requestOrdinal(ticket) {
+      const metadata = TICKETS.get(ticket);
+      if (!metadata || metadata.budget !== budget || metadata.settled) throw new Error('UNTRUSTED_REQUEST_BUDGET_TICKET');
+      return metadata.entry.ordinal;
+    },
+    completeRequest(ticket, outcome = 'success', identity = null, responseStatus = null) {
       const metadata = TICKETS.get(ticket);
       if (!metadata || metadata.budget !== budget) throw new Error('UNTRUSTED_REQUEST_BUDGET_TICKET');
-      if (metadata.entry.outcome !== 'pending') throw new Error('REQUEST_BUDGET_ALREADY_COMPLETED');
-      metadata.entry.outcome = outcome;
-      if (outcome === 'failed') failed++;
-      if (outcome === 'cancelled_after_dispatch') { failed++; cancelledAfter++; }
+      if (metadata.settled) throw new Error('REQUEST_BUDGET_ALREADY_COMPLETED');
+      metadata.settled = true;
+      try {
+        let validationError = null;
+        if (!['success', 'failed', 'cancelled_after_dispatch'].includes(outcome)) {
+          validationError = new Error('INVALID_REQUEST_BUDGET_OUTCOME');
+        } else if (responseStatus !== null && (!Number.isInteger(responseStatus) || responseStatus < 100 || responseStatus > 599)) {
+          validationError = new Error('INVALID_REQUEST_RESPONSE_STATUS');
+        }
+        if (validationError) {
+          // The provider was already entered. Persist failure without inventing
+          // HTTP status or accepting unverified identity, then reject admission.
+          outcome = 'failed';
+          identity = null;
+          responseStatus = null;
+        }
+        journal?.complete(metadata.entry.ordinal, outcome, identity, responseStatus);
+        metadata.entry.outcome = outcome;
+        if (outcome === 'failed') failed++;
+        if (outcome === 'cancelled_after_dispatch') { failed++; cancelledAfter++; }
+        if (validationError) throw validationError;
+      } finally {
+        journal?.leaveRequest();
+      }
     },
     report() {
       return {
         projectRef: options.projectRef, runId: options.runId, maxTotalRequests: LIMIT,
         minIntervalMs: INTERVAL, pacingMode: mode, simulatedPacing: mode === 'recorded_zero_wait',
-        simulatedTransportRequests: attempted, actualHostedRequests: 0, pendingReservations: reserved,
+        simulatedTransportRequests: dispatched, actualHostedRequests: 0, pendingReservations: reserved,
         blockedRequests: blocked, failedRequestAttempts: failed, cancelledBeforeDispatch: cancelledBefore,
         cancelledAfterDispatch: cancelledAfter, auxiliaryRequests: auxiliaryAttempts, cleanupRequests: cleanupAttempts,
-        probeTransportRequests: attempted - auxiliaryAttempts - cleanupAttempts,
+        probeTransportRequests: dispatched - auxiliaryAttempts - cleanupAttempts,
         cleanupPolicy: 'SHARED_TOTAL_LIMIT_NO_EXTRA_ALLOWANCE', reservedCleanupCapacity: 0,
-        remainingCapacity: LIMIT - attempted - reserved, intervalsMs: intervals.slice(), attempts: attempts.map(entry => ({ ...entry }))
+        remainingCapacity: LIMIT - consumed - reserved, intervalsMs: intervals.slice(), attempts: attempts.map(entry => ({ ...entry })),
+        ...(journal ? {
+          consumedAttempts: consumed, reservedWithoutDispatch: consumed - dispatched, durableDispatchMarkers: dispatched
+        } : {})
       };
     }
   });
   TRUSTED_BUDGETS.add(budget);
-  RUN_BUDGETS.set(key, budget);
+  if (journal) DURABLE_BUDGETS.set(journal, budget);
+  else RUN_BUDGETS.set(key, budget);
   return budget;
 }
 export function assertRunRequestBudget(budget, projectRef, runId) {
@@ -184,4 +252,27 @@ export function assertRunRequestBudget(budget, projectRef, runId) {
   const report = budget.report();
   if (report.projectRef !== projectRef || report.runId !== runId) throw new Error('REQUEST_BUDGET_BINDING_MISMATCH');
   return budget;
+}
+
+// The operation is a module-owned dispatch closure. Outcome persistence must
+// happen after it settles and outside the operation's exception handler.
+export async function executeRunBudgetRequest(budget, request, operation) {
+  const ticket = await budget.beginRequest(request);
+  let identity = null;
+  let result;
+  let outcome;
+  let responseStatus;
+  try {
+    result = await operation(budget.requestOrdinal(ticket), observed => { identity = observed; });
+    outcome = result?.ok === false ? 'failed' : 'success';
+    responseStatus = result?.status ?? null;
+  } catch (error) {
+    let cancelled = false;
+    // Rejection metadata is diagnostic and may itself be unreadable.
+    try { cancelled = error?.name === 'AbortError'; } catch { /* retain failed classification */ }
+    budget.completeRequest(ticket, cancelled ? 'cancelled_after_dispatch' : 'failed');
+    throw error;
+  }
+  budget.completeRequest(ticket, outcome, identity, responseStatus);
+  return result;
 }

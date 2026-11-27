@@ -39,6 +39,9 @@ function defineData(target, key, value) {
 
 const PROVIDERS = new WeakSet();
 const PROVIDER_BINDINGS = new WeakMap();
+const RECOVERY_WITNESSES = new WeakMap();
+const RECOVERY_SNAPSHOTS = new WeakSet();
+const RECOVERY_OBSERVATIONS = new WeakMap();
 const TRANSPORT_PROVIDERS = new WeakMap();
 const TEMP_REF = 'wvdabiwbaavfggcmpizd';
 const BUCKET = 'task06i_probe_bucket';
@@ -99,7 +102,7 @@ function result(status, expected, current = null, deleted = false) {
  * authorization for any hosted operation.
  */
 export function createConditionalStorageFixtureProvider(rawSpec) {
-  const spec = record(rawSpec, ['projectRef', 'runId', 'objects', 'available', 'responseMode'], ['projectRef', 'runId']);
+  const spec = record(rawSpec, ['projectRef', 'runId', 'objects', 'available', 'responseMode', 'recoverySnapshot'], ['projectRef', 'runId']);
   if (spec.projectRef !== TEMP_REF || typeof spec.runId !== 'string' || !safeTest(/^[a-zA-Z0-9_-]+$/, spec.runId)) throw new Error('CONDITIONAL_STORAGE_SCOPE_MISMATCH');
   const available = safeHasOwn(spec, 'available') ? spec.available : true;
   if (typeof available !== 'boolean') throw new Error('INVALID_CONDITIONAL_STORAGE_AVAILABILITY');
@@ -107,6 +110,16 @@ export function createConditionalStorageFixtureProvider(rawSpec) {
   if (!safeIncludes(['normal', 'lost_response', 'indeterminate', 'malformed'], mode)) throw new Error('INVALID_CONDITIONAL_STORAGE_RESPONSE_MODE');
   const objects = new Map();
   const unknownObjects = new Set();
+  const creationOrdinals = new Map();
+  const recoverySnapshot = safeHasOwn(spec, 'recoverySnapshot')
+    ? record(spec.recoverySnapshot, ['projectRef', 'runId', 'objects', 'indeterminate', 'creationOrdinal'])
+    : null;
+  if (recoverySnapshot && (safeHasOwn(spec, 'objects') || typeof recoverySnapshot.indeterminate !== 'boolean')) {
+    throw new Error('INVALID_RECOVERY_PROVIDER_SNAPSHOT');
+  }
+  if (recoverySnapshot && (recoverySnapshot.projectRef !== spec.projectRef || recoverySnapshot.runId !== spec.runId)) {
+    throw new Error('RECOVERY_PROVIDER_SNAPSHOT_SCOPE_MISMATCH');
+  }
   const attempts = [];
   const key = item => `${item.bucket}/${item.path}`;
   function boundIdentity(raw) {
@@ -114,14 +127,26 @@ export function createConditionalStorageFixtureProvider(rawSpec) {
     if (item.runId !== spec.runId || item.projectRef !== spec.projectRef) throw new Error('CONDITIONAL_STORAGE_BINDING_MISMATCH');
     return item;
   }
-  if (safeHasOwn(spec, 'objects')) {
-    if (!safeIsArray(spec.objects) || safeIsProxy(spec.objects) || safePrototype(spec.objects) !== safeArrayPrototype) throw new Error('INVALID_CONDITIONAL_STORAGE_OBJECTS');
-    for (let index = 0; index < spec.objects.length; index++) {
-      const descriptor = safeDescriptor(spec.objects, String(index));
+  if (recoverySnapshot || safeHasOwn(spec, 'objects')) {
+    const rows = recoverySnapshot ? recoverySnapshot.objects : spec.objects;
+    if (!safeIsArray(rows) || safeIsProxy(rows) || safePrototype(rows) !== safeArrayPrototype) throw new Error('INVALID_CONDITIONAL_STORAGE_OBJECTS');
+    for (let index = 0; index < rows.length; index++) {
+      const descriptor = safeDescriptor(rows, String(index));
       if (!descriptor || !safeHasOwn(descriptor, 'value')) throw new Error('INVALID_CONDITIONAL_STORAGE_OBJECTS');
       const item = boundIdentity(descriptor.value);
       if (objects.has(key(item))) throw new Error('DUPLICATE_CONDITIONAL_STORAGE_OBJECT');
       objects.set(key(item), item);
+    }
+  }
+  if (recoverySnapshot) {
+    const locationKey = `${BUCKET}/${spec.runId}/probe.txt`;
+    if (recoverySnapshot.indeterminate) unknownObjects.add(locationKey);
+    const ordinal = recoverySnapshot.creationOrdinal;
+    if (ordinal !== null) {
+      if (objects.size !== 1 || !Number.isSafeInteger(ordinal) || ordinal < 1 || ordinal > 25) {
+        throw new Error('INVALID_RECOVERY_PROVIDER_WITNESS');
+      }
+      creationOrdinals.set(locationKey, ordinal);
     }
   }
   const provider = {
@@ -129,6 +154,7 @@ export function createConditionalStorageFixtureProvider(rawSpec) {
     putObject(raw) {
       const item = boundIdentity(raw);
       objects.set(key(item), item);
+      creationOrdinals.delete(key(item));
       unknownObjects.delete(key(item));
       return item;
     },
@@ -140,6 +166,7 @@ export function createConditionalStorageFixtureProvider(rawSpec) {
     removeFixtureObject(rawLocation) {
       const item = location(rawLocation);
       unknownObjects.delete(key(item));
+      creationOrdinals.delete(key(item));
       return objects.delete(key(item));
     },
     getObject(rawLocation) {
@@ -162,6 +189,7 @@ export function createConditionalStorageFixtureProvider(rawSpec) {
       if (current.ownerId !== expected.ownerId) return result('OWNER_MISMATCH', expected, current);
       if (current.objectId !== expected.objectId) return result('OBJECT_ID_MISMATCH', expected, current);
       objects.delete(key(expected));
+      creationOrdinals.delete(key(expected));
       if (mode === 'lost_response') return result('CONDITIONAL_DELETE_INDETERMINATE', expected, null);
       return result('EXPECTED_OBJECT_DELETED', expected, null, true);
     },
@@ -174,6 +202,8 @@ export function createConditionalStorageFixtureProvider(rawSpec) {
   Object.freeze(provider);
   PROVIDERS.add(provider);
   PROVIDER_BINDINGS.set(provider, Object.freeze({ projectRef: spec.projectRef, runId: spec.runId }));
+  RECOVERY_WITNESSES.set(provider, creationOrdinals);
+  if (available && recoverySnapshot) RECOVERY_SNAPSHOTS.add(provider);
   return provider;
 }
 
@@ -191,6 +221,71 @@ export function registerConditionalStorageFixtureTransport(transport, spec) {
 
 export function getConditionalStorageFixtureProvider(transport) {
   return TRANSPORT_PROVIDERS.get(transport) || null;
+}
+
+export function getConditionalStorageFixtureRunId(transport) {
+  return PROVIDER_BINDINGS.get(getConditionalStorageFixtureProvider(transport))?.runId ?? null;
+}
+
+// Recovery accepts authoritative fixture state supplied independently of the
+// journal. An ordinary fixture (including an empty one) is not a snapshot.
+export function assertRecoveryStorageFixture(provider, projectRef, runId) {
+  const binding = PROVIDER_BINDINGS.get(provider);
+  if (!RECOVERY_SNAPSHOTS.has(provider) || binding.projectRef !== projectRef || binding.runId !== runId) {
+    throw new Error('RECOVERY_PROVIDER_SNAPSHOT_REQUIRED');
+  }
+}
+
+function recoveryStorageState(provider, runId) {
+  const path = `${runId}/probe.txt`;
+  const state = provider.getObjectState({ bucket: BUCKET, path });
+  return { ...state, creationOrdinal: RECOVERY_WITNESSES.get(provider).get(`${BUCKET}/${path}`) ?? null };
+}
+
+// Fixture control for the separate simulation environment. Preserve all state
+// that distinguishes a known empty location from an indeterminate one.
+export function snapshotRecoveryStorageFixture(provider) {
+  assertConditionalStorageFixtureProvider(provider);
+  const { projectRef, runId } = PROVIDER_BINDINGS.get(provider);
+  const { current, indeterminate, creationOrdinal } = recoveryStorageState(provider, runId);
+  return Object.freeze({
+    projectRef, runId, objects: Object.freeze(current ? [current] : []), indeterminate, creationOrdinal
+  });
+}
+
+export function readRecoveryStorageFixture(provider, projectRef, runId) {
+  assertRecoveryStorageFixture(provider, projectRef, runId);
+  const { current, indeterminate, creationOrdinal } = recoveryStorageState(provider, runId);
+  const observation = Object.freeze({
+    current, indeterminate, creationOrdinal
+  });
+  RECOVERY_OBSERVATIONS.set(observation, { projectRef, runId });
+  return observation;
+}
+
+export function assertRecoveryStorageObservation(observation, projectRef, runId) {
+  const binding = RECOVERY_OBSERVATIONS.get(observation);
+  if (!binding || binding.projectRef !== projectRef || binding.runId !== runId) {
+    throw new Error('UNTRUSTED_RECOVERY_STORAGE_OBSERVATION');
+  }
+  return observation;
+}
+
+export function deleteRecoveryStorageFixture(provider, expected, creationOrdinal) {
+  assertRecoveryStorageFixture(provider, expected.projectRef, expected.runId);
+  if (RECOVERY_WITNESSES.get(provider).get(`${expected.bucket}/${expected.path}`) !== creationOrdinal) return false;
+  // The provider checks the current object UUID, owner UUID and unknown bit
+  // inside the same synchronous transition as deletion.
+  return provider.conditionalDelete(expected).status === 'EXPECTED_OBJECT_DELETED';
+}
+
+export function readObservedStorageCreation(transport, runId, ordinal) {
+  const provider = getConditionalStorageFixtureProvider(transport);
+  const binding = PROVIDER_BINDINGS.get(provider);
+  if (!binding || binding.runId !== runId) return null;
+  const path = `${runId}/probe.txt`;
+  if (RECOVERY_WITNESSES.get(provider).get(`${BUCKET}/${path}`) !== ordinal) return null;
+  return provider.getObject({ bucket: BUCKET, path });
 }
 
 function ownData(value, key) {
@@ -336,7 +431,7 @@ function uploadIdentity(provider, request, response, bucket, path) {
   return { identity: { ...binding, bucket, path, objectId: object.objectId, ownerId } };
 }
 
-export function observeConditionalStorageUpload(transport, request, response) {
+export function observeConditionalStorageUpload(transport, request, response, ordinal = null) {
   const provider = getConditionalStorageFixtureProvider(transport);
   if (!provider || request.method !== 'POST' || !safeStartsWith(request.pathname, '/storage/v1/object/')) return null;
   const status = typeof response.status === 'number' ? response.status : 200;
@@ -355,5 +450,8 @@ export function observeConditionalStorageUpload(transport, request, response) {
   if (!admittedIdentity) return { status: 'UPLOAD_IDENTITY_INDETERMINATE', reason: ownData(observation, 'reason') };
   // Expected invalid evidence returned above; genuine internal failures propagate.
   provider.putObject(admittedIdentity);
+  if (Number.isSafeInteger(ordinal) && ordinal >= 1 && ordinal <= 25) {
+    RECOVERY_WITNESSES.get(provider).set(`${bucket}/${path}`, ordinal);
+  }
   return { status: 'UPLOAD_IDENTITY_OBSERVED', cryptographicallyVerified: false };
 }

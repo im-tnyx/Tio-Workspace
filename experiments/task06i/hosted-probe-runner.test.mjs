@@ -2944,10 +2944,13 @@ test('57. Task 06I-B1-H1-R4 (R4-03): Password reset in SESSION-02 requires affir
   // 3. createHostedDispatcher detects surviving session regression when pre-reset token still succeeds with HTTP 200
   const runCtx = createRunContext();
   runCtx.activeUserId = 'user-test-reset-123';
-  runCtx.activeAccessToken = createMockJwt();
+  runCtx.activeSessionId = 'sess-r4-03';
+  runCtx.activeAccessToken = createMockJwt({ sub: runCtx.activeUserId, session_id: runCtx.activeSessionId });
+  const session01 = { id: 'SESSION-01', category: 'Session & Consumer' };
 
   const mockFetchSurviving = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
+      { urlIncludes: '/auth/v1/user', times: 1, status: 200, json: { id: 'user-test-reset-123' } },
       { urlIncludes: '/auth/v1/admin/users/', status: 200, json: { id: 'user-test-reset-123' } },
       { urlIncludes: '/auth/v1/user', status: 200, json: { id: 'user-test-reset-123' } }
     ],
@@ -2961,6 +2964,7 @@ test('57. Task 06I-B1-H1-R4 (R4-03): Password reset in SESSION-02 requires affir
     fetchFn: mockFetchSurviving
   });
 
+  assert.equal((await dispSurviving(session01)).passed, true);
   const outSurviving = await dispSurviving(session02);
   assert.equal(outSurviving.passed, false);
   assert.equal(outSurviving.remaining_sessions, 1);
@@ -2970,6 +2974,7 @@ test('57. Task 06I-B1-H1-R4 (R4-03): Password reset in SESSION-02 requires affir
   // 4. When /auth/v1/user returns generic 401 (e.g. 'Invalid token') without session_not_found, fails closed (R5-01)
   const mockFetchGenericInvalidToken = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
+      { urlIncludes: '/auth/v1/user', times: 1, status: 200, json: { id: 'user-test-reset-123' } },
       { urlIncludes: '/auth/v1/admin/users/', status: 200, json: { id: 'user-test-reset-123' } },
       { urlIncludes: '/auth/v1/user', status: 401, json: { message: 'Invalid token' } }
     ],
@@ -2983,6 +2988,7 @@ test('57. Task 06I-B1-H1-R4 (R4-03): Password reset in SESSION-02 requires affir
     fetchFn: mockFetchGenericInvalidToken
   });
 
+  assert.equal((await dispGeneric(session01)).passed, true);
   const outGeneric = await dispGeneric(session02);
   assert.equal(outGeneric.passed, false, 'Generic Invalid token cannot pass SESSION-02 (R5-01)');
   assert.equal(outGeneric.session_revoked, false);
@@ -2991,6 +2997,7 @@ test('57. Task 06I-B1-H1-R4 (R4-03): Password reset in SESSION-02 requires affir
   // 5. When /auth/v1/user returns affirmative session_not_found provider error, session revocation is verified
   const mockFetchRevoked = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
+      { urlIncludes: '/auth/v1/user', times: 1, status: 200, json: { id: 'user-test-reset-123' } },
       { urlIncludes: '/auth/v1/admin/users/', status: 200, json: { id: 'user-test-reset-123' } },
       { urlIncludes: '/auth/v1/user', status: 401, json: { error_code: 'session_not_found', message: 'Session not found' } }
     ],
@@ -3004,6 +3011,7 @@ test('57. Task 06I-B1-H1-R4 (R4-03): Password reset in SESSION-02 requires affir
     fetchFn: mockFetchRevoked
   });
 
+  assert.equal((await dispRevoked(session01)).passed, true);
   const outRevoked = await dispRevoked(session02);
   assert.equal(outRevoked.passed, true);
   assert.equal(outRevoked.remaining_sessions, 0);
@@ -3224,9 +3232,10 @@ test('62. Task 06I-B1-H1-R4 (R4-08): Send Email Hook suppression (42501) cannot 
 test('63. Task 06I-B1-H1-R5 (R5-01): SESSION-02 rejects generic 401/403, bad_jwt, expired token, and ambiguous errors; strictly requires affirmative session_not_found', async () => {
   const session02 = { id: 'SESSION-02', category: 'Session & Consumer' };
   const runCtx = createRunContext();
-  runCtx.activeAccessToken = createMockJwt();
   runCtx.activeUserId = 'user-r5-01';
   runCtx.activeSessionId = 'sess-r5-01';
+  runCtx.activeAccessToken = createMockJwt({ sub: runCtx.activeUserId, session_id: runCtx.activeSessionId });
+  const session01 = { id: 'SESSION-01', category: 'Session & Consumer' };
 
   // 1. bad_jwt is rejected as FALSE_PROOF_REJECTED
   const dispBadJwt = createHostedDispatcher({
@@ -3235,12 +3244,14 @@ test('63. Task 06I-B1-H1-R5 (R5-01): SESSION-02 rejects generic 401/403, bad_jwt
     runContext: runCtx,
     fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [
+        { urlIncludes: '/auth/v1/user', times: 1, status: 200, json: { id: 'user-r5-01' } },
         { urlIncludes: '/auth/v1/admin/users/', status: 200, json: { id: 'user-r5-01' } },
         { urlIncludes: '/auth/v1/user', status: 401, json: { error_code: 'bad_jwt', message: 'Token signature is invalid' } }
       ],
       defaultResponse: { status: 400, json: {} }
     })
   });
+  assert.equal((await dispBadJwt(session01)).passed, true);
   const outBadJwt = await dispBadJwt(session02);
   assert.equal(outBadJwt.passed, false);
   assert.match(outBadJwt.error, /FALSE_PROOF_REJECTED/);
@@ -3252,12 +3263,14 @@ test('63. Task 06I-B1-H1-R5 (R5-01): SESSION-02 rejects generic 401/403, bad_jwt
     runContext: runCtx,
     fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [
+        { urlIncludes: '/auth/v1/user', times: 1, status: 200, json: { id: 'user-r5-01' } },
         { urlIncludes: '/auth/v1/admin/users/', status: 200, json: { id: 'user-r5-01' } },
         { urlIncludes: '/auth/v1/user', status: 403, json: { message: 'Forbidden' } }
       ],
       defaultResponse: { status: 400, json: {} }
     })
   });
+  assert.equal((await dispAmbiguous(session01)).passed, true);
   const outAmbiguous = await dispAmbiguous(session02);
   assert.equal(outAmbiguous.passed, false);
   assert.match(outAmbiguous.error, /AMBIGUOUS_REJECTION/);
@@ -3453,9 +3466,11 @@ test('68. Task 06I-B1-H1-R5 (R5-06): Seed credential lifecycle: password reset m
   runCtx1.activeUserId = 'seed-user-uuid-1';
   runCtx1.activeSessionId = 'sess-run-1';
   runCtx1.activeAccessToken = createMockJwt({ sub: 'seed-user-uuid-1', session_id: 'sess-run-1' });
+  inv1.registerSession(runCtx1.activeSessionId, { accessToken: runCtx1.activeAccessToken, userId: 'seed-user-uuid-1' });
 
   const disp1Transport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
+      { urlIncludes: '/auth/v1/user', times: 1, status: 200, json: { id: 'seed-user-uuid-1' } },
       { urlIncludes: '/auth/v1/admin/users/', status: 200, json: { id: 'seed-user-uuid-1' } },
       { urlIncludes: '/auth/v1/user', status: 401, json: { error_code: 'session_not_found', message: 'Session not found' } }
     ],
@@ -3469,6 +3484,7 @@ test('68. Task 06I-B1-H1-R5 (R5-06): Seed credential lifecycle: password reset m
     fetchFn: disp1Transport
   });
 
+  assert.equal((await disp1({ id: 'SESSION-01', category: 'Session & Consumer' })).passed, true);
   const outReset = await disp1(session02);
   assert.equal(outReset.passed, true);
   assert.equal(disp1Transport.calls.find(c => c.url.includes('/auth/v1/admin/users/'))?.bodyJson?.password, 'TioNewPassword#2026!', 'Seed user password changed to new password in provider');
@@ -4306,7 +4322,6 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
       status: 403,
       ok: false,
       json: {
-        code: 403,
         error_code: 'session_not_found',
         msg: 'Session from session_id claim in JWT does not exist'
       }
@@ -4325,7 +4340,6 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
       status: 400,
       ok: false,
       json: {
-        code: 400,
         error_code: 'authsessionmissingerror',
         msg: 'Auth session missing!'
       }
@@ -4391,7 +4405,7 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
   // 2. SESSION-02 marks session revoked in inventory when revocation is proven
   const invSession02 = new TestRunInventory('test-run-session02-marking');
   const s02SessionId = 'sess-s02-verified';
-  const s02Token = createMockJwt({ session_id: s02SessionId });
+  const s02Token = createMockJwt({ sub: 'u-s02-test', session_id: s02SessionId });
   invSession02.registerSession(s02SessionId, { accessToken: s02Token });
 
   const runCtxS02 = createRunContext({ runId: invSession02.runId });
@@ -4406,6 +4420,7 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
     runContext: runCtxS02,
     fetchFn: createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
       routes: [
+        { urlIncludes: '/auth/v1/user', times: 1, status: 200, ok: true, json: { id: 'u-s02-test' } },
         { urlIncludes: '/auth/v1/admin/users/', status: 200, ok: true, json: { id: 'u-s02-test' } },
         { urlIncludes: '/auth/v1/user', status: 403, ok: false, json: { error_code: 'session_not_found', msg: 'Session not found' } }
       ],
@@ -4413,6 +4428,7 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
     })
   });
 
+  assert.equal((await dispS02({ id: 'SESSION-01', category: 'Session & Consumer' })).passed, true);
   const outS02 = await dispS02({ id: 'SESSION-02', category: 'Session & Consumer' });
   assert.equal(outS02.passed, true);
   assert.equal(invSession02.isSessionRevoked(s02SessionId), true, 'SESSION-02 must mark session as revoked in inventory');
@@ -4475,6 +4491,7 @@ test('77. Task 06I-B1-H1-R8 (R8-02): Idempotent session cleanup and confirmed se
 
 test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, state tracking, and indeterminate transport failure handling', async () => {
   const session02 = { id: 'SESSION-02', category: 'Session & Consumer' };
+  const session01 = { id: 'SESSION-01', category: 'Session & Consumer' };
   const origPassword = 'OriginalTioPassword#2026!';
   const newPassword = 'TioNewPassword#2026!';
   const seedUserId = 'seed-user-uuid-r9-01';
@@ -4489,9 +4506,11 @@ test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, stat
   runCtxPre.originalSeedPassword = origPassword;
   runCtxPre.activeSessionId = 'sess-pre-1';
   runCtxPre.activeAccessToken = createMockJwt({ sub: seedUserId, session_id: 'sess-pre-1' });
+  invPre.registerSession('sess-pre-1', { accessToken: runCtxPre.activeAccessToken, userId: seedUserId });
 
   const preTransport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
+      { urlIncludes: '/auth/v1/user', times: 1, status: 200, json: { id: seedUserId } },
       { urlIncludes: '/auth/v1/admin/users/', waitForBarrier: preDispatchBarrier, status: 200, json: { id: seedUserId } },
       { urlIncludes: '/auth/v1/user', status: 401, json: { error_code: 'session_not_found', message: 'Session not found' } }
     ],
@@ -4507,6 +4526,7 @@ test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, stat
     fetchFn: preTransport
   });
 
+  assert.equal((await dispPre(session01)).passed, true);
   const prePromise = dispPre(session02);
   await preDispatchBarrier.waitForArrivals(1);
   assert.equal(invPre.seedCredentialRestorations.length, 1, 'Restoration MUST be registered before dispatch completes');
@@ -4532,10 +4552,12 @@ test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, stat
   runCtxTransport.originalSeedPassword = origPassword;
   runCtxTransport.activeSessionId = 'sess-trans-1';
   runCtxTransport.activeAccessToken = createMockJwt({ sub: seedUserId, session_id: 'sess-trans-1' });
+  invTransport.registerSession('sess-trans-1', { accessToken: runCtxTransport.activeAccessToken, userId: seedUserId });
 
   let transportProviderPassword = origPassword;
   const transportErrMock = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
+      { urlIncludes: '/auth/v1/user', times: 1, status: 200, json: { id: seedUserId } },
       { urlIncludes: '/auth/v1/admin/users/', throwError: { message: 'ECONNRESET: socket hang up', code: 'ECONNRESET' } }
     ],
     defaultResponse: { status: 400, json: {} }
@@ -4549,6 +4571,7 @@ test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, stat
     fetchFn: transportErrMock
   });
 
+  assert.equal((await dispTransport(session01)).passed, true);
   const outTransport = await dispTransport(session02);
   assert.equal(outTransport.passed, false, 'Probe must fail when transport throws');
   assert.equal(outTransport.status, 0);
@@ -4563,7 +4586,8 @@ test('78. Task 06I-B1-H1-R9 (R9-01): Pre-dispatch restoration registration, stat
   assert.equal(transRec.state, 'indeterminate');
   assert.ok(transRec.indeterminateAt);
   assert.match(transRec.error, /ECONNRESET/);
-  assert.equal(transportErrMock.calls[0].bodyJson?.password, newPassword, 'PUT request carried newPassword before connection drop');
+  assert.equal(transportErrMock.calls.find(call => call.method === 'PUT')?.bodyJson?.password, newPassword,
+    'PUT request carried newPassword before connection drop');
 
   // Cleanup MUST execute restoration and restore original password
   const mockAdminClient = fixtureSpec();
@@ -5160,9 +5184,11 @@ test('81. Task 06I-B1-H1-R10 (R10-02): Exact identity binding, seed user correla
     session_id: 'sess-custom-01',
     email: customSeedEmail
   });
+  invCustom.registerSession('sess-custom-01', { accessToken: runCtxCustom.activeAccessToken, userId: seedUserId });
 
   const dispCustomTransport = createDeterministicFixtureTransport({ requestBudgetMode: 'recorded_zero_wait',
     routes: [
+      { urlIncludes: '/auth/v1/user', times: 1, status: 200, ok: true, json: { id: seedUserId } },
       { urlIncludes: '/auth/v1/admin/users/', status: 200, ok: true, json: { id: seedUserId } },
       { urlIncludes: '/auth/v1/user', status: 403, ok: false, json: { error_code: 'session_not_found', msg: 'Session not found' } }
     ],
@@ -5176,6 +5202,7 @@ test('81. Task 06I-B1-H1-R10 (R10-02): Exact identity binding, seed user correla
     fetchFn: dispCustomTransport
   });
 
+  assert.equal((await dispCustom({ id: 'SESSION-01', category: 'Session & Consumer' })).passed, true);
   const outCustom = await dispCustom(s02Item);
   assert.equal(outCustom.passed, true);
   assert.equal(invCustom.seedCredentialRestorations.length, 1);
@@ -10635,13 +10662,24 @@ async function r5ProvisionedFixture(runId, { session = false, logoutFailure = fa
   return { inventory, adminClient, transport, path };
 }
 
-function r5AssertOutstanding(report, inventory) {
+function r5AssertOutstanding(report, inventory, { admissionRejected = false } = {}) {
   assert.equal(report.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
   assert.ok(report.residualUsers.some(user => user.id === R5_CREATED_USER));
   for (const type of ['client', 'storage_fixture', 'storage_object', 'session', 'table_row', 'seed_credential_restoration']) {
     assert.ok(report.residualResources.some(resource => resource.type === type), type + ' obligation must remain visible');
   }
-  assert.equal(inventory.runLifecycleState, INVENTORY_RUN_STATE.RESIDUAL_BLOCKED);
+  if (admissionRejected) {
+    assert.equal(report.failureStage, 'admission');
+    assert.equal(report.cleanupExecuted, false);
+    assert.equal(report.createdUsersAttempted, 0);
+    assert.equal(inventory.runLifecycleState, INVENTORY_RUN_STATE.ACTIVE);
+    assert.equal(inventory.cleanupStarted, false);
+    assert.equal(inventory.finalized, false);
+  } else {
+    assert.equal(inventory.runLifecycleState, INVENTORY_RUN_STATE.RESIDUAL_BLOCKED);
+    assert.equal(inventory.cleanupStarted, true);
+    assert.equal(inventory.finalized, true);
+  }
   assert.equal(inventory.isClean(), false);
   assert.equal(inventory.deletedUsers.size, 0);
   assert.equal(inventory.revokedSessions.size, 0);
@@ -10751,7 +10789,7 @@ test('115. H3-R5-01/R5-03: runner admission preserves outstanding cleanup eviden
     const inventory = r5OutstandingInventory(runId);
     await assert.rejects(runHostedProbeRunner({ projectRef: HARDCODED_TEMP_REF, runId, inventory, adminClient, argv: ['--live'], env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, selectedProbeIds: ['BYPASS-01'], mockDispatcher: trustedDispatcher }), error => {
       assert.equal(error.code, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
-      r5AssertOutstanding(error.cleanupReport, inventory);
+      r5AssertOutstanding(error.cleanupReport, inventory, { admissionRejected: true });
       return true;
     });
   }
@@ -10759,7 +10797,7 @@ test('115. H3-R5-01/R5-03: runner admission preserves outstanding cleanup eviden
   const mismatchInventory = r5OutstandingInventory(runId);
   await assert.rejects(runHostedProbeRunner({ projectRef: HARDCODED_TEMP_REF, runId: 'r5-runner-requested-b', inventory: mismatchInventory, adminClient: trusted, argv: ['--live'], env: { TASK06I_HOSTED_PROBE_AUTHORIZED: 'true' }, selectedProbeIds: ['BYPASS-01'], mockDispatcher: trustedDispatcher }), error => {
     assert.match(error.message, /ADMIN_CLIENT_RUN_MISMATCH/);
-    r5AssertOutstanding(error.cleanupReport, mismatchInventory);
+    r5AssertOutstanding(error.cleanupReport, mismatchInventory, { admissionRejected: true });
     return true;
   });
   assert.equal(callbacks, 0);
@@ -11062,13 +11100,13 @@ test('123. H3-R6-01: runHostedProbeRunner admission rejects all untrusted, forge
       error => {
         assert.match(error.message, tc.pattern, `Case ${tc.label} failed pattern`);
         // Case 13: Existing residual obligations preserved in structured cleanupReport
-        r5AssertOutstanding(error.cleanupReport, inv);
+        r5AssertOutstanding(error.cleanupReport, inv, { admissionRejected: true });
         return true;
       }
     );
     // Zero destructive cleanup or probe transport calls
     assert.equal(transport.calls.length, 0, `Case ${tc.label} must dispatch 0 transport calls`);
-    assert.equal(inv.runLifecycleState, INVENTORY_RUN_STATE.RESIDUAL_BLOCKED, `Case ${tc.label} must finalize inventory as RESIDUAL_BLOCKED`);
+    assert.equal(inv.runLifecycleState, INVENTORY_RUN_STATE.ACTIVE, 'Rejected admission must preserve the original lifecycle');
   }
 
   // Case 6: Dispatcher registered for another project rejected at assertTrustedOfflineDispatcher
@@ -11101,7 +11139,7 @@ test('123. H3-R6-01: runHostedProbeRunner admission rejects all untrusted, forge
     }),
     error => {
       assert.match(error.message, /OFFLINE_DISPATCHER_RUN_MISMATCH/);
-      r5AssertOutstanding(error.cleanupReport, invA);
+      r5AssertOutstanding(error.cleanupReport, invA, { admissionRejected: true });
       return true;
     }
   );
@@ -11253,7 +11291,7 @@ test('125. H3-R7-01: sleepFn callbacks/getters/inherited overrides and invalid t
         () => (entry === 'runner' ? runHostedProbeRunner(opts) : runOfflineProbeSimulation(opts)),
         error => {
           assert.match(error.message, /UNTRUSTED_TIMING_OVERRIDE/);
-          r5AssertOutstanding(error.cleanupReport, inv);
+          r5AssertOutstanding(error.cleanupReport, inv, { admissionRejected: true });
           return true;
         }
       );
@@ -11355,7 +11393,7 @@ test('125. H3-R7-01: sleepFn callbacks/getters/inherited overrides and invalid t
       }),
       error => {
         assert.match(error.message, /INVALID_TIMING_CONFIG|INVALID_DETERMINISTIC_FIXTURE_SPEC/);
-        r5AssertOutstanding(error.cleanupReport, inv);
+        r5AssertOutstanding(error.cleanupReport, inv, { admissionRejected: true });
         return true;
       }
     );
@@ -11695,7 +11733,7 @@ test('129. H3-R8-01B/C/D: Untrusted inventory and runContext reject with zero ex
     }),
     error => {
       assert.match(error.message, /ADMIN_CLIENT_RUN_MISMATCH|INVENTORY_RUN_ID_MISMATCH/);
-      r5AssertOutstanding(error.cleanupReport, crossRunInv);
+      r5AssertOutstanding(error.cleanupReport, crossRunInv, { admissionRejected: true });
       return true;
     }
   );
@@ -11715,7 +11753,7 @@ test('129. H3-R8-01B/C/D: Untrusted inventory and runContext reject with zero ex
     }),
     error => {
       assert.match(error.message, /UNTRUSTED_OFFLINE_DISPATCHER/);
-      r5AssertOutstanding(error.cleanupReport, validOutstandingInv);
+      r5AssertOutstanding(error.cleanupReport, validOutstandingInv, { admissionRejected: true });
       return true;
     }
   );
