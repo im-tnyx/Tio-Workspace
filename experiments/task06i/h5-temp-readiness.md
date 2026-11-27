@@ -1,8 +1,8 @@
 # H5 — Seed lifecycle and future TEMP readiness
 
-Status: local implementation and offline verification only. This packet is a proposal for a future owner decision, not authorization to call a hosted endpoint. H4 is MERGED / OFFLINE TESTED. Hosted verification remains **0/18**, hosted atomic deletion **UNVERIFIED**, LIVE **BLOCKED**, Production Real Auth **STRICT NO-GO**, hosted mutations **0**, added infrastructure cost **$0**. No Expo Auth or production implementation changed.
+H5 is **MERGED / OFFLINE TESTED** via [PR #49](https://github.com/im-tnyx/Tio-Workspace/pull/49). The TEMP proposal requires a separate owner decision. Hosted verification remains **0/18**, hosted atomic conditional deletion **UNVERIFIED**, LIVE **NOT AUTHORIZED / BLOCKED**, Production Real Auth **STRICT NO-GO**, hosted mutations **0**, and added infrastructure cost **$0**.
 
-Authority: [H5 task](../../.ai/tasks/auth/local-20261127-task06i-b1-h5-seed-temp-readiness.md), [H3 history](../../.ai/archive/2026/local-20261124-task06i-b1-h3-subset-runner-storage.md), [H4 R1–R9 history](../../.ai/archive/2026/local-20261126-task06i-b1-h4-durable-recovery.md), [security](../../docs/04-AUTH-AND-SECURITY.md), [review workflow](../../docs/11-PR-REVIEW-WORKFLOW.md).
+Authority: [H5 archive and merge receipt](../../.ai/archive/2026/local-20261127-task06i-b1-h5-seed-temp-readiness.md#h5-merged-closeout-receipt), [H3 history](../../.ai/archive/2026/local-20261124-task06i-b1-h3-subset-runner-storage.md), [H4 R1–R9 history](../../.ai/archive/2026/local-20261126-task06i-b1-h4-durable-recovery.md), [security](../../docs/04-AUTH-AND-SECURITY.md), [review workflow](../../docs/11-PR-REVIEW-WORKFLOW.md).
 
 ## Architecture and identity contract
 

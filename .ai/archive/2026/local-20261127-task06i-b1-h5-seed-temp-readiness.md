@@ -2,20 +2,22 @@
 
 | Field | Value |
 |---|---|
-| Status | H5-R1 IMPLEMENTED_OFFLINE_TESTED / fresh formal exact-HEAD re-review pending |
+| Status | **H5 MERGED / OFFLINE TESTED**. Documentation closeout requires its own review and merge authorization. |
 | Objective | Offline-tested Option B run-created seed lifecycle integrated with the existing runner, H4 journal and shared budget, plus future TEMP readiness packet |
-| Implementation owner | Codex root |
-| Previous agent | Codex root, H4 closeout |
-| Last commit agent | Codex root; runtime checkpoint `08d6cd2111a66e965fcb0a296012b13f5e71c8c8`; resolve latest continuity/publication HEAD from PR #49 |
-| Tracking / approval | Owner H5 task brief supplied 2026-11-27, local implementation/tests/docs/publication only |
-| Branch | `feat/task06i-b1-h5-seed-temp-readiness` |
-| PR | [#49](https://github.com/im-tnyx/Tio-Workspace/pull/49), open for review against main; merge not authorized |
+| Implementation owner | Antigravity for final H5-R2 implementation. H5 implementation is complete. Codex root owns the merge and documentation handoff. |
+| Previous agent | Codex root for H5 and H5-R1 implementation. |
+| Last commit agent | Antigravity for approved feature HEAD `9dd83fc1bf7fe371f8f3daa4a514f83ca2fb5063`. GitHub created squash commit `b217093a9619d137c5f659a537717765fb189fad` through the authorized `im-tnyx` account. |
+| Tracking / approval | The owner authorized the offline slices and separately authorized the exact-HEAD squash merge, local validation and synchronization, branch cleanup and documentation closeout on 2026-11-27. |
+| Branch | `feat/task06i-b1-h5-seed-temp-readiness` removed locally and from origin after validation. |
+| PR | [#49](https://github.com/im-tnyx/Tio-Workspace/pull/49), squash-merged into `main` on 2026-11-27. |
 | Base | `efa5929f5718e38d40f0035624c1b6b3da8000db` |
 | Scope | `experiments/task06i/` runtime/fixtures/tests and H5 continuity/readiness documentation |
 
 ## Context and authority
 
-Applicable [AGENTS](../../../AGENTS.md), [review workflow](../../../docs/11-PR-REVIEW-WORKFLOW.md), [H3 history](../../archive/2026/local-20261124-task06i-b1-h3-subset-runner-storage.md) and [H4 complete history](../../archive/2026/local-20261126-task06i-b1-h4-durable-recovery.md) were inspected. PR #47 and #48 are merged; initial local/remote main matched the base with a clean checkout and one worktree. Main Protection `27218050` is active/strict with App `5032971` attribution check, independent approval, resolved threads and zero bypass actors. Historical archives remain unchanged.
+Applicable [AGENTS](../../../AGENTS.md), [review workflow](../../../docs/11-PR-REVIEW-WORKFLOW.md), [H3 history](local-20261124-task06i-b1-h3-subset-runner-storage.md) and [H4 complete history](local-20261126-task06i-b1-h4-durable-recovery.md) were inspected. PR #47 and #48 are merged; initial local/remote main matched the base with a clean checkout and one worktree. Main Protection `27218050` is active/strict with App `5032971` attribution check, independent approval, resolved threads and zero bypass actors. Historical archives remain unchanged.
+
+The implementation and review sections below record their original checkpoints. The [merged closeout receipt](#h5-merged-closeout-receipt) records the final disposition of the H5, R1 and R2 review gates.
 
 ## Design and bounded implementation
 
@@ -145,6 +147,25 @@ Follow-up resolution on [PR #49](https://github.com/im-tnyx/Tio-Workspace/pull/4
    - Initial independent audit flagged relative-URL / extra-slash raw-transport bypass (`#4717252490`); after adding `normalizedAuthDeletionCandidate` + slash normalization + extended tests (`verified=false/true`, canonical/uppercase/trailing-slash/`//`/`%2f`/`%`-encoded/relative URLs, and post-reopen+close rejection), independent re-audit returned **PASS**.
    - Offline checks after final edit: `H5-R1` `33/33` PASS; complete `offline-seed-lifecycle.test.mjs` `85/85` PASS; `experiments/task06i/*.test.mjs` Windows `547/547` PASS; hardened Docker Linux (`node:24-bookworm`, `--network none --pull never --cap-drop ALL --security-opt no-new-privileges`) `479/479` PASS; `experiments/task06h/*.test.mjs` `115/115` PASS; PostgreSQL `17.11` parity `18/18` (`POSTGRES_VERIFIED`); `npm run verify` PASS (`22/22` shell tests).
 
+## H5 merged closeout receipt
+
+- [PR #49](https://github.com/im-tnyx/Tio-Workspace/pull/49) was squash-merged at 2026-11-27 09:40:20 UTC. GitHub reported “Pull Request successfully merged” and remote `main` reached squash `b217093a9619d137c5f659a537717765fb189fad`. The squash parent was approved base `efa5929f5718e38d40f0035624c1b6b3da8000db`. The squash and approved feature HEAD `9dd83fc1bf7fe371f8f3daa4a514f83ca2fb5063` both have tree `d620b962c2baf05e3f8d855696d36681a80b0de9`.
+- Pre-merge, [im-tio formally APPROVED the exact feature HEAD](https://github.com/im-tnyx/Tio-Workspace/pull/49#pullrequestreview-6086105906). All four historical threads were resolved and the review reported no new actionable findings. [Main Protection](https://github.com/im-tnyx/Tio-Workspace/rules/27218050) was active with strict base freshness, one approving review, stale-review dismissal, required thread resolution and no bypass actors. The only required check, [Commit attribution guard](https://github.com/im-tnyx/Tio-Workspace/runs/140420261616), passed at that HEAD from App `5032971`. The four supplemental GitHub Actions jobs also passed.
+- Exact-HEAD pre-merge evidence includes [Task 06I 547/547 in CI](https://github.com/im-tnyx/Tio-Workspace/actions/runs/45973728315), [PostgreSQL parity](https://github.com/im-tnyx/Tio-Workspace/actions/runs/45973728522) and [attribution 142/142 and integrity 14/14](https://github.com/im-tnyx/Tio-Workspace/actions/runs/45973728251). The [R2 publication receipt](https://github.com/im-tnyx/Tio-Workspace/pull/49#issuecomment-7214684304) records H5 85/85, PostgreSQL 18/18 and the hardened Docker subset 479/479. Exact-HEAD Codex code review had no findings per the formal review receipt. [Cursor Security Reviewer](https://github.com/im-tnyx/Tio-Workspace/runs/140420157275) was neutral due to quota exhaustion, [Bugbot](https://github.com/im-tnyx/Tio-Workspace/pull/49#issuecomment-7211416982) was disabled and the separate Codex security review had no completed result.
+- Post-merge local verification on the squash passed Windows Task 06I **547/547**, H5 **85/85**, H4 crash/restart **130/130**, isolated PostgreSQL 17.11 **POSTGRES_VERIFIED 18/18**, and `npm run verify` with shell **22/22**. The complete post-merge Task 06I suite also passed **547/547** in cached Node 24.22.0 Docker with networking disabled, pull disabled, all capabilities dropped, no-new-privileges, read-only root/source and temporary writable `/tmp`. This full run is separate from the earlier 479-test subset.
+- Post-merge attribution **142/142**, guard integrity **14/14** and both checks on the actual squash range passed in hardened Docker using temporary LF script copies. The merged documentation's 50 relative targets and Markdown fences passed, along with `git show --check`, exact squash-tree equality and historical archive/protected-file equality.
+- Four GitHub push workflows succeeded on the squash: [security contracts 547/547](https://github.com/im-tnyx/Tio-Workspace/actions/runs/45975650223), [PostgreSQL parity](https://github.com/im-tnyx/Tio-Workspace/actions/runs/45975650191), [attribution fixtures and guard integrity](https://github.com/im-tnyx/Tio-Workspace/actions/runs/45975650270) and [main attribution audit](https://github.com/im-tnyx/Tio-Workspace/actions/runs/45975650212).
+- Clean local `main` and `origin/main` aligned at the squash through a fast-forward. No worktree, open PR, active workflow or active implementation depended on the H5 branch. Git accepted non-forced local deletion against the synchronized upstream. The exact remote ref was verified before deletion. Both refs were confirmed absent after pruning.
+
+### Historical review thread dispositions
+
+| Finding | Thread | Disposition |
+|---|---|---|
+| [4716305329](https://github.com/im-tnyx/Tio-Workspace/pull/49#discussion_r4716305329) | `PRRT_kwDOVtCmZc68qu0M` | Resolved in R1. Persist verified sibling absence before the seed gate. |
+| [4716319038](https://github.com/im-tnyx/Tio-Workspace/pull/49#discussion_r4716319038) | `PRRT_kwDOVtCmZc68qw6i` | Resolved in R1. Enforce run-wide private seed deletion authority. |
+| [4717252490](https://github.com/im-tnyx/Tio-Workspace/pull/49#discussion_r4717252490) | `PRRT_kwDOVtCmZc68s8xo` | Resolved in R2. Preserve seed protection across journal close and reopen. |
+| [4717254383](https://github.com/im-tnyx/Tio-Workspace/pull/49#discussion_r4717254383) | `PRRT_kwDOVtCmZc68s9DT` | Resolved in R2. Bind session and cleanup evidence to the verified provider. |
+
 ## Truth boundary
 
-H4 MERGED / OFFLINE TESTED. H5-R2 IMPLEMENTED_OFFLINE_TESTED / PR #49 exact-HEAD re-review pending. Hosted atomic deletion UNVERIFIED. Hosted verification 0/18. Hosted LIVE NOT AUTHORIZED/BLOCKED. Production Real Auth STRICT NO-GO. Hosted mutations 0. Added infrastructure cost $0. Merge requires separate explicit owner authorization. Stop after PR #49 blocker publication; no H6.
+H5 is **MERGED / OFFLINE TESTED**. Hosted verification is **0/18** and hosted atomic conditional deletion is **UNVERIFIED**. Hosted LIVE is **NOT AUTHORIZED / BLOCKED** and Production Real Auth is **STRICT NO-GO**. Hosted mutations **0** and added infrastructure cost **$0**. H6 is proposed and awaits separate owner authorization. The documentation closeout PR requires its own review, required checks and separate merge authorization.
