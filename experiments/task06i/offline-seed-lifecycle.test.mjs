@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto';
 import {
   HARDCODED_TEMP_REF as projectRef, HARDCODED_REAL_REF, HARDCODED_TIO_WORLD_REF,
   TestRunInventory, createMockProjectKey, createCreationProof, createRunContext,
-  createDeterministicFixtureTransport, createHostedAdminClient, createRunCreatedSeedDispatcher,
+  createDeterministicFixtureTransport, createHostedAdminClient, createHostedDispatcher, createRunCreatedSeedDispatcher,
   reserveRunCreatedSeed, provisionRunCreatedSeed, runOfflineProbeSimulation, runHostedProbeRunner,
   provisionStorageProbeFixture, createTrustedOfflineDispatcher
 } from './hosted-probe-runner.mjs';
@@ -284,6 +284,78 @@ if (!process.argv.includes('--seed-child')) {
       assert.equal(report.reason, 'TRANSIENT_AUTH_CREDENTIALS_OR_PROOF_UNAVAILABLE');
       assert.equal(f.transport.calls.filter(c => c.method === 'DELETE').length, 0);
     } finally { reopened.close(); }
+  });
+  for (const verified of [false, true]) test('H5-R1-01 closed journal preserves raw transport seed deletion protection: ' + verified, async t => {
+    const base = setup(t);
+    const plan = reserveRunCreatedSeed({ inventory: base.inventory, projectRef });
+    const rawNoStorage = createDeterministicFixtureTransport({ requestBudgetMode: mode, initialState: { created: false }, routes: [
+      { method: 'GET', pathEquals: '/auth/v1/admin/users/' + plan.userId, whenState: { created: false }, status: 404, json: { code: 'user_not_found' } },
+      { method: 'POST', pathEquals: '/auth/v1/admin/users', setsState: { created: true }, status: 201, json: { id: plan.userId, email: plan.email } },
+      { method: 'GET', pathEquals: '/auth/v1/admin/users/' + plan.userId, whenState: { created: true }, status: 200, json: { id: plan.userId, email: plan.email } },
+      { method: 'DELETE', pathEquals: '/auth/v1/admin/users/' + plan.userId, status: 200, json: {} }
+    ] });
+    const rawAdmin = createHostedAdminClient({ runId: base.handle.runId, fetchFn: rawNoStorage,
+      serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
+    if (verified) await provisionRunCreatedSeed({ plan, inventory: base.inventory, adminClient: rawAdmin });
+    const beforeCalls = rawNoStorage.calls.length;
+    base.handle.close();
+    const candidates = [
+      `https://${projectRef}.supabase.co/auth/v1/admin/users/${plan.userId}`,
+      `https://${projectRef}.supabase.co/auth/v1/admin/users/${plan.userId.toUpperCase()}`,
+      `https://${projectRef}.supabase.co/auth/v1/admin/users/${plan.userId}/`,
+      `https://${projectRef}.supabase.co/auth/v1/admin/users//${plan.userId}`,
+      `https://${projectRef}.supabase.co/auth/v1/admin/users/%2f${plan.userId}`,
+      `https://${projectRef}.supabase.co/auth/v1/admin/users/${'%' + plan.userId.charCodeAt(0).toString(16) + plan.userId.slice(1)}`,
+      `/auth/v1/admin/users/${plan.userId}`,
+      `/auth/v1/admin/users//${plan.userId}`,
+      `/auth/v1/admin/users/%2f${plan.userId}`
+    ];
+    for (const url of candidates) {
+      await assert.rejects(rawNoStorage(url, { method: 'DELETE' }), /SEED_DELETE_PROJECT_RUN_OR_PATH_MISMATCH/);
+    }
+    const reopened = reopenOfflineRecoveryJournal({ directory: base.directory, projectRef, runId: base.handle.runId });
+    reopened.close();
+    await assert.rejects(rawNoStorage(`/auth/v1/admin/users/${plan.userId}`, { method: 'DELETE' }), /SEED_DELETE_PROJECT_RUN_OR_PATH_MISMATCH/);
+    await assert.rejects(rawNoStorage(`https://${projectRef}.supabase.co/auth/v1/admin/users/${plan.userId}`, { method: 'DELETE' }), /SEED_DELETE_PROJECT_RUN_OR_PATH_MISMATCH/);
+    assert.equal(rawNoStorage.calls.length, beforeCalls);
+    assert.equal(rawNoStorage.calls.filter(c => c.method === 'DELETE').length, 0);
+  });
+  test('H5-R1-01 alternate provider cannot revoke session or spoof dispatcher evidence before original retry', async t => {
+    const f = fixture(setup(t)); await f.provision();
+    const dispatch = f.dispatcher();
+    await dispatch({ id: 'HOOK-01' });
+    await dispatch({ id: 'SESSION-01' });
+    const raw = createDeterministicFixtureTransport({ requestBudgetMode: mode, routes: [
+      { method: 'POST', pathEquals: '/auth/v1/logout', status: 204 },
+      { method: 'GET', pathEquals: '/auth/v1/user', status: 200, json: { id: f.plan.userId } },
+      { method: 'PUT', pathEquals: '/auth/v1/admin/users/' + f.plan.userId, status: 200, json: { id: f.plan.userId } },
+      { method: 'DELETE', pathEquals: '/auth/v1/admin/users/' + f.plan.userId, status: 200, json: {} },
+      { method: 'GET', pathEquals: '/auth/v1/admin/users/' + f.plan.userId, status: 404, json: { code: 'user_not_found' } }
+    ] });
+    const alternate = createHostedAdminClient({ runId: f.handle.runId, fetchFn: raw,
+      serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
+    assert.throws(() => createRunCreatedSeedDispatcher({ inventory: f.inventory, fetchFn: raw,
+      anonKey: createMockProjectKey(projectRef, 'anon'), serviceRoleKey: createMockProjectKey(projectRef, 'service_role') }), /SEED_DISPATCHER_TRANSPORT_MISMATCH/);
+    assert.throws(() => createHostedDispatcher({ inventory: f.inventory, fetchFn: raw,
+      anonKey: createMockProjectKey(projectRef, 'anon'), serviceRoleKey: createMockProjectKey(projectRef, 'service_role') }), /SEED_PROVIDER_TRANSPORT_MISMATCH/);
+    const directLogout = await alternate.invalidateSession(sessionId, f.jwt);
+    assert.equal(directLogout.error?.code, 'SEED_PROVIDER_TRANSPORT_MISMATCH');
+    const altCleanup = await f.inventory.executeCleanup({ adminClient: alternate, failClosed: false });
+    assert.equal(altCleanup.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
+    assert.equal(raw.calls.length, 0);
+    assert.equal(f.transport.calls.filter(c => c.method === 'DELETE').length, 0);
+    assert.equal(f.handle.report().status, 'RECOVERY_REQUIRED');
+
+    // Public revokedSessions tampering also cannot bypass authentic original-provider logout on retry
+    f.inventory.revokedSessions.add(sessionId);
+    const retryCleanup = await cleanup(f);
+    assert.equal(retryCleanup.status, 'CLEANUP_VERIFIED_SUCCESS', JSON.stringify(retryCleanup));
+    const logouts = f.transport.calls.filter(c => c.method === 'POST' && c.pathname === '/auth/v1/logout');
+    assert.equal(logouts.length, 1);
+    const deleteIdx = f.transport.calls.findIndex(c => c.method === 'DELETE' && c.pathname.endsWith('/' + f.plan.userId));
+    const logoutIdx = f.transport.calls.findIndex(c => c.method === 'POST' && c.pathname === '/auth/v1/logout');
+    assert.ok(logoutIdx >= 0 && logoutIdx < deleteIdx);
+    assert.equal(f.handle.report().status, 'CLEANUP_VERIFIED_SUCCESS');
   });
   for (const first of [true, false]) test('H5-R1-02 seed-last is independent of registration order: ' + first, async t => {
     const f = fixture(setup(t), { siblings: [foreignId, sessionId] });

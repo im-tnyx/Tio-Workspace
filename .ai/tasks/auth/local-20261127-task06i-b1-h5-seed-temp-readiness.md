@@ -130,6 +130,21 @@ Independent read-only reviewer `/root/h5_r1_review` returned final **PASS**, ind
 
 Publication must reply separately to both original findings with exact committed SHA and this evidence, resolve only demonstrated corrections, and request fresh exact-HEAD `im-tio`/Codex review. The existing CHANGES_REQUESTED review is not dismissed. Bugbot remains disabled and Cursor Security Reviewer quota-limited; neither is a successful scan. No settings/credits/paid service changes. Formal approval, CI and merge authorization are separate gates; resolve their current state from GitHub.
 
+## H5-R2 — Closed-journal seed protection and provider-bound session revocation
+
+Follow-up resolution on [PR #49](https://github.com/im-tnyx/Tio-Workspace/pull/49) (continuing from `c038b5ced0a1ffdd29be79a84061eccfd376c9ec`) for the two remaining open review threads:
+
+1. **`PRRT_kwDOVtCmZc68s8xo` / [`#4717252490`](https://github.com/im-tnyx/Tio-Workspace/pull/49#discussion_r4717252490) (P2 — Preserve seed protection while journal is closed):**
+   - `offline-recovery-journal.mjs`: Added process-lifetime `protectedSeeds` tombstone populated on `openJournal` replay and `reserveSeed` and preserved across `handle.close()`. `journalProtectingSeed(userId)` returns `{ closed: true, handle }` when not open in `active`.
+   - `hosted-probe-runner.mjs`: `deterministicFixtureTransport` blocks `protectingJournal.closed`, `authDeletionUserId` strips leading/trailing slashes, and `normalizedAuthDeletionCandidate` resolves relative URLs, percent-encoded slashes (`%2f`), and collapsed repeated slashes before `journalProtectingSeed(...)` lookup (`SEED_DELETE_PROJECT_RUN_OR_PATH_MISMATCH`).
+2. **`PRRT_kwDOVtCmZc68s9DT` / [`#4717254383`](https://github.com/im-tnyx/Tio-Workspace/pull/49#discussion_r4717254383) (P1 — Bind session revocation & cleanup to verified seed provider):**
+   - `_executeCleanupInternal` rejects any `adminClient` with `rawTransportFetch !== seed.transport` (`SEED_CLEANUP_PROVIDER_MISMATCH`) prior to Storage, session, sibling Auth, restoration, or seed phases, leaving durable obligations intact and retryable with the verified provider.
+   - `RESOURCE_ENTRY_TRANSPORTS`, `SESSION_ISSUANCE_TRANSPORTS`, `TRANSPORT_OBSERVATION_CONTEXT`, `recordSessionIssuanceProvider`, `recordVerifiedSessionBaseline`, `getVerifiedSessionBaseline`, `recordVerifiedSessionRevocation`, and `hasVerifiedSessionRevocation` bind issuance/baseline/revocation evidence to exact originating transport, `journal.handle`, and `seed.transport`. Seed-run cleanup skips require `hasVerifiedSessionRevocation(this, sessionId)` (ignoring `revokedSessions` tampering while preserving H4-R6 replay semantics).
+   - `createRunCreatedSeedDispatcher`, `createHostedDispatcher`, `verifyUserCredentials`, and `invalidateSession` enforce `seed.transport`.
+3. **Final validation & independent read-only audit (`9dc4edd2`):**
+   - Initial independent audit flagged relative-URL / extra-slash raw-transport bypass (`#4717252490`); after adding `normalizedAuthDeletionCandidate` + slash normalization + extended tests (`verified=false/true`, canonical/uppercase/trailing-slash/`//`/`%2f`/`%`-encoded/relative URLs, and post-reopen+close rejection), independent re-audit returned **PASS**.
+   - Offline checks after final edit: `H5-R1` `33/33` PASS; complete `offline-seed-lifecycle.test.mjs` `85/85` PASS; `experiments/task06i/*.test.mjs` Windows `547/547` PASS; hardened Docker Linux (`node:24-bookworm`, `--network none --pull never --cap-drop ALL --security-opt no-new-privileges`) `479/479` PASS; `experiments/task06h/*.test.mjs` `115/115` PASS; PostgreSQL `17.11` parity `18/18` (`POSTGRES_VERIFIED`); `npm run verify` PASS (`22/22` shell tests).
+
 ## Truth boundary
 
-H4 MERGED / OFFLINE TESTED. H5-R1 IMPLEMENTED_OFFLINE_TESTED / PR #49 exact-HEAD re-review pending. Hosted atomic deletion UNVERIFIED. Hosted verification0/18. Hosted LIVE NOT AUTHORIZED/BLOCKED. Production Real Auth STRICT NO-GO. Hosted mutations0. Added infrastructure cost$0. Merge requires separate explicit owner authorization. Stop after R1 publication; no H6.
+H4 MERGED / OFFLINE TESTED. H5-R2 IMPLEMENTED_OFFLINE_TESTED / PR #49 exact-HEAD re-review pending. Hosted atomic deletion UNVERIFIED. Hosted verification 0/18. Hosted LIVE NOT AUTHORIZED/BLOCKED. Production Real Auth STRICT NO-GO. Hosted mutations 0. Added infrastructure cost $0. Merge requires separate explicit owner authorization. Stop after PR #49 blocker publication; no H6.

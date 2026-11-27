@@ -21,6 +21,7 @@ const SCHEMA = 'CREATE TABLE journal (id INTEGER PRIMARY KEY CHECK (id = 1), pay
 const require = createRequire(import.meta.url);
 const active = new Map();
 const handles = new WeakMap();
+const protectedSeeds = new Map();
 const projectRoot = fileURLToPath(new URL('../../', import.meta.url));
 const runPattern = /^h4-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -488,6 +489,7 @@ function openJournal(rawOptions, creating) {
       events = envelope[4];
     }
     state = replay(events, mode);
+    for (const key of state.seeds.keys()) protectedSeeds.set(key, runId);
     db.exec('COMMIT;'); // In EXCLUSIVE locking mode the connection retains ownership.
     const originalFile = stat(path);
     let failed = false;
@@ -604,6 +606,7 @@ function openJournal(rawOptions, creating) {
       reserveSeed(userId, operation) {
         const key = digest('auth:user:' + userId);
         append(['seed_intent', key, digest(operation), userId]);
+        protectedSeeds.set(key, runId);
         return key;
       },
       verifySeed(receipt) {
@@ -726,5 +729,9 @@ export function journalProtectingSeed(userId) {
   if (typeof userId !== 'string') return null;
   const key = digest('auth:user:' + userId.toLowerCase());
   for (const journal of active.values()) if (journal.state.seeds.has(key)) return journal;
+  const protectedRunId = protectedSeeds.get(key);
+  if (protectedRunId) {
+    return { closed: true, handle: Object.freeze({ projectRef: RECOVERY_PROJECT, runId: protectedRunId }) };
+  }
   return null;
 }

@@ -144,9 +144,12 @@ const LIVE_RESOURCE_OBLIGATIONS = new WeakMap();
 const LIVE_RESOLUTION_RECEIPTS = new WeakMap();
 const VERIFIED_LIVE_RESOURCE_CLEANUPS = new WeakMap();
 const RESOURCE_REQUEST_CONTEXT = new AsyncLocalStorage();
+const RESOURCE_ENTRY_TRANSPORTS = new WeakMap();
 const LIVE_RESOURCE_ATTEMPTS = new WeakMap();
 const VERIFIED_SESSION_REVOCATIONS = new WeakMap();
 const VERIFIED_SESSION_BASELINES = new WeakMap();
+const SESSION_ISSUANCE_TRANSPORTS = new WeakMap();
+const TRANSPORT_OBSERVATION_CONTEXT = new AsyncLocalStorage();
 const RUN_SEEDS = new WeakMap();
 const JOURNAL_SEEDS = new WeakMap();
 const AUTH_DELETE_CONTEXT = new AsyncLocalStorage();
@@ -155,6 +158,20 @@ const AUTH_USER_REGISTRATIONS = new WeakMap();
 const SEED_PLANS = new WeakMap();
 const ADMIN_SEED_CREATORS = new WeakMap();
 const SEED_ADMISSION = Symbol('module-owned seed admission');
+
+function recordSessionIssuanceProvider(inventory, sessionId, transport) {
+  if (!inventory || !sessionId || !transport) return false;
+  const journal = journalForRun(inventory.runId);
+  const seed = (journal ? JOURNAL_SEEDS.get(journal.handle) : null) || RUN_SEEDS.get(inventory);
+  if (seed && (!seed.transport || seed.transport !== transport)) return false;
+  let providers = SESSION_ISSUANCE_TRANSPORTS.get(inventory);
+  if (!providers) { providers = new Map(); SESSION_ISSUANCE_TRANSPORTS.set(inventory, providers); }
+  const existing = providers.get(sessionId);
+  const expectedHandle = journal?.handle || null;
+  if (existing && (existing.transport !== transport || existing.handle !== expectedHandle)) return false;
+  providers.set(sessionId, { transport, handle: expectedHandle });
+  return true;
+}
 
 function privateSeed(inventory, id) {
   const journal = journalForRun(inventory.runId);
@@ -169,7 +186,21 @@ function protectedSeed(inventory, id) {
 
 function authDeletionUserId(target) {
   if (target?.method !== 'DELETE' || !target.path?.startsWith('/auth/v1/admin/users/')) return null;
-  try { return decodeURIComponent(target.path.slice('/auth/v1/admin/users/'.length)).toLowerCase(); } catch { return null; }
+  try { return decodeURIComponent(target.path.slice('/auth/v1/admin/users/'.length)).replace(/^\/+|\/+$/g, '').toLowerCase() || null; } catch { return null; }
+}
+
+function normalizedAuthDeletionCandidate(urlStr, method) {
+  if (method !== 'DELETE' || typeof urlStr !== 'string') return null;
+  let rawPath = urlStr;
+  try { rawPath = new URL(urlStr, 'https://relative.invalid').pathname; } catch {}
+  let decoded = rawPath;
+  try { decoded = decodeURIComponent(rawPath); } catch {}
+  const collapsed = decoded.replace(/\/+/g, '/');
+  const lower = collapsed.toLowerCase();
+  const prefix = '/auth/v1/admin/users/';
+  const idx = lower.indexOf(prefix);
+  if (idx === -1) return null;
+  return lower.slice(idx + prefix.length).replace(/^\/+|\/+$/g, '') || null;
 }
 
 function withAuthDeletion(inventory, userId, record, adminClient, operation) {
@@ -451,6 +482,7 @@ function recordVerifiedSessionBaseline(inventory, sessionId, token, expectedUser
       entry.projectRef !== HARDCODED_TEMP_REF || entry.runId !== inventory.runId ||
       entry.resource !== 'session:' + sessionId || !Array.isArray(entry.requestOrdinals) || entry.requestOrdinals.length !== 1 ||
       !Array.isArray(entry.responses) || entry.responses.length !== 1) return false;
+  const entryTransport = RESOURCE_ENTRY_TRANSPORTS.get(entry) || null;
   const claims = extractUnverifiedJwtIdentityClaims(token);
   const ordinal = entry.requestOrdinals[0];
   const response = entry.responses[0];
@@ -460,6 +492,11 @@ function recordVerifiedSessionBaseline(inventory, sessionId, token, expectedUser
       response?.ordinal !== ordinal || response.status !== 200 || response.kind !== 'read' ||
       response.target?.method !== 'GET' || response.target?.path !== '/auth/v1/user') return false;
   const journal = journalForRun(inventory.runId);
+  const seed = (journal ? JOURNAL_SEEDS.get(journal.handle) : null) || RUN_SEEDS.get(inventory);
+  const issuance = SESSION_ISSUANCE_TRANSPORTS.get(inventory)?.get(sessionId) || null;
+  if ((journal || seed) && !entryTransport) return false;
+  if (seed && (!seed.transport || seed.transport !== entryTransport || (journal && seed.handle !== journal.handle))) return false;
+  if (issuance && (issuance.transport !== entryTransport || (journal && issuance.handle !== journal.handle))) return false;
   if (journal) {
     const attempt = journal.state.attempts[ordinal - 1];
     if (!attempt || attempt.resourceKey !== key || attempt.kind !== 'read' || attempt.outcome !== 'success' || attempt.httpStatus !== 200) return false;
@@ -469,19 +506,25 @@ function recordVerifiedSessionBaseline(inventory, sessionId, token, expectedUser
   baselines.set(sessionId, {
     ordinal, status: 200, kind: 'read', method: 'GET', path: '/auth/v1/user', scope: null,
     classification: 'pre_invalidation_session_valid', tokenHash: crypto.createHash('sha256').update(token).digest('hex'),
-    userId: expectedUserId, resourceKey: key
+    userId: expectedUserId, resourceKey: key, transport: entryTransport, handle: journal?.handle || null
   });
   return true;
 }
-function getVerifiedSessionBaseline(inventory, sessionId, token, expectedUserId) {
+function getVerifiedSessionBaseline(inventory, sessionId, token, expectedUserId, requiredTransport = null) {
   if (!inventory || typeof token !== 'string' || !expectedUserId) return null;
   const baseline = VERIFIED_SESSION_BASELINES.get(inventory)?.get(sessionId);
   const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
   const key = crypto.createHash('sha256').update('auth:session:' + sessionId).digest('hex');
   if (!baseline || baseline.tokenHash !== tokenHash || baseline.userId !== expectedUserId || baseline.resourceKey !== key ||
       inventory.getSessionToken(sessionId) !== token || inventory.sessionMetadata.get(sessionId)?.userId !== expectedUserId) return null;
+  if (requiredTransport && baseline.transport !== requiredTransport) return null;
   const journal = journalForRun(inventory.runId);
+  const seed = (journal ? JOURNAL_SEEDS.get(journal.handle) : null) || RUN_SEEDS.get(inventory);
+  const issuance = SESSION_ISSUANCE_TRANSPORTS.get(inventory)?.get(sessionId) || null;
+  if (seed && (!seed.transport || baseline.transport !== seed.transport || (journal && baseline.handle !== journal.handle))) return null;
+  if (issuance && (baseline.transport !== issuance.transport || (journal && baseline.handle !== issuance.handle))) return null;
   if (journal) {
+    if (baseline.handle !== journal.handle || !baseline.transport) return null;
     const attempt = journal.state.attempts[baseline.ordinal - 1];
     if (!attempt || attempt.resourceKey !== key || attempt.kind !== 'read' || attempt.outcome !== 'success' || attempt.httpStatus !== 200) return null;
   }
@@ -512,6 +555,14 @@ function recordVerifiedSessionRevocation(inventory, sessionId, token, expectedUs
   const claims = extractUnverifiedJwtIdentityClaims(token);
   if (claims.sessionId !== sessionId || claims.userId !== expectedUserId ||
       inventory.getSessionToken(sessionId) !== token || inventory.sessionMetadata.get(sessionId)?.userId !== expectedUserId) return false;
+  const entryTransport = RESOURCE_ENTRY_TRANSPORTS.get(entry) || null;
+  const journal = journalForRun(inventory.runId);
+  const seed = (journal ? JOURNAL_SEEDS.get(journal.handle) : null) || RUN_SEEDS.get(inventory);
+  const issuance = SESSION_ISSUANCE_TRANSPORTS.get(inventory)?.get(sessionId) || null;
+  if ((journal || seed) && !entryTransport) return false;
+  if (seed && (!seed.transport || seed.transport !== entryTransport || (journal && seed.handle !== journal.handle))) return false;
+  if (issuance && entryTransport && (issuance.transport !== entryTransport || (journal && issuance.handle !== journal.handle))) return false;
+  if (issuance && !entryTransport) return false;
   const resourceKey = crypto.createHash('sha256').update('auth:session:' + sessionId).digest('hex');
   const proof = {
     ...semanticProof,
@@ -521,7 +572,6 @@ function recordVerifiedSessionRevocation(inventory, sessionId, token, expectedUs
     userId: expectedUserId,
     tokenHash: crypto.createHash('sha256').update(token).digest('hex')
   };
-  const journal = journalForRun(inventory.runId);
   const evidence = validateSessionRevocationEvidence({
     entry,
     proof,
@@ -537,6 +587,8 @@ function recordVerifiedSessionRevocation(inventory, sessionId, token, expectedUs
   });
   if (!evidence || entry.resource !== 'session:' + sessionId || entry.key !== resourceKey ||
       entry.projectRef !== HARDCODED_TEMP_REF || entry.runId !== inventory.runId) return false;
+  if (semanticProof?.supportingOrdinals?.length > 0 &&
+      !getVerifiedSessionBaseline(inventory, sessionId, token, expectedUserId, entryTransport)) return false;
   if (journal) {
     const key = LIVE_RESOURCE_OBLIGATIONS.get(inventory)?.get('session:' + sessionId);
     if (!key || entry.key !== key || journal.handle.projectRef !== HARDCODED_TEMP_REF || journal.handle.runId !== inventory.runId) return false;
@@ -552,14 +604,29 @@ function recordVerifiedSessionRevocation(inventory, sessionId, token, expectedUs
   }
   let proofs = VERIFIED_SESSION_REVOCATIONS.get(inventory);
   if (!proofs) { proofs = new Map(); VERIFIED_SESSION_REVOCATIONS.set(inventory, proofs); }
-  proofs.set(sessionId, { tokenHash: crypto.createHash('sha256').update(token).digest('hex'), userId: expectedUserId });
+  proofs.set(sessionId, {
+    tokenHash: crypto.createHash('sha256').update(token).digest('hex'),
+    userId: expectedUserId,
+    transport: entryTransport,
+    handle: journal?.handle || null
+  });
   return true;
 }
 function hasVerifiedSessionRevocation(inventory, sessionId) {
   const proof = VERIFIED_SESSION_REVOCATIONS.get(inventory)?.get(sessionId);
   const token = inventory.getSessionToken(sessionId);
-  return Boolean(proof && typeof token === 'string' && inventory.sessionMetadata.get(sessionId)?.userId === proof.userId &&
-    crypto.createHash('sha256').update(token).digest('hex') === proof.tokenHash);
+  if (!proof || typeof token !== 'string' || inventory.sessionMetadata.get(sessionId)?.userId !== proof.userId ||
+      crypto.createHash('sha256').update(token).digest('hex') !== proof.tokenHash) return false;
+  const journal = journalForRun(inventory.runId);
+  const seed = (journal ? JOURNAL_SEEDS.get(journal.handle) : null) || RUN_SEEDS.get(inventory);
+  const issuance = SESSION_ISSUANCE_TRANSPORTS.get(inventory)?.get(sessionId) || null;
+  if (journal) {
+    const key = crypto.createHash('sha256').update('auth:session:' + sessionId).digest('hex');
+    if (proof.handle !== journal.handle || !proof.transport || journal.state.obligations.has(key)) return false;
+  }
+  if (seed && (!seed.transport || proof.transport !== seed.transport || proof.handle !== seed.handle)) return false;
+  if (issuance && (proof.transport !== issuance.transport || (journal && proof.handle !== issuance.handle))) return false;
+  return true;
 }
 function persistVerifiedResourceResolutions(inventory, entries) {
   const journal = journalForRun(inventory.runId);
@@ -703,6 +770,12 @@ async function executeBudgetedRequest(runId, category, operation, signal = null,
 function executeCurrentTransportRequest(transport, signal, operation, kind, target) {
   const authority = AUTH_DELETE_CONTEXT.getStore();
   if (kind === 'auth_delete' && authority && authority.transport !== transport) throw new Error('SEED_DELETE_TRANSPORT_MISMATCH');
+  const rc = RESOURCE_REQUEST_CONTEXT.getStore();
+  if (rc) {
+    const existingTransport = RESOURCE_ENTRY_TRANSPORTS.get(rc);
+    if (existingTransport && existingTransport !== transport) throw new Error('RESOURCE_CLEANUP_TRANSPORT_MISMATCH');
+    RESOURCE_ENTRY_TRANSPORTS.set(rc, transport);
+  }
   const context = RUN_REQUEST_BUDGET_CONTEXT.getStore();
   if (!context) return operation(null, () => {}); // Standalone fixture routing has no run/resource authority.
   return executeBudgetedRequest(context.runId, context.category, operation, signal, TRANSPORT_REQUEST_BUDGET_MODES.get(transport), kind, target);
@@ -2116,9 +2189,9 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
     const journal = journalForRun(runId);
     const kind = recoveryRequestKind(transport, runId, urlStr, method);
     const target = sessionEvidenceRequestTarget(urlStr, method);
-    const authUserId = authDeletionUserId(target);
+    const authUserId = authDeletionUserId(target) || normalizedAuthDeletionCandidate(urlStr, method);
     const protectingJournal = journalProtectingSeed(authUserId);
-    if (protectingJournal && (runId !== protectingJournal.handle.runId ||
+    if (protectingJournal && (protectingJournal.closed || runId !== protectingJournal.handle.runId ||
         target.origin !== `https://${HARDCODED_TEMP_REF}.supabase.co` ||
         target.path !== '/auth/v1/admin/users/' + authUserId)) throw new Error('SEED_DELETE_PROJECT_RUN_OR_PATH_MISMATCH');
     if (isTrustedSignalAborted(signal)) {
@@ -6452,6 +6525,19 @@ export class TestRunInventory {
       }
     }
 
+    const obsTransport = TRANSPORT_OBSERVATION_CONTEXT.getStore()?.transport || null;
+    if (obsTransport && !recordSessionIssuanceProvider(this, sessionId, obsTransport)) {
+      this.registerSessionReconciliationObligation({
+        reason: 'SESSION_PROVIDER_MISMATCH',
+        probeId,
+        expectedSessionId: sessionId,
+        expectedUserId: expectedUserId || existingMeta?.userId || null,
+        tokenUserId: tokClaims.userId || userId || null,
+        source
+      });
+      return { registered: false, providerMismatch: true, sessionId };
+    }
+
     this.sessionTokens.set(sessionId, trimmedToken);
     this.sessionMetadata.set(sessionId, {
       userId: tokClaims.userId || userId || existingMeta?.userId || null,
@@ -7438,7 +7524,12 @@ export class TestRunInventory {
 
     try {
       if (!adminClient) throw new Error('CLEANUP_CLIENT_REQUIRED: MISSING_ADMIN_CLIENT');
-      assertTrustedAdminClient(adminClient, { projectRef: HARDCODED_TEMP_REF, runId: this.runId });
+      const adminMeta = assertTrustedAdminClient(adminClient, { projectRef: HARDCODED_TEMP_REF, runId: this.runId });
+      const journal = journalForRun(this.runId);
+      const seed = (journal ? JOURNAL_SEEDS.get(journal.handle) : null) || RUN_SEEDS.get(this);
+      if (seed?.transport && adminMeta.rawTransportFetch !== seed.transport) {
+        throw new Error('SEED_CLEANUP_PROVIDER_MISMATCH: Cleanup adminClient transport must match verified seed provider transport');
+      }
     } catch (integrityErr) {
       // Rejection blocks all execution in both reporting modes. Keep every outstanding obligation visible.
       recordBlockedCleanup(report, this, integrityErr.message, unresolvedOps);
@@ -7769,7 +7860,12 @@ export class TestRunInventory {
     } else {
       for (const sessionId of this.trackedSessions) {
         // Idempotency check: if session is already confirmed revoked, skip redundant duplicate logout (R8-02)
-        if (this.revokedSessions.has(sessionId) || hasVerifiedSessionRevocation(this, sessionId)) {
+        const sessionJournal = journalForRun(this.runId);
+        const isSeedRun = Boolean((sessionJournal ? JOURNAL_SEEDS.get(sessionJournal.handle) : null) || RUN_SEEDS.get(this));
+        const isAlreadyVerifiedRevoked = isSeedRun
+          ? hasVerifiedSessionRevocation(this, sessionId)
+          : (this.revokedSessions.has(sessionId) || hasVerifiedSessionRevocation(this, sessionId));
+        if (isAlreadyVerifiedRevoked) {
           this.revokedSessions.add(sessionId);
           report.sessionsRevoked++;
           continue;
@@ -9578,6 +9674,7 @@ export function createRunCreatedSeedDispatcher(rawOptions) {
   const options = admitValidatedInput(rawOptions, 'createHostedDispatcherOptions');
   const seed = RUN_SEEDS.get(options.inventory);
   if (!seed || seed.state !== 'CREATION_VERIFIED') throw new Error('SEED_NOT_VERIFIED');
+  if (!seed.transport || options.fetchFn !== seed.transport) throw new Error('SEED_DISPATCHER_TRANSPORT_MISMATCH');
   return createHostedDispatcher({ ...options, testEmail: seed.email, seedEmail: seed.email, seedUserId: seed.userId,
     runContext: options.runContext || createRunContext({ runId: seed.plan.runId, testEmail: seed.email,
       seedEmail: seed.email, seedUserId: seed.userId }) }, SEED_ADMISSION);
@@ -9636,6 +9733,11 @@ export function createHostedDispatcher(rawOptions = {}, seedCapability = null) {
     });
   }
   const factoryBoundRunId = inventory ? inventory.runId : (runContext ? runContext.runId : null);
+  const boundJournal = journalForRun(factoryBoundRunId);
+  const boundSeed = (boundJournal ? JOURNAL_SEEDS.get(boundJournal.handle) : null) || (inventory ? RUN_SEEDS.get(inventory) : null);
+  if (boundSeed?.transport && fetchFn !== boundSeed.transport) {
+    throw new Error('SEED_PROVIDER_TRANSPORT_MISMATCH: Dispatcher transport must match verified seed provider transport');
+  }
 
   const factorySeedEmail = seedEmail || null;
   const factorySeedUserId = seedUserId || (runContext ? runContext.seedUserId : null) || null;
@@ -9705,6 +9807,11 @@ export function createHostedDispatcher(rawOptions = {}, seedCapability = null) {
     const seed = RUN_SEEDS.get(effInv);
     if (seed && seed.state !== 'CREATION_VERIFIED') throw new Error('SEED_NOT_VERIFIED');
     if (seed) effInv.assertActiveForAdmission('seed probe dispatch');
+    const callJournal = journalForRun(callCtx.runId);
+    const callSeed = (callJournal ? JOURNAL_SEEDS.get(callJournal.handle) : null) || seed;
+    if (callSeed?.transport && transportFetch !== callSeed.transport) {
+      throw new Error('SEED_PROVIDER_TRANSPORT_MISMATCH: Dispatcher transport must match verified seed provider transport');
+    }
     if (seed && ((effCtx && (effCtx.seedUserId !== seed.userId || effCtx.testEmail !== seed.email)) ||
         (effCtx?.activeUserId && effCtx.activeUserId !== seed.userId) ||
         (effCtx?.activeAccessToken && extractUnverifiedJwtIdentityClaims(effCtx.activeAccessToken).userId !== seed.userId) ||
@@ -9714,7 +9821,8 @@ export function createHostedDispatcher(rawOptions = {}, seedCapability = null) {
         (options.seedUserId && options.seedUserId !== seed.userId))) throw new Error('SEED_CONTEXT_IDENTITY_MISMATCH');
     const seedRequestContext = seed ? { resource: 'user:' + seed.userId, key: seed.key, projectRef: normRef,
       runId: seed.plan.runId, attempts: [], requestOrdinals: [], responses: [] } : RESOURCE_REQUEST_CONTEXT.getStore();
-    const outcome = await RESOURCE_REQUEST_CONTEXT.run(seedRequestContext, () => DISPATCHER_CALL_CONTEXT.run(callCtx, async () => {
+    const outcome = await TRANSPORT_OBSERVATION_CONTEXT.run({ transport: transportFetch }, () =>
+      RESOURCE_REQUEST_CONTEXT.run(seedRequestContext, () => DISPATCHER_CALL_CONTEXT.run(callCtx, async () => {
       const signal = options.signal;
       const probeId = item.id;
       const ctx = effCtx;
@@ -10763,7 +10871,7 @@ export function createHostedDispatcher(rawOptions = {}, seedCapability = null) {
         let probeErrorCode = null;
         let probeProviderEvidence = null;
         const durableSessionJournal = Boolean(inv && journalForRun(inv.runId));
-        const verifiedBaseline = getVerifiedSessionBaseline(inv, ctx?.activeSessionId, ctx?.activeAccessToken, ctx?.activeUserId);
+        const verifiedBaseline = getVerifiedSessionBaseline(inv, ctx?.activeSessionId, ctx?.activeAccessToken, ctx?.activeUserId, transportFetch);
         const baselineValid = ctx?.preInvalidationSessionValid === true && (!durableSessionJournal || verifiedBaseline !== null);
 
         if (resetSucceeded && ctx?.activeAccessToken && baselineValid) {
@@ -10893,7 +11001,7 @@ export function createHostedDispatcher(rawOptions = {}, seedCapability = null) {
             error: 'PREREQUISITE_MISSING: SESSION-03 requires valid activeSessionId from HOOK-01 (R3-05)'
           };
         }
-        const baseline = getVerifiedSessionBaseline(inv, sessionId, ctx?.activeAccessToken, ctx?.activeUserId);
+        const baseline = getVerifiedSessionBaseline(inv, sessionId, ctx?.activeAccessToken, ctx?.activeUserId, transportFetch);
         if (inv && journalForRun(inv.runId) && (ctx?.preInvalidationSessionValid !== true || !baseline)) {
           return { passed: false, status: 0, error: 'PREREQUISITE_MISSING: SESSION-03 requires the exact durable SESSION-01 baseline' };
         }
@@ -11245,7 +11353,7 @@ export function createHostedDispatcher(rawOptions = {}, seedCapability = null) {
             error: 'PREREQUISITE_MISSING: SESSION-06 requires activeSessionId from HOOK-01 (R3-05)'
           };
         }
-        const baseline = getVerifiedSessionBaseline(inv, sessionId, ctx?.activeAccessToken, ctx?.activeUserId);
+        const baseline = getVerifiedSessionBaseline(inv, sessionId, ctx?.activeAccessToken, ctx?.activeUserId, transportFetch);
         if (inv && journalForRun(inv.runId) && (ctx?.preInvalidationSessionValid !== true || !baseline)) {
           return { passed: false, status: 0, error: 'PREREQUISITE_MISSING: SESSION-06 requires the exact durable SESSION-01 baseline' };
         }
@@ -11333,7 +11441,7 @@ export function createHostedDispatcher(rawOptions = {}, seedCapability = null) {
         };
       }
     }
-    }));
+    })));
     if (callCtx.trappedRecoveryError) {
       throw callCtx.trappedRecoveryError;
     }
@@ -11825,6 +11933,14 @@ export function createHostedAdminClient(rawOptions = {}) {
         : priorUserId && options.expectedUserId && options.expectedUserId !== priorUserId ? 'VERIFICATION_IDENTITY_CONFLICT'
         : !expectedUserId ? 'VERIFICATION_IDENTITY_UNAVAILABLE' : null;
 
+      const verifyJournal = journalForRun(inv?.runId || boundRunId);
+      const verifySeed = (verifyJournal ? JOURNAL_SEEDS.get(verifyJournal.handle) : null) || (inv ? RUN_SEEDS.get(inv) : null);
+      if (verifySeed?.transport && rawTransportFetch !== verifySeed.transport) {
+        return { data: null, credentialVerified: false, verifiedUserId: null,
+          sessionRevocationFailed: true, indeterminateSession: false,
+          error: { code: 'SEED_PROVIDER_TRANSPORT_MISMATCH', message: 'SEED_PROVIDER_TRANSPORT_MISMATCH: Credential verification requires verified seed provider transport' } };
+      }
+
       const cap = getEndpointCapabilities('verify_credentials') || {
         canMintSession: true,
         canCreateUser: false,
@@ -11871,7 +11987,7 @@ export function createHostedAdminClient(rawOptions = {}) {
 
       const parseEnv = res ? await parseResponseEnvelope(res) : null;
       const preObservationUsers = inv ? new Set(inv.referencedUsers.values()) : null;
-      const observed = observeAuthResponse({
+      const observed = TRANSPORT_OBSERVATION_CONTEXT.run({ transport: rawTransportFetch }, () => observeAuthResponse({
         probeId: 'verify_credentials',
         status: parseEnv?.status || 0,
         parseStatus: parseEnv?.parseStatus || (transportError ? 'transport_error' : 'missing_response'),
@@ -11885,7 +12001,7 @@ export function createHostedAdminClient(rawOptions = {}) {
         canModifyProviderState: cap.canModifyProviderState,
         requiresCleanupReconciliation: cap.requiresCleanupReconciliation,
         testUser: email.trim()
-      });
+      }));
       if (inv) {
         for (const user of inv.referencedUsers.values()) {
           if (!preObservationUsers.has(user)) VERIFICATION_RESPONSE_USER_RECORDS.add(user);
@@ -11946,8 +12062,8 @@ export function createHostedAdminClient(rawOptions = {}) {
       if (credentialVerified && inv) {
         const verifiedReference = inv.referencedUsers.get(claims.userId);
         if (verifiedReference) VERIFICATION_RESPONSE_USER_RECORDS.delete(verifiedReference);
-        inv.registerSession(sessionId, { accessToken: token, userId: claims.userId,
-          expectedUserId: claims.userId, validated: true, replaceExisting: true, source: 'verify_credentials' });
+        TRANSPORT_OBSERVATION_CONTEXT.run({ transport: rawTransportFetch }, () => inv.registerSession(sessionId, { accessToken: token, userId: claims.userId,
+          expectedUserId: claims.userId, validated: true, replaceExisting: true, source: 'verify_credentials' }));
       }
 
       // Immediately revoke verification session so no residual sessions leak (R9-01, R10-01, R11-01)
@@ -12125,6 +12241,18 @@ export function createHostedAdminClient(rawOptions = {}) {
     },
 
     async invalidateSession(sessionId, token) {
+      const boundJournal = journalForRun(boundRunId);
+      const boundSeed = boundJournal ? JOURNAL_SEEDS.get(boundJournal.handle) : null;
+      if (boundSeed?.transport && rawTransportFetch !== boundSeed.transport) {
+        return {
+          data: null,
+          error: {
+            status: 400,
+            code: 'SEED_PROVIDER_TRANSPORT_MISMATCH',
+            message: 'SEED_PROVIDER_TRANSPORT_MISMATCH: Session revocation transport must match verified seed provider transport'
+          }
+        };
+      }
       const normSessionId = typeof sessionId === 'string' && sessionId.trim() ? sessionId.trim() : null;
       if (!normSessionId) {
         return {
