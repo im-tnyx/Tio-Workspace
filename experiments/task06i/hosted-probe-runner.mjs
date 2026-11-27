@@ -1,5 +1,6 @@
 import { registerConditionalStorageFixtureTransport, getConditionalStorageFixtureProvider, getConditionalStorageFixtureRunId, observeConditionalStorageUpload, readObservedStorageCreation, decodeOfflineJwtClaims, extractOfflineStorageObjectId, canonicalStorageUuid, snapshotBoundedJwtClaims, MAX_OFFLINE_JWT_TOKEN_LENGTH } from './conditional-storage-fixture.mjs';
 import { admitInventoryEffects, snapshotInventoryEffectData, snapshotDirectInventoryInput } from './inventory-effect-admission.mjs';
+import { validateSessionRevocationEvidence } from './session-revocation-evidence.mjs';
 // Hosted Probe Runner Specification & Harness for Task 06I-B1-H0-R2
 // Prepares the opt-in, fail-closed hosted test runner for future authorized testing.
 // Enforces strict safety gates:
@@ -145,6 +146,7 @@ const VERIFIED_LIVE_RESOURCE_CLEANUPS = new WeakMap();
 const RESOURCE_REQUEST_CONTEXT = new AsyncLocalStorage();
 const LIVE_RESOURCE_ATTEMPTS = new WeakMap();
 const VERIFIED_SESSION_REVOCATIONS = new WeakMap();
+const VERIFIED_SESSION_BASELINES = new WeakMap();
 const revocationFalseProofTest = Function.prototype.call.bind(RegExp.prototype.test);
 function isFalseRevocationProof(body) {
   if (!body || typeof body !== 'object' || utilTypes.isProxy(body)) return false;
@@ -163,10 +165,14 @@ function planStorageOperationId(inventory, rawId) {
   if (explicitId.length > 512 || /[\u0000-\u001f\u007f]/.test(explicitId)) throw new Error('INVALID_STORAGE_OPERATION_ID');
   const used = new Set();
   for (const fixture of inventory.storageFixtures.values()) used.add(fixture.reservationOpId);
+  const journal = journalForRun(inventory.runId);
+  const usedJournalOperationHashes = new Set(journal ? journal.state.reservations.values() : []);
+  const isUsed = operationId => used.has(operationId) ||
+    usedJournalOperationHashes.has(crypto.createHash('sha256').update(operationId).digest('hex'));
   let nextSequence = inventory._reservationSequence;
   if (!Number.isSafeInteger(nextSequence) || nextSequence < 0) throw new Error('INVALID_STORAGE_OPERATION_SEQUENCE');
   if (explicitId) {
-    if (used.has(explicitId)) throw new Error('STORAGE_OPERATION_ID_CONFLICT');
+    if (isUsed(explicitId)) throw new Error('STORAGE_OPERATION_ID_CONFLICT');
     return { assignedOpId: explicitId, nextSequence };
   }
   let assignedOpId;
@@ -174,8 +180,28 @@ function planStorageOperationId(inventory, rawId) {
     nextSequence++;
     if (!Number.isSafeInteger(nextSequence)) throw new Error('INVALID_STORAGE_OPERATION_SEQUENCE');
     assignedOpId = `op-res-${inventory.runId}-${nextSequence}`;
-  } while (used.has(assignedOpId));
+  } while (isUsed(assignedOpId));
   return { assignedOpId, nextSequence };
+}
+
+function durableStorageReservation(inventory, resource, operationId) {
+  const journal = journalForRun(inventory.runId);
+  if (!journal) return null;
+  const resourceKey = crypto.createHash('sha256').update('storage:' + resource).digest('hex');
+  const operationHash = crypto.createHash('sha256').update(operationId).digest('hex');
+  const state = journal.state;
+  if (state.obligations.has(resourceKey) || state.reservations.has(resourceKey)) {
+    throw new Error('STORAGE_FIXTURE_RESERVATION_CONFLICT: Durable Storage obligation already exists');
+  }
+  if ([...state.reservations.values()].includes(operationHash)) {
+    throw new Error('STORAGE_OPERATION_ID_CONFLICT');
+  }
+  const key = journal.reserveStorage(resource, operationId);
+  VERIFIED_LIVE_RESOURCE_CLEANUPS.get(inventory)?.delete(resource);
+  let obligations = LIVE_RESOURCE_OBLIGATIONS.get(inventory);
+  if (!obligations) { obligations = new Map(); LIVE_RESOURCE_OBLIGATIONS.set(inventory, obligations); }
+  obligations.set(resource, key);
+  return key;
 }
 
 function durableInventoryObligation(inventory, kind, resource) {
@@ -198,30 +224,122 @@ export function consumeLiveCleanupResolution(receipt, handle) {
   return proof;
 }
 
-async function collectResourceCleanup(resource, operation, verified) {
+async function collectResourceCleanup(resource, operation, verified, retainAttemptOnFailure = false) {
   const kind = resource.startsWith('table:') ? 'other' : resource.startsWith('storage:') ? 'storage' : 'auth';
-  const entry = { resource, key: crypto.createHash('sha256').update(kind + ':' + resource).digest('hex'), attempts: [], requestOrdinals: [], responses: [] };
+  const entry = {
+    resource,
+    key: crypto.createHash('sha256').update(kind + ':' + resource).digest('hex'),
+    projectRef: HARDCODED_TEMP_REF,
+    runId: RUN_REQUEST_BUDGET_CONTEXT.getStore()?.runId ?? DISPATCHER_CALL_CONTEXT.getStore()?.runId ?? null,
+    attempts: [],
+    requestOrdinals: [],
+    responses: []
+  };
   const result = await RESOURCE_REQUEST_CONTEXT.run(entry, operation);
-  if (verified(result)) return { result, entry };
-  return { result, entry: null };
+  const isVerified = Boolean(verified(result));
+  return { result, entry: isVerified || retainAttemptOnFailure ? entry : null, verified: isVerified };
 }
-function recordVerifiedSessionRevocation(inventory, sessionId, token, expectedUserId, entry) {
+function createSessionRevocationProof(entry, purpose, classification, prerequisites, supportingOrdinals = [], providerEvidence = null, supportingRequests = []) {
+  return {
+    purpose,
+    classification,
+    providerEvidence,
+    decisiveOrdinal: entry?.responses?.at(-1)?.ordinal ?? null,
+    prerequisites,
+    supportingOrdinals,
+    supportingRequests
+  };
+}
+function recordVerifiedSessionBaseline(inventory, sessionId, token, expectedUserId, entry) {
+  if (!inventory || typeof token !== 'string' || !expectedUserId || !entry ||
+      entry.projectRef !== HARDCODED_TEMP_REF || entry.runId !== inventory.runId ||
+      entry.resource !== 'session:' + sessionId || !Array.isArray(entry.requestOrdinals) || entry.requestOrdinals.length !== 1 ||
+      !Array.isArray(entry.responses) || entry.responses.length !== 1) return false;
+  const claims = extractUnverifiedJwtIdentityClaims(token);
+  const ordinal = entry.requestOrdinals[0];
+  const response = entry.responses[0];
+  const key = crypto.createHash('sha256').update('auth:session:' + sessionId).digest('hex');
+  if (claims.sessionId !== sessionId || claims.userId !== expectedUserId || inventory.getSessionToken(sessionId) !== token ||
+      inventory.sessionMetadata.get(sessionId)?.userId !== expectedUserId || entry.key !== key ||
+      response?.ordinal !== ordinal || response.status !== 200 || response.kind !== 'read' ||
+      response.target?.method !== 'GET' || response.target?.path !== '/auth/v1/user') return false;
+  const journal = journalForRun(inventory.runId);
+  if (journal) {
+    const attempt = journal.state.attempts[ordinal - 1];
+    if (!attempt || attempt.resourceKey !== key || attempt.kind !== 'read' || attempt.outcome !== 'success' || attempt.httpStatus !== 200) return false;
+  }
+  let baselines = VERIFIED_SESSION_BASELINES.get(inventory);
+  if (!baselines) { baselines = new Map(); VERIFIED_SESSION_BASELINES.set(inventory, baselines); }
+  baselines.set(sessionId, {
+    ordinal, status: 200, kind: 'read', method: 'GET', path: '/auth/v1/user', scope: null,
+    classification: 'pre_invalidation_session_valid', tokenHash: crypto.createHash('sha256').update(token).digest('hex'),
+    userId: expectedUserId, resourceKey: key
+  });
+  return true;
+}
+function getVerifiedSessionBaseline(inventory, sessionId, token, expectedUserId) {
+  if (!inventory || typeof token !== 'string' || !expectedUserId) return null;
+  const baseline = VERIFIED_SESSION_BASELINES.get(inventory)?.get(sessionId);
+  const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+  const key = crypto.createHash('sha256').update('auth:session:' + sessionId).digest('hex');
+  if (!baseline || baseline.tokenHash !== tokenHash || baseline.userId !== expectedUserId || baseline.resourceKey !== key ||
+      inventory.getSessionToken(sessionId) !== token || inventory.sessionMetadata.get(sessionId)?.userId !== expectedUserId) return null;
+  const journal = journalForRun(inventory.runId);
+  if (journal) {
+    const attempt = journal.state.attempts[baseline.ordinal - 1];
+    if (!attempt || attempt.resourceKey !== key || attempt.kind !== 'read' || attempt.outcome !== 'success' || attempt.httpStatus !== 200) return null;
+  }
+  return baseline;
+}
+function normalizedSessionProviderEvidence(errorCode) {
+  if (typeof errorCode !== 'string') return null;
+  switch (errorCode.toLowerCase()) {
+    case 'session_not_found': return 'SESSION_NOT_FOUND';
+    case 'session_revoked': return 'SESSION_REVOKED';
+    case 'authsessionmissingerror': return 'AUTH_SESSION_MISSING';
+    default: return null;
+  }
+}
+function recordVerifiedSessionRevocation(inventory, sessionId, token, expectedUserId, entry, semanticProof) {
   if (!inventory || !entry || typeof token !== 'string' || !expectedUserId) return false;
   const claims = extractUnverifiedJwtIdentityClaims(token);
   if (claims.sessionId !== sessionId || claims.userId !== expectedUserId ||
       inventory.getSessionToken(sessionId) !== token || inventory.sessionMetadata.get(sessionId)?.userId !== expectedUserId) return false;
+  const resourceKey = crypto.createHash('sha256').update('auth:session:' + sessionId).digest('hex');
+  const proof = {
+    ...semanticProof,
+    projectRef: HARDCODED_TEMP_REF,
+    runId: inventory.runId,
+    sessionId,
+    userId: expectedUserId,
+    tokenHash: crypto.createHash('sha256').update(token).digest('hex')
+  };
   const journal = journalForRun(inventory.runId);
+  const evidence = validateSessionRevocationEvidence({
+    entry,
+    proof,
+    expected: {
+      projectRef: HARDCODED_TEMP_REF,
+      runId: inventory.runId,
+      sessionId,
+      userId: expectedUserId,
+      tokenHash: proof.tokenHash,
+      resourceKey,
+      requireDurableBaseline: Boolean(journal)
+    }
+  });
+  if (!evidence || entry.resource !== 'session:' + sessionId || entry.key !== resourceKey ||
+      entry.projectRef !== HARDCODED_TEMP_REF || entry.runId !== inventory.runId) return false;
   if (journal) {
-    if (!entry.requestOrdinals.length || entry.responses.length !== entry.requestOrdinals.length ||
-        entry.responses.some(response => !(response.status >= 200 && response.status < 300) &&
-          !(response.kind === 'read' && [401, 403].includes(response.status)) &&
-          !(response.kind === 'auth_effect' && [400, 401, 403, 404].includes(response.status)) &&
-          !(response.kind === 'other_effect' && [401, 403, 500].includes(response.status)))) return false;
     const key = LIVE_RESOURCE_OBLIGATIONS.get(inventory)?.get('session:' + sessionId);
-    if (!key || entry.key !== key) return false;
+    if (!key || entry.key !== key || journal.handle.projectRef !== HARDCODED_TEMP_REF || journal.handle.runId !== inventory.runId) return false;
     if (journal.state.obligations.has(key)) {
       const receipt = Object.freeze(Object.create(null));
-      LIVE_RESOLUTION_RECEIPTS.set(receipt, { type: 'session', handle: journal.handle, key, attempts: entry.requestOrdinals });
+      const attempts = [...new Set([
+        ...evidence.requests.filter(request => request.role === 'supporting').map(request => request.ordinal),
+        ...entry.requestOrdinals
+      ])].sort((left, right) => left - right);
+      LIVE_RESOLUTION_RECEIPTS.set(receipt, { type: 'session', handle: journal.handle, key, attempts, evidence });
       journal.resolveSession(receipt);
     }
   }
@@ -256,6 +374,83 @@ function persistVerifiedResourceResolutions(inventory, entries) {
   LIVE_RESOLUTION_RECEIPTS.set(receipt, { handle: journal.handle, keys: [...new Set(keys)], attempts: [...new Set(attempts)].sort((a, b) => a - b) });
   journal.resolveLive(receipt);
 }
+function persistVerifiedStorageAbsence(inventory, fixture, deletion, absenceCheck) {
+  const journal = journalForRun(inventory.runId);
+  if (!journal) return;
+  const resource = 'storage:' + fixture.bucket + '/' + fixture.path;
+  const key = crypto.createHash('sha256').update('storage:' + resource).digest('hex');
+  const operation = journal.state.reservations.get(key);
+  const registeredKey = LIVE_RESOURCE_OBLIGATIONS.get(inventory)?.get(resource);
+  const deleteEvidence = deletion.result?.conditionalDeletion;
+  const expected = deleteEvidence?.expected;
+  const expectedIdentity = expected && expected.projectRef === HARDCODED_TEMP_REF &&
+    expected.runId === inventory.runId && expected.bucket === fixture.bucket && expected.path === fixture.path &&
+    expected.objectId === fixture.providerObjectId && expected.ownerId === fixture.verifiedOwnerId;
+  const deletionStatus = deleteEvidence?.status;
+  const deleteResponse = deletion.entry?.responses?.[0];
+  const absenceResponse = absenceCheck.entry?.responses?.[0];
+  const absenceCode = absenceCheck.result?.code;
+  const deleteEvidenceClass = deletionStatus === 'EXPECTED_OBJECT_DELETED'
+    ? 'OBJECT_DELETED'
+    : deleteResponse?.status >= 200 && deleteResponse?.status < 300
+      ? 'ATOMIC_OBJECT_ABSENT'
+      : 'STRUCTURED_NOSUCHKEY';
+  const absenceEvidenceClass = absenceResponse?.status === 400 && absenceCheck.result?.logicalStatus === '404' && absenceCode === 'NoSuchKey'
+    ? 'STRUCTURED_NOSUCHKEY'
+    : absenceResponse?.status === 404 && absenceCheck.result?.logicalStatus === '404' && absenceCode === 'NoSuchKey'
+      ? 'HTTP404_NOSUCHKEY'
+      : null;
+  const expectedOrigin = `https://${HARDCODED_TEMP_REF}.supabase.co`;
+  const expectedDeletePath = `/storage/v1/object/${fixture.bucket}/${fixture.path}`;
+  const expectedReadPath = `/storage/v1/object/authenticated/${fixture.bucket}/${fixture.path}`;
+  const requestIsBound = (entry, response, method, path) => Boolean(entry && response &&
+    entry.resource === resource && entry.key === key && entry.projectRef === HARDCODED_TEMP_REF &&
+    entry.runId === inventory.runId && entry.requestOrdinals.length === 1 && entry.responses.length === 1 &&
+    response.ordinal === entry.requestOrdinals[0] && response.target?.origin === expectedOrigin &&
+    response.target?.method === method && response.target?.path === path && response.target?.scope === null);
+  if (!fixture || fixture.projectRef !== HARDCODED_TEMP_REF || fixture.runId !== inventory.runId ||
+      fixture.bucket !== STORAGE_PROBE_BUCKET || fixture.path !== `${inventory.runId}/probe.txt` ||
+      !fixture.providerObjectIdLocked || !fixture.proof?.verifiedOwnership ||
+      !operation || registeredKey !== key || journal.state.obligations.get(key) !== 'storage' ||
+      !expectedIdentity || deleteEvidence.providerContract !== 'OFFLINE_ATOMIC_IDENTITY_COMPARE_DELETE_V1' ||
+      deleteEvidence.hostedCapabilityVerified !== false ||
+      !((deletionStatus === 'EXPECTED_OBJECT_DELETED' && deleteEvidence.deleted === true && deleteEvidence.authoritativeAbsent !== true) ||
+        (deletionStatus === 'EXPECTED_OBJECT_ABSENT' && deleteEvidence.deleted === false && deleteEvidence.authoritativeAbsent === true)) ||
+      !requestIsBound(deletion.entry, deleteResponse, 'DELETE', expectedDeletePath) ||
+      (deletionStatus === 'EXPECTED_OBJECT_DELETED' && !(deleteResponse.status >= 200 && deleteResponse.status < 300)) ||
+      (deletionStatus === 'EXPECTED_OBJECT_ABSENT' && !(deleteResponse.status >= 200 && deleteResponse.status < 300 || [400, 404].includes(deleteResponse.status))) ||
+      absenceCheck.result?.isAbsent !== true || absenceCheck.result?.classification !== STORAGE_RESPONSE_CLASS.OBJECT_ABSENT ||
+      !requestIsBound(absenceCheck.entry, absenceResponse, 'GET', expectedReadPath) ||
+      ![400, 404].includes(absenceResponse.status) || !absenceEvidenceClass) {
+    throw new Error('STORAGE_ABSENCE_RESOLUTION_EVIDENCE_INVALID');
+  }
+  const state = journal.state;
+  const uploads = state.attempts.filter(attempt => attempt.kind === 'storage_upload' &&
+    attempt.dispatchedAt !== null && attempt.ordinal > state.absentThrough && !state.resolvedAttempts.has(attempt.ordinal));
+  const operationHash = crypto.createHash('sha256').update(fixture.reservationOpId).digest('hex');
+  if (uploads.length !== 1 || uploads[0].outcome !== 'success' || uploads[0].resourceKey !== key ||
+      uploads[0].operationHash !== operationHash || operation !== operationHash ||
+      uploads[0].objectId !== fixture.providerObjectId || uploads[0].ownerId !== fixture.verifiedOwnerId) {
+    throw new Error('STORAGE_ABSENCE_UPLOAD_IDENTITY_UNPROVEN');
+  }
+  const scopedAttempts = state.attempts.filter(attempt => attempt.dispatchedAt !== null && attempt.resourceKey === key &&
+    ['storage_delete', 'storage_absence_read'].includes(attempt.kind) && !state.resolvedAttempts.has(attempt.ordinal));
+  if (!scopedAttempts.some(attempt => attempt.kind === 'storage_delete' && attempt.ordinal === deleteResponse.ordinal) ||
+      !scopedAttempts.some(attempt => attempt.kind === 'storage_absence_read' && attempt.ordinal === absenceResponse.ordinal) ||
+      scopedAttempts.at(-1)?.ordinal !== absenceResponse.ordinal) {
+    throw new Error('STORAGE_ABSENCE_REQUEST_SCOPE_UNPROVEN');
+  }
+  const receipt = Object.freeze(Object.create(null));
+  LIVE_RESOLUTION_RECEIPTS.set(receipt, {
+    type: 'storage_absence', handle: journal.handle, key, operation,
+    attempts: [uploads[0].ordinal, ...scopedAttempts.map(attempt => attempt.ordinal)],
+    deletionStatus, absenceClassification: STORAGE_RESPONSE_CLASS.OBJECT_ABSENT,
+    objectId: fixture.providerObjectId, ownerId: fixture.verifiedOwnerId,
+    deleteOrdinal: deleteResponse.ordinal, deleteHttpStatus: deleteResponse.status, deleteEvidenceClass,
+    absenceOrdinal: absenceResponse.ordinal, absenceHttpStatus: absenceResponse.status, absenceEvidenceClass
+  });
+  journal.resolveStorageAbsence(receipt);
+}
 function withRunRequestBudget(runId, category, operation, mode = undefined) {
   const existing = RUN_REQUEST_BUDGET_CONTEXT.getStore();
   if (!runId) throw new Error('REQUEST_BUDGET_BINDING_REQUIRED: Executing run operations require exact run ID');
@@ -265,16 +460,17 @@ function withRunRequestBudget(runId, category, operation, mode = undefined) {
   }
   return RUN_REQUEST_BUDGET_CONTEXT.run({ runId, category, mode }, operation);
 }
-async function executeBudgetedRequest(runId, category, operation, signal = null, mode = undefined, kind = undefined) {
+async function executeBudgetedRequest(runId, category, operation, signal = null, mode = undefined, kind = undefined, target = null) {
   const existing = RUN_REQUEST_BUDGET_CONTEXT.getStore();
   const effectiveRun = existing?.runId || runId;
   if (!effectiveRun || (runId && runId !== effectiveRun)) throw new Error('REQUEST_BUDGET_BINDING_MISMATCH');
   const budget = getRunRequestBudget({ projectRef: 'wvdabiwbaavfggcmpizd', runId: effectiveRun, mode: existing?.mode ?? mode });
   const resourceContext = RESOURCE_REQUEST_CONTEXT.getStore();
-  return executeRunBudgetRequest(budget, { category: existing?.category || category, signal, kind, resourceKey: resourceContext?.key }, async (ordinal, recordCreation) => {
+  return executeRunBudgetRequest(budget, { category: existing?.category || category, signal, kind,
+    resourceKey: resourceContext?.key, operationHash: resourceContext?.operationHash }, async (ordinal, recordCreation) => {
     resourceContext?.requestOrdinals?.push(ordinal);
     const result = await operation(ordinal, recordCreation);
-    resourceContext?.responses?.push({ ordinal, status: result?.status, kind });
+    resourceContext?.responses?.push({ ordinal, status: result?.status, kind, target });
     const resource = RESOURCE_REQUEST_CONTEXT.getStore();
     if (resource && result?.ok === true) {
       resource.attempts.push(ordinal);
@@ -290,10 +486,24 @@ async function executeBudgetedRequest(runId, category, operation, signal = null,
     return result;
   });
 }
-function executeCurrentTransportRequest(transport, signal, operation, kind) {
+function executeCurrentTransportRequest(transport, signal, operation, kind, target) {
   const context = RUN_REQUEST_BUDGET_CONTEXT.getStore();
   if (!context) return operation(null, () => {}); // Standalone fixture routing has no run/resource authority.
-  return executeBudgetedRequest(context.runId, context.category, operation, signal, TRANSPORT_REQUEST_BUDGET_MODES.get(transport), kind);
+  return executeBudgetedRequest(context.runId, context.category, operation, signal, TRANSPORT_REQUEST_BUDGET_MODES.get(transport), kind, target);
+}
+
+function sessionEvidenceRequestTarget(url, method) {
+  try {
+    const target = new URL(url);
+    return {
+      origin: target.origin,
+      method,
+      path: target.pathname,
+      scope: target.pathname === '/auth/v1/logout' ? target.searchParams.get('scope') : null
+    };
+  } catch {
+    return { origin: null, method, path: null, scope: null };
+  }
 }
 
 function recoveryRequestKind(transport, runId, url, method) {
@@ -1687,12 +1897,13 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
       throw new Error('RECOVERY_TRANSPORT_RUN_SCOPE_REQUIRED');
     }
     const journal = journalForRun(runId);
-    const kind = journal ? recoveryRequestKind(transport, runId, urlStr, method) : undefined;
+    const kind = recoveryRequestKind(transport, runId, urlStr, method);
+    const target = sessionEvidenceRequestTarget(urlStr, method);
     if (isTrustedSignalAborted(signal)) {
       const abortErr = new Error('The operation was aborted');
       abortErr.name = 'AbortError';
       if (RUN_REQUEST_BUDGET_CONTEXT.getStore()) {
-        return executeCurrentTransportRequest(transport, signal, () => { throw abortErr; }, kind);
+        return executeCurrentTransportRequest(transport, signal, () => { throw abortErr; }, kind, target);
       }
       throw abortErr;
     }
@@ -1813,7 +2024,7 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
       }
       if (conditionalDeletion) publishConditionalEvidence(response, transport, 'conditionalDeletion', conditionalDeletion);
       return response;
-    }), kind);
+    }), kind, target);
   };
 
   TRANSPORT_REQUEST_BUDGET_MODES.set(transport, requestBudgetMode);
@@ -6120,13 +6331,7 @@ export class TestRunInventory {
 
     const { assignedOpId, nextSequence } = planStorageOperationId(this, reservationOpId);
 
-    const journal = journalForRun(this.runId);
-    if (journal) {
-      const key = journal.reserveStorage('storage:' + fixtureKey, assignedOpId);
-      let obligations = LIVE_RESOURCE_OBLIGATIONS.get(this);
-      if (!obligations) { obligations = new Map(); LIVE_RESOURCE_OBLIGATIONS.set(this, obligations); }
-      obligations.set('storage:' + fixtureKey, key);
-    }
+    durableStorageReservation(this, 'storage:' + fixtureKey, assignedOpId);
     this._reservationSequence = nextSequence;
 
     const fixtureRecord = {
@@ -6209,12 +6414,23 @@ export class TestRunInventory {
         `STORAGE_FIXTURE_RESERVATION_CONFLICT: Storage fixture '${fixtureKey}' already exists in state '${existing.lifecycleState}' (ownerOpId='${existing.reservationOpId || 'none'}') and cannot be overwritten (R3-03)`
       );
     }
-
-    const { assignedOpId, nextSequence } = planStorageOperationId(this, reservationOpId);
-    const state = lifecycleState || STORAGE_LIFECYCLE_STATE.CREATION_PENDING;
-    if (hasCommittedUpload || !neverDispatched || state !== STORAGE_LIFECYCLE_STATE.CREATION_PENDING) {
-      durableInventoryObligation(this, 'storage', 'storage:' + cleanBucket + '/' + cleanPath);
+    if (this.trackedStorageObjects.get(cleanBucket)?.has(cleanPath)) {
+      throw new Error(
+        `STORAGE_FIXTURE_RESERVATION_CONFLICT: Storage key '${fixtureKey}' is already tracked in inventory (R7-01)`
+      );
     }
+
+    const state = lifecycleState === null ? STORAGE_LIFECYCLE_STATE.CREATION_PENDING : lifecycleState;
+    if (!Object.values(STORAGE_LIFECYCLE_STATE).includes(state) ||
+        typeof hasCommittedUpload !== 'boolean' || typeof neverDispatched !== 'boolean') {
+      throw new Error('INVALID_STORAGE_REGISTRATION_STATE');
+    }
+    const { assignedOpId, nextSequence } = planStorageOperationId(this, reservationOpId);
+    const resource = 'storage:' + cleanBucket + '/' + cleanPath;
+    // Every journal-backed registration is a durable, identity-bound Storage
+    // obligation. Public lifecycle/neverDispatched labels cannot mint the
+    // private R4 non-creation receipt or suppress provider reconciliation.
+    const durableReservation = durableStorageReservation(this, resource, assignedOpId);
     const canDelete = deletionEligible === true && state === STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED;
     const cleanObjectId = providerObjectId ? String(providerObjectId).trim() : null;
     this._reservationSequence = nextSequence;
@@ -6229,7 +6445,7 @@ export class TestRunInventory {
       key: fixtureKey,
       runId: this.runId,
       reservationOpId: assignedOpId,
-      strictOwnerOpRequired: Boolean(strictOwnerOpRequired || reservationOpId),
+      strictOwnerOpRequired: Boolean(strictOwnerOpRequired || reservationOpId || durableReservation),
       ownerId: ownerId ? String(ownerId).trim() : null,
       verifiedOwnerId: state === STORAGE_LIFECYCLE_STATE.RUN_CREATED_VERIFIED && ownerId ? String(ownerId).trim() : null,
       providerObjectId: cleanObjectId,
@@ -7172,7 +7388,7 @@ export class TestRunInventory {
           objectId: fixture.providerObjectId, ownerId: fixture.verifiedOwnerId
         }));
         const deletion = await collectResourceCleanup('storage:' + fixture.bucket + '/' + fixture.path,
-          () => adminClient.conditionalDeleteStorageObject(authorization), res => res && !res.error);
+          () => adminClient.conditionalDeleteStorageObject(authorization), res => res && !res.error, true);
         const delRes = deletion.result;
         fixture.conditionalDeletionEvidence = delRes?.conditionalDeletion || { status: 'CONDITIONAL_DELETE_INDETERMINATE' };
         const delIsProviderAbsent =
@@ -7205,12 +7421,14 @@ export class TestRunInventory {
 
         // 5. Independent normalized post-deletion absence verification (R1-06, R2-03, R3-06)
         // Both successful DELETE (200/204) AND idempotent DELETE NoSuchKey MUST prove authoritative absence via GET + settled ops
-        const absenceDetail = await verifyStorageObjectAbsenceDetailed(
-          adminClient,
-          fixture.bucket,
-          fixture.path,
-          { projectRef: fixture.projectRef || HARDCODED_TEMP_REF, runId: this.runId }
-        );
+        const absenceCheck = await collectResourceCleanup('storage:' + fixture.bucket + '/' + fixture.path,
+          () => verifyStorageObjectAbsenceDetailed(
+            adminClient,
+            fixture.bucket,
+            fixture.path,
+            { projectRef: fixture.projectRef || HARDCODED_TEMP_REF, runId: this.runId }
+          ), result => result?.isAbsent === true);
+        const absenceDetail = absenceCheck.result;
         const unresolvedDuringVerify = this.getUnresolvedOperations().filter(
           op => op.canModifyProviderState || op.requiresCleanupReconciliation
         );
@@ -7238,7 +7456,9 @@ export class TestRunInventory {
           fixture.lifecycleState = nextState;
           fixture.status = 'DELETION_FAILED';
         } else {
-          journalForRun(this.runId)?.liveAbsence(fixture.providerObjectId, fixture.verifiedOwnerId);
+          // Persist the private identity-bound DELETE + separate authoritative
+          // GET proof before changing the inventory state or admitting Auth deletion.
+          persistVerifiedStorageAbsence(this, fixture, deletion, absenceCheck);
           report.storageObjectsDeleted++;
           fixture.lifecycleState = STORAGE_LIFECYCLE_STATE.DELETION_VERIFIED;
           fixture.status = 'DELETED';
@@ -7247,13 +7467,9 @@ export class TestRunInventory {
           VERIFIED_STORAGE_DELETIONS.set(fixture, Object.freeze({
             inventory: this, runId: this.runId, fixtureKey, snapshot: JSON.stringify(storageEvidenceSnapshot(fixture))
           }));
-          if (deletion.entry) verifiedResolutions.push(deletion.entry);
           if (this.trackedStorageObjects.has(fixture.bucket)) {
             this.trackedStorageObjects.get(fixture.bucket).delete(fixture.path);
           }
-          // Persist this exact private deletion/absence proof before dependent
-          // Auth cleanup. Other resources and unknown Storage remain pending.
-          if (deletion.entry) persistVerifiedResourceResolutions(this, [deletion.entry]);
         }
       } catch (err) {
         report.residualResources.push({
@@ -7312,7 +7528,13 @@ export class TestRunInventory {
             continue;
           }
           let res;
-          const sessionCleanup = { resource: 'session:' + sessionId, key: crypto.createHash('sha256').update('auth:session:' + sessionId).digest('hex'), attempts: [], requestOrdinals: [], responses: [] };
+          const sessionCleanup = {
+            resource: 'session:' + sessionId,
+            key: crypto.createHash('sha256').update('auth:session:' + sessionId).digest('hex'),
+            projectRef: HARDCODED_TEMP_REF,
+            runId: this.runId,
+            attempts: [], requestOrdinals: [], responses: []
+          };
           if (typeof adminClient.invalidateSession === 'function') {
             res = await RESOURCE_REQUEST_CONTEXT.run(sessionCleanup, () => adminClient.invalidateSession(sessionId, token));
           } else if (typeof adminClient.signOut === 'function') {
@@ -7329,7 +7551,10 @@ export class TestRunInventory {
           if (res && res.error) {
             report.residualResources.push({ type: 'session', id: sessionId, error: res.error.message || String(res.error) });
           } else {
-            const proven = recordVerifiedSessionRevocation(this, sessionId, token, this.sessionMetadata.get(sessionId)?.userId, sessionCleanup);
+            const proven = recordVerifiedSessionRevocation(this, sessionId, token, this.sessionMetadata.get(sessionId)?.userId, sessionCleanup,
+              createSessionRevocationProof(sessionCleanup, 'targeted_local_logout',
+                res?.session_not_found === true ? 'provider_session_absent' : 'local_logout_completed',
+                ['session_token_correlated'], [], res?.session_evidence ?? null));
             if (journalForRun(this.runId) && !proven) throw new Error('SESSION_REVOCATION_PROOF_UNAVAILABLE');
             this.revokedSessions.add(sessionId);
             report.sessionsRevoked++;
@@ -7605,7 +7830,10 @@ export class TestRunInventory {
                           () => adminClient.invalidateSession(leakSessId, leakToken), () => true);
                         const retryRes = retry.result;
                         if (retryRes && !retryRes.error && retryRes.data?.scope === 'local') {
-                          const proven = recordVerifiedSessionRevocation(this, leakSessId, leakToken, item.userId, retry.entry);
+                          const proven = recordVerifiedSessionRevocation(this, leakSessId, leakToken, item.userId, retry.entry,
+                            createSessionRevocationProof(retry.entry, 'restoration_retry_local_logout',
+                              retryRes.session_not_found === true ? 'provider_session_absent' : 'local_logout_completed',
+                              ['session_token_correlated', 'intended_user_correlated'], [], retryRes.session_evidence ?? null));
                           if (journalForRun(this.runId) && !proven) throw new Error('SESSION_REVOCATION_PROOF_UNAVAILABLE');
                           retrySucceeded = true;
                           if (leakSessId) this.markSessionRevoked(leakSessId);
@@ -8119,11 +8347,22 @@ export async function provisionStorageProbeFixture(rawOptions = {}) {
         uploadHeaders.apikey = anonKey.trim();
       }
       uploadMayHaveDispatched = true;
-      uploadRes = await safeFetch(`${baseUrl}/storage/v1/object/${fullKey}`, {
+      const uploadResource = `storage:${fullKey}`;
+      const uploadResourceContext = {
+        resource: uploadResource,
+        key: crypto.createHash('sha256').update('storage:' + uploadResource).digest('hex'),
+        operationHash: crypto.createHash('sha256').update(ownerOpId).digest('hex'),
+        projectRef: normRef,
+        runId: validRunId,
+        attempts: [],
+        requestOrdinals: [],
+        responses: []
+      };
+      uploadRes = await RESOURCE_REQUEST_CONTEXT.run(uploadResourceContext, () => safeFetch(`${baseUrl}/storage/v1/object/${fullKey}`, {
         method: 'POST',
         headers: uploadHeaders,
         body: expectedBuf
-      });
+      }));
     } catch (err) {
       uploadError = err;
     }
@@ -9967,22 +10206,30 @@ export function createHostedDispatcher(rawOptions = {}) {
           };
         }
 
-        const res = await fetchFn(`${baseUrl}/auth/v1/user`, {
+        const baselineRead = await collectResourceCleanup('session:' + sessionId, () => fetchFn(`${baseUrl}/auth/v1/user`, {
           method: 'GET',
           headers: { ...headers, Authorization: authHeader },
           signal
-        });
+        }), () => true);
+        const res = baselineRead.result;
         const body = await parseResponseBody(res);
-        const sessionCreated = res.status === 200 && isNonEmptyString(body?.id);
+        const expectedUserId = ctx?.activeUserId;
+        const claims = extractUnverifiedJwtIdentityClaims(ctx?.activeAccessToken);
+        const registeredSessionMatches = !inv || (inv.getSessionToken(sessionId) === ctx?.activeAccessToken &&
+          inv.sessionMetadata.get(sessionId)?.userId === expectedUserId);
+        const sessionCreated = res.status === 200 && isNonEmptyString(expectedUserId) && body?.id === expectedUserId &&
+          claims.isJwtStructure && claims.parseable && claims.sessionId === sessionId && claims.userId === expectedUserId &&
+          registeredSessionMatches;
+        const baselineRecorded = sessionCreated && (!inv || recordVerifiedSessionBaseline(inv, sessionId, ctx?.activeAccessToken, expectedUserId, baselineRead.entry));
 
-        if (sessionCreated && ctx) {
-          ctx.preInvalidationSessionValid = true;
+        if (ctx) {
+          ctx.preInvalidationSessionValid = baselineRecorded;
         }
 
         return {
-          passed: sessionCreated,
+          passed: Boolean(baselineRecorded),
           status: res.status,
-          session_created: sessionCreated,
+          session_created: Boolean(baselineRecorded),
           session_id: sessionId,
           user_id: body?.id,
           sessions_count: 1,
@@ -10193,8 +10440,11 @@ export function createHostedDispatcher(rawOptions = {}) {
         let remainingSessions = null;
         let verifyError = null;
         let probeErrorCode = null;
+        const durableSessionJournal = Boolean(inv && journalForRun(inv.runId));
+        const verifiedBaseline = getVerifiedSessionBaseline(inv, ctx?.activeSessionId, ctx?.activeAccessToken, ctx?.activeUserId);
+        const baselineValid = ctx?.preInvalidationSessionValid === true && (!durableSessionJournal || verifiedBaseline !== null);
 
-        if (resetSucceeded && ctx?.activeAccessToken) {
+        if (resetSucceeded && ctx?.activeAccessToken && baselineValid) {
           try {
             const revocation = await collectResourceCleanup('session:' + ctx.activeSessionId, () => fetchFn(`${baseUrl}/auth/v1/user`, {
               method: 'GET',
@@ -10258,14 +10508,22 @@ export function createHostedDispatcher(rawOptions = {}) {
             verifyError = `REVOCATION_CHECK_FAILED: ${err.message}`;
           }
         } else if (resetSucceeded) {
-          verifyError = 'PREREQUISITE_MISSING: Cannot verify session revocation without activeAccessToken from HOOK-01';
+          verifyError = baselineValid
+            ? 'PREREQUISITE_MISSING: Cannot verify session revocation without activeAccessToken from HOOK-01'
+            : 'PREREQUISITE_MISSING: SESSION-02 requires an exact pre-invalidation session baseline from SESSION-01';
         }
 
-        let isRevoked = resetSucceeded && sessionRevocationVerified && remainingSessions === 0;
+        let isRevoked = resetSucceeded && baselineValid && sessionRevocationVerified && remainingSessions === 0;
 
         if (isRevoked) {
           if (inv && ctx?.activeSessionId) {
-            const proven = recordVerifiedSessionRevocation(inv, ctx.activeSessionId, ctx.activeAccessToken, ctx.activeUserId, revocationEntry);
+            const proven = recordVerifiedSessionRevocation(inv, ctx.activeSessionId, ctx.activeAccessToken, ctx.activeUserId, revocationEntry,
+              createSessionRevocationProof(revocationEntry, 'session_02_post_reset_user_read', 'provider_session_revoked',
+                ['password_reset_confirmed', 'pre_invalidation_session_valid', 'intended_user_correlated'],
+                verifiedBaseline ? [verifiedBaseline.ordinal] : [], normalizedSessionProviderEvidence(probeErrorCode),
+                verifiedBaseline ? [{ ordinal: verifiedBaseline.ordinal, status: verifiedBaseline.status, kind: verifiedBaseline.kind,
+                  target: { origin: `https://${HARDCODED_TEMP_REF}.supabase.co`, method: verifiedBaseline.method,
+                    path: verifiedBaseline.path, scope: verifiedBaseline.scope } }] : []));
             if (journalForRun(inv.runId) && !proven) {
               isRevoked = false;
               sessionRevocationVerified = false;
@@ -10317,6 +10575,10 @@ export function createHostedDispatcher(rawOptions = {}) {
             error: 'PREREQUISITE_MISSING: SESSION-03 requires valid activeSessionId from HOOK-01 (R3-05)'
           };
         }
+        const baseline = getVerifiedSessionBaseline(inv, sessionId, ctx?.activeAccessToken, ctx?.activeUserId);
+        if (inv && journalForRun(inv.runId) && (ctx?.preInvalidationSessionValid !== true || !baseline)) {
+          return { passed: false, status: 0, error: 'PREREQUISITE_MISSING: SESSION-03 requires the exact durable SESSION-01 baseline' };
+        }
 
         const revocation = await collectResourceCleanup('session:' + sessionId, () => fetchFn(`${baseUrl}/auth/v1/user`, {
           method: 'GET',
@@ -10336,7 +10598,13 @@ export function createHostedDispatcher(rawOptions = {}) {
 
         let isRevocationSuccess = isRevocationError && ctx?.preInvalidationSessionValid === true && ctx?.passwordResetCompleted === true;
         if (isRevocationSuccess && inv && sessionId) {
-          const proven = recordVerifiedSessionRevocation(inv, sessionId, ctx.activeAccessToken, ctx.activeUserId, revocation.entry);
+          const proven = recordVerifiedSessionRevocation(inv, sessionId, ctx.activeAccessToken, ctx.activeUserId, revocation.entry,
+            createSessionRevocationProof(revocation.entry, 'session_03_post_reset_user_read', 'provider_session_revoked',
+              ['password_reset_confirmed', 'pre_invalidation_session_valid', 'intended_user_correlated'],
+              baseline ? [baseline.ordinal] : [], normalizedSessionProviderEvidence(errCode),
+              baseline ? [{ ordinal: baseline.ordinal, status: baseline.status, kind: baseline.kind,
+                target: { origin: `https://${HARDCODED_TEMP_REF}.supabase.co`, method: baseline.method,
+                  path: baseline.path, scope: baseline.scope } }] : []));
           if (journalForRun(inv.runId) && !proven) isRevocationSuccess = false;
           else inv.markSessionRevoked(sessionId);
         }
@@ -10661,6 +10929,10 @@ export function createHostedDispatcher(rawOptions = {}) {
             error: 'PREREQUISITE_MISSING: SESSION-06 requires activeSessionId from HOOK-01 (R3-05)'
           };
         }
+        const baseline = getVerifiedSessionBaseline(inv, sessionId, ctx?.activeAccessToken, ctx?.activeUserId);
+        if (inv && journalForRun(inv.runId) && (ctx?.preInvalidationSessionValid !== true || !baseline)) {
+          return { passed: false, status: 0, error: 'PREREQUISITE_MISSING: SESSION-06 requires the exact durable SESSION-01 baseline' };
+        }
 
         const revocation = await collectResourceCleanup('session:' + sessionId, () => fetchFn(`${baseUrl}/functions/v1/auth-user-probe`, {
           method: 'POST',
@@ -10710,7 +10982,13 @@ export function createHostedDispatcher(rawOptions = {}) {
 
         let isRevocationSuccess = isRevocationError && ctx?.preInvalidationSessionValid === true && ctx?.passwordResetCompleted === true;
         if (isRevocationSuccess && inv && sessionId) {
-          const proven = recordVerifiedSessionRevocation(inv, sessionId, ctx.activeAccessToken, ctx.activeUserId, revocation.entry);
+          const proven = recordVerifiedSessionRevocation(inv, sessionId, ctx.activeAccessToken, ctx.activeUserId, revocation.entry,
+            createSessionRevocationProof(revocation.entry, 'session_06_post_reset_edge_probe', 'provider_session_revoked',
+              ['password_reset_confirmed', 'pre_invalidation_session_valid', 'intended_user_correlated'],
+              baseline ? [baseline.ordinal] : [], normalizedSessionProviderEvidence(errCode),
+              baseline ? [{ ordinal: baseline.ordinal, status: baseline.status, kind: baseline.kind,
+                target: { origin: `https://${HARDCODED_TEMP_REF}.supabase.co`, method: baseline.method,
+                  path: baseline.path, scope: baseline.scope } }] : []));
           if (journalForRun(inv.runId) && !proven) isRevocationSuccess = false;
           else inv.markSessionRevoked(sessionId);
         }
@@ -11366,7 +11644,10 @@ export function createHostedAdminClient(rawOptions = {}) {
       let revocationSucceeded = !signOutThrew && !signOutRes?.error && signOutRes?.data?.scope === 'local';
       if (revocationSucceeded && inv && claims.userId && (!storedUserId || storedUserId === claims.userId)) {
         if (credentialVerified) {
-          const proven = recordVerifiedSessionRevocation(inv, sessionId, token, expectedUserId, revocationEntry);
+          const proven = recordVerifiedSessionRevocation(inv, sessionId, token, expectedUserId, revocationEntry,
+            createSessionRevocationProof(revocationEntry, 'credential_verification_local_logout',
+              signOutRes?.session_not_found === true ? 'provider_session_absent' : 'local_logout_completed',
+              ['session_token_correlated', 'intended_user_correlated'], [], signOutRes?.session_evidence ?? null));
           if (journalForRun(inv.runId) && !proven) revocationSucceeded = false;
         }
         if (revocationSucceeded) inv.markSessionRevoked(sessionId);
@@ -11506,8 +11787,17 @@ export function createHostedAdminClient(rawOptions = {}) {
           (errMsg.includes('session') && errMsg.includes('does not exist'))
         );
 
+        const sessionEvidence = isSessionAbsence
+          ? errCode === 'authsessionmissingerror' || errMsg.includes('auth session missing')
+            ? 'AUTH_SESSION_MISSING'
+            : 'SESSION_NOT_FOUND'
+          : null;
+
         if (isSessionAbsence && [400, 401, 403, 404].includes(res.status)) {
-          return { data: { scope, alreadyRevoked: true }, error: null, session_not_found: true };
+          return {
+            data: { scope, alreadyRevoked: true }, error: null,
+            session_not_found: true, session_evidence: sessionEvidence
+          };
         }
 
         return {
@@ -11567,7 +11857,10 @@ export function createHostedAdminClient(rawOptions = {}) {
       }
       const res = await this.signOut(trimmedToken, 'local');
       if (res.session_not_found) {
-        return { data: { sessionId, scope: 'local', alreadyRevoked: true }, error: null, session_not_found: true };
+        return {
+          data: { sessionId, scope: 'local', alreadyRevoked: true }, error: null,
+          session_not_found: true, session_evidence: res.session_evidence
+        };
       }
       return res;
     },

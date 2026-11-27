@@ -113,9 +113,11 @@ export function getRunRequestBudget(rawOptions) {
   }));
   const budget = Object.freeze({
     async beginRequest(rawRequest = Object.create(null)) {
-      const request = record(rawRequest, ['category', 'signal', 'kind', 'resourceKey']);
+      const request = record(rawRequest, ['category', 'signal', 'kind', 'resourceKey', 'operationHash']);
       const category = request.category ?? 'probe';
       if (!['probe', 'auxiliary', 'cleanup'].includes(category)) throw new Error('INVALID_REQUEST_BUDGET_CATEGORY');
+      if (request.resourceKey !== undefined && (typeof request.resourceKey !== 'string' || !/^[a-f0-9]{64}$/.test(request.resourceKey))) throw new Error('INVALID_REQUEST_RESOURCE_KEY');
+      if (request.operationHash !== undefined && (typeof request.operationHash !== 'string' || !/^[a-f0-9]{64}$/.test(request.operationHash) || request.kind !== 'storage_upload' || !request.resourceKey)) throw new Error('INVALID_REQUEST_OPERATION_BINDING');
       const signal = trustedSignal(request.signal);
       const rejectCancelled = () => { blocked++; cancelledBefore++; const error = abortError(); error._counted = true; PRE_DISPATCH_FAILURES.set(error, options.runId); throw error; };
       if (signal && abortedGet.call(signal)) return rejectCancelled();
@@ -157,7 +159,7 @@ export function getRunRequestBudget(rawOptions) {
         }
         if (signal && abortedGet.call(signal)) return rejectCancelled();
         const reservedAt = Date.now();
-        journal?.reserve(consumed + 1, category, request.kind, reservedAt, request.resourceKey ?? null);
+        journal?.reserve(consumed + 1, category, request.kind, reservedAt, request.resourceKey ?? null, request.operationHash ?? null);
         lastDispatch = reservedAt;
         consumed++;
         const ticket = Object.freeze(Object.create(null));
@@ -196,14 +198,15 @@ export function getRunRequestBudget(rawOptions) {
       if (!metadata || metadata.budget !== budget || metadata.settled) throw new Error('UNTRUSTED_REQUEST_BUDGET_TICKET');
       return metadata.entry.ordinal;
     },
-    completeRequest(ticket, outcome = 'success', identity = null) {
+    completeRequest(ticket, outcome = 'success', identity = null, responseStatus = null) {
       if (!['success', 'failed', 'cancelled_after_dispatch'].includes(outcome)) throw new Error('INVALID_REQUEST_BUDGET_OUTCOME');
+      if (responseStatus !== null && (!Number.isInteger(responseStatus) || responseStatus < 100 || responseStatus > 599)) throw new Error('INVALID_REQUEST_RESPONSE_STATUS');
       const metadata = TICKETS.get(ticket);
       if (!metadata || metadata.budget !== budget) throw new Error('UNTRUSTED_REQUEST_BUDGET_TICKET');
       if (metadata.settled) throw new Error('REQUEST_BUDGET_ALREADY_COMPLETED');
       metadata.settled = true;
       try {
-        journal?.complete(metadata.entry.ordinal, outcome, identity);
+        journal?.complete(metadata.entry.ordinal, outcome, identity, responseStatus);
         metadata.entry.outcome = outcome;
         if (outcome === 'failed') failed++;
         if (outcome === 'cancelled_after_dispatch') { failed++; cancelledAfter++; }
@@ -253,6 +256,6 @@ export async function executeRunBudgetRequest(budget, request, operation) {
     budget.completeRequest(ticket, error?.name === 'AbortError' ? 'cancelled_after_dispatch' : 'failed');
     throw error;
   }
-  budget.completeRequest(ticket, outcome, identity);
+  budget.completeRequest(ticket, outcome, identity, result?.status ?? null);
   return result;
 }

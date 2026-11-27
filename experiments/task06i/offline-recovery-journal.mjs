@@ -5,6 +5,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { types } from 'node:util';
 import { assertRecoveryStorageObservation } from './conditional-storage-fixture.mjs';
+import { validateSessionResolutionJournalEvidence } from './session-revocation-evidence.mjs';
 import { consumeLiveCleanupResolution } from './hosted-probe-runner.mjs';
 
 export const RECOVERY_PROJECT = 'wvdabiwbaavfggcmpizd';
@@ -101,7 +102,8 @@ function validIdentity(first, second) {
 }
 
 function pendingStorage(state) {
-  return state.attempts.filter(a => a.dispatchedAt !== null && storageKinds.includes(a.kind) && a.ordinal > state.absentThrough);
+  return state.attempts.filter(a => a.dispatchedAt !== null && storageKinds.includes(a.kind) &&
+    a.ordinal > state.absentThrough && !state.storageResolvedAttempts.has(a.ordinal));
 }
 
 function hasStorageObligation(state) {
@@ -120,7 +122,9 @@ function residuals(state) {
 // Replaying the closed set of events validates on-disk transitions before any
 // budget or provider capability can use them. Sequence is the array index.
 function replay(events, mode) {
-  const state = { attempts: [], absentThrough: 0, ownership: null, terminal: false, inventoryKinds: new Set(), obligations: new Map(), reservations: new Map(), resolvedAttempts: new Set(), recovery: false };
+  const state = { attempts: [], absentThrough: 0, lastVerifiedAbsenceOrdinal: 0, ownership: null, terminal: false,
+    inventoryKinds: new Set(), obligations: new Map(), reservations: new Map(), resolvedAttempts: new Set(),
+    storageResolvedAttempts: new Set(), recovery: false };
   const invalid = () => { throw fail('INVALID_RECOVERY_TRANSITION'); };
   if (!Array.isArray(events) || events.length > MAX_EVENTS) invalid();
   for (const event of events) {
@@ -133,7 +137,10 @@ function replay(events, mode) {
         state.recovery = true;
         break;
       case 'reserve':
-        if (![5, 6].includes(event.length) || (event.length === 6 && (typeof event[5] !== 'string' || !/^[a-f0-9]{64}$/.test(event[5]))) || ordinal !== state.attempts.length + 1 || ordinal > REQUEST_LIMIT ||
+        if (![5, 6, 7].includes(event.length) ||
+            (event.length >= 6 && (typeof event[5] !== 'string' || !/^[a-f0-9]{64}$/.test(event[5]))) ||
+            (event.length === 7 && (second !== 'storage_upload' || typeof event[6] !== 'string' || !/^[a-f0-9]{64}$/.test(event[6]))) ||
+            ordinal !== state.attempts.length + 1 || ordinal > REQUEST_LIMIT ||
             !categories.includes(first) || !kinds.includes(second) || !validTime(third) ||
             (state.recovery !== second.startsWith('recovery_')) ||
             (second.startsWith('recovery_') && first !== 'cleanup') ||
@@ -144,7 +151,8 @@ function replay(events, mode) {
         state.attempts.push({
           ordinal, category: first, kind: second, reservedAt: third,
           dispatchedAt: null, outcome: 'pending', objectId: null, ownerId: null,
-          ...(event.length === 6 ? { resourceKey: event[5] } : {})
+          ...(event.length >= 6 ? { resourceKey: event[5] } : {}),
+          ...(event.length === 7 ? { operationHash: event[6] } : {})
         });
         break;
       case 'dispatch':
@@ -155,14 +163,25 @@ function replay(events, mode) {
         attempt.dispatchedAt = first;
         break;
       case 'outcome':
-        if (event.length !== 5 || !attempt || attempt.dispatchedAt === null || attempt.outcome !== 'pending' ||
+        if (![5, 6].includes(event.length) || !attempt || attempt.dispatchedAt === null || attempt.outcome !== 'pending' ||
             !outcomes.includes(first) || (state.recovery !== attempt.kind.startsWith('recovery_'))) invalid();
-        if ((second !== null || third !== null) &&
-            (attempt.kind !== 'storage_upload' || first !== 'success' ||
-              !validIdentity(second, third))) invalid();
         attempt.outcome = first;
-        attempt.objectId = second;
-        attempt.ownerId = third;
+        if (event.length === 5) {
+          if ((second !== null || third !== null) &&
+              (attempt.kind !== 'storage_upload' || first !== 'success' || !validIdentity(second, third))) invalid();
+          attempt.objectId = second;
+          attempt.ownerId = third;
+        } else {
+          const httpStatus = event[3];
+          const objectId = event[4];
+          const ownerId = event[5];
+          if ((httpStatus !== null && (!Number.isInteger(httpStatus) || httpStatus < 100 || httpStatus > 599)) ||
+              ((objectId !== null || ownerId !== null) &&
+                (attempt.kind !== 'storage_upload' || first !== 'success' || !validIdentity(objectId, ownerId)))) invalid();
+          attempt.httpStatus = httpStatus;
+          attempt.objectId = objectId;
+          attempt.ownerId = ownerId;
+        }
         break;
       case 'ownership':
         if (event.length !== 5 || !state.recovery || !attempt || attempt.kind !== 'storage_upload' ||
@@ -203,8 +222,9 @@ function replay(events, mode) {
         state.reservations.delete(first);
         break;
       case 'session_resolution': {
-        if (event.length !== 4 || state.recovery || ordinal !== state.attempts.length || state.obligations.get(first) !== 'auth' ||
+        if (event.length !== 5 || state.recovery || ordinal !== state.attempts.length || state.obligations.get(first) !== 'auth' ||
             !Array.isArray(second) || second.length === 0) invalid();
+        if (!validateSessionResolutionJournalEvidence(first, second, third)) invalid();
         let previous = 0;
         for (const index of second) {
           const effect = state.attempts[index - 1];
@@ -214,16 +234,31 @@ function replay(events, mode) {
           previous = index;
           state.resolvedAttempts.add(index);
         }
+        for (const request of third.requests) {
+          const effect = state.attempts[request.ordinal - 1];
+          if (!second.includes(request.ordinal) || !effect || effect.resourceKey !== first || effect.kind !== request.kind ||
+              effect.httpStatus !== request.status ||
+              (request.role === 'supporting' && (effect.kind !== 'read' || effect.outcome !== 'success' || request.status !== 200)) ||
+              (request.role === 'decisive' && effect.outcome === 'cancelled_after_dispatch')) invalid();
+        }
         state.obligations.delete(first);
         break;
       }
       case 'resolution': {
         if (event.length !== 4 || state.recovery || ordinal !== state.attempts.length ||
             !Array.isArray(first) || !Array.isArray(second) || first.length + second.length === 0) invalid();
+        if (first.some(key => state.obligations.get(key) === 'storage')) {
+          const absence = state.attempts[ordinal - 1];
+          if (state.absentThrough !== ordinal || absence?.kind !== 'storage_absence_read' ||
+              !['success', 'failed'].includes(absence.outcome)) invalid();
+        }
         const seen = new Set();
         for (const key of first) {
           if (typeof key !== 'string' || !state.obligations.has(key) || seen.has(key) ||
               !second.some(index => state.attempts[index - 1]?.resourceKey === key)) invalid();
+          if (state.obligations.get(key) === 'storage' &&
+              !second.some(index => state.attempts[index - 1]?.resourceKey === key &&
+                state.attempts[index - 1]?.kind === 'storage_delete' && state.attempts[index - 1]?.outcome === 'success')) invalid();
           seen.add(key);
           state.obligations.delete(key);
           state.reservations.delete(key);
@@ -240,6 +275,66 @@ function replay(events, mode) {
         }
         break;
       }
+      case 'storage_absence_resolution': {
+        if (event.length !== 15 || state.recovery || ordinal !== state.attempts.length ||
+            !/^[a-f0-9]{64}$/.test(first) || state.obligations.get(first) !== 'storage' ||
+            typeof second !== 'string' || !/^[a-f0-9]{64}$/.test(second) || state.reservations.get(first) !== second ||
+            !Array.isArray(third) || third.length < 3 ||
+            !['EXPECTED_OBJECT_DELETED', 'EXPECTED_OBJECT_ABSENT'].includes(event[5]) || event[6] !== 'OBJECT_ABSENT' ||
+            !validIdentity(event[7], event[8]) || !Number.isSafeInteger(event[9]) ||
+            !Number.isInteger(event[10]) || event[10] < 100 || event[10] > 599 ||
+            !['OBJECT_DELETED', 'ATOMIC_OBJECT_ABSENT', 'STRUCTURED_NOSUCHKEY'].includes(event[11]) ||
+            !Number.isSafeInteger(event[12]) || !Number.isInteger(event[13]) || event[13] < 100 || event[13] > 599 ||
+            !['STRUCTURED_NOSUCHKEY', 'HTTP404_NOSUCHKEY'].includes(event[14])) invalid();
+        const uploadOrdinal = third[0];
+        const upload = Number.isSafeInteger(uploadOrdinal) ? state.attempts[uploadOrdinal - 1] : null;
+        const pendingUploads = pendingStorage(state).filter(item => item.kind === 'storage_upload');
+        if (pendingUploads.length !== 1 || pendingUploads[0] !== upload || !upload || upload.dispatchedAt === null ||
+            upload.outcome !== 'success' || upload.objectId !== event[7] || upload.ownerId !== event[8] ||
+            upload.resourceKey !== first || upload.operationHash !== second || state.resolvedAttempts.has(uploadOrdinal)) invalid();
+        const unresolvedScoped = state.attempts.filter(item => item.dispatchedAt !== null &&
+          item.resourceKey === first && ['storage_delete', 'storage_absence_read'].includes(item.kind) &&
+          !state.resolvedAttempts.has(item.ordinal));
+        const scopedOrdinals = unresolvedScoped.map(item => item.ordinal);
+        if (third.length !== scopedOrdinals.length + 1 ||
+            third.slice(1).some((index, position) => index !== scopedOrdinals[position]) ||
+            third[0] >= third[1] || third.at(-1) !== ordinal) invalid();
+        const scopedAttempts = unresolvedScoped;
+        if (scopedAttempts.length < 2 ||
+            !scopedAttempts.some(item => item.kind === 'storage_delete') ||
+            scopedAttempts.at(-1)?.kind !== 'storage_absence_read') invalid();
+        for (let position = 0; position < scopedAttempts.length; position++) {
+          const effect = scopedAttempts[position];
+          if (effect.resourceKey !== first || effect.dispatchedAt === null ||
+              !['success', 'failed'].includes(effect.outcome) || state.resolvedAttempts.has(effect.ordinal)) invalid();
+        }
+        const deleteAttempt = state.attempts[event[9] - 1];
+        const absenceAttempt = state.attempts[event[12] - 1];
+        if (!deleteAttempt || deleteAttempt.kind !== 'storage_delete' || deleteAttempt.resourceKey !== first ||
+            !third.slice(1, -1).includes(event[9]) || deleteAttempt.httpStatus !== event[10] ||
+            !absenceAttempt || absenceAttempt.kind !== 'storage_absence_read' || absenceAttempt.resourceKey !== first ||
+            absenceAttempt.ordinal !== ordinal || event[12] !== third.at(-1) || absenceAttempt.httpStatus !== event[13]) invalid();
+        if (event[5] === 'EXPECTED_OBJECT_DELETED') {
+          if (event[11] !== 'OBJECT_DELETED' || event[10] < 200 || event[10] >= 300 || deleteAttempt.outcome !== 'success') invalid();
+        } else if (event[10] >= 200 && event[10] < 300) {
+          if (event[11] !== 'ATOMIC_OBJECT_ABSENT' || deleteAttempt.outcome !== 'success') invalid();
+        } else if (![400, 404].includes(event[10]) || event[11] !== 'STRUCTURED_NOSUCHKEY' || deleteAttempt.outcome !== 'failed') invalid();
+        if (event[13] === 400) {
+          if (event[14] !== 'STRUCTURED_NOSUCHKEY' || absenceAttempt.outcome !== 'failed') invalid();
+        } else if (event[13] !== 404 || event[14] !== 'HTTP404_NOSUCHKEY' || absenceAttempt.outcome !== 'failed') invalid();
+        if (state.attempts[ordinal - 1]?.kind !== 'storage_absence_read' ||
+            state.attempts[ordinal - 1]?.resourceKey !== first ||
+            state.attempts[ordinal - 1]?.httpStatus !== event[13] ||
+            state.attempts[ordinal - 1]?.outcome !== 'failed') invalid();
+        for (const index of third) {
+          state.resolvedAttempts.add(index);
+          state.storageResolvedAttempts.add(index);
+        }
+        state.obligations.delete(first);
+        state.reservations.delete(first);
+        state.lastVerifiedAbsenceOrdinal = ordinal;
+        break;
+      }
       case 'absence':
         if (event.length !== 2 || ordinal !== state.attempts.length || !attempt ||
             (state.recovery ? attempt.kind !== 'recovery_lookup' || attempt.outcome !== 'success' :
@@ -247,6 +342,7 @@ function replay(events, mode) {
               !['failed', 'success'].includes(attempt.outcome)) ||
             pendingStorage(state).length === 0) invalid();
         state.absentThrough = ordinal;
+        state.lastVerifiedAbsenceOrdinal = ordinal;
         break;
       case 'terminal': {
         const pending = residuals(state);
@@ -356,7 +452,7 @@ function openJournal(rawOptions, creating) {
         return {
           projectRef: RECOVERY_PROJECT, runId, mode, consumed: state.attempts.length,
           status: state.terminal ? 'CLEANUP_VERIFIED_SUCCESS' : 'RECOVERY_REQUIRED',
-          lastVerifiedStorageAbsenceOrdinal: state.absentThrough || null,
+          lastVerifiedStorageAbsenceOrdinal: state.lastVerifiedAbsenceOrdinal || null,
           attempts: state.attempts.map(attempt => ({ ...attempt })),
           residual: {
             storage: pendingStorage(state).map(a => a.ordinal),
@@ -380,17 +476,18 @@ function openJournal(rawOptions, creating) {
       handle, mode,
       enterRequest() { requireUsable(); leases++; },
       leaveRequest() { leases--; },
-      reserve(ordinal, category, kind, time, resourceKey = null) {
+      reserve(ordinal, category, kind, time, resourceKey = null, operationHash = null) {
         if (state.recovery && !reconciling) throw fail('RECOVERY_RECONCILIATION_REQUIRED');
-        append(resourceKey === null ? ['reserve', ordinal, category, kind, time] : ['reserve', ordinal, category, kind, time, resourceKey]);
+        append(operationHash !== null ? ['reserve', ordinal, category, kind, time, resourceKey, operationHash] :
+          resourceKey === null ? ['reserve', ordinal, category, kind, time] : ['reserve', ordinal, category, kind, time, resourceKey]);
       },
       dispatch(ordinal, time) { append(['dispatch', ordinal, time]); },
-      complete(ordinal, outcome, identity) {
+      complete(ordinal, outcome, identity, httpStatus = null) {
         const candidate = identity === null ? null : recoveryOptions(identity, ['projectRef', 'runId', 'bucket', 'path', 'objectId', 'ownerId']);
         if (candidate && (candidate.projectRef !== RECOVERY_PROJECT || candidate.runId !== runId ||
             candidate.bucket !== 'task06i_probe_bucket' || candidate.path !== runId + '/probe.txt' ||
             !validIdentity(candidate.objectId, candidate.ownerId))) throw fail('INVALID_RECOVERY_STORAGE_CANDIDATE');
-        append(['outcome', ordinal, outcome, candidate?.objectId ?? null, candidate?.ownerId ?? null]);
+        append(['outcome', ordinal, outcome, httpStatus, candidate?.objectId ?? null, candidate?.ownerId ?? null]);
       },
       volatile(kind, resource = null) {
         requireUsable();
@@ -422,7 +519,17 @@ function openJournal(rawOptions, creating) {
         if (leases || state.recovery || state.terminal) throw fail('RECOVERY_RESOLUTION_BLOCKED');
         const proof = consumeLiveCleanupResolution(receipt, handle);
         if (proof.type !== 'session') throw fail('UNTRUSTED_LIVE_CLEANUP_RESOLUTION');
-        append(['session_resolution', state.attempts.length, proof.key, proof.attempts]);
+        append(['session_resolution', state.attempts.length, proof.key, proof.attempts, proof.evidence]);
+      },
+      resolveStorageAbsence(receipt) {
+        requireUsable();
+        if (leases || state.recovery || state.terminal) throw fail('RECOVERY_RESOLUTION_BLOCKED');
+        const proof = consumeLiveCleanupResolution(receipt, handle);
+        if (proof.type !== 'storage_absence') throw fail('UNTRUSTED_LIVE_CLEANUP_RESOLUTION');
+        append(['storage_absence_resolution', state.attempts.length, proof.key, proof.operation,
+          proof.attempts, proof.deletionStatus, proof.absenceClassification, proof.objectId, proof.ownerId,
+          proof.deleteOrdinal, proof.deleteHttpStatus, proof.deleteEvidenceClass,
+          proof.absenceOrdinal, proof.absenceHttpStatus, proof.absenceEvidenceClass]);
       },
       resolveLive(receipt) {
         requireUsable();
@@ -447,11 +554,6 @@ function openJournal(rawOptions, creating) {
       hasRecoveryStorageReservation() {
         const key = digest('storage:storage:task06i_probe_bucket/' + runId + '/probe.txt');
         return state.reservations.has(key) && state.obligations.has(key);
-      },
-      liveAbsence(objectId, ownerId) {
-        const uploads = pendingStorage(state).filter(attempt => attempt.kind === 'storage_upload');
-        if (leases || uploads.length !== 1 || uploads[0].objectId !== objectId || uploads[0].ownerId !== ownerId) return;
-        append(['absence', state.attempts.length]);
       },
       finish() {
         requireUsable();

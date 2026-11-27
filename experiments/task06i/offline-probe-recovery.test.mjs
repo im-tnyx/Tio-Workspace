@@ -23,6 +23,7 @@ import {
 import { createOfflineRecoveryJournal, recoverOfflineProbeRun, reopenOfflineRecoveryJournal } from './offline-probe-recovery.mjs';
 import { executeRunBudgetRequest, getRunRequestBudget } from './run-request-budget.mjs';
 import { journalForRun } from './offline-recovery-journal.mjs';
+import { validateSessionRevocationEvidence, validateSessionResolutionJournalEvidence } from './session-revocation-evidence.mjs';
 
 const file = fileURLToPath(import.meta.url);
 const projectRef = HARDCODED_TEMP_REF;
@@ -70,7 +71,7 @@ function provider(runId, options = {}) {
   });
 }
 
-function journalTransport(handle, { postDeleteResponse = null, authCleanup = false, authStatus = 200 } = {}) {
+function journalTransport(handle, { postDeleteResponse = null, deleteResponse = null, authCleanup = false, authStatus = 200 } = {}) {
   const { runId } = handle;
   const location = object(runId);
   const transport = createDeterministicFixtureTransport({
@@ -84,7 +85,7 @@ function journalTransport(handle, { postDeleteResponse = null, authCleanup = fal
       { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { uploaded: true, deleted: false }, status: 200, text: content },
       { method: 'POST', pathEquals: '/rest/v1/rpc/task06i_lookup_storage_object_owner', status: 200,
         json: [{ id: objectId, bucket_id: location.bucket, name: location.path, owner_id: ownerId }] },
-      { method: 'DELETE', urlIncludes: '/storage/v1/object/', setsState: { deleted: true }, status: 200, json: {} },
+      { method: 'DELETE', urlIncludes: '/storage/v1/object/', setsState: { deleted: true }, ...(deleteResponse || { status: 200, json: {} }) },
       { method: 'GET', urlIncludes: '/storage/v1/object/authenticated/', whenState: { deleted: true },
         ...(postDeleteResponse || { status: 400, json: { code: 'NoSuchKey', statusCode: '404' } }) },
       ...(authCleanup ? [
@@ -158,7 +159,8 @@ function resolutionFixture(handle, { partial = false } = {}) {
   return { inventory, transport, adminClient };
 }
 
-function revokedSessionFixture(handle, { sessionId = ownerId, tokenUser = ownerId, intendedUser = ownerId, probeId = 'SESSION-03', rejection = { status: 401, json: { code: 'session_not_found' } } } = {}) {
+function revokedSessionFixture(handle, { sessionId = ownerId, tokenUser = ownerId, intendedUser = ownerId, probeId = 'SESSION-03',
+  rejection = { status: 401, json: { code: 'session_not_found' } }, establishBaseline = true } = {}) {
   const encode = value => Buffer.from(JSON.stringify(value)).toString('base64url');
   const token = [encode({ alg: 'HS256' }), encode({ sub: tokenUser, session_id: sessionId, ref: projectRef }), 'AA'].join('.');
   const inventory = new TestRunInventory(handle.runId);
@@ -167,6 +169,7 @@ function revokedSessionFixture(handle, { sessionId = ownerId, tokenUser = ownerI
   Object.assign(context, { activeAccessToken: token, activeSessionId: sessionId, activeUserId: intendedUser,
     preInvalidationSessionValid: true, passwordResetCompleted: true });
   const transport = createDeterministicFixtureTransport({ requestBudgetMode: mode, routes: [
+    { method: 'GET', pathEquals: '/auth/v1/user', times: 1, status: 200, json: { id: tokenUser } },
     { method: 'GET', pathEquals: '/auth/v1/user', ...rejection },
     { method: 'PUT', pathIncludes: '/auth/v1/admin/users/', status: 200, json: { id: ownerId } },
     { method: 'POST', pathEquals: '/functions/v1/auth-user-probe', ...rejection },
@@ -176,7 +179,10 @@ function revokedSessionFixture(handle, { sessionId = ownerId, tokenUser = ownerI
   const dispatcher = createHostedDispatcher({ inventory, runContext: context,
     fetchFn: transport, anonKey: createMockProjectKey(projectRef, 'anon'), serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
   return { inventory, context, transport, adminClient, token,
-    verify: () => dispatcher({ id: probeId, category: 'Session & Consumer' }) };
+    verify: async () => {
+      if (establishBaseline) await dispatcher({ id: 'SESSION-01', category: 'Session & Consumer' });
+      return dispatcher({ id: probeId, category: 'Session & Consumer' });
+    } };
 }
 
 function admissionSnapshot(handle, directory, fixture, runContext) {
@@ -263,7 +269,7 @@ async function child(kind, directory, runId) {
   let calls = 0;
   if (kind === 'r6-before-resolution' || kind === 'r6-after-resolution') {
     const fixture = revokedSessionFixture(handle);
-    interruptWrite(directory, 'session_resolution', 1, kind === 'r6-after-resolution', () => ({ calls: fixture.transport.calls.length }));
+    interruptWrite(directory, 'session_resolution', 2, kind === 'r6-after-resolution', () => ({ calls: fixture.transport.calls.length }));
     await fixture.verify();
   } else if (kind === 'r4-capacity') {
     const inventory = new TestRunInventory(handle.runId);
@@ -273,6 +279,19 @@ async function child(kind, directory, runId) {
       catch (error) { if (error.code !== 'RECOVERY_CAPACITY_EXCEEDED') throw error; break; }
     }
     writeFileSync(join(directory, 'provider-witness.json'), JSON.stringify({ admitted }), { flush: true });
+    process.kill(process.pid, 'SIGKILL');
+  } else if (kind === 'r7-direct-registration' || kind === 'r7-direct-registration-absence') {
+    const inventory = new TestRunInventory(handle.runId);
+    inventory.registerStorageFixture({
+      path: handle.runId + '/probe.txt',
+      lifecycleState: 'CREATION_PENDING',
+      neverDispatched: true
+    });
+    const storage = provider(handle.runId);
+    if (kind === 'r7-direct-registration') storage.putObject(object(handle.runId));
+    writeFileSync(join(directory, 'provider-witness.json'), JSON.stringify({
+      ...snapshotRecoveryStorageFixture(storage)
+    }), { flush: true });
     process.kill(process.pid, 'SIGKILL');
   } else if (kind === 'r4-reservation' || kind === 'r4-direct-effect') {
     const inventory = new TestRunInventory(handle.runId);
@@ -284,7 +303,7 @@ async function child(kind, directory, runId) {
   } else if (kind === 'before-storage-resolution' || kind === 'after-storage-resolution') {
     const fixture = journalTransport(handle);
     await provisionKeyedStorage(fixture, handle);
-    interruptWrite(directory, 'resolution', 7, kind === 'after-storage-resolution', () => ({ calls: fixture.transport.calls.length }));
+    interruptWrite(directory, 'storage_absence_resolution', 7, kind === 'after-storage-resolution', () => ({ calls: fixture.transport.calls.length }));
     await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient });
   } else if (kind === 'before-resolution' || kind === 'after-resolution') {
     const fixture = resolutionFixture(handle);
@@ -958,7 +977,7 @@ if (process.argv[2] === '--h4-child') {
     assert.equal(handle.report().consumed, 7);
   });
 
-  test('H4-R3 authentic keyed Storage cleanup commits absence before resolution and replays terminal', async t => {
+  test('H4-R3 authentic keyed Storage cleanup persists scoped absence resolution and replays terminal', async t => {
     const directory = testDirectory();
     const handle = create(directory);
     const fixture = journalTransport(handle);
@@ -966,7 +985,7 @@ if (process.argv[2] === '--h4-child') {
     // this writes a keyed obligation before the real upload has dispatched.
     await provisionKeyedStorage(fixture, handle);
     const result = await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient, failClosed: false });
-    assert.equal(result.status, 'CLEANUP_VERIFIED_SUCCESS', JSON.stringify(result.residualResources));
+    assert.equal(result.status, 'CLEANUP_VERIFIED_SUCCESS', JSON.stringify({ residual: result.residualResources, journal: handle.report() }));
     const before = handle.report();
     assert.deepEqual(before.residual.storage, []);
     assert.equal(before.residual.volatileInventory, false);
@@ -977,12 +996,21 @@ if (process.argv[2] === '--h4-child') {
     const envelope = JSON.parse(db.prepare('SELECT payload FROM journal WHERE id=1').get().payload);
     db.close();
     const events = envelope[4];
-    assert.ok(events.findIndex(event => event[0] === 'absence') < events.findIndex(event => event[0] === 'resolution'));
-    assert.ok(events.find(event => event[0] === 'resolution')[3].includes(6));
+    const storageResolution = events.find(event => event[0] === 'storage_absence_resolution');
+    assert.ok(storageResolution);
+    assert.deepEqual(storageResolution[4], [3, 6, 7]);
+    assert.equal(storageResolution[5], 'EXPECTED_OBJECT_DELETED');
+    assert.equal(storageResolution[6], 'OBJECT_ABSENT');
     for (const mutate of [
-      records => records.splice(records.findIndex(event => event[0] === 'absence'), 1),
-      records => records.splice(-1, 0, records.find(event => event[0] === 'resolution')),
-      records => { records.find(event => event[0] === 'resolution')[3] = [5]; }
+      records => records.splice(records.findIndex(event => event[0] === 'storage_absence_resolution'), 1),
+      records => records.splice(-1, 0, records.find(event => event[0] === 'storage_absence_resolution')),
+      records => { records.find(event => event[0] === 'storage_absence_resolution')[4] = [3, 7]; },
+      records => { records.find(event => event[0] === 'storage_absence_resolution')[6] = 'OBJECT_PRESENT'; },
+      records => {
+        const index = records.findIndex(event => event[0] === 'storage_absence_resolution');
+        const event = records[index];
+        records[index] = ['resolution', event[1], [event[2]], [event[4][1]]];
+      }
     ]) {
       const alternate = testDirectory();
       copyFileSync(journalPath(directory, handle.runId), journalPath(alternate, handle.runId));
@@ -1029,7 +1057,7 @@ if (process.argv[2] === '--h4-child') {
     test('H4-R3 process crash ' + (after ? 'after' : 'before') + ' keyed Storage resolution', async t => {
       const { handle } = crash(t, after ? 'after-storage-resolution' : 'before-storage-resolution');
       assert.equal(handle.report().consumed, 7);
-      assert.equal(handle.report().lastVerifiedStorageAbsenceOrdinal, 7);
+      assert.equal(handle.report().lastVerifiedStorageAbsenceOrdinal, after ? 7 : null);
       const result = await recoverOfflineProbeRun({ handle });
       assert.equal(result.status, after ? 'CLEANUP_VERIFIED_SUCCESS' : 'RECOVERY_REQUIRED');
       assert.equal(result.consumed, 7);
@@ -1042,7 +1070,7 @@ if (process.argv[2] === '--h4-child') {
     t.after(() => handle.close());
     const fixture = journalTransport(handle);
     await provisionKeyedStorage(fixture, handle);
-    const restore = interruptWrite(directory, 'resolution', 7, false, () => ({}), 'fail');
+    const restore = interruptWrite(directory, 'storage_absence_resolution', 7, false, () => ({}), 'fail');
     try {
       const result = await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient, failClosed: false });
       assert.equal(result.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
@@ -1298,13 +1326,15 @@ if (process.argv[2] === '--h4-child') {
     t.after(() => handle.close());
     const fixture = revokedSessionFixture(handle);
     const observation = await fixture.verify();
-    assert.equal(observation.passed, true);
+    assert.equal(observation.passed, true, JSON.stringify({ observation, report: handle.report() }));
     assert.equal(fixture.inventory.isSessionRevoked(ownerId), true);
     const result = await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient, failClosed: false });
-    assert.equal(result.status, 'CLEANUP_VERIFIED_SUCCESS', JSON.stringify(result.residualResources));
+    assert.equal(result.status, 'CLEANUP_VERIFIED_SUCCESS', JSON.stringify({
+      residual: result.residualResources, report: handle.report()
+    }));
     assert.equal(handle.report().status, 'CLEANUP_VERIFIED_SUCCESS');
-    assert.equal(handle.report().consumed, 1);
-    assert.equal(fixture.transport.calls.length, 1);
+    assert.equal(handle.report().consumed, 2);
+    assert.equal(fixture.transport.calls.length, 2);
   });
 
   test('H4-R6 empty cleanup must finalize the durable journal with zero requests', async t => {
@@ -1323,6 +1353,329 @@ if (process.argv[2] === '--h4-child') {
     assert.equal((await recoverOfflineProbeRun({ handle: restarted })).status, 'CLEANUP_VERIFIED_SUCCESS');
   });
 
+  test('H4-R7 direct CREATION_PENDING registration survives process crash with provider object preserved', async t => {
+    const { handle, witness } = crash(t, 'r7-direct-registration');
+    assert.equal(witness.objects.length, 1);
+    assert.equal(handle.report().residual.volatileInventory, true);
+    const result = await recoverOfflineProbeRun({ handle, provider: fromWitness(handle.runId, witness) });
+    assert.equal(result.status, 'RECOVERY_REQUIRED');
+    assert.equal(result.reason, 'STORAGE_OWNERSHIP_UNPROVEN_OR_REPLACED');
+    assert.equal(result.consumed, 1);
+    assert.equal(witness.objects.length, 1, 'unknown provider object must never be deleted');
+  });
+
+  test('H4-R7 direct default registration persists exact operation-bound Storage reservation', async t => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    t.after(() => handle.close());
+    const inventory = new TestRunInventory(handle.runId);
+    const fixture = inventory.registerStorageFixture({ path: handle.runId + '/probe.txt' });
+    const key = createHash('sha256').update('storage:storage:' + STORAGE_PROBE_BUCKET + '/' + fixture.path).digest('hex');
+    const state = journalForRun(handle.runId).state;
+    assert.equal(state.obligations.get(key), 'storage');
+    assert.equal(state.reservations.get(key), createHash('sha256').update(fixture.reservationOpId).digest('hex'));
+    assert.equal(inventory._reservationSequence, 1);
+    handle.close();
+    const restarted = reopen(directory, handle.runId);
+    t.after(() => restarted.close());
+    assert.equal((await recoverOfflineProbeRun({ handle: restarted })).status, 'RECOVERY_REQUIRED');
+    assert.equal(restarted.report().consumed, 0, 'recovery cannot infer absence without an authoritative provider snapshot');
+  });
+
+  test('H4-R7 lifecycle labels and neverDispatched cannot establish definitive non-creation', async t => {
+    const handle = create(testDirectory());
+    t.after(() => handle.close());
+    const inventory = new TestRunInventory(handle.runId);
+    const fixture = inventory.registerStorageFixture({ path: handle.runId + '/probe.txt',
+      lifecycleState: 'DEFINITIVE_NON_CREATION', neverDispatched: true });
+    assert.equal(fixture.neverDispatched, true, 'the public label remains diagnostic only');
+    assert.equal(handle.report().status, 'RECOVERY_REQUIRED');
+    assert.equal(handle.report().residual.volatileInventory, true);
+    assert.throws(() => inventory.registerStorageFixture({ path: 'unsupported/probe.txt', lifecycleState: 'UNTRUSTED_STATE' }),
+      /INVALID_STORAGE_REGISTRATION_STATE/);
+  });
+
+  test('H4-R7 direct registration reuses neither an existing resource nor a journaled operation ID', t => {
+    const handle = create(testDirectory());
+    t.after(() => handle.close());
+    const firstInventory = new TestRunInventory(handle.runId);
+    const first = firstInventory.reserveStorageFixture({ path: 'r7-existing/probe.txt', reservationOpId: 'op-res-' + handle.runId + '-1' });
+    const secondInventory = new TestRunInventory(handle.runId);
+    const before = handle.report();
+    assert.throws(() => secondInventory.registerStorageFixture({ path: first.path, reservationOpId: 'different' }), /RESERVATION_CONFLICT/);
+    assert.deepEqual(handle.report(), before);
+    assert.equal(secondInventory.storageFixtures.size, 0);
+    const next = secondInventory.registerStorageFixture({ path: 'r7-new/probe.txt' });
+    assert.notEqual(next.reservationOpId, first.reservationOpId);
+    assert.equal(handle.report().residual.volatileKinds.length, 1);
+  });
+
+  for (const durable of [false, true]) {
+    test('H4-R7 direct fixture registration cannot duplicate a path-only Storage entry ' + (durable ? 'journal' : 'legacy'), t => {
+      const handle = durable ? create(testDirectory()) : null;
+      if (handle) t.after(() => handle.close());
+      const inventory = new TestRunInventory(handle?.runId || 'r7-legacy-path-only');
+      const path = 'same/path.txt';
+      inventory.registerStorageObject(STORAGE_PROBE_BUCKET, path);
+      const beforeSequence = inventory._reservationSequence;
+      const beforeFixtureCount = inventory.storageFixtures.size;
+      assert.throws(() => inventory.registerStorageFixture({ path }), /already tracked in inventory/);
+      assert.equal(inventory._reservationSequence, beforeSequence);
+      assert.equal(inventory.storageFixtures.size, beforeFixtureCount);
+      assert.equal(inventory.trackedStorageObjects.get(STORAGE_PROBE_BUCKET).has(path), true);
+      if (handle) assert.equal(handle.report().residual.volatileKinds.length, 1);
+    });
+  }
+
+  test('H4-R7 fresh canonical absence reconciles registration; noncanonical registration stays blocked', async t => {
+    const canonical = crash(t, 'r7-direct-registration-absence');
+    const absentResult = await recoverOfflineProbeRun({ handle: canonical.handle, provider: fromWitness(canonical.handle.runId, canonical.witness) });
+    assert.equal(absentResult.status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(absentResult.consumed, 1);
+
+    const directory = testDirectory();
+    const created = create(directory);
+    t.after(() => created.close());
+    const inventory = new TestRunInventory(created.runId);
+    inventory.registerStorageFixture({ path: 'noncanonical/path.txt', lifecycleState: 'CREATION_PENDING', neverDispatched: true });
+    const runId = created.runId;
+    created.close();
+    const handle = reopen(directory, runId);
+    t.after(() => handle.close());
+    const result = await recoverOfflineProbeRun({ handle, provider: provider(runId) });
+    assert.equal(result.status, 'RECOVERY_REQUIRED');
+    assert.equal(result.consumed, 0, 'canonical absence evidence does not clear a noncanonical resource');
+    assert.deepEqual(result.residual.volatileKinds, ['storage']);
+  });
+
+  test('H4-R7 unresolved direct Storage registration blocks dependent Auth deletion', async t => {
+    const handle = create(testDirectory());
+    t.after(() => handle.close());
+    const fixture = journalTransport(handle, { authCleanup: true });
+    fixture.inventory.registerStorageFixture({ path: handle.runId + '/probe.txt',
+      lifecycleState: 'CREATION_PENDING', neverDispatched: true });
+    fixture.inventory.registerCreatedUser({ id: replacementId, email: 'r7-created@proof.invalid', creationProof: createCreationProof('before_after_check') });
+    const result = await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient, failClosed: false });
+    assert.notEqual(result.status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(fixture.transport.calls.filter(call => call.method === 'DELETE' && call.pathname.includes('/auth/v1/admin/users/')).length, 0);
+    assert.equal(handle.report().status, 'RECOVERY_REQUIRED');
+  });
+
+  test('H4-R7 conditional NoSuchKey plus independent GET absence durably resolves exact Storage before Auth', async t => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    t.after(() => handle.close());
+    const fixture = journalTransport(handle, { authCleanup: true,
+      deleteResponse: { status: 400, json: { code: 'NoSuchKey', statusCode: '404' } } });
+    await provisionKeyedStorage(fixture, handle);
+    const resource = { bucket: STORAGE_PROBE_BUCKET, path: handle.runId + '/probe.txt' };
+    const storageProvider = getConditionalStorageFixtureProvider(fixture.transport);
+    assert.ok(storageProvider);
+    assert.equal(storageProvider.removeFixtureObject(resource), true,
+      'model a run-owned object that became absent before cleanup');
+    fixture.inventory.registerCreatedUser({ id: replacementId, email: 'r7-absence@proof.invalid',
+      creationProof: createCreationProof('before_after_check') });
+
+    const result = await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient, failClosed: false });
+    assert.equal(result.status, 'CLEANUP_VERIFIED_SUCCESS', JSON.stringify({ residual: result.residualResources, report: handle.report() }));
+    assert.equal(fixture.transport.calls.filter(call => call.method === 'DELETE' && call.pathname.includes('/storage/v1/object/')).length, 1);
+    const storageFixture = fixture.inventory.storageFixtures.get(STORAGE_PROBE_BUCKET + '/' + resource.path);
+    assert.equal(storageFixture.absenceEvidence.status, 400);
+    assert.equal(storageFixture.absenceEvidence.classification, 'OBJECT_ABSENT');
+    assert.equal(result.status, 'CLEANUP_VERIFIED_SUCCESS', JSON.stringify(result.residualResources));
+    assert.equal(handle.report().status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(result.usersDeleted, 1);
+    assert.equal(fixture.transport.calls.filter(call => call.method === 'DELETE' && call.pathname.includes('/auth/v1/admin/users/')).length, 1,
+      'dependent Auth deletion runs only after the Storage proof is durably admitted');
+    const storageKey = createHash('sha256').update('storage:storage:' + STORAGE_PROBE_BUCKET + '/' + resource.path).digest('hex');
+    assert.equal(journalForRun(handle.runId).state.obligations.has(storageKey), false);
+    assert.equal(journalForRun(handle.runId).state.reservations.has(storageKey), false);
+    const durableAttempts = journalForRun(handle.runId).state.attempts;
+    assert.equal(durableAttempts[5].kind, 'storage_delete');
+    assert.equal(durableAttempts[5].outcome, 'failed', 'expected NoSuchKey DELETE remains an accounted failed HTTP attempt');
+    assert.equal(durableAttempts[5].resourceKey, storageKey);
+    assert.equal(durableAttempts[6].kind, 'storage_absence_read');
+    assert.equal(durableAttempts[6].outcome, 'failed', 'authoritative NoSuchKey GET remains an accounted failed HTTP attempt');
+    assert.equal(durableAttempts[6].resourceKey, storageKey);
+    assert.equal(handle.report().consumed, budget(handle).report().consumedAttempts);
+    const attemptsBeforeRestart = handle.report().consumed;
+    handle.close();
+    const restarted = reopen(directory, handle.runId);
+    t.after(() => restarted.close());
+    assert.equal((await recoverOfflineProbeRun({ handle: restarted })).status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(restarted.report().consumed, attemptsBeforeRestart, 'terminal replay does not refund or add requests');
+  });
+
+  test('H4-R7 registration persistence failure leaves fixture and operation sequence unchanged', t => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    t.after(() => handle.close());
+    const inventory = new TestRunInventory(handle.runId);
+    const path = handle.runId + '/probe.txt';
+    const key = createHash('sha256').update('storage:storage:' + STORAGE_PROBE_BUCKET + '/' + path).digest('hex');
+    const before = readFileSync(journalPath(directory, handle.runId));
+    const restore = interruptWrite(directory, 'storage_reservation', key, false, () => ({}), 'fail');
+    try {
+      assert.throws(() => inventory.registerStorageFixture({ path, lifecycleState: 'CREATION_PENDING', neverDispatched: true }), /RECOVERY_PERSISTENCE_FAILED/);
+      assert.equal(inventory._reservationSequence, 0);
+      assert.equal(inventory.storageFixtures.size, 0);
+      assert.deepEqual(readFileSync(journalPath(directory, handle.runId)), before);
+    } finally { restore(); }
+  });
+
+  test('H4-R7 semantic proof requires decisive endpoint evidence and permits declared supporting reads', t => {
+    const handle = create(testDirectory());
+    t.after(() => handle.close());
+    const resourceKey = createHash('sha256').update('auth:session:' + ownerId).digest('hex');
+    const tokenHash = 'a'.repeat(64);
+    const expected = { projectRef, runId: handle.runId, sessionId: ownerId, userId: ownerId, tokenHash, resourceKey };
+    const proof = {
+      projectRef, runId: handle.runId, sessionId: ownerId, userId: ownerId, tokenHash,
+      purpose: 'session_03_post_reset_user_read', classification: 'provider_session_revoked',
+      providerEvidence: 'SESSION_NOT_FOUND',
+      decisiveOrdinal: 2,
+      prerequisites: ['password_reset_confirmed', 'pre_invalidation_session_valid', 'intended_user_correlated'],
+      supportingOrdinals: [1]
+    };
+    const read = (ordinal, status) => ({ ordinal, status, kind: 'read', target: {
+      origin: 'https://' + projectRef + '.supabase.co', method: 'GET', path: '/auth/v1/user', scope: null
+    } });
+    const entry = {
+      projectRef, runId: handle.runId, resource: 'session:' + ownerId, key: resourceKey,
+      requestOrdinals: [1, 2], responses: [read(1, 200), read(2, 401)]
+    };
+    const evidence = validateSessionRevocationEvidence({ entry, proof, expected });
+    assert.ok(evidence);
+    assert.deepEqual(evidence.requests.map(request => request.role), ['supporting', 'decisive']);
+    assert.equal(validateSessionResolutionJournalEvidence(resourceKey, [1, 2], evidence), true);
+
+    assert.equal(validateSessionRevocationEvidence({ entry: { ...entry, responses: [read(1, 200)] , requestOrdinals: [1] },
+      proof: { ...proof, decisiveOrdinal: 1, supportingOrdinals: [] }, expected }), null,
+    'a successful /user read cannot be decisive revocation evidence');
+    const badEdge = { ...entry, requestOrdinals: [1], responses: [{ ordinal: 1, status: 200, kind: 'other_effect', target: {
+      origin: 'https://' + projectRef + '.supabase.co', method: 'POST', path: '/functions/v1/auth-user-probe', scope: null
+    } }] };
+    assert.equal(validateSessionRevocationEvidence({ entry: badEdge, proof: { ...proof, purpose: 'session_06_post_reset_edge_probe',
+      decisiveOrdinal: 1, supportingOrdinals: [] }, expected }), null,
+    'a generic successful Edge response cannot be decisive revocation evidence');
+    const genericFiveHundred = { ...badEdge, responses: [{ ...badEdge.responses[0], status: 500 }] };
+    assert.equal(validateSessionRevocationEvidence({ entry: genericFiveHundred,
+      proof: { ...proof, purpose: 'session_06_post_reset_edge_probe', classification: 'provider_session_revoked', providerEvidence: null,
+        decisiveOrdinal: 1, supportingOrdinals: [] }, expected }), null,
+    'HTTP 500 without fixed session-missing evidence is not revocation proof');
+    const unrelated = { ...entry, responses: [read(1, 200), { ...read(2, 401), target: {
+      origin: 'https://' + projectRef + '.supabase.co', method: 'GET', path: '/auth/v1/token', scope: null
+    } }] };
+    assert.equal(validateSessionRevocationEvidence({ entry: unrelated, proof, expected }), null,
+      'unrelated endpoints cannot be attached as session evidence');
+  });
+
+  test('H4-R7 SESSION-01 baseline binds provider user to the registered token and session', async t => {
+    for (const providerUserId of [ownerId, replacementId]) {
+      const handle = create(testDirectory());
+      t.after(() => handle.close());
+      const encode = value => Buffer.from(JSON.stringify(value)).toString('base64url');
+      const token = [encode({ alg: 'HS256' }), encode({ sub: ownerId, session_id: ownerId, ref: projectRef }), 'AA'].join('.');
+      const inventory = new TestRunInventory(handle.runId);
+      inventory.registerSession(ownerId, token);
+      const context = createRunContext({ runId: handle.runId });
+      Object.assign(context, { activeAccessToken: token, activeSessionId: ownerId, activeUserId: ownerId });
+      const transport = createDeterministicFixtureTransport({ requestBudgetMode: mode, routes: [
+        { method: 'GET', pathEquals: '/auth/v1/user', status: 200, json: { id: providerUserId } }
+      ] });
+      const dispatcher = createHostedDispatcher({ inventory, runContext: context, fetchFn: transport,
+        anonKey: createMockProjectKey(projectRef, 'anon'), serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
+      const observation = await dispatcher({ id: 'SESSION-01', category: 'Session & Consumer' });
+      assert.equal(observation.passed, providerUserId === ownerId);
+      assert.equal(context.preInvalidationSessionValid, providerUserId === ownerId);
+      assert.equal(handle.report().consumed, 1);
+      if (providerUserId !== ownerId) assert.equal(handle.report().residual.volatileInventory, true);
+    }
+  });
+
+  test('H4-R7 SESSION-02 cannot claim revocation without a proven pre-invalidation baseline', async t => {
+    const handle = create(testDirectory());
+    t.after(() => handle.close());
+    const fixture = revokedSessionFixture(handle, { probeId: 'SESSION-02', establishBaseline: false });
+    fixture.context.preInvalidationSessionValid = false;
+    const observation = await fixture.verify();
+    assert.equal(observation.passed, false);
+    assert.match(observation.error, /exact pre-invalidation session baseline/);
+    assert.equal(fixture.transport.calls.filter(call => call.method === 'PUT').length, 1);
+    assert.equal(fixture.transport.calls.filter(call => call.method === 'GET').length, 0,
+      'without a valid baseline, the post-reset rejection is not dispatched as revocation proof');
+    assert.equal(handle.report().consumed, 1);
+    assert.equal(journalForRun(handle.runId).state.obligations.size, 1);
+  });
+
+  for (const probeId of ['SESSION-03', 'SESSION-06']) {
+    test('H4-R7 successful ' + probeId + ' response never resolves durable revocation', async t => {
+      const handle = create(testDirectory());
+      t.after(() => handle.close());
+      const fixture = revokedSessionFixture(handle, { probeId, rejection: { status: 200, json: { id: ownerId } } });
+      const result = await fixture.verify();
+      assert.equal(result.passed, false);
+      const key = createHash('sha256').update('auth:session:' + ownerId).digest('hex');
+      assert.equal(journalForRun(handle.runId).state.obligations.has(key), true);
+      assert.equal(handle.report().status, 'RECOVERY_REQUIRED');
+      assert.equal(handle.report().consumed, 2);
+    });
+  }
+
+  test('H4-R7 generic Edge HTTP 500 cannot resolve a session obligation', async t => {
+    const handle = create(testDirectory());
+    t.after(() => handle.close());
+    const fixture = revokedSessionFixture(handle, { probeId: 'SESSION-06', rejection: { status: 500, json: { message: 'Internal Server Error' } } });
+    assert.equal((await fixture.verify()).passed, false);
+    assert.equal(handle.report().status, 'RECOVERY_REQUIRED');
+    assert.equal(handle.report().consumed, 2);
+  });
+
+  test('H4-R7 exact fixed Edge session-missing evidence remains supported and persists only safe metadata', async t => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    t.after(() => handle.close());
+    const fixture = revokedSessionFixture(handle, { probeId: 'SESSION-06', rejection: { status: 500, json: { code: 'session_not_found' } } });
+    assert.equal((await fixture.verify()).passed, true);
+    assert.equal(journalForRun(handle.runId).state.obligations.size, 0);
+    handle.close();
+    const db = new DatabaseSync(journalPath(directory, handle.runId));
+    try {
+      const payload = db.prepare('SELECT payload FROM journal').get().payload;
+      const resolution = JSON.parse(payload)[4].find(event => event[0] === 'session_resolution');
+      assert.equal(resolution[4].purpose, 'session_06_post_reset_edge_probe');
+      assert.equal(resolution[4].classification, 'provider_session_revoked');
+    assert.equal(resolution[4].requests.at(-1).path, '/functions/v1/auth-user-probe');
+      assert.equal(payload.includes(fixture.token), false);
+      assert.equal(payload.includes('session_not_found'), false);
+      assert.equal(payload.includes(secretSentinel), false);
+    } finally { db.close(); }
+  });
+
+  test('H4-R7 authentic targeted local logout resolves only its exact session and stores safe semantic evidence', async t => {
+    const directory = testDirectory();
+    const handle = create(directory);
+    t.after(() => handle.close());
+    const fixture = revokedSessionFixture(handle);
+    const result = await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient, failClosed: false });
+    assert.equal(result.status, 'CLEANUP_VERIFIED_SUCCESS');
+    assert.equal(fixture.transport.calls.length, 1);
+    assert.equal(handle.report().consumed, 1);
+    assert.equal(journalForRun(handle.runId).state.obligations.size, 0);
+    handle.close();
+    const db = new DatabaseSync(journalPath(directory, handle.runId));
+    try {
+      const payload = db.prepare('SELECT payload FROM journal').get().payload;
+      const resolution = JSON.parse(payload)[4].find(event => event[0] === 'session_resolution');
+      assert.equal(resolution[4].purpose, 'targeted_local_logout');
+      assert.equal(resolution[4].classification, 'local_logout_completed');
+      assert.deepEqual(resolution[4].requests.map(request => [request.method, request.path, request.scope, request.status]),
+        [['POST', '/auth/v1/logout', 'local', 204]]);
+      assert.equal(payload.includes(fixture.token), false);
+      assert.equal(payload.includes(secretSentinel), false);
+    } finally { db.close(); }
+  });
+
   for (const probeId of ['SESSION-02', 'SESSION-06']) {
     test('H4-R6 ' + probeId + ' persists exact verified session and preserves unrelated reset effects', async t => {
       const handle = create(testDirectory());
@@ -1332,13 +1685,13 @@ if (process.argv[2] === '--h4-child') {
       assert.equal(result.passed, true, JSON.stringify(result));
       const key = createHash('sha256').update('auth:session:' + ownerId).digest('hex');
       assert.equal(journalForRun(handle.runId).state.obligations.has(key), false);
-      assert.equal(handle.report().consumed, probeId === 'SESSION-02' ? 2 : 1);
+      assert.equal(handle.report().consumed, probeId === 'SESSION-02' ? 3 : 2);
       if (probeId === 'SESSION-02') {
         assert.ok(handle.report().residual.credentialDependent.length > 0);
         assert.equal(handle.report().status, 'RECOVERY_REQUIRED');
       } else {
         assert.equal((await fixture.inventory.executeCleanup({ adminClient: fixture.adminClient })).status, 'CLEANUP_VERIFIED_SUCCESS');
-        assert.equal(fixture.transport.calls.length, 1);
+        assert.equal(fixture.transport.calls.length, 2);
       }
     });
   }
@@ -1405,7 +1758,7 @@ if (process.argv[2] === '--h4-child') {
       const { handle } = crash(t, after ? 'r6-after-resolution' : 'r6-before-resolution');
       const result = await recoverOfflineProbeRun({ handle });
       assert.equal(result.status, after ? 'CLEANUP_VERIFIED_SUCCESS' : 'RECOVERY_REQUIRED');
-      assert.equal(result.consumed, 1);
+      assert.equal(result.consumed, 2);
       assert.deepEqual(await recoverOfflineProbeRun({ handle }), result);
     });
   }
@@ -1417,7 +1770,7 @@ if (process.argv[2] === '--h4-child') {
       t.after(() => handle.close());
       const fixture = empty ? { inventory: new TestRunInventory(handle.runId) } : revokedSessionFixture(handle);
       fixture.inventory.sessionTokens.set('transient', 'synthetic-transient-credential');
-      const restore = interruptWrite(directory, empty ? 'terminal' : 'session_resolution', empty ? undefined : 1, false, () => ({}), 'fail');
+      const restore = interruptWrite(directory, empty ? 'terminal' : 'session_resolution', empty ? undefined : 2, false, () => ({}), 'fail');
       try {
         if (empty) {
           const result = await fixture.inventory.executeCleanup({ adminClient: null, failClosed: false });
@@ -1463,7 +1816,8 @@ if (process.argv[2] === '--h4-child') {
     assert.equal(result.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
     assert.equal(handle.report().status, 'RECOVERY_REQUIRED');
     assert.equal(handle.report().consumed, 1);
-    const known = create(testDirectory());
+    const knownDirectory = testDirectory();
+    const known = create(knownDirectory);
     t.after(() => known.close());
     const valid = revokedSessionFixture(known);
     const confirmed = createDeterministicFixtureTransport({ requestBudgetMode: mode, routes: [
@@ -1472,6 +1826,38 @@ if (process.argv[2] === '--h4-child') {
     const confirmedAdmin = createHostedAdminClient({ runId: known.runId, fetchFn: confirmed, serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
     assert.equal((await valid.inventory.executeCleanup({ adminClient: confirmedAdmin })).status, 'CLEANUP_VERIFIED_SUCCESS');
     assert.equal(known.report().consumed, 1);
+    known.close();
+    const db = new DatabaseSync(journalPath(knownDirectory, known.runId));
+    try {
+      const payload = db.prepare('SELECT payload FROM journal').get().payload;
+      const resolution = JSON.parse(payload)[4].find(event => event[0] === 'session_resolution');
+      assert.equal(resolution[4].providerEvidence, 'AUTH_SESSION_MISSING');
+    } finally { db.close(); }
+    const tampered = testDirectory();
+    copyFileSync(journalPath(knownDirectory, known.runId), journalPath(tampered, known.runId));
+    rewrite(tampered, known.runId, envelope => {
+      envelope[4].find(event => event[0] === 'session_resolution')[4].providerEvidence = null;
+    });
+    assert.throws(() => reopen(tampered, known.runId), /INVALID_RECOVERY_TRANSITION/,
+      'replay refuses a status-only local logout absence claim');
+  });
+
+  test('H4-R7 generic local logout rejection statuses cannot become durable session absence', async t => {
+    for (const status of [400, 401, 403, 404]) {
+      const handle = create(testDirectory());
+      t.after(() => handle.close());
+      const fixture = revokedSessionFixture(handle);
+      const transport = createDeterministicFixtureTransport({ requestBudgetMode: mode, routes: [
+        { method: 'POST', pathEquals: '/auth/v1/logout', status, json: { code: 'permission_denied', message: 'request denied' } }
+      ] });
+      const admin = createHostedAdminClient({ runId: handle.runId, fetchFn: transport, serviceRoleKey: createMockProjectKey(projectRef, 'service_role') });
+      const result = await fixture.inventory.executeCleanup({ adminClient: admin, failClosed: false });
+      assert.equal(result.status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES', `HTTP ${status} remains an unresolved logout`);
+      assert.equal(journalForRun(handle.runId).state.obligations.size, 1, `HTTP ${status} cannot resolve the session obligation`);
+      assert.equal(handle.report().status, 'RECOVERY_REQUIRED');
+      assert.equal(handle.report().consumed, 1);
+      assert.equal(journalForRun(handle.runId).state.attempts[0].httpStatus, status);
+    }
   });
 
   test('H4-R6 generic cleanup resolution cannot bypass a rejected private session proof', async t => {
@@ -1491,14 +1877,22 @@ if (process.argv[2] === '--h4-child') {
     const handle = create(directory);
     t.after(() => handle.close());
     const fixture = revokedSessionFixture(handle);
-    await fixture.verify();
-    await fixture.verify();
-    assert.equal(handle.report().consumed, 2);
+    assert.equal((await fixture.verify()).passed, true);
+    const repeated = await fixture.verify();
+    assert.equal(repeated.passed, false, 'a fresh failed SESSION-01 read does not repeat or replace the prior proof');
+    assert.equal(repeated.status, 0);
+    assert.equal(handle.report().consumed, 3);
+    assert.deepEqual(handle.report().attempts.map(attempt => attempt.httpStatus), [200, 401, 401]);
     assert.equal(journalForRun(handle.runId).state.obligations.size, 0);
     handle.close();
     for (const mutate of [
       events => { events.find(event => event[0] === 'session_resolution')[2] = 'a'.repeat(64); },
       events => { events.find(event => event[0] === 'session_resolution')[3] = [99]; },
+      events => { events.find(event => event[0] === 'session_resolution')[4].requests[0].path = '/auth/v1/token'; },
+      events => { events.find(event => event[0] === 'session_resolution')[4].prerequisites.push('raw-response-secret'); },
+      events => { events.find(event => event[0] === 'session_resolution')[4].purpose = 'constructor'; },
+      events => { events.find(event => event[0] === 'session_resolution')[4].purpose = 'toString'; },
+      events => { events.find(event => event[0] === 'session_resolution').length = 4; },
       events => { events.push(events.find(event => event[0] === 'session_resolution')); }
     ]) {
       const alternate = testDirectory();
@@ -1515,7 +1909,7 @@ if (process.argv[2] === '--h4-child') {
     await next.verify();
     next.inventory.registerSession(ownerId, next.token);
     assert.equal((await next.inventory.executeCleanup({ adminClient: next.adminClient, failClosed: false })).status, 'CLEANUP_FAILED_RESIDUAL_RESOURCES');
-    assert.equal(second.report().consumed, 1, 'Public marker reuse cannot consume a hidden logout');
+    assert.equal(second.report().consumed, 2, 'Only the baseline and provider probe were dispatched; public marker reuse cannot consume a hidden logout');
   });
 
   test('H4 standard pacing and cancellation survive restart', async t => {
