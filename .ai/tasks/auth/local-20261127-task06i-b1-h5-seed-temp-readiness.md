@@ -2,13 +2,14 @@
 
 | Field | Value |
 |---|---|
-| Status | IMPLEMENTED_OFFLINE_TESTED / publication and formal exact-HEAD review pending |
+| Status | IMPLEMENTED_OFFLINE_TESTED / PR #49 published, formal exact-HEAD review pending |
 | Objective | Offline-tested Option B run-created seed lifecycle integrated with the existing runner, H4 journal and shared budget, plus future TEMP readiness packet |
 | Implementation owner | Codex root |
 | Previous agent | Codex root, H4 closeout |
-| Last commit agent | Pending H5 publication; resolve exact feature HEAD from GitHub |
+| Last commit agent | Codex root; runtime checkpoint `08d6cd2111a66e965fcb0a296012b13f5e71c8c8`; resolve latest continuity/publication HEAD from PR #49 |
 | Tracking / approval | Owner H5 task brief supplied 2026-11-27, local implementation/tests/docs/publication only |
 | Branch | `feat/task06i-b1-h5-seed-temp-readiness` |
+| PR | [#49](https://github.com/im-tnyx/Tio-Workspace/pull/49), open for review against main; merge not authorized |
 | Base | `efa5929f5718e38d40f0035624c1b6b3da8000db` |
 | Scope | `experiments/task06i/` runtime/fixtures/tests and H5 continuity/readiness documentation |
 
@@ -79,6 +80,10 @@ Reviewer returned **PASS** on the final runtime, test and readiness diff and ind
 - Existing offline probe readiness (10 implemented,5 prerequisite blocked,3 LayerA only) does not mean all18 or every combined Option B subset has valid hosted/terminal evidence. Failed mutating probe effects remain conservatively unresolved.
 - No isolated-worker migration, H6, production Auth, hosted credential/configuration access or merge is included. Rollback preserves active journals and residual obligations; old runtime does not interpret new typed seed events and must not be used to erase them.
 
+### Publication receipt
+
+Runtime checkpoint `08d6cd2111a66e965fcb0a296012b13f5e71c8c8` was committed and pushed after final independent PASS. Remote main remained `efa5929f5718e38d40f0035624c1b6b3da8000db`. PR #49 opened with seven scoped files. This follow-up records the actual PR link; runtime/tests/readiness blobs remain identical to the independently reviewed versions. Exact final HEAD, CI, review requests and reviewer availability are recorded in the PR conversation after this continuity push. Formal approval remains pending; this record does not cache a mutable PR-head SHA or claim CI/reviewer success before observation.
+
 ## Truth boundary
 
-H4 MERGED / OFFLINE TESTED. H5 IMPLEMENTED_OFFLINE_TESTED, formal review/publication pending. Hosted atomic deletion UNVERIFIED. Hosted verification0/18. Hosted LIVE NOT AUTHORIZED/BLOCKED. Production Real Auth STRICT NO-GO. Hosted mutations0. Added infrastructure cost$0. Merge requires separate explicit owner authorization.
+H4 MERGED / OFFLINE TESTED. H5 IMPLEMENTED_OFFLINE_TESTED / PR #49 REVIEW_PENDING. Hosted atomic deletion UNVERIFIED. Hosted verification0/18. Hosted LIVE NOT AUTHORIZED/BLOCKED. Production Real Auth STRICT NO-GO. Hosted mutations0. Added infrastructure cost$0. Merge requires separate explicit owner authorization.

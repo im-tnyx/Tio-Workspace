@@ -5,7 +5,7 @@
 | Field | Value |
 |---|---|
 | Status | **H4 MERGED / OFFLINE TESTED via PR #47 at `9165825a233795dd06cc362e8afcaf9c4b289115`. Approved feature HEAD `bcae8f89e6654d74246c681c168df884627328c3`; 14/14 threads resolved; all eight pre-merge checks and four post-merge workflows PASS. Hosted atomic deletion UNVERIFIED; hosted verification0/18; LIVE NOT AUTHORIZED/BLOCKED; Production Real Auth STRICT NO-GO.** |
-| Active Task | [H5 run-created seed lifecycle and TEMP readiness](tasks/auth/local-20261127-task06i-b1-h5-seed-temp-readiness.md) — IMPLEMENTED_OFFLINE_TESTED; Windows/Linux514/514 each, H5 focused52/52, formal review/publication pending. [Readiness packet](../experiments/task06i/h5-temp-readiness.md) preserves hosted0/18 and LIVE BLOCKED. |
+| Active Task | [H5 run-created seed lifecycle and TEMP readiness](tasks/auth/local-20261127-task06i-b1-h5-seed-temp-readiness.md) — IMPLEMENTED_OFFLINE_TESTED / [PR #49](https://github.com/im-tnyx/Tio-Workspace/pull/49) REVIEW_PENDING; Windows/Linux514/514 each, H5 focused52/52. Resolve current HEAD/reviews/checks from GitHub. [Readiness packet](../experiments/task06i/h5-temp-readiness.md) preserves hosted0/18 and LIVE BLOCKED. |
 | Active Scope / Owner | Codex root owns bounded H5 experiments. H4 and documentation closeout PR #48 are merged. Hosted operations and merge require separate authorization. |
 | Last H3 follow-up commit | Codex root / approved feature HEAD `8ab4c0e2fc80e940f94d1bee443db8fad0f82efc` (historical PR #45 head, not a mutable current-HEAD pointer). |
 | Branch | `feat/task06i-b1-h5-seed-temp-readiness`, created from clean verified main. Completed H4 and closeout branches retired. |
