@@ -113,12 +113,23 @@ export function getRunRequestBudget(rawOptions) {
   }));
   const budget = Object.freeze({
     async beginRequest(rawRequest = Object.create(null)) {
-      const request = record(rawRequest, ['category', 'signal', 'kind', 'resourceKey', 'operationHash']);
+      const request = record(rawRequest, ['category', 'signal', 'kind', 'resourceKey', 'operationHash', 'dispatchDeadline', 'monotonicDeadline']);
       const category = request.category ?? 'probe';
+      const deadline = request.dispatchDeadline;
+      const monoDeadline = request.monotonicDeadline;
       if (!['probe', 'auxiliary', 'cleanup'].includes(category)) throw new Error('INVALID_REQUEST_BUDGET_CATEGORY');
+      if ((deadline === undefined) !== (monoDeadline === undefined)) throw new Error('INVALID_REQUEST_DISPATCH_DEADLINE');
+      if (deadline !== undefined && (!Number.isSafeInteger(deadline) || deadline <= 0)) throw new Error('INVALID_REQUEST_DISPATCH_DEADLINE');
+      if (monoDeadline !== undefined && (typeof monoDeadline !== 'number' || !Number.isFinite(monoDeadline))) throw new Error('INVALID_REQUEST_DISPATCH_DEADLINE');
       if (request.resourceKey !== undefined && (typeof request.resourceKey !== 'string' || !/^[a-f0-9]{64}$/.test(request.resourceKey))) throw new Error('INVALID_REQUEST_RESOURCE_KEY');
       if (request.operationHash !== undefined && (typeof request.operationHash !== 'string' || !/^[a-f0-9]{64}$/.test(request.operationHash) || !['storage_upload', 'seed_create', 'auth_delete'].includes(request.kind) || !request.resourceKey)) throw new Error('INVALID_REQUEST_OPERATION_BINDING');
       const signal = trustedSignal(request.signal);
+      const assertDeadline = (timestamp, monoTimestamp = performance.now()) => {
+        if ((deadline === undefined || timestamp < deadline) &&
+            (monoDeadline === undefined || monoTimestamp < monoDeadline)) return;
+        blocked++;
+        throw new Error('TEMP_AUTH_AUTHORIZATION_EXPIRED');
+      };
       const rejectCancelled = () => { blocked++; cancelledBefore++; const error = abortError(); error._counted = true; PRE_DISPATCH_FAILURES.set(error, options.runId); throw error; };
       if (signal && abortedGet.call(signal)) return rejectCancelled();
       // Synchronous reservation occurs before the first await, so concurrent callers cannot oversubscribe.
@@ -159,6 +170,7 @@ export function getRunRequestBudget(rawOptions) {
         }
         if (signal && abortedGet.call(signal)) return rejectCancelled();
         const reservedAt = Date.now();
+        assertDeadline(reservedAt, performance.now());
         journal?.reserve(consumed + 1, category, request.kind, reservedAt, request.resourceKey ?? null, request.operationHash ?? null);
         lastDispatch = reservedAt;
         consumed++;
@@ -168,6 +180,8 @@ export function getRunRequestBudget(rawOptions) {
         attempts.push(entry);
         if (journal) {
           const dispatchedAt = Date.now();
+          // A durable reservation can cross the deadline. Preserve it without dispatching.
+          assertDeadline(dispatchedAt, performance.now());
           journal.dispatch(consumed, dispatchedAt);
           lastAdmission = performance.now();
           lastDispatch = dispatchedAt;

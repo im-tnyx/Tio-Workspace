@@ -1,6 +1,7 @@
 import { registerConditionalStorageFixtureTransport, getConditionalStorageFixtureProvider, getConditionalStorageFixtureRunId, observeConditionalStorageUpload, readObservedStorageCreation, decodeOfflineJwtClaims, extractOfflineStorageObjectId, canonicalStorageUuid, snapshotBoundedJwtClaims, MAX_OFFLINE_JWT_TOKEN_LENGTH } from './conditional-storage-fixture.mjs';
 import { admitInventoryEffects, snapshotInventoryEffectData, snapshotDirectInventoryInput } from './inventory-effect-admission.mjs';
 import { validateSessionRevocationEvidence } from './session-revocation-evidence.mjs';
+import { assertTempAuthFixtureResponse, assertTempAuthRequest, TEMP_AUTH_ORIGIN, tempAuthRequestPlan } from './temp-auth-pilot-contract.mjs';
 // Hosted Probe Runner Specification & Harness for Task 06I-B1-H0-R2
 // Prepares the opt-in, fail-closed hosted test runner for future authorized testing.
 // Enforces strict safety gates:
@@ -734,7 +735,7 @@ function withRunRequestBudget(runId, category, operation, mode = undefined) {
   }
   return RUN_REQUEST_BUDGET_CONTEXT.run({ runId, category, mode }, operation);
 }
-async function executeBudgetedRequest(runId, category, operation, signal = null, mode = undefined, kind = undefined, target = null) {
+async function executeBudgetedRequest(runId, category, operation, signal = null, mode = undefined, kind = undefined, target = null, dispatchDeadline = undefined, monotonicDeadline = undefined) {
   const existing = RUN_REQUEST_BUDGET_CONTEXT.getStore();
   const effectiveRun = existing?.runId || runId;
   if (!effectiveRun || (runId && runId !== effectiveRun)) throw new Error('REQUEST_BUDGET_BINDING_MISMATCH');
@@ -747,7 +748,7 @@ async function executeBudgetedRequest(runId, category, operation, signal = null,
   const operationHash = kind === 'auth_delete' && journal?.state.seeds.has(authKey)
     ? journal.state.seeds.get(authKey).operation : ['seed_create', 'storage_upload'].includes(kind) ? resourceContext?.operationHash : undefined;
   return executeRunBudgetRequest(budget, { category: existing?.category || category, signal, kind,
-    resourceKey: resourceContext?.key, operationHash }, async (ordinal, recordCreation) => {
+    resourceKey: resourceContext?.key, operationHash, dispatchDeadline, monotonicDeadline }, async (ordinal, recordCreation) => {
     if (kind === 'auth_delete') journal?.admitAuthDeletionProvider(ordinal);
     resourceContext?.requestOrdinals?.push(ordinal);
     const result = await operation(ordinal, recordCreation);
@@ -767,7 +768,7 @@ async function executeBudgetedRequest(runId, category, operation, signal = null,
     return result;
   });
 }
-function executeCurrentTransportRequest(transport, signal, operation, kind, target) {
+function executeCurrentTransportRequest(transport, signal, operation, kind, target, dispatchDeadline, monotonicDeadline) {
   const authority = AUTH_DELETE_CONTEXT.getStore();
   if (kind === 'auth_delete' && authority && authority.transport !== transport) throw new Error('SEED_DELETE_TRANSPORT_MISMATCH');
   const rc = RESOURCE_REQUEST_CONTEXT.getStore();
@@ -778,7 +779,8 @@ function executeCurrentTransportRequest(transport, signal, operation, kind, targ
   }
   const context = RUN_REQUEST_BUDGET_CONTEXT.getStore();
   if (!context) return operation(null, () => {}); // Standalone fixture routing has no run/resource authority.
-  return executeBudgetedRequest(context.runId, context.category, operation, signal, TRANSPORT_REQUEST_BUDGET_MODES.get(transport), kind, target);
+  return executeBudgetedRequest(context.runId, context.category, operation, signal, TRANSPORT_REQUEST_BUDGET_MODES.get(transport),
+    kind, target, dispatchDeadline, monotonicDeadline);
 }
 
 function sessionEvidenceRequestTarget(url, method) {
@@ -2083,7 +2085,33 @@ function validateDispatcherFixtureTiming(spec) {
  * Only transports produced by this module factory are trusted in offline simulation.
  * Accepts zero arbitrary user callbacks and executes inside runWithBlockedRealFetch.
  */
-export function createDeterministicFixtureTransport(rawSpec = {}) {
+const TEMP_AUTH_FIXTURE_SCOPE = new WeakMap();
+
+export function createTempAuthPilotFixtureTransport(rawOptions) {
+  const { plan, fixture, expiresAt, monotonicExpiresAt } = recoveryOptions(rawOptions, ['plan', 'fixture', 'expiresAt', 'monotonicExpiresAt']);
+  if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) throw new Error('TEMP_AUTH_INVALID_AUTHORIZATION_DEADLINE');
+  const nowWall = Date.now();
+  const nowMono = performance.now();
+  const effectiveMonotonicExpiresAt = monotonicExpiresAt !== undefined ? monotonicExpiresAt : nowMono + (expiresAt - nowWall);
+  if (typeof effectiveMonotonicExpiresAt !== 'number' || !Number.isFinite(effectiveMonotonicExpiresAt)) {
+    throw new Error('TEMP_AUTH_INVALID_AUTHORIZATION_DEADLINE');
+  }
+  const seed = SEED_PLANS.get(plan);
+  if (!seed || seed.state !== 'CREATION_PENDING' || journalForRun(plan.runId)?.handle !== seed.handle) {
+    throw new Error('TEMP_AUTH_UNTRUSTED_SEED');
+  }
+  const spec = extractValidatedPlainOptions(fixture, 'transportSpec');
+  if (Object.hasOwn(spec, 'conditionalStorage')) throw new Error('TEMP_AUTH_STORAGE_NOT_ALLOWED');
+  const scope = Object.freeze(Object.create(null));
+  TEMP_AUTH_FIXTURE_SCOPE.set(scope, { seed, plan: tempAuthRequestPlan(plan.userId), expiresAt, monotonicExpiresAt: effectiveMonotonicExpiresAt });
+  return createDeterministicFixtureTransport(spec, scope);
+}
+
+export function createDeterministicFixtureTransport(rawSpec = {}, scope = null) {
+  const pilot = scope === null ? null : TEMP_AUTH_FIXTURE_SCOPE.get(scope);
+  if (scope !== null && !pilot) throw new Error('TEMP_AUTH_UNTRUSTED_TRANSPORT_SCOPE');
+  let pilotNext = 0;
+  let pilotSession = null;
   if (rawSpec !== undefined && rawSpec !== null && utilTypes.isProxy(rawSpec)) {
     throw new Error('INVALID_DETERMINISTIC_FIXTURE_SPEC: Proxy object rejected at \'transportSpec\' (R7-02)');
   }
@@ -2162,6 +2190,7 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
 
   const transport = async function deterministicFixtureTransport(rawUrl, rawOpts = {}) {
     // R12-01: Descriptor-first typed admission BEFORE reading signal, converting URL/method/headers/body, recording calls, or mutating state/barriers
+    if (pilot && typeof rawUrl !== 'string') throw new Error('TEMP_AUTH_RAW_URL_REQUIRED');
     let urlStr;
     if (typeof rawUrl === 'string') {
       urlStr = rawUrl;
@@ -2182,6 +2211,41 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
     const signal = ownSchemaMeta(opts, 'signal', null);
     const method = ownSchemaMeta(opts, 'method', 'GET').toUpperCase();
     const runId = RUN_REQUEST_BUDGET_CONTEXT.getStore()?.runId;
+    let pilotBody = null;
+    if (pilot) {
+      if (runId !== pilot.seed.plan.runId || journalForRun(runId)?.handle !== pilot.seed.handle) {
+        throw new Error('TEMP_AUTH_TRANSPORT_RUN_MISMATCH');
+      }
+      assertTempAuthRequest(pilot.plan, method, urlStr);
+      const createSeed = urlStr === TEMP_AUTH_ORIGIN + '/auth/v1/admin/users';
+      const passwordGrant = urlStr === TEMP_AUTH_ORIGIN + '/auth/v1/token?grant_type=password';
+      const requestBody = ownSchemaMeta(opts, 'body', null);
+      if (createSeed || passwordGrant) {
+        if (typeof requestBody === 'string' && requestBody.length <= 1024) {
+          try { pilotBody = JSON.parse(requestBody); } catch { /* rejected below */ }
+        }
+        const expectedKeys = createSeed ? ['id', 'email', 'password', 'email_confirm'] : ['email', 'password'];
+        if (!pilotBody || Object.keys(pilotBody).length !== expectedKeys.length ||
+            !expectedKeys.every(field => Object.hasOwn(pilotBody, field)) ||
+            pilotBody.email !== pilot.seed.email || pilotBody.password !== pilot.seed.password ||
+            (createSeed && (pilotBody.id !== pilot.seed.userId || pilotBody.email_confirm !== true))) {
+          throw new Error('TEMP_AUTH_SEED_REQUEST_BODY_MISMATCH');
+        }
+      } else if (requestBody != null) {
+        throw new Error('TEMP_AUTH_UNEXPECTED_REQUEST_BODY');
+      }
+      const authUserRead = urlStr === TEMP_AUTH_ORIGIN + '/auth/v1/user';
+      const authLogout = urlStr === TEMP_AUTH_ORIGIN + '/auth/v1/logout?scope=local';
+      if (authUserRead || authLogout) {
+        const header = ownSchemaMeta(opts, 'headers', null)?.authorization;
+        const token = typeof header === 'string' && header.startsWith('Bearer ') ? header.slice(7) : null;
+        if (!token || !pilotSession ||
+            crypto.createHash('sha256').update(token).digest('hex') !== pilotSession.tokenDigest ||
+            (authLogout && !getVerifiedSessionBaseline(pilot.seed.inventory, pilotSession.id, token, pilot.seed.userId, transport))) {
+          throw new Error('TEMP_AUTH_SESSION_PROVENANCE_UNVERIFIED');
+        }
+      }
+    }
     const providerRunId = getConditionalStorageFixtureRunId(transport);
     if (providerRunId && /^h4-/i.test(providerRunId) && runId !== providerRunId) {
       throw new Error('RECOVERY_TRANSPORT_RUN_SCOPE_REQUIRED');
@@ -2198,12 +2262,28 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
       const abortErr = new Error('The operation was aborted');
       abortErr.name = 'AbortError';
       if (RUN_REQUEST_BUDGET_CONTEXT.getStore()) {
-        return executeCurrentTransportRequest(transport, signal, () => { throw abortErr; }, kind, target);
+        return executeCurrentTransportRequest(transport, signal, () => { throw abortErr; }, kind, target, pilot?.expiresAt, pilot?.monotonicExpiresAt);
       }
       throw abortErr;
     }
 
     return executeCurrentTransportRequest(transport, signal, (ordinal, recordCreation) => runWithBlockedRealFetch(async () => {
+      if (pilot) {
+        // Journal I/O can outlast the authorization even after the dispatch marker.
+        if (Date.now() >= pilot.expiresAt || performance.now() >= pilot.monotonicExpiresAt) throw new Error('TEMP_AUTH_AUTHORIZATION_EXPIRED');
+        const matches = entry => entry?.method === method && entry.url === urlStr;
+        if (!matches(pilot.plan[pilotNext])) {
+          // A failed probe may go directly to seed-last cleanup only with the
+          // original H5 proof. The transport never retries an earlier step.
+          if (pilotNext >= 3 && pilotNext < 6 && matches(pilot.plan[6]) &&
+              seedCanDelete(pilot.seed.inventory, pilot.seed, ordinal)) {
+            pilotNext = 6;
+          } else {
+            throw new Error('TEMP_AUTH_REQUEST_OUT_OF_ORDER');
+          }
+        }
+        pilotNext += 1;
+      }
       let pathname = urlStr;
       try {
         pathname = new URL(urlStr, 'https://localhost').pathname;
@@ -2215,13 +2295,15 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
       const admittedBody = ownSchemaMeta(opts, 'body', undefined);
 
       let rawBody = null;
-      let bodyJson = null;
+      let bodyJson = pilotBody;
       if (typeof admittedBody === 'string') {
         rawBody = admittedBody;
-        try {
-          bodyJson = JSON.parse(admittedBody);
-        } catch {
-          bodyJson = null;
+        if (bodyJson === null) {
+          try {
+            bodyJson = JSON.parse(admittedBody);
+          } catch {
+            bodyJson = null;
+          }
         }
       } else if (admittedBody !== undefined && admittedBody !== null) {
         rawBody = admittedBody.toString('utf8');
@@ -2308,6 +2390,25 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
         recordCreation(readObservedStorageCreation(transport, runId, ordinal));
       }
       let response = buildDeterministicResponse(selected);
+      if (pilot) {
+        const tokenExchange = urlStr === TEMP_AUTH_ORIGIN + '/auth/v1/token?grant_type=password';
+        const identityAbsence = method === 'GET' && response.status === 404 && pathname.startsWith('/auth/v1/admin/users/');
+        const envelope = (identityAbsence || (tokenExchange && response.status === 200))
+          ? await parseResponseEnvelope(response) : response;
+        const body = snapshotJwtRecord(envelope.body);
+        assertTempAuthFixtureResponse(method, urlStr, { status: response.status, ok: response.ok, body });
+        if (tokenExchange && response.status === 200) {
+          const token = body?.access_token;
+          const claims = decodeOfflineJwtClaims(token);
+          if (claims?.sub === pilot.seed.userId && typeof claims.session_id === 'string' &&
+              validateUuid(claims.session_id) && claims.iss === TEMP_AUTH_ORIGIN + '/auth/v1' &&
+              Number.isSafeInteger(claims.iat) && Number.isSafeInteger(claims.exp) &&
+              claims.exp > claims.iat && claims.exp - claims.iat <= 300 &&
+              body?.user?.id === pilot.seed.userId) {
+            pilotSession = { id: claims.session_id, tokenDigest: crypto.createHash('sha256').update(token).digest('hex') };
+          }
+        }
+      }
       if (uploadIdentity) publishConditionalEvidence(response, transport, 'conditionalUploadIdentity', uploadIdentity);
       // A declarative absent route cannot override authoritative current provider state.
       // Re-read after awaits so a replacement during DELETE/GET delay is preserved.
@@ -2322,7 +2423,7 @@ export function createDeterministicFixtureTransport(rawSpec = {}) {
       }
       if (conditionalDeletion) publishConditionalEvidence(response, transport, 'conditionalDeletion', conditionalDeletion);
       return response;
-    }), kind, target);
+    }), kind, target, pilot?.expiresAt, pilot?.monotonicExpiresAt);
   };
 
   TRANSPORT_REQUEST_BUDGET_MODES.set(transport, requestBudgetMode);

@@ -107,3 +107,70 @@ test('R14-04 integration: provisioning consumes shared allowance and exhausted c
  assert.equal(shared.report().cleanupRequests,0);
  assert.equal(shared.report().reservedCleanupCapacity,0);
 });
+
+test('H6-C0-R2: monotonic deadline blocks expired dispatches including cleanup and preserves journal reservation', async t => {
+ const { mkdtempSync, realpathSync, rmSync } = await import('node:fs');
+ const { tmpdir } = await import('node:os');
+ const { join } = await import('node:path');
+ const { DatabaseSync } = await import('node:sqlite');
+ const { createOfflineRecoveryJournal, reopenOfflineRecoveryJournal } = await import('./offline-recovery-journal.mjs');
+ const dir = realpathSync.native(mkdtempSync(join(realpathSync.native(tmpdir()), 'tio-rbb-mono-')));
+ t.after(() => rmSync(dir, { recursive: true, force: true }));
+
+ const journal = createOfflineRecoveryJournal({ directory: dir, projectRef, mode: 'recorded_zero_wait' });
+ try {
+  const monoBase = performance.now();
+  const wallNow = Date.now();
+  let monoTick = monoBase;
+  t.mock.method(performance, 'now', () => monoTick);
+  t.mock.method(Date, 'now', () => wallNow);
+
+  const budgetInstance = getRunRequestBudget({ projectRef, runId: journal.runId, mode: 'recorded_zero_wait' });
+  await assert.rejects(
+   budgetInstance.beginRequest({ category: 'cleanup', kind: 'auth_effect', dispatchDeadline: wallNow + 5000 }),
+   /INVALID_REQUEST_DISPATCH_DEADLINE/
+  );
+  monoTick = monoBase + 1000;
+  await assert.rejects(
+   budgetInstance.beginRequest({
+    category: 'cleanup', kind: 'auth_effect',
+    dispatchDeadline: wallNow + 5000, monotonicDeadline: monoBase + 500
+   }),
+   /TEMP_AUTH_AUTHORIZATION_EXPIRED/
+  );
+  assert.equal(journal.report().consumed, 0);
+
+  monoTick = monoBase + 100;
+  const origPrepare = DatabaseSync.prototype.prepare;
+  t.mock.method(DatabaseSync.prototype, 'prepare', function (sql) {
+   const statement = origPrepare.call(this, sql);
+   if (!sql.startsWith('UPDATE journal SET payload')) return statement;
+   return { run(...params) {
+    const event = JSON.parse(params[0])[4].at(-1);
+    const result = statement.run(...params);
+    if (event[0] === 'reserve') monoTick = monoBase + 600;
+    return result;
+   } };
+  });
+  await assert.rejects(
+   budgetInstance.beginRequest({
+    category: 'cleanup', kind: 'auth_delete',
+    dispatchDeadline: wallNow + 5000, monotonicDeadline: monoBase + 500
+   }),
+   /TEMP_AUTH_AUTHORIZATION_EXPIRED/
+  );
+ } finally {
+  journal.close();
+ }
+
+ const reopened = reopenOfflineRecoveryJournal({ directory: dir, runId: journal.runId, projectRef });
+ try {
+  const report = reopened.report();
+  assert.equal(report.status, 'RECOVERY_REQUIRED');
+  assert.equal(report.attempts.length, 1);
+  assert.equal(report.attempts[0].kind, 'auth_delete');
+  assert.equal(report.attempts[0].dispatchedAt, null);
+ } finally {
+  reopened.close();
+ }
+});
