@@ -264,6 +264,126 @@ if (process.argv[2] === '--crash-child') {
     } finally { journal.close(); }
   });
 
+  test('C0 partial clock rollback during standard pacing blocks expired dispatches on monotonic deadline and preserves cleanup obligation', async t => {
+    const { directory, run } = rehearsal(t);
+    const realNow = Date.now;
+    const baseWall = realNow();
+    const expiresAt = baseWall + 3400;
+    const allowed = authorization(run.runId, { expiresAt: new Date(expiresAt).toISOString() });
+    await verifiedCredentials(run, allowed);
+
+    let rollbackAt = null;
+    t.mock.method(Date, 'now', () => {
+      const current = realNow();
+      return rollbackAt !== null && current >= rollbackAt ? current - 800 : current;
+    });
+    const prepare = DatabaseSync.prototype.prepare;
+    t.mock.method(DatabaseSync.prototype, 'prepare', function (sql) {
+      const statement = prepare.call(this, sql);
+      if (!sql.startsWith('UPDATE journal SET payload')) return statement;
+      return { run(...params) {
+        const event = JSON.parse(params[0])[4].at(-1);
+        const result = statement.run(...params);
+        if (event[0] === 'seed_verified' && rollbackAt === null) rollbackAt = realNow() + 150;
+        return result;
+      } };
+    });
+
+    const result = await run.run(allowed);
+    assert.notEqual(rollbackAt, null);
+    assert.equal(result.status, 'OFFLINE_REHEARSAL_BLOCKED');
+    assert.equal(result.observedRequests, 3);
+    assert.equal(result.consumed, 3);
+    await assert.rejects(run.run(allowed), /TEMP_AUTH_RUN_NOT_ADMISSIBLE/);
+    run.close();
+
+    const journal = reopenOfflineRecoveryJournal({ directory, runId: run.runId, projectRef: TEMP_AUTH_PROJECT });
+    try {
+      const report = journal.report();
+      assert.equal(report.status, 'RECOVERY_REQUIRED');
+      assert.deepEqual(report.attempts.map(attempt => attempt.kind), ['read', 'seed_create', 'read']);
+      assert.ok(report.attempts.every(attempt => attempt.dispatchedAt < expiresAt));
+      assert.equal(report.seeds[0]?.state, 'CREATION_VERIFIED');
+      assert.ok(report.residual.volatileKinds.includes('auth'));
+    } finally { journal.close(); }
+  });
+
+  test('C0 partial clock rollback across revalidation or fixture entry cannot extend authorization', async t => {
+    const { directory, run } = rehearsal(t);
+    const realNow = Date.now;
+    const realMono = performance.now.bind(performance);
+    const baseWall = realNow();
+    const baseMono = realMono();
+    const allowed = authorization(run.runId, { expiresAt: new Date(baseWall + 30_000).toISOString() });
+    await verifiedCredentials(run, allowed);
+
+    t.mock.method(Date, 'now', () => baseWall + 25_000);
+    t.mock.method(performance, 'now', () => baseMono + 30_050);
+
+    const ttyExpired = operator([sample.publishable, sample.secret]);
+    await assert.rejects(run.verifyOperatorInput(allowed, ttyExpired.input, ttyExpired.output), /TEMP_AUTH_RUN_NOT_ADMISSIBLE/);
+    assert.equal(ttyExpired.transcript.length, 0);
+
+    const distinctAfterRollback = authorization(run.runId, {
+      issuedAt: new Date(baseWall - 500).toISOString(),
+      expiresAt: new Date(baseWall + 30_000).toISOString()
+    });
+    const ttyDistinct = operator([sample.publishable, sample.secret]);
+    await assert.rejects(run.verifyOperatorInput(distinctAfterRollback, ttyDistinct.input, ttyDistinct.output), /TEMP_AUTH_RUN_NOT_ADMISSIBLE/);
+    assert.equal(ttyDistinct.transcript.length, 0);
+    run.close();
+
+    const { directory: dir2, run: run2 } = rehearsal(t);
+    t.mock.restoreAll();
+    const wall2 = Date.now();
+    const mono2 = performance.now();
+    const allowed2 = authorization(run2.runId, { expiresAt: new Date(wall2 + 30_000).toISOString() });
+    await verifiedCredentials(run2, allowed2);
+
+    t.mock.method(Date, 'now', () => wall2 + 25_000);
+    t.mock.method(performance, 'now', () => mono2 + 30_050);
+    await assert.rejects(run2.run(allowed2), /TEMP_AUTH_AUTHORIZATION_EXPIRED/);
+    run2.close();
+
+    assert.equal(inspectTempAuthRecovery(directory, run.runId).consumed, 0);
+    assert.equal(inspectTempAuthRecovery(dir2, run2.runId).consumed, 0);
+
+    const { run: run3 } = rehearsal(t);
+    const wall3 = realNow();
+    const mono3 = realMono();
+    let mono3Now = mono3;
+    t.mock.restoreAll();
+    t.mock.method(Date, 'now', () => wall3 + 25_000);
+    t.mock.method(performance, 'now', () => mono3Now);
+    const prepare3 = DatabaseSync.prototype.prepare;
+    t.mock.method(DatabaseSync.prototype, 'prepare', function (sql) {
+      const statement = prepare3.call(this, sql);
+      if (!sql.startsWith('UPDATE journal SET payload')) return statement;
+      return { run(...params) {
+        const event = JSON.parse(params[0])[4].at(-1);
+        const result = statement.run(...params);
+        if (event[0] === 'dispatch') mono3Now = mono3 + 30_050;
+        return result;
+      } };
+    });
+    const inventory = new TestRunInventory(run3.runId);
+    const seed = reserveRunCreatedSeed({ inventory, projectRef: TEMP_AUTH_PROJECT });
+    const req = tempAuthRequestPlan(seed.userId)[0];
+    const transport = createTempAuthPilotFixtureTransport({
+      plan: seed,
+      fixture: { routes: [{ method: req.method, pathEquals: new URL(req.url).pathname, status: 404, json: {} }] },
+      expiresAt: wall3 + 30_000,
+      monotonicExpiresAt: mono3 + 30_000
+    });
+    const adminClient = createHostedAdminClient({
+      projectRef: TEMP_AUTH_PROJECT, runId: run3.runId, fetchFn: transport,
+      anonKey: createMockProjectKey(TEMP_AUTH_PROJECT, 'anon'),
+      serviceRoleKey: createMockProjectKey(TEMP_AUTH_PROJECT, 'service_role')
+    });
+    await assert.rejects(adminClient.getUserById(seed.userId), /TEMP_AUTH_AUTHORIZATION_EXPIRED/);
+    assert.equal(transport.calls.length, 0);
+  });
+
   test('C0 ambiguous responses and unverified Auth effects leave durable failures without retry', { concurrency: true }, async t => {
     const matrix = [['preexisting', 1], ['generic-404', 1], ['unreadable-404', 1], ['create-lost', 2],
       ['create-wrong-id', 2], ['redirect', 2], ['session-wrong-id', 4], ['session-wrong-issuer', 4],

@@ -735,7 +735,7 @@ function withRunRequestBudget(runId, category, operation, mode = undefined) {
   }
   return RUN_REQUEST_BUDGET_CONTEXT.run({ runId, category, mode }, operation);
 }
-async function executeBudgetedRequest(runId, category, operation, signal = null, mode = undefined, kind = undefined, target = null, dispatchDeadline = undefined) {
+async function executeBudgetedRequest(runId, category, operation, signal = null, mode = undefined, kind = undefined, target = null, dispatchDeadline = undefined, monotonicDeadline = undefined) {
   const existing = RUN_REQUEST_BUDGET_CONTEXT.getStore();
   const effectiveRun = existing?.runId || runId;
   if (!effectiveRun || (runId && runId !== effectiveRun)) throw new Error('REQUEST_BUDGET_BINDING_MISMATCH');
@@ -748,7 +748,7 @@ async function executeBudgetedRequest(runId, category, operation, signal = null,
   const operationHash = kind === 'auth_delete' && journal?.state.seeds.has(authKey)
     ? journal.state.seeds.get(authKey).operation : ['seed_create', 'storage_upload'].includes(kind) ? resourceContext?.operationHash : undefined;
   return executeRunBudgetRequest(budget, { category: existing?.category || category, signal, kind,
-    resourceKey: resourceContext?.key, operationHash, dispatchDeadline }, async (ordinal, recordCreation) => {
+    resourceKey: resourceContext?.key, operationHash, dispatchDeadline, monotonicDeadline }, async (ordinal, recordCreation) => {
     if (kind === 'auth_delete') journal?.admitAuthDeletionProvider(ordinal);
     resourceContext?.requestOrdinals?.push(ordinal);
     const result = await operation(ordinal, recordCreation);
@@ -768,7 +768,7 @@ async function executeBudgetedRequest(runId, category, operation, signal = null,
     return result;
   });
 }
-function executeCurrentTransportRequest(transport, signal, operation, kind, target, dispatchDeadline) {
+function executeCurrentTransportRequest(transport, signal, operation, kind, target, dispatchDeadline, monotonicDeadline) {
   const authority = AUTH_DELETE_CONTEXT.getStore();
   if (kind === 'auth_delete' && authority && authority.transport !== transport) throw new Error('SEED_DELETE_TRANSPORT_MISMATCH');
   const rc = RESOURCE_REQUEST_CONTEXT.getStore();
@@ -780,7 +780,7 @@ function executeCurrentTransportRequest(transport, signal, operation, kind, targ
   const context = RUN_REQUEST_BUDGET_CONTEXT.getStore();
   if (!context) return operation(null, () => {}); // Standalone fixture routing has no run/resource authority.
   return executeBudgetedRequest(context.runId, context.category, operation, signal, TRANSPORT_REQUEST_BUDGET_MODES.get(transport),
-    kind, target, dispatchDeadline);
+    kind, target, dispatchDeadline, monotonicDeadline);
 }
 
 function sessionEvidenceRequestTarget(url, method) {
@@ -2088,8 +2088,14 @@ function validateDispatcherFixtureTiming(spec) {
 const TEMP_AUTH_FIXTURE_SCOPE = new WeakMap();
 
 export function createTempAuthPilotFixtureTransport(rawOptions) {
-  const { plan, fixture, expiresAt } = recoveryOptions(rawOptions, ['plan', 'fixture', 'expiresAt']);
+  const { plan, fixture, expiresAt, monotonicExpiresAt } = recoveryOptions(rawOptions, ['plan', 'fixture', 'expiresAt', 'monotonicExpiresAt']);
   if (!Number.isSafeInteger(expiresAt) || expiresAt <= 0) throw new Error('TEMP_AUTH_INVALID_AUTHORIZATION_DEADLINE');
+  const nowWall = Date.now();
+  const nowMono = performance.now();
+  const effectiveMonotonicExpiresAt = monotonicExpiresAt !== undefined ? monotonicExpiresAt : nowMono + (expiresAt - nowWall);
+  if (typeof effectiveMonotonicExpiresAt !== 'number' || !Number.isFinite(effectiveMonotonicExpiresAt)) {
+    throw new Error('TEMP_AUTH_INVALID_AUTHORIZATION_DEADLINE');
+  }
   const seed = SEED_PLANS.get(plan);
   if (!seed || seed.state !== 'CREATION_PENDING' || journalForRun(plan.runId)?.handle !== seed.handle) {
     throw new Error('TEMP_AUTH_UNTRUSTED_SEED');
@@ -2097,7 +2103,7 @@ export function createTempAuthPilotFixtureTransport(rawOptions) {
   const spec = extractValidatedPlainOptions(fixture, 'transportSpec');
   if (Object.hasOwn(spec, 'conditionalStorage')) throw new Error('TEMP_AUTH_STORAGE_NOT_ALLOWED');
   const scope = Object.freeze(Object.create(null));
-  TEMP_AUTH_FIXTURE_SCOPE.set(scope, { seed, plan: tempAuthRequestPlan(plan.userId), expiresAt });
+  TEMP_AUTH_FIXTURE_SCOPE.set(scope, { seed, plan: tempAuthRequestPlan(plan.userId), expiresAt, monotonicExpiresAt: effectiveMonotonicExpiresAt });
   return createDeterministicFixtureTransport(spec, scope);
 }
 
@@ -2256,7 +2262,7 @@ export function createDeterministicFixtureTransport(rawSpec = {}, scope = null) 
       const abortErr = new Error('The operation was aborted');
       abortErr.name = 'AbortError';
       if (RUN_REQUEST_BUDGET_CONTEXT.getStore()) {
-        return executeCurrentTransportRequest(transport, signal, () => { throw abortErr; }, kind, target, pilot?.expiresAt);
+        return executeCurrentTransportRequest(transport, signal, () => { throw abortErr; }, kind, target, pilot?.expiresAt, pilot?.monotonicExpiresAt);
       }
       throw abortErr;
     }
@@ -2264,7 +2270,7 @@ export function createDeterministicFixtureTransport(rawSpec = {}, scope = null) 
     return executeCurrentTransportRequest(transport, signal, (ordinal, recordCreation) => runWithBlockedRealFetch(async () => {
       if (pilot) {
         // Journal I/O can outlast the authorization even after the dispatch marker.
-        if (Date.now() >= pilot.expiresAt) throw new Error('TEMP_AUTH_AUTHORIZATION_EXPIRED');
+        if (Date.now() >= pilot.expiresAt || performance.now() >= pilot.monotonicExpiresAt) throw new Error('TEMP_AUTH_AUTHORIZATION_EXPIRED');
         const matches = entry => entry?.method === method && entry.url === urlStr;
         if (!matches(pilot.plan[pilotNext])) {
           // A failed probe may go directly to seed-last cleanup only with the
@@ -2417,7 +2423,7 @@ export function createDeterministicFixtureTransport(rawSpec = {}, scope = null) 
       }
       if (conditionalDeletion) publishConditionalEvidence(response, transport, 'conditionalDeletion', conditionalDeletion);
       return response;
-    }), kind, target, pilot?.expiresAt);
+    }), kind, target, pilot?.expiresAt, pilot?.monotonicExpiresAt);
   };
 
   TRANSPORT_REQUEST_BUDGET_MODES.set(transport, requestBudgetMode);

@@ -150,22 +150,42 @@ export function prepareTempAuthRehearsal(rawOptions) {
   let closed = false;
   let credentialCheckActive = false;
   let credentialReceipt = null;
+  const anchoredDeadlines = new Map();
+  let maxWallMinusMono = Date.now() - performance.now();
+  function anchorAuthorizationDeadline(verified, wallNow, monoNow) {
+    maxWallMinusMono = Math.max(maxWallMinusMono, wallNow - monoNow);
+    const candidateMono = verified.expiresAt - maxWallMinusMono;
+    const prior = anchoredDeadlines.get(verified.receipt);
+    const monotonicExpiresAt = prior ? Math.min(prior.monotonicExpiresAt, candidateMono) : candidateMono;
+    const bound = Object.freeze({ wallExpiresAt: verified.expiresAt, monotonicExpiresAt });
+    anchoredDeadlines.set(verified.receipt, bound);
+    return bound;
+  }
   return Object.freeze({
     runId: journal.runId,
     close() {
       journal.close();
       closed = true;
       credentialReceipt = null;
+      anchoredDeadlines.clear();
     },
     async verifyOperatorInput(authorization, input, output) {
       if (closed || consumed || credentialCheckActive) throw new Error('TEMP_AUTH_RUN_NOT_ADMISSIBLE');
+      const wallNow = Date.now();
+      const monoNow = performance.now();
       const verified = verifiedAuthorization(authorization, trust,
-        { runId: journal.runId, runtime: readTempAuthRuntimeIdentity() }, Date.now());
+        { runId: journal.runId, runtime: readTempAuthRuntimeIdentity() }, wallNow);
+      const boundDeadline = anchorAuthorizationDeadline(verified, wallNow, monoNow);
       credentialReceipt = null;
+      if (wallNow >= boundDeadline.wallExpiresAt || monoNow >= boundDeadline.monotonicExpiresAt) {
+        throw new Error('TEMP_AUTH_RUN_NOT_ADMISSIBLE');
+      }
       credentialCheckActive = true;
       try {
         await verifyTempAuthOperatorInput(verified.bindings, input, output);
-        if (closed || Date.now() >= verified.expiresAt) throw new Error('TEMP_AUTH_RUN_NOT_ADMISSIBLE');
+        if (closed || Date.now() >= boundDeadline.wallExpiresAt || performance.now() >= boundDeadline.monotonicExpiresAt) {
+          throw new Error('TEMP_AUTH_RUN_NOT_ADMISSIBLE');
+        }
         credentialReceipt = verified.receipt;
         return Object.freeze({ projectRef, runId: journal.runId, keyBindingVerified: true, hostedRequests: 0 });
       } finally {
@@ -174,15 +194,22 @@ export function prepareTempAuthRehearsal(rawOptions) {
     },
     async run(authorization, fault = 'none') {
       if (closed || consumed || credentialCheckActive || !FAULTS.has(fault)) throw new Error('TEMP_AUTH_RUN_NOT_ADMISSIBLE');
+      const runWallNow = Date.now();
+      const runMonoNow = performance.now();
       const verified = verifiedAuthorization(authorization, trust,
-        { runId: journal.runId, runtime: readTempAuthRuntimeIdentity() }, Date.now());
+        { runId: journal.runId, runtime: readTempAuthRuntimeIdentity() }, runWallNow);
       if (credentialReceipt !== verified.receipt) throw new Error('TEMP_AUTH_OPERATOR_RECEIPT_REQUIRED');
+      const boundDeadline = anchoredDeadlines.get(verified.receipt);
+      if (!boundDeadline || runWallNow >= boundDeadline.wallExpiresAt || runMonoNow >= boundDeadline.monotonicExpiresAt) {
+        throw new Error('TEMP_AUTH_AUTHORIZATION_EXPIRED');
+      }
       consumed = true;
       credentialReceipt = null;
       const inventory = new TestRunInventory(journal.runId);
       const seed = reserveRunCreatedSeed({ inventory, projectRef });
       const transport = createTempAuthPilotFixtureTransport({
-        plan: seed, fixture: fixtureFor(seed, fault), expiresAt: verified.expiresAt
+        plan: seed, fixture: fixtureFor(seed, fault),
+        expiresAt: boundDeadline.wallExpiresAt, monotonicExpiresAt: boundDeadline.monotonicExpiresAt
       });
       const keys = { anonKey: createMockProjectKey(projectRef, 'anon'), serviceRoleKey: createMockProjectKey(projectRef, 'service_role') };
       const adminClient = createHostedAdminClient({ projectRef, runId: journal.runId, fetchFn: transport, ...keys });
